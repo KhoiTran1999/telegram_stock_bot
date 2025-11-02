@@ -220,20 +220,38 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    # kiểm tra có tham số không
     if not context.args:
         await update.message.reply_text("⚠️ Ví dụ: /add HPG hoặc /add VNINDEX")
         return
 
     symbol = context.args[0].upper().strip()
+
+    # ✅ kiểm tra mã có tồn tại thực sự không
+    quote_test = get_quote(symbol)
+    if not quote_test:
+        await update.message.reply_text(
+            f"❌ Mã `{symbol}` không tìm được dữ liệu.\n"
+            "Có thể mã không tồn tại, bị hủy niêm yết, hoặc gõ sai."
+        )
+        return
+
     all_watch, chat_key, lst = get_watch_for_chat(chat_id)
 
     if symbol not in lst:
         lst.append(symbol)
         all_watch[chat_key]["list"] = lst
         update_watch_for_chat(all_watch)
-        await update.message.reply_text(f"✅ Đã thêm {symbol} vào danh sách.")
-    else:
-        await update.message.reply_text(f"ℹ️ {symbol} đã có trong danh sách của bạn.")
+
+        await update.message.reply_text(
+            "✅ Theo dõi thành công!\n"
+            f"• Mã: {symbol}\n"
+            f"• Giá hiện tại: {quote_test['price']:,.2f}\n"
+            f"• Thay đổi: {quote_test['pct']:+.2f}%"
+        )
+
+
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
