@@ -10,6 +10,7 @@ from flask import Flask
 from vnstock import *
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
 
 # =======================
 # CẤU HÌNH
@@ -361,8 +362,6 @@ def run_flask():
 # =======================
 # TELEGRAM BOT POLLING
 # =======================
-import asyncio
-
 def run_telegram_bot():
     if not TOKEN:
         raise RuntimeError("Thiếu TELEGRAM_TOKEN trong biến môi trường.")
@@ -375,11 +374,14 @@ def run_telegram_bot():
         tg_app.add_handler(CommandHandler("remove", cmd_remove))
         tg_app.add_handler(CommandHandler("list", cmd_list))
 
-        print(">> Telegram polling started (async).")
-        await tg_app.run_polling()
+        print(">> Telegram polling started (Render-safe mode).")
+        # tắt signal handler để chạy trong thread phụ
+        await tg_app.run_polling(close_loop=False, stop_signals=None)
 
-    # Tạo loop asyncio riêng cho thread này
-    asyncio.run(start_bot())
+    # Tạo loop riêng trong thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_bot())
 
 
 # =======================
