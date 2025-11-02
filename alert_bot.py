@@ -361,19 +361,26 @@ def run_flask():
 # =======================
 # TELEGRAM BOT POLLING
 # =======================
+import asyncio
+
 def run_telegram_bot():
     if not TOKEN:
         raise RuntimeError("Thiếu TELEGRAM_TOKEN trong biến môi trường.")
 
-    tg_app = ApplicationBuilder().token(TOKEN).build()
+    async def start_bot():
+        tg_app = ApplicationBuilder().token(TOKEN).build()
 
-    tg_app.add_handler(CommandHandler("start", cmd_start))
-    tg_app.add_handler(CommandHandler("add", cmd_add))
-    tg_app.add_handler(CommandHandler("remove", cmd_remove))
-    tg_app.add_handler(CommandHandler("list", cmd_list))
+        tg_app.add_handler(CommandHandler("start", cmd_start))
+        tg_app.add_handler(CommandHandler("add", cmd_add))
+        tg_app.add_handler(CommandHandler("remove", cmd_remove))
+        tg_app.add_handler(CommandHandler("list", cmd_list))
 
-    print(">> Telegram polling started.")
-    tg_app.run_polling()
+        print(">> Telegram polling started (async).")
+        await tg_app.run_polling()
+
+    # Tạo loop asyncio riêng cho thread này
+    asyncio.run(start_bot())
+
 
 # =======================
 # MAIN
