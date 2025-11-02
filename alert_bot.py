@@ -362,12 +362,20 @@ def run_flask():
 # =======================
 # TELEGRAM BOT POLLING
 # =======================
+import asyncio
+from telegram.ext import ApplicationBuilder, CommandHandler
+
 def run_telegram_bot():
     if not TOKEN:
         raise RuntimeError("Thiếu TELEGRAM_TOKEN trong biến môi trường.")
 
     async def start_bot():
-        tg_app = ApplicationBuilder().token(TOKEN).build()
+        tg_app = (
+            ApplicationBuilder()
+            .token(TOKEN)
+            .concurrent_updates(True)   # cho phép chạy nhiều user song song
+            .build()
+        )
 
         tg_app.add_handler(CommandHandler("start", cmd_start))
         tg_app.add_handler(CommandHandler("add", cmd_add))
@@ -375,18 +383,18 @@ def run_telegram_bot():
         tg_app.add_handler(CommandHandler("list", cmd_list))
 
         print(">> Telegram polling started (Render async-safe mode).")
-        # Không để PTB tự đóng loop, không dùng signal
-        await tg_app.initialize()
-        await tg_app.start()
-        await tg_app.updater.start_polling()
-        await tg_app.updater.wait_until_closed()
-        await tg_app.stop()
-        await tg_app.shutdown()
 
-    # Mỗi thread có loop riêng, tránh conflict
+        # ✅ chạy polling mà KHÔNG dùng signal handler (vì đang trong thread phụ)
+        await tg_app.run_polling(
+            stop_signals=None,     # tắt signal handler (Render không cho phép)
+            close_loop=False       # giữ loop đang chạy
+        )
+
+    # tạo event loop riêng cho thread này
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(start_bot())
+
 
 
 # =======================
