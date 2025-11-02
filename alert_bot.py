@@ -288,17 +288,28 @@ async def main():
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
 
-    print(">> Telegram polling started (Render unified async mode).")
+    print(">> Telegram polling started (Render unified async-safe mode).")
 
     config = Config()
     config.bind = ["0.0.0.0:10000"]
 
-    # Chạy Flask, Telegram bot, và alert_loop song song
-    await asyncio.gather(
-        tg_app.run_polling(stop_signals=None, close_loop=False),
-        serve(flask_app, config),
-        alert_loop(),
-    )
+    # ✅ KHỞI TẠO MANUAL (thay vì run_polling)
+    await tg_app.initialize()
+    await tg_app.start()
+    await tg_app.updater.start_polling()
+
+    try:
+        # chạy Flask và alert loop song song
+        await asyncio.gather(
+            serve(flask_app, config),
+            alert_loop(),
+        )
+    finally:
+        # dọn dẹp khi Render dừng service
+        await tg_app.updater.stop()
+        await tg_app.stop()
+        await tg_app.shutdown()
+
 
 # =======================
 # MAIN
