@@ -374,11 +374,16 @@ def run_telegram_bot():
         tg_app.add_handler(CommandHandler("remove", cmd_remove))
         tg_app.add_handler(CommandHandler("list", cmd_list))
 
-        print(">> Telegram polling started (Render-safe mode).")
-        # tắt signal handler để chạy trong thread phụ
-        await tg_app.run_polling(close_loop=False, stop_signals=None)
+        print(">> Telegram polling started (Render async-safe mode).")
+        # Không để PTB tự đóng loop, không dùng signal
+        await tg_app.initialize()
+        await tg_app.start()
+        await tg_app.updater.start_polling()
+        await tg_app.updater.wait_until_closed()
+        await tg_app.stop()
+        await tg_app.shutdown()
 
-    # Tạo loop riêng trong thread
+    # Mỗi thread có loop riêng, tránh conflict
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(start_bot())
