@@ -6,23 +6,24 @@ import threading
 import datetime
 import pytz
 import requests
+from flask import Flask
 from vnstock import *
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # =======================
-# CẤU HÌNH CƠ BẢN
+# CẤU HÌNH
 # =======================
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # bắt buộc phải có
+TOKEN = os.getenv("TELEGRAM_TOKEN")  # lấy từ biến môi trường Render
 TIMEZONE = "Asia/Ho_Chi_Minh"
 
-WATCH_FILE = "watch_list.json"      # Lưu danh sách mã theo dõi theo từng chat
-STATE_FILE = "alerts_state.json"    # Lưu mốc đã cảnh báo theo từng chat
+WATCH_FILE = "watch_list.json"      # lưu danh sách mã theo dõi theo từng chat
+STATE_FILE = "alerts_state.json"    # lưu mốc cảnh báo đã gửi theo từng chat
 
-# Cổ phiếu: cảnh báo theo % thay đổi
+# Ngưỡng cảnh báo:
+# - Cổ phiếu: theo % thay đổi
 STOCK_LEVELS = [2, 4, 6.9, -2, -4, -6.9]
-
-# Chỉ số: cảnh báo theo điểm tuyệt đối thay đổi
+# - Chỉ số (VNINDEX, VN30): theo điểm tuyệt đối thay đổi
 INDEX_POINT_LEVELS = [10, 20, 30, 40, -10, -20, -30, -40]
 
 FUN_UP = [
@@ -42,9 +43,6 @@ FUN_DOWN = [
 # HÀM ĐỌC/GHI JSON
 # =======================
 def load_json(path, default=None):
-    """
-    Đọc file JSON. Nếu chưa có thì trả default.
-    """
     if not os.path.exists(path):
         return default or {}
     try:
@@ -54,19 +52,18 @@ def load_json(path, default=None):
         return default or {}
 
 def save_json(path, data):
-    """
-    Ghi file JSON (pretty, utf-8).
-    """
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =======================
-# HÀM CHO DỮ LIỆU THEO CHAT
+# DỮ LIỆU THEO TỪNG CHAT
 # =======================
 def get_watch_for_chat(chat_id: int):
     """
-    Lấy danh sách mã theo dõi cho 1 chat cụ thể.
-    Trả về (toàn bộ_data, chat_key, list_cua_chat)
+    Trả về (all_watch, chat_key, list_theo_doi)
+    all_watch = toàn bộ watch_list.json
+    chat_key = str(chat_id)
+    list_theo_doi = danh sách mã của chat_id đó
     """
     all_watch = load_json(WATCH_FILE, {})
     chat_key = str(chat_id)
@@ -75,30 +72,21 @@ def get_watch_for_chat(chat_id: int):
     return all_watch, chat_key, all_watch[chat_key]["list"]
 
 def update_watch_for_chat(all_watch):
-    """
-    Ghi lại watch_list.json sau khi sửa đổi.
-    """
     save_json(WATCH_FILE, all_watch)
 
-def get_state_for_chat(chat_id: int):
+def get_state_for_all():
     """
-    Lấy trạng thái cảnh báo đã gửi cho chat này.
-    state lưu dạng:
+    Đọc trạng thái cảnh báo đã gửi (alerts_state.json)
+    Format:
     {
-      "123456789": { "HPG": 4, "VNINDEX": 20, ... },
-      "-987654": { ... }
+      "123456789": { "HPG": 4, "VNINDEX": 20 },
+      "-987654321": { "VN30": -10 }
     }
     """
     all_state = load_json(STATE_FILE, {})
-    chat_key = str(chat_id)
-    if chat_key not in all_state:
-        all_state[chat_key] = {}
-    return all_state, chat_key, all_state[chat_key]
+    return all_state
 
-def update_state_for_chat(all_state):
-    """
-    Ghi lại alerts_state.json sau khi sửa đổi.
-    """
+def save_state_for_all(all_state):
     save_json(STATE_FILE, all_state)
 
 # =======================
@@ -106,15 +94,15 @@ def update_state_for_chat(all_state):
 # =======================
 def get_quote(symbol: str):
     """
-    symbol có thể là mã cổ phiếu (HPG, SSI...)
+    symbol có thể là mã cổ phiếu (HPG, SSI, NLG...)
     hoặc chỉ số (VNINDEX, VN30...)
     """
     try:
         q = stock_quote(symbol, source="VCI")
         return {
-            "price": q["close"].iloc[-1],           # giá/điểm hiện tại
-            "change_abs": q["change"].iloc[-1],     # thay đổi tuyệt đối (điểm)
-            "pct": q["percent_change"].iloc[-1],    # thay đổi %
+            "price": q["close"].iloc[-1],        # giá/điểm hiện tại
+            "change_abs": q["change"].iloc[-1],  # thay đổi tuyệt đối (điểm)
+            "pct": q["percent_change"].iloc[-1], # thay đổi %
             "vol": q["volume"].iloc[-1] if "volume" in q else 0,
         }
     except Exception as e:
@@ -125,9 +113,6 @@ def get_quote(symbol: str):
 # GỬI TELEGRAM
 # =======================
 def send_msg_to(chat_id: int, text: str):
-    """
-    Gửi tin nhắn tới từng chat ID cụ thể.
-    """
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     params = {
         "chat_id": chat_id,
@@ -141,15 +126,16 @@ def send_msg_to(chat_id: int, text: str):
         print(f"[ERROR] gửi Telegram tới {chat_id} lỗi: {e}")
 
 # =======================
-# NGƯỠNG CẢNH BÁO
+# CHỌN MỐC CẢNH BÁO
 # =======================
 def pick_new_level(value: float, levels: list[float]):
     """
-    Chọn mốc mạnh nhất đã đạt.
-    - value >0 (ví dụ +23 điểm hoặc +4.5%)
-      -> trả về mốc dương lớn nhất <= value (10,20,30,...)
-    - value <0 (ví dụ -13 điểm hoặc -4.2%)
-      -> trả về mốc âm nhỏ nhất >= value (-10,-20,-30,...)
+    Chọn mốc mạnh nhất đã đạt:
+    - value dương -> trả mốc dương lớn nhất <= value
+    - value âm -> trả mốc âm nhỏ nhất >= value
+    Ví dụ:
+      value = +23, levels = [10,20,30,...] -> 20
+      value = -13, levels = [-10,-20,-30,...] -> -10
     """
     chosen = None
     for lvl in levels:
@@ -159,22 +145,22 @@ def pick_new_level(value: float, levels: list[float]):
         elif lvl < 0 and value <= lvl:
             if chosen is None or lvl < chosen:
                 chosen = lvl
-    return chosen  # có thể None nếu chưa chạm mốc nào
+    return chosen  # None nếu chưa chạm ngưỡng
 
 # =======================
-# THỜI GIAN GIAO DỊCH VN
+# KIỂM TRA GIỜ GIAO DỊCH VN
 # =======================
 def in_session_vietnam():
     """
-    Chỉ gửi cảnh báo trong giờ thị trường:
-    T2-T6, 09:00 -> 15:00 giờ VN.
+    Gửi cảnh báo trong khung:
+    - Thứ 2 -> Thứ 6
+    - từ 09:00 đến 15:00 giờ VN
     """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
     weekday = now.weekday()  # 0=Mon ... 6=Sun
     if weekday > 4:
         return False
-    # Rộng tay một chút (8h50 -> 15h10) nếu muốn
     hhmm = now.hour * 100 + now.minute
     return (hhmm >= 900 and hhmm <= 1500)
 
@@ -183,15 +169,15 @@ def in_session_vietnam():
 # =======================
 def alert_loop():
     """
-    Chạy liên tục trên thread riêng.
-    Mỗi ~15s:
-    - Duyệt qua TỪNG chat_id
-    - Lấy list mã của chat đó
-    - Xem mã nào chạm ngưỡng cảnh báo mới
-    - Gửi tin nhắn riêng cho chat đó
-    - Cập nhật state riêng cho chat đó
+    Thread chính để quét giá và gửi cảnh báo.
+    Cứ mỗi ~15 giây:
+    - Duyệt qua từng chat_id trong watch_list.json
+    - Lấy từng mã trong list của chat_id đó
+    - Kiểm tra ngưỡng biến động mới
+    - Gửi tin cho đúng chat_id đó
+    - Cập nhật state để tránh spam
+    Chỉ hoạt động trong giờ giao dịch VN.
     """
-
     vn_tz = pytz.timezone(TIMEZONE)
 
     while True:
@@ -199,21 +185,20 @@ def alert_loop():
             now = datetime.datetime.now(vn_tz)
 
             if not in_session_vietnam():
-                # Ngoài giờ: chỉ log nhẹ nhàng cho biết bot vẫn sống
                 print(now.strftime("[DEBUG %H:%M:%S] Ngoài giờ giao dịch"))
                 time.sleep(15)
                 continue
 
-            # load toàn bộ watch_list và state một lần cho hiệu suất
+            # Tải toàn bộ watch_list và state
             all_watch = load_json(WATCH_FILE, {})
-            all_state = load_json(STATE_FILE, {})
+            all_state = get_state_for_all()
 
             # Duyệt từng chat
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", [])
 
-                # state cá nhân của chat
+                # Lấy state của riêng chat_id
                 if chat_key not in all_state:
                     all_state[chat_key] = {}
                 personal_state = all_state[chat_key]
@@ -230,7 +215,7 @@ def alert_loop():
                     change_abs = quote["change_abs"]
                     pct = quote["pct"]
 
-                    # heuristic: VNINDEX, VN30... -> index => cảnh báo theo điểm
+                    # Nếu tên mã bắt đầu bằng "VN" => coi như chỉ số (VNINDEX, VN30...)
                     is_index = sym.upper().startswith("VN")
 
                     new_lvl = pick_new_level(
@@ -240,8 +225,8 @@ def alert_loop():
 
                     prev_lvl = personal_state.get(sym, 0)
 
+                    # Nếu vừa chạm mốc mới khác mốc cũ => gửi cảnh báo
                     if new_lvl and new_lvl != prev_lvl:
-                        # Cập nhật state để chống spam lần sau
                         personal_state[sym] = new_lvl
 
                         if not header_added:
@@ -254,7 +239,7 @@ def alert_loop():
                         fun_line = random.choice(FUN_UP if going_up else FUN_DOWN)
 
                         if is_index:
-                            # ví dụ: VNINDEX +20 điểm
+                            # ví dụ: VNINDEX +20.35 điểm (+1.75%)
                             messages.append(
                                 f"{icon} *{sym} {change_abs:+.2f} điểm* "
                                 f"({pct:+.2f}%) tại {price:,.2f}\n"
@@ -268,39 +253,38 @@ def alert_loop():
                                 f"_{fun_line}_"
                             )
                     elif new_lvl is None:
-                        # Chưa đạt ngưỡng -> reset để chuẩn bị lần sau
+                        # Chưa đạt mốc -> reset để lần sau nếu bùng mạnh sẽ báo lại
                         personal_state[sym] = 0
 
-                # Nếu chat này có message cảnh báo mới -> gửi riêng cho chat này
+                # Nếu chat này có cảnh báo mới -> gửi riêng cho chat này
                 if messages:
                     final_text = "\n".join(messages)
                     print(f"[INFO] Send alert to {chat_id}:\n{final_text}")
                     send_msg_to(chat_id, final_text)
 
-                # Ghi lại state đã cập nhật cho chat này
+                # Ghi lại state chat này
                 all_state[chat_key] = personal_state
 
-            # Sau khi duyệt hết tất cả chat -> lưu file state chung
-            save_json(STATE_FILE, all_state)
+            # Lưu state sau khi duyệt hết các chat
+            save_state_for_all(all_state)
 
         except Exception as e:
-            # tránh thread chết im lặng
             print(f"[ERROR] alert_loop exception: {e}")
 
-        # nghỉ 15 giây rồi check tiếp
+        # nghỉ 15 giây rồi lặp lại
         time.sleep(15)
 
 # =======================
-# HANDLERS CHO LỆNH TELEGRAM
+# HANDLER CHO CÁC LỆNH TELEGRAM
 # =======================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Xin chào! Mình là bot cảnh báo chứng khoán realtime (theo dõi riêng từng người).\n"
+        "👋 Xin chào! Mình là bot cảnh báo chứng khoán realtime (mỗi người 1 danh sách riêng).\n"
         "Lệnh:\n"
         "• /add <MÃ>    -> thêm theo dõi (VD: /add HPG hoặc /add VNINDEX)\n"
         "• /remove <MÃ> -> bỏ theo dõi\n"
         "• /list        -> xem danh sách đang theo dõi\n"
-        "Bot sẽ gửi cảnh báo khi biến động mạnh trong giờ thị trường (T2-T6, 09h-15h)."
+        "Bot sẽ nhắn khi biến động mạnh trong giờ thị trường (T2-T6, 09h-15h)."
     )
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -311,7 +295,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     symbol = context.args[0].upper().strip()
-
     all_watch, chat_key, lst = get_watch_for_chat(chat_id)
 
     if symbol not in lst:
@@ -334,7 +317,6 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     symbol = context.args[0].upper().strip()
-
     all_watch, chat_key, lst = get_watch_for_chat(chat_id)
 
     if symbol in lst:
@@ -351,7 +333,6 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-
     _, _, lst = get_watch_for_chat(chat_id)
 
     if not lst:
@@ -362,27 +343,54 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # =======================
-# MAIN
+# FLASK KEEPALIVE SERVER
 # =======================
-def main():
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    # Render sẽ ping port này để confirm service "đang sống"
+    return "Bot is running ✅"
+
+def run_flask():
+    # Mở 1 cổng (10000) để Render coi đây là web service thật sự
+    port = int(os.getenv("PORT", "10000"))
+    # host=0.0.0.0 để Render truy cập được
+    app.run(host="0.0.0.0", port=port)
+
+# =======================
+# TELEGRAM BOT POLLING
+# =======================
+def run_telegram_bot():
     if not TOKEN:
         raise RuntimeError("Thiếu TELEGRAM_TOKEN trong biến môi trường.")
 
-    # Khởi động bot Telegram (polling updates từ Telegram)
-    app = ApplicationBuilder().token(TOKEN).build()
+    tg_app = ApplicationBuilder().token(TOKEN).build()
 
-    # Đăng ký các lệnh
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("add", cmd_add))
-    app.add_handler(CommandHandler("remove", cmd_remove))
-    app.add_handler(CommandHandler("list", cmd_list))
+    tg_app.add_handler(CommandHandler("start", cmd_start))
+    tg_app.add_handler(CommandHandler("add", cmd_add))
+    tg_app.add_handler(CommandHandler("remove", cmd_remove))
+    tg_app.add_handler(CommandHandler("list", cmd_list))
 
-    # Chạy vòng lặp cảnh báo ở thread riêng
-    t = threading.Thread(target=alert_loop, daemon=True)
-    t.start()
+    print(">> Telegram polling started.")
+    tg_app.run_polling()
 
-    print("🚀 Bot đa người dùng đã khởi động. Đang polling Telegram & gửi alert realtime...")
-    app.run_polling()
+# =======================
+# MAIN
+# =======================
+def main():
+    print("🚀 Khởi động bot đa người dùng + Flask keepalive cho Render Web Service...")
+
+    # Thread 1: vòng lặp cảnh báo chứng khoán
+    t_alert = threading.Thread(target=alert_loop, daemon=True)
+    t_alert.start()
+
+    # Thread 2: Telegram bot polling
+    t_tg = threading.Thread(target=run_telegram_bot, daemon=True)
+    t_tg.start()
+
+    # Thread 3: Flask web server (Render cần port mở)
+    run_flask()
 
 if __name__ == "__main__":
     main()
