@@ -81,18 +81,16 @@ def save_state_for_all(all_state):
 # =======================
 def get_quote(symbol: str):
     """
-    Lấy giá realtime từ Trading.price_board().
-
-    Trả về dict:
+    Trả về dict dạng:
     {
-        "price": <giá hiện tại (match_price hoặc ref_price)>,
-        "pct": <% thay đổi so với tham chiếu>,
-        "change_abs": <điểm thay đổi tuyệt đối so với tham chiếu>
+        "price": float | None,        # giá hiện tại (ưu tiên match_price, fallback ref_price)
+        "pct": float | None,          # % thay đổi vs tham chiếu
+        "change_abs": float | None    # tuyệt đối (match - ref), dùng cho VNINDEX
     }
-
-    Nếu không lấy được thì trả None.
+    Nếu không fetch được thì return None.
     """
     from vnstock import Trading
+    import math
 
     try:
         trading = Trading(source='VCI')
@@ -104,15 +102,27 @@ def get_quote(symbol: str):
 
         row = df.iloc[0]
 
-        match_price = row.get("match_price", None)     # giá khớp hiện tại
-        ref_price = row.get("ref_price", None)         # giá tham chiếu
-        pct_change = row.get("percent_change", None)   # % thay đổi
-        # với index: price_board có thể không trả match_price mà chỉ có ref_price
+        # Lấy raw field (có thể là None hoặc NaN)
+        match_price = row.get("match_price", None)
+        ref_price   = row.get("ref_price", None)
+        pct_change  = row.get("percent_change", None)
 
-        # chọn giá hiển thị: ưu tiên match_price, fallback ref_price
+        # Convert NaN -> None cho dễ xử lý
+        def clean_num(x):
+            if x is None:
+                return None
+            if isinstance(x, float) and math.isnan(x):
+                return None
+            return x
+
+        match_price = clean_num(match_price)
+        ref_price   = clean_num(ref_price)
+        pct_change  = clean_num(pct_change)
+
+        # Ưu tiên match_price, fallback ref_price
         price = match_price if match_price is not None else ref_price
 
-        # tính chênh lệch tuyệt đối để đo cho index (VNINDEX/VN30)
+        # Tính change_abs nếu có đủ match và ref
         change_abs = None
         if match_price is not None and ref_price is not None:
             try:
@@ -120,18 +130,31 @@ def get_quote(symbol: str):
             except Exception:
                 change_abs = None
 
+        # Nếu pct_change không có, tự tính từ match/ref
+        # pct = (match - ref) / ref * 100
+        if pct_change is None:
+            if match_price is not None and ref_price is not None and float(ref_price) != 0:
+                try:
+                    pct_change = (float(match_price) - float(ref_price)) / float(ref_price) * 100.0
+                except Exception:
+                    pct_change = None
+
         out = {
             "price": price,
             "pct": pct_change,
             "change_abs": change_abs,
         }
 
+        # Debug chi tiết để bạn thấy server trả gì
+        print("[DEBUG RAW]", symbol, dict(row))
         print(f"[QUOTE OK] {symbol} -> {out}")
+
         return out
 
     except Exception as e:
         print(f"[QUOTE FAIL] {symbol}: {type(e).__name__}: {e}")
         return None
+
 
 # =======================
 # GỬI TIN NHẮN TELEGRAM
