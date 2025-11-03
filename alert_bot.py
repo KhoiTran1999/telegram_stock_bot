@@ -158,7 +158,7 @@ def get_quote(symbol: str):
         }
 
         # In debug chi tiết để theo dõi server trả gì
-        print("[DEBUG RAW]", symbol, dict(row))
+        # print("[DEBUG RAW]", symbol, dict(row))
         print(f"[QUOTE OK] {symbol} -> {out}")
 
         return out
