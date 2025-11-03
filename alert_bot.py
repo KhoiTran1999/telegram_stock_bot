@@ -22,6 +22,10 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 WATCH_FILE = "watch_list.json"
 STATE_FILE = "alerts_state.json"
 
+# ⚙️ Trạng thái bot và ID admin
+BOT_ACTIVE = True
+ADMIN_ID = 1088200599  # 👉 thay bằng Telegram ID của bạn
+
 # Mốc cảnh báo
 STOCK_LEVELS = [2, 4, 6.9, -2, -4, -6.9]
 INDEX_POINT_LEVELS = [10, 20, 30, 40, -10, -20, -30, -40]
@@ -99,6 +103,27 @@ def send_msg_to(chat_id: int, text: str):
         requests.get(url, params=params, timeout=10)
     except Exception as e:
         print("Lỗi gửi Telegram:", e)
+
+# =======================
+# On/Off Chat Bot
+# =======================
+async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Bạn không có quyền tắt bot.")
+        return
+    BOT_ACTIVE = False
+    await update.message.reply_text("🔴 Bot đã tắt (đang bảo trì).")
+
+
+async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Bạn không có quyền bật bot.")
+        return
+    BOT_ACTIVE = True
+    await update.message.reply_text("🟢 Bot đã bật lại.")
+
 
 # =======================
 # TIỆN ÍCH
@@ -209,6 +234,11 @@ async def alert_loop():
 # COMMAND HANDLERS
 # =======================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
+        return
+    
     await update.message.reply_text(
         "👋 Xin chào! Mình là bot cảnh báo chứng khoán realtime.\n\n"
         "Lệnh:\n"
@@ -219,41 +249,69 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
+        return
+    
     chat_id = update.effective_chat.id
 
-    # kiểm tra có tham số không
     if not context.args:
         await update.message.reply_text("⚠️ Ví dụ: /add HPG hoặc /add VNINDEX")
         return
 
     symbol = context.args[0].upper().strip()
 
-    # ✅ kiểm tra mã có tồn tại thực sự không
+    # thử lấy quote
     quote_test = get_quote(symbol)
-    if not quote_test:
-        await update.message.reply_text(
-            f"❌ Mã `{symbol}` không tìm được dữ liệu.\n"
-            "Có thể mã không tồn tại, bị hủy niêm yết, hoặc gõ sai."
-        )
-        return
 
+    # load danh sách hiện có
     all_watch, chat_key, lst = get_watch_for_chat(chat_id)
 
+    # nếu mã chưa có trong danh sách -> thêm vào
+    just_added = False
     if symbol not in lst:
         lst.append(symbol)
         all_watch[chat_key]["list"] = lst
         update_watch_for_chat(all_watch)
+        just_added = True
 
+    # phản hồi cho user
+    if quote_test:
+        # lấy được giá -> confirm đẹp
         await update.message.reply_text(
-            "✅ Theo dõi thành công!\n"
-            f"• Mã: {symbol}\n"
-            f"• Giá hiện tại: {quote_test['price']:,.2f}\n"
-            f"• Thay đổi: {quote_test['pct']:+.2f}%"
+            (
+                "✅ Đã thêm vào danh sách theo dõi.\n" if just_added else
+                "ℹ️ Mã này đã có sẵn trong danh sách theo dõi của bạn.\n"
+            )
+            + f"• Mã: {symbol}\n"
+            + f"• Giá hiện tại: {quote_test['price']:,.2f}\n"
+            + f"• Thay đổi: {quote_test['pct']:+.2f}%"
+        )
+    else:
+        # KHÔNG lấy được giá -> có thể lỗi mạng / chặn IP / thị trường đóng
+        await update.message.reply_text(
+            (
+                "⚠️ Mình đã lưu mã này vào danh sách theo dõi của bạn, "
+                "nhưng hiện tại không lấy được dữ liệu giá realtime cho mã đó.\n"
+                "• Mã: " + symbol + "\n"
+                "👉 Có thể do:\n"
+                "- Gõ sai mã\n"
+                "- Thị trường đang đóng\n"
+                "- Server dữ liệu từ chối IP của host\n"
+                "Mình sẽ vẫn cố gửi cảnh báo nếu sau này lấy được giá."
+            )
         )
 
 
 
+
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
+        return
+    
     chat_id = update.effective_chat.id
     if not context.args:
         await update.message.reply_text("⚠️ Ví dụ: /remove SSI")
@@ -271,6 +329,11 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {symbol} không có trong danh sách.")
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
+        return
+    
     chat_id = update.effective_chat.id
     _, _, lst = get_watch_for_chat(chat_id)
     if not lst:
@@ -305,6 +368,9 @@ async def main():
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
+    tg_app.add_handler(CommandHandler("on", cmd_on))
+    tg_app.add_handler(CommandHandler("off", cmd_off))
+
 
     print(">> Telegram polling started (Render unified async-safe mode).")
 
