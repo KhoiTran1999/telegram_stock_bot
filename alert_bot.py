@@ -1,12 +1,10 @@
 import os
 import json
-import time
 import random
 import datetime
 import asyncio
 import pytz
 import requests
-from vnstock import *
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask
@@ -83,20 +81,21 @@ def save_state_for_all(all_state):
 # =======================
 def get_quote(symbol: str):
     """
-    Trả về dict như:
+    Lấy giá realtime từ Trading.price_board().
+
+    Trả về dict:
     {
-        "price": <giá khớp hiện tại>,
+        "price": <giá hiện tại (match_price hoặc ref_price)>,
         "pct": <% thay đổi so với tham chiếu>,
-        "change_abs": <mức tăng/giảm tuyệt đối so với tham chiếu>
+        "change_abs": <điểm thay đổi tuyệt đối so với tham chiếu>
     }
-    Nếu lỗi (mã không có / API fail) -> return None
+
+    Nếu không lấy được thì trả None.
     """
     from vnstock import Trading
 
     try:
         trading = Trading(source='VCI')
-
-        # API cho phép get nhiều mã 1 lúc, nhưng ở đây ta chỉ cần 1
         df = trading.price_board([symbol])
 
         if df is None or len(df) == 0:
@@ -105,26 +104,26 @@ def get_quote(symbol: str):
 
         row = df.iloc[0]
 
-        # match_price: giá khớp hiện tại
-        price = row.get("match_price", None)
+        match_price = row.get("match_price", None)     # giá khớp hiện tại
+        ref_price = row.get("ref_price", None)         # giá tham chiếu
+        pct_change = row.get("percent_change", None)   # % thay đổi
+        # với index: price_board có thể không trả match_price mà chỉ có ref_price
 
-        # percent_change: % thay đổi so với tham chiếu (ví dụ +1.23)
-        pct = row.get("percent_change", None)
+        # chọn giá hiển thị: ưu tiên match_price, fallback ref_price
+        price = match_price if match_price is not None else ref_price
 
-        # ref_price: giá tham chiếu
-        ref_price = row.get("ref_price", None)
-
+        # tính chênh lệch tuyệt đối để đo cho index (VNINDEX/VN30)
         change_abs = None
-        if price is not None and ref_price is not None:
+        if match_price is not None and ref_price is not None:
             try:
-                change_abs = float(price) - float(ref_price)
+                change_abs = float(match_price) - float(ref_price)
             except Exception:
                 change_abs = None
 
         out = {
             "price": price,
-            "pct": pct,
-            "change_abs": change_abs
+            "pct": pct_change,
+            "change_abs": change_abs,
         }
 
         print(f"[QUOTE OK] {symbol} -> {out}")
@@ -133,7 +132,6 @@ def get_quote(symbol: str):
     except Exception as e:
         print(f"[QUOTE FAIL] {symbol}: {type(e).__name__}: {e}")
         return None
-
 
 # =======================
 # GỬI TIN NHẮN TELEGRAM
@@ -157,7 +155,6 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     BOT_ACTIVE = False
     await update.message.reply_text("🔴 Bot đã tắt (đang bảo trì).")
 
-
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     if update.effective_user.id != ADMIN_ID:
@@ -166,11 +163,17 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     BOT_ACTIVE = True
     await update.message.reply_text("🟢 Bot đã bật lại.")
 
-
 # =======================
 # TIỆN ÍCH
 # =======================
-def pick_new_level(value: float, levels: list[float]):
+def pick_new_level(value: float | None, levels: list[float]):
+    """
+    value: % thay đổi (cổ phiếu) hoặc điểm thay đổi (index).
+    Có thể là None. Nếu None -> trả None luôn.
+    """
+    if value is None:
+        return None
+
     chosen = None
     for lvl in levels:
         if lvl > 0 and value >= lvl:
@@ -184,10 +187,11 @@ def pick_new_level(value: float, levels: list[float]):
 def in_session_vietnam():
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
-    weekday = now.weekday()
+    weekday = now.weekday()  # 0=Mon ... 6=Sun
     if weekday > 4:
         return False
     hhmm = now.hour * 100 + now.minute
+    # cả pre-open lẫn ATC: 09:00 - 15:00
     return 900 <= hhmm <= 1500
 
 # =======================
@@ -195,9 +199,11 @@ def in_session_vietnam():
 # =======================
 async def alert_loop():
     vn_tz = pytz.timezone(TIMEZONE)
+
     while True:
         try:
             now = datetime.datetime.now(vn_tz)
+
             if not in_session_vietnam():
                 print(now.strftime("[DEBUG %H:%M:%S] Ngoài giờ giao dịch"))
                 await asyncio.sleep(15)
@@ -209,6 +215,7 @@ async def alert_loop():
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", [])
+
                 if chat_key not in all_state:
                     all_state[chat_key] = {}
                 personal_state = all_state[chat_key]
@@ -222,12 +229,17 @@ async def alert_loop():
                         continue
 
                     price = quote["price"]
-                    change_abs = quote["change_abs"]
                     pct = quote["pct"]
+                    change_abs = quote["change_abs"]
+
+                    # xác định mã là index hay cổ phiếu
+                    # ví dụ: VNINDEX, VN30 -> index
                     is_index = sym.upper().startswith("VN")
 
+                    # chọn biến động để so sánh level
+                    metric_value = change_abs if is_index else pct
                     new_lvl = pick_new_level(
-                        change_abs if is_index else pct,
+                        metric_value,
                         INDEX_POINT_LEVELS if is_index else STOCK_LEVELS,
                     )
 
@@ -235,6 +247,7 @@ async def alert_loop():
 
                     if new_lvl and new_lvl != prev_lvl:
                         personal_state[sym] = new_lvl
+
                         if not header_added:
                             messages.append(f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*")
                             messages.append("--------------------------------")
@@ -244,18 +257,48 @@ async def alert_loop():
                         icon = "🟢" if going_up else "🔴"
                         fun_line = random.choice(FUN_UP if going_up else FUN_DOWN)
 
+                        # format giá
+                        if price is not None:
+                            try:
+                                price_str = f"{float(price):,.2f}"
+                            except Exception:
+                                price_str = str(price)
+                        else:
+                            price_str = "N/A"
+
+                        # format pct
+                        if pct is not None:
+                            try:
+                                pct_str = f"{float(pct):+.2f}%"
+                            except Exception:
+                                pct_str = f"{pct}%"
+                        else:
+                            pct_str = "N/A"
+
+                        # format change_abs (cho index)
+                        if change_abs is not None:
+                            try:
+                                abs_str = f"{float(change_abs):+.2f}"
+                            except Exception:
+                                abs_str = str(change_abs)
+                        else:
+                            abs_str = "N/A"
+
                         if is_index:
+                            # ví dụ: VNINDEX +12.3 điểm (+1.23%) tại 1,245.6
                             messages.append(
-                                f"{icon} *{sym} {change_abs:+.2f} điểm* "
-                                f"({pct:+.2f}%) tại {price:,.2f}\n_{fun_line}_"
+                                f"{icon} *{sym} {abs_str} điểm* "
+                                f"({pct_str}) tại {price_str}\n_{fun_line}_"
                             )
                         else:
+                            # ví dụ: HPG +4.20% tại 30,900
                             messages.append(
-                                f"{icon} *{sym} {pct:+.2f}%* "
-                                f"tại {price:,.2f}\n_{fun_line}_"
+                                f"{icon} *{sym} {pct_str}* "
+                                f"tại {price_str}\n_{fun_line}_"
                             )
 
                     elif new_lvl is None:
+                        # reset state nếu không còn vượt ngưỡng
                         personal_state[sym] = 0
 
                 if messages:
@@ -280,7 +323,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
         return
-    
+
     await update.message.reply_text(
         "👋 Xin chào! Mình là bot cảnh báo chứng khoán realtime.\n\n"
         "Lệnh:\n"
@@ -295,7 +338,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
         return
-    
+
     chat_id = update.effective_chat.id
 
     if not context.args:
@@ -304,13 +347,13 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     symbol = context.args[0].upper().strip()
 
-    # thử lấy quote
+    # lấy quote realtime (có thể là None nếu IP bị chặn / ngoài giờ)
     quote_test = get_quote(symbol)
 
-    # load danh sách hiện có
+    # load watchlist user
     all_watch, chat_key, lst = get_watch_for_chat(chat_id)
 
-    # nếu mã chưa có trong danh sách -> thêm vào
+    # thêm mã vào watchlist nếu chưa có
     just_added = False
     if symbol not in lst:
         lst.append(symbol)
@@ -320,30 +363,60 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # phản hồi cho user
     if quote_test:
+        raw_price = quote_test.get("price")
+        raw_pct = quote_test.get("pct")
+
+        # format giá hiện tại
+        if raw_price is not None:
+            try:
+                price_str = f"{float(raw_price):,.2f} VND"
+            except Exception:
+                price_str = f"{raw_price} VND"
+        else:
+            price_str = "N/A"
+
+        # format % thay đổi
+        if raw_pct is not None:
+            try:
+                pct_str = f"{float(raw_pct):+.2f}%"
+            except Exception:
+                pct_str = f"{raw_pct}%"
+        else:
+            pct_str = "N/A"
+
         await update.message.reply_text(
             (
-                "✅ Đã thêm vào danh sách theo dõi.\n" if just_added else
-                "ℹ️ Mã này đã có sẵn trong danh sách theo dõi của bạn.\n"
+                "✅ Đã thêm vào danh sách theo dõi.\n" if just_added
+                else "ℹ️ Mã này đã có sẵn trong danh sách theo dõi của bạn.\n"
             )
             + f"• Mã: {symbol}\n"
-            + f"• Giá hiện tại: {quote_test['price']:,}\n"
-            + (
-                f"• Thay đổi: {quote_test['pct']:+.2f}%"
-                if quote_test['pct'] is not None
-                else "• Thay đổi: (không xác định)"
-            )
+            + f"• Giá hiện tại: {price_str}\n"
+            + f"• Biến động: {pct_str}"
         )
 
-
-
-
+    else:
+        await update.message.reply_text(
+            (
+                "⚠️ Mình đã lưu mã này vào danh sách theo dõi của bạn, "
+                "nhưng hiện tại không lấy được dữ liệu realtime.\n"
+                if just_added
+                else "ℹ️ Mã này đã có sẵn trong danh sách theo dõi của bạn, "
+                     "nhưng hiện tại không lấy được dữ liệu realtime.\n"
+            )
+            + f"• Mã: {symbol}\n"
+            "👉 Có thể do:\n"
+            "- Mã ít thanh khoản / chưa khớp lệnh\n"
+            "- Ngoài giờ giao dịch\n"
+            "- Server dữ liệu từ chối IP host\n"
+            "Mình vẫn sẽ cố gửi cảnh báo khi có biến động."
+        )
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
         return
-    
+
     chat_id = update.effective_chat.id
     if not context.args:
         await update.message.reply_text("⚠️ Ví dụ: /remove SSI")
@@ -365,7 +438,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
         return
-    
+
     chat_id = update.effective_chat.id
     _, _, lst = get_watch_for_chat(chat_id)
     if not lst:
@@ -403,17 +476,16 @@ async def main():
     tg_app.add_handler(CommandHandler("on", cmd_on))
     tg_app.add_handler(CommandHandler("off", cmd_off))
 
-
     print(">> Telegram polling started (Render unified async-safe mode).")
 
     config = Config()
     config.bind = ["0.0.0.0:10000"]
 
-    # ✅ KHỞI TẠO MANUAL (thay vì run_polling)
+    # tránh conflict khi redeploy
     print(">> Waiting 10s before starting polling (avoid Telegram conflict)...")
     await asyncio.sleep(10)
+
     await tg_app.initialize()
-    
     await tg_app.start()
     await tg_app.updater.start_polling()
 
@@ -428,7 +500,6 @@ async def main():
         await tg_app.updater.stop()
         await tg_app.stop()
         await tg_app.shutdown()
-
 
 # =======================
 # MAIN
