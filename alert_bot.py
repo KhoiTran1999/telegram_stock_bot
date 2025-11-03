@@ -81,13 +81,16 @@ def save_state_for_all(all_state):
 # =======================
 def get_quote(symbol: str):
     """
-    Trả về dict dạng:
+    Lấy dữ liệu realtime cho 1 mã (cổ phiếu hoặc index) từ Trading(source='VCI').price_board()
+
+    Trả về dict:
     {
-        "price": float | None,        # giá hiện tại (ưu tiên match_price, fallback ref_price)
-        "pct": float | None,          # % thay đổi vs tham chiếu
-        "change_abs": float | None    # tuyệt đối (match - ref), dùng cho VNINDEX
+        "price": float | None,        # giá khớp hiện tại
+        "pct": float | None,          # % thay đổi so với tham chiếu
+        "change_abs": float | None    # chênh lệch tuyệt đối so với tham chiếu (dùng cho VNINDEX)
     }
-    Nếu không fetch được thì return None.
+
+    Nếu không lấy được dữ liệu => return None
     """
     from vnstock import Trading
     import math
@@ -102,27 +105,37 @@ def get_quote(symbol: str):
 
         row = df.iloc[0]
 
-        # Lấy raw field (có thể là None hoặc NaN)
-        match_price = row.get("match_price", None)
-        ref_price   = row.get("ref_price", None)
-        pct_change  = row.get("percent_change", None)
-
-        # Convert NaN -> None cho dễ xử lý
-        def clean_num(x):
+        # Helper: convert NaN-like -> None, và numpy scalar -> float bình thường
+        def norm(x):
+            # None
             if x is None:
                 return None
+            # np types -> cast về float hoặc int bình thường
+            try:
+                # ví dụ np.int64(26700) -> 26700
+                if hasattr(x, "item"):
+                    x = x.item()
+            except Exception:
+                pass
+            # NaN -> None
             if isinstance(x, float) and math.isnan(x):
                 return None
             return x
 
-        match_price = clean_num(match_price)
-        ref_price   = clean_num(ref_price)
-        pct_change  = clean_num(pct_change)
+        # --- lấy giá khớp hiện tại ---
+        # ('match', 'match_price')
+        match_price = norm(row.get(("match", "match_price")))
+        # --- giá tham chiếu (có thể nằm ở 'match.reference_price' hoặc 'listing.ref_price') ---
+        ref_price = norm(
+            row.get(("match", "reference_price"))
+            if ("match", "reference_price") in row
+            else row.get(("listing", "ref_price"))
+        )
 
-        # Ưu tiên match_price, fallback ref_price
+        # fallback price: nếu chưa có match_price (chưa khớp lệnh) thì dùng ref_price
         price = match_price if match_price is not None else ref_price
 
-        # Tính change_abs nếu có đủ match và ref
+        # chênh lệch tuyệt đối (điểm thay đổi)
         change_abs = None
         if match_price is not None and ref_price is not None:
             try:
@@ -130,22 +143,21 @@ def get_quote(symbol: str):
             except Exception:
                 change_abs = None
 
-        # Nếu pct_change không có, tự tính từ match/ref
-        # pct = (match - ref) / ref * 100
-        if pct_change is None:
-            if match_price is not None and ref_price is not None and float(ref_price) != 0:
-                try:
-                    pct_change = (float(match_price) - float(ref_price)) / float(ref_price) * 100.0
-                except Exception:
-                    pct_change = None
+        # phần trăm thay đổi (%)
+        pct_change = None
+        if match_price is not None and ref_price is not None and ref_price != 0:
+            try:
+                pct_change = (float(match_price) - float(ref_price)) / float(ref_price) * 100.0
+            except Exception:
+                pct_change = None
 
         out = {
-            "price": price,
-            "pct": pct_change,
-            "change_abs": change_abs,
+            "price": price,           # vd 26700
+            "pct": pct_change,        # vd +1.23
+            "change_abs": change_abs  # vd +3.5 điểm
         }
 
-        # Debug chi tiết để bạn thấy server trả gì
+        # In debug chi tiết để theo dõi server trả gì
         print("[DEBUG RAW]", symbol, dict(row))
         print(f"[QUOTE OK] {symbol} -> {out}")
 
@@ -154,6 +166,7 @@ def get_quote(symbol: str):
     except Exception as e:
         print(f"[QUOTE FAIL] {symbol}: {type(e).__name__}: {e}")
         return None
+
 
 
 # =======================
