@@ -378,7 +378,10 @@ async def main():
     config.bind = ["0.0.0.0:10000"]
 
     # ✅ KHỞI TẠO MANUAL (thay vì run_polling)
+    print(">> Waiting 10s before starting polling (avoid Telegram conflict)...")
+    await asyncio.sleep(10)
     await tg_app.initialize()
+    
     await tg_app.start()
     await tg_app.updater.start_polling()
 
