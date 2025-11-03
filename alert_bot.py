@@ -79,19 +79,61 @@ def save_state_for_all(all_state):
     save_json(STATE_FILE, all_state)
 
 # =======================
-# LẤY GIÁ
+# LẤY GIÁ (Realtime từ Trading.price_board)
 # =======================
 def get_quote(symbol: str):
+    """
+    Trả về dict như:
+    {
+        "price": <giá khớp hiện tại>,
+        "pct": <% thay đổi so với tham chiếu>,
+        "change_abs": <mức tăng/giảm tuyệt đối so với tham chiếu>
+    }
+    Nếu lỗi (mã không có / API fail) -> return None
+    """
+    from vnstock import Trading
+
     try:
-        q = stock_quote(symbol, source="VCI")
-        return {
-            "price": q["close"].iloc[-1],
-            "change_abs": q["change"].iloc[-1],
-            "pct": q["percent_change"].iloc[-1],
+        trading = Trading(source='VCI')
+
+        # API cho phép get nhiều mã 1 lúc, nhưng ở đây ta chỉ cần 1
+        df = trading.price_board([symbol])
+
+        if df is None or len(df) == 0:
+            print(f"[WARN] Không có dữ liệu trả về cho {symbol}")
+            return None
+
+        row = df.iloc[0]
+
+        # match_price: giá khớp hiện tại
+        price = row.get("match_price", None)
+
+        # percent_change: % thay đổi so với tham chiếu (ví dụ +1.23)
+        pct = row.get("percent_change", None)
+
+        # ref_price: giá tham chiếu
+        ref_price = row.get("ref_price", None)
+
+        change_abs = None
+        if price is not None and ref_price is not None:
+            try:
+                change_abs = float(price) - float(ref_price)
+            except Exception:
+                change_abs = None
+
+        out = {
+            "price": price,
+            "pct": pct,
+            "change_abs": change_abs
         }
+
+        print(f"[QUOTE OK] {symbol} -> {out}")
+        return out
+
     except Exception as e:
-        print(f"[WARN] Lỗi lấy dữ liệu {symbol}: {e}")
+        print(f"[QUOTE FAIL] {symbol}: {type(e).__name__}: {e}")
         return None
+
 
 # =======================
 # GỬI TIN NHẮN TELEGRAM
@@ -278,30 +320,20 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # phản hồi cho user
     if quote_test:
-        # lấy được giá -> confirm đẹp
         await update.message.reply_text(
             (
                 "✅ Đã thêm vào danh sách theo dõi.\n" if just_added else
                 "ℹ️ Mã này đã có sẵn trong danh sách theo dõi của bạn.\n"
             )
             + f"• Mã: {symbol}\n"
-            + f"• Giá hiện tại: {quote_test['price']:,.2f}\n"
-            + f"• Thay đổi: {quote_test['pct']:+.2f}%"
-        )
-    else:
-        # KHÔNG lấy được giá -> có thể lỗi mạng / chặn IP / thị trường đóng
-        await update.message.reply_text(
-            (
-                "⚠️ Mình đã lưu mã này vào danh sách theo dõi của bạn, "
-                "nhưng hiện tại không lấy được dữ liệu giá realtime cho mã đó.\n"
-                "• Mã: " + symbol + "\n"
-                "👉 Có thể do:\n"
-                "- Gõ sai mã\n"
-                "- Thị trường đang đóng\n"
-                "- Server dữ liệu từ chối IP của host\n"
-                "Mình sẽ vẫn cố gửi cảnh báo nếu sau này lấy được giá."
+            + f"• Giá hiện tại: {quote_test['price']:,}\n"
+            + (
+                f"• Thay đổi: {quote_test['pct']:+.2f}%"
+                if quote_test['pct'] is not None
+                else "• Thay đổi: (không xác định)"
             )
         )
+
 
 
 
