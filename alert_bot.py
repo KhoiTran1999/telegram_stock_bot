@@ -6,7 +6,7 @@ import asyncio
 import pytz
 import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from flask import Flask
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
@@ -198,6 +198,85 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     BOT_ACTIVE = True
     await update.message.reply_text("🟢 Bot đã bật lại.")
+
+# ======================================================
+# 📢 ANNOUNCE: Admin broadcast đến toàn bộ user đã từng dùng bot
+#   - Không tự động chèn VNINDEX/VN30; gửi đúng nguyên văn bạn gõ
+#   - Lấy danh sách chat_id từ watch_list.json và alerts_state.json
+# ======================================================
+
+from typing import Any, Set  # phòng khi chưa có ở đầu file
+
+def _get_all_chat_ids() -> Set[int]:
+    """Gom tập chat_id từng xuất hiện trong WATCH_FILE và STATE_FILE."""
+    ids = set()
+    try:
+        wl = load_json(WATCH_FILE, {})
+        for k in wl.keys():
+            try:
+                ids.add(int(k))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        st = load_json(STATE_FILE, {})
+        for k in st.keys():
+            try:
+                ids.add(int(k))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ids
+
+async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Thu thập chat_id của bất kỳ ai nhắn tin (để lần sau broadcast có người nhận).
+    Nếu chat_id chưa có trong watch_list.json thì tạo entry rỗng.
+    """
+    if update and update.effective_chat:
+        chat_id = update.effective_chat.id
+        all_watch = load_json(WATCH_FILE, {})
+        chat_key = str(chat_id)
+        if chat_key not in all_watch:
+            all_watch[chat_key] = {"list": []}
+            save_json(WATCH_FILE, all_watch)
+
+async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Chỉ ADMIN_ID được dùng: /announce <nội dung>"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Bạn không có quyền dùng /announce.")
+        return
+
+    text_raw = update.message.text or ""
+    parts = text_raw.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        await update.message.reply_text("⚠️ Cách dùng: /announce <nội dung cần gửi>")
+        return
+
+    announcement = parts[1].strip()
+    if len(announcement) > 4096:
+        announcement = announcement[:4096]
+
+    targets = _get_all_chat_ids()
+    if not targets:
+        await update.message.reply_text("ℹ️ Chưa có ai trong danh sách để gửi thông báo.")
+        return
+
+    ok = fail = 0
+    for chat_id in targets:
+        try:
+            # dùng API async chính thức để gửi
+            await context.bot.send_message(chat_id=chat_id, text=announcement, parse_mode="Markdown")
+            ok += 1
+        except Exception as e:
+            print(f"[WARN] Gửi {chat_id} lỗi: {e}")
+            fail += 1
+        await asyncio.sleep(0.05)  # nương tay rate-limit
+
+    await update.message.reply_text(f"✅ Đã gửi: {ok} | ❌ Lỗi: {fail}")
+
 
 # =======================
 # TIỆN ÍCH
@@ -511,6 +590,9 @@ async def main():
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("on", cmd_on))
     tg_app.add_handler(CommandHandler("off", cmd_off))
+    tg_app.add_handler(CommandHandler("announce", cmd_announce))
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector), group=1)
+
 
     print(">> Telegram polling started (Render unified async-safe mode).")
 
