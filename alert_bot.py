@@ -640,14 +640,28 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID is None:
         await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
-
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Không có quyền.")
         return
 
     BOT_ACTIVE = True
-    await update.message.reply_text("🟢 Bot đã *ON* trở lại. User có thể dùng lệnh bình thường.")
-    
+    msg = (
+        "✅ *Hệ thống đã hoạt động trở lại.*\n\n"
+        "Cảm ơn bạn đã kiên nhẫn trong thời gian bảo trì. "
+        "Các tính năng cảnh báo và báo cáo đã sẵn sàng phục vụ bạn trở lại. 🚀"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+    # Gửi thông báo đến toàn bộ user
+    try:
+        all_watch = get_all_watch()
+        for chat_key in all_watch.keys():
+            chat_id = int(chat_key)
+            send_msg_to(chat_id, msg)
+        log.info(f"[ADMIN] Đã gửi thông báo bật bot đến {len(all_watch)} user.")
+    except Exception as e:
+        log.warning(f"[ADMIN] Lỗi broadcast khi bật bot: {e}")
+
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tắt bot (chỉ admin)."""
@@ -656,15 +670,29 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID is None:
         await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
-
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Không có quyền.")
         return
 
     BOT_ACTIVE = False
-    await update.message.reply_text(
-        "🔴 Bot đã *OFF*. Tạm thời chặn user gửi lệnh (hiện lệnh sẽ trả về 'Bot đang bảo trì')."
+    msg = (
+        "🛠️ *Hệ thống tạm thời bảo trì.*\n\n"
+        "Chúng tôi đang nâng cấp để mang đến trải nghiệm tốt hơn. "
+        "Trong thời gian này, các lệnh tạm thời bị tắt. "
+        "Xin cảm ơn bạn đã thông cảm và chờ đợi. 🙏"
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+    # Gửi thông báo đến toàn bộ user
+    try:
+        all_watch = get_all_watch()
+        for chat_key in all_watch.keys():
+            chat_id = int(chat_key)
+            send_msg_to(chat_id, msg)
+        log.info(f"[ADMIN] Đã gửi thông báo tắt bot đến {len(all_watch)} user.")
+    except Exception as e:
+        log.warning(f"[ADMIN] Lỗi broadcast khi tắt bot: {e}")
+
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
