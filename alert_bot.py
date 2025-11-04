@@ -708,9 +708,9 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ✅ Yêu cầu:
     - Mã phải là 3 chữ cái (A–Z)
-    - Không cho add các chỉ số như VNINDEX, VN30,...
+    - Không cho add chỉ số như VNINDEX, VN30,...
     - Chỉ add nếu có dữ liệu thực
-    - Sau khi add, bot tóm tắt thông tin cơ bản cho user
+    - Sau khi add: tóm tắt thông tin + hiển thị danh sách hiện tại
     """
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
@@ -733,7 +733,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(symbol) != 3 or not symbol.isalpha():
         await update.message.reply_text(
             "⚠️ Mã không hợp lệ.\n"
-            "Hiện bot chỉ cho phép thêm *mã cổ phiếu* gồm đúng 3 chữ cái HOSE/HNX/UPCOM, "
+            "Hiện bot chỉ cho phép thêm *mã cổ phiếu* gồm đúng 3 chữ cái, "
             "ví dụ: HPG, SSI, VNM.",
             parse_mode="Markdown",
         )
@@ -753,7 +753,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCoM.*)",
             parse_mode="Markdown",
         )
         return
@@ -767,23 +767,22 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lst.append(symbol)
     save_watch_list_for_chat(chat_id, lst)
 
-    # 5️⃣ Chuẩn bị phần tóm tắt thông tin cổ phiếu
+    # 5️⃣ Tóm tắt thông tin mã vừa thêm
     try:
         price = quote_data.get("price")
         pct = quote_data.get("pct")
         change_abs = quote_data.get("change_abs")
-        # format dấu +/-
         change_sign = "+" if (pct is not None and pct >= 0) else ""
         pct_text = f"{change_sign}{pct:.2f}%" if pct is not None else "—"
         abs_text = f"{change_sign}{change_abs:,.0f}" if change_abs is not None else "—"
 
         summary = (
-            f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
+            f"✅ *Đã thêm {symbol} vào danh sách theo dõi.*\n\n"
             f"💰 Giá hiện tại: *{price:,.2f}*\n"
             f"📊 Thay đổi: *{pct_text}* ({abs_text})\n"
         )
 
-        # lấy thêm thông tin sàn, khối lượng nếu có
+        # Lấy thêm sàn & khối lượng nếu có
         try:
             trading = Trading(source="VCI")
             df = trading.price_board([symbol])
@@ -793,9 +792,13 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vol = row.get(("match", "accumulated_vol"), None)
                 if vol is not None:
                     summary += f"📦 Khối lượng: *{int(vol):,}* cp\n"
-                summary += f"🏛️ Sàn: *{exch}*"
+                summary += f"🏛️ Sàn: *{exch}*\n"
         except Exception:
             pass
+
+        # 6️⃣ Hiển thị danh sách hiện tại
+        if lst:
+            summary += "\n📋 *Danh sách hiện tại của bạn:*\n" + ", ".join(lst)
 
         await update.message.reply_text(summary, parse_mode="Markdown")
 
@@ -804,25 +807,58 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Đã thêm {symbol} vào danh sách theo dõi.\n⚠️ (Không thể tóm tắt dữ liệu: {e})"
         )
 
-
-
-
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /remove <MÃ>
+
+    - Nếu mã có trong danh sách: xoá và hiển thị lại danh sách còn lại.
+    - Nếu mã không có: báo lỗi nhẹ + gợi ý dùng /list.
+    """
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
+
     chat_id = update.effective_chat.id
+
+    # Không truyền mã -> hướng dẫn
     if not context.args:
         await update.message.reply_text("⚠️ Ví dụ: /remove SSI")
         return
+
     symbol = context.args[0].upper().strip()
-    lst = get_watch_list_for_chat(chat_id)
+
+    # Lấy danh sách hiện tại (nếu chưa có thì coi như danh sách trống)
+    lst = get_watch_list_for_chat(chat_id) or []
+
     if symbol in lst:
+        # Xoá mã khỏi danh sách và lưu lại
         lst.remove(symbol)
         save_watch_list_for_chat(chat_id, lst)
-        await update.message.reply_text(f"🗑️ Đã xoá {symbol} khỏi danh sách.")
+
+        # Chuẩn bị message cập nhật danh sách
+        if lst:
+            current_list = ", ".join(lst)
+            msg = (
+                f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
+                f"📊 *Danh sách hiện tại của bạn:*\n{current_list}"
+            )
+        else:
+            msg = (
+                f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
+                "📭 Hiện bạn *không còn theo dõi mã nào*.\n"
+                "Bạn có thể dùng /add để thêm mã mới."
+            )
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
     else:
-        await update.message.reply_text(f"❌ {symbol} không có trong danh sách.")
+        # Mã không nằm trong danh sách
+        await update.message.reply_text(
+            f"❌ *{symbol}* không có trong danh sách theo dõi.\n"
+            "Bạn có thể dùng /list để xem lại danh sách hiện tại.",
+            parse_mode="Markdown",
+        )
+
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
