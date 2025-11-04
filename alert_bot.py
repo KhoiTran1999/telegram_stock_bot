@@ -274,6 +274,66 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning(f"[WARN] Announce lỗi {chat_id}: {e}")
     await update.message.reply_text(f"✅ Đã gửi đến {count} người.")
 
+async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Chỉ cho admin dùng
+    if ADMIN_ID is None:
+        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        return
+
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Không có quyền.")
+        return
+
+    all_watch = get_all_watch()
+    if not all_watch:
+        await update.message.reply_text("📭 Chưa có user nào lưu danh sách theo dõi.")
+        return
+
+    # Thống kê symbol -> số user đang theo dõi
+    symbol_counts = {}
+    detail_lines = []
+
+    for chat_key, block in all_watch.items():
+        lst = block.get("list", []) or []
+        # thống kê theo mã
+        for sym in lst:
+            symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
+
+        # chi tiết theo từng user
+        if lst:
+            detail_lines.append(f"- {chat_key}: {', '.join(lst)}")
+        else:
+            detail_lines.append(f"- {chat_key}: (trống)")
+
+    # Phần thống kê theo mã
+    stats_lines = []
+    for sym, cnt in sorted(symbol_counts.items()):
+        stats_lines.append(f"{sym}: {cnt} user")
+
+    header = (
+        "📋 *Tổng hợp danh sách mã đang được theo dõi*\n"
+        f"👥 Tổng số user: {len(all_watch)}\n"
+        f"🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
+        "📌 *Thống kê theo mã:*\n"
+        + "\n".join(stats_lines)
+        + "\n\n📌 *Chi tiết theo từng user (chat_id):*"
+    )
+
+    # Ghép text và tự chia nhỏ nếu quá dài
+    max_len = 3500
+    parts = []
+    current = header
+    for line in detail_lines:
+        if len(current) + len(line) + 1 > max_len:
+            parts.append(current)
+            current = line
+        else:
+            current += "\n" + line
+    parts.append(current)
+
+    for part in parts:
+        await update.message.reply_text(part, parse_mode="Markdown")
+
 
 async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tự động lưu chat_id vào DB nếu chưa có."""
@@ -428,6 +488,7 @@ async def main():
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
+    tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
 
     async def run_telegram():
