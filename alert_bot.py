@@ -243,6 +243,30 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ Đã gửi: {ok} | ❌ Lỗi: {fail}")
 
+
+# =======================
+# Liệt kê tất cả chat_id + watch_list with command /debug_watch
+# =======================
+async def cmd_debug_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Không có quyền.")
+        return
+
+    all_watch = get_all_watch()
+    if not all_watch:
+        await update.message.reply_text("Không có dòng nào trong bot_watch.")
+        return
+
+    lines = []
+    for chat_key, data in all_watch.items():
+        lines.append(f"{chat_key}: {data.get('list', [])}")
+
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:4000] + "\n...(cắt bớt)"
+    await update.message.reply_text(msg)
+
+
 # =======================
 # TIỆN ÍCH
 # =======================
@@ -563,7 +587,7 @@ async def main():
     tg_app.add_handler(CommandHandler("off", cmd_off))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector), group=1)
-
+    tg_app.add_handler(CommandHandler("debug_watch", cmd_debug_watch))
 
     print(">> Telegram polling started (Render unified async-safe mode).")
 
