@@ -650,17 +650,20 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Cảm ơn bạn đã kiên nhẫn trong thời gian bảo trì. "
         "Các tính năng cảnh báo và báo cáo đã sẵn sàng phục vụ bạn trở lại. 🚀"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
-    # Gửi thông báo đến toàn bộ user
+    # ✅ Gửi chỉ 1 lần tới toàn bộ user (bao gồm admin)
     try:
         all_watch = get_all_watch()
+        count = 0
         for chat_key in all_watch.keys():
             chat_id = int(chat_key)
             send_msg_to(chat_id, msg)
-        log.info(f"[ADMIN] Đã gửi thông báo bật bot đến {len(all_watch)} user.")
+            count += 1
+        log.info(f"[ADMIN] Đã gửi thông báo bật bot đến {count} user (bao gồm admin).")
+        await update.message.reply_text("✅ Đã bật bot và gửi thông báo cho mọi người.", parse_mode="Markdown")
     except Exception as e:
         log.warning(f"[ADMIN] Lỗi broadcast khi bật bot: {e}")
+        await update.message.reply_text("⚠️ Lỗi khi gửi thông báo bật bot.", parse_mode="Markdown")
 
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -681,18 +684,20 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Trong thời gian này, các lệnh tạm thời bị tắt. "
         "Xin cảm ơn bạn đã thông cảm và chờ đợi. 🙏"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
-    # Gửi thông báo đến toàn bộ user
+    # ✅ Gửi chỉ 1 lần tới toàn bộ user (bao gồm admin)
     try:
         all_watch = get_all_watch()
+        count = 0
         for chat_key in all_watch.keys():
             chat_id = int(chat_key)
             send_msg_to(chat_id, msg)
-        log.info(f"[ADMIN] Đã gửi thông báo tắt bot đến {len(all_watch)} user.")
+            count += 1
+        log.info(f"[ADMIN] Đã gửi thông báo tắt bot đến {count} user (bao gồm admin).")
+        await update.message.reply_text("🛠️ Đã tắt bot và gửi thông báo cho mọi người.", parse_mode="Markdown")
     except Exception as e:
         log.warning(f"[ADMIN] Lỗi broadcast khi tắt bot: {e}")
-
+        await update.message.reply_text("⚠️ Lỗi khi gửi thông báo tắt bot.", parse_mode="Markdown")
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
