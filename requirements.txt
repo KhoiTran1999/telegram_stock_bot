@@ -6,3 +6,4 @@ requests
 flask
 hypercorn
 psycopg[binary]
+psutil
