@@ -8,6 +8,7 @@ import datetime
 import asyncio
 import pytz
 import requests
+import pandas as pd
 import math
 import uuid
 import logging
@@ -22,13 +23,14 @@ from telegram.ext import (
 from flask import Flask
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-from vnstock import Trading
+from vnstock import Trading, Quote
 from db_utils import (
     init_db,
     get_all_watch,
     get_watch_list_for_chat,
     save_watch_list_for_chat,
 )
+from openai import OpenAI
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -39,7 +41,21 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
+# ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
+INSTANCE_ID = str(uuid.uuid4())[:8]
 
+# Log gọn, không bị Render flush trùng
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+log = logging.getLogger("bot")
+log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
+
+# Thiết lập OpenAI client
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    log.warning("⚠️ OPENAI_API_KEY chưa được cấu hình – chức năng báo cáo 16:00 sẽ không hoạt động.")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+# ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
 # Log gọn, không bị Render flush trùng
@@ -168,6 +184,226 @@ def get_quote(symbol: str):
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [QUOTE FAIL] {symbol}: {e}")
         return None
+
+def get_perf_history(symbol: str):
+    """
+    Lấy chính xác:
+    - Giá hiện tại (close gần nhất)
+    - % thay đổi so với:
+        + 1 ngày trước (trading day gần nhất trước đó)
+        + 1 tuần trước (close gần nhất trước ngày -7)
+        + 1 tháng trước (close gần nhất trước ngày -30)
+    Dùng dữ liệu lịch sử từ vnstock Quote.history (nguồn VCI).
+    """
+    try:
+        vn_tz = pytz.timezone(TIMEZONE)
+        today = datetime.datetime.now(vn_tz).date()
+
+        # Lấy tầm 60 ngày gần nhất là đủ để tính 1 tháng
+        start_date = (today - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+
+        quote = Quote(symbol=symbol, source="VCI")
+        df = quote.history(start=start_date, end=end_date, interval="1D")
+
+        if df is None or len(df) == 0:
+            log.warning(f"[{INSTANCE_ID}] [PERF] {symbol}: không có dữ liệu history")
+            return None
+
+        # Chuẩn hoá time -> datetime + sort
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.sort_values("time").reset_index(drop=True)
+
+        last = df.iloc[-1]
+        last_date = last["time"].date()
+        price = float(last["close"])
+
+        def find_price_before(target_date: datetime.date):
+            """Tìm giá close gần nhất TRƯỚC hoặc BẰNG target_date."""
+            sub = df[df["time"].dt.date <= target_date]
+            if sub.empty:
+                return None
+            return float(sub.iloc[-1]["close"])
+
+        # % NGÀY: so với trading day gần nhất trước hôm nay
+        prev_price = find_price_before(last_date - datetime.timedelta(days=1))
+        if prev_price is not None and prev_price != 0:
+            day_pct = (price - prev_price) / prev_price * 100.0
+        else:
+            day_pct = None
+
+        # % TUẦN: so với close gần nhất trước (hôm nay - 7 ngày)
+        week_price = find_price_before(last_date - datetime.timedelta(days=7))
+        if week_price is not None and week_price != 0:
+            week_pct = (price - week_price) / week_price * 100.0
+        else:
+            week_pct = None
+
+        # % THÁNG: so với close gần nhất trước (hôm nay - 30 ngày)
+        month_price = find_price_before(last_date - datetime.timedelta(days=30))
+        if month_price is not None and month_price != 0:
+            month_pct = (price - month_price) / month_price * 100.0
+        else:
+            month_pct = None
+
+        return {
+            "price": price,
+            "day_pct": day_pct,
+            "week_pct": week_pct,
+            "month_pct": month_pct,
+        }
+
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] [PERF FAIL] {symbol}: {e}")
+        return None
+
+def format_perf_line(sym: str, perf: dict) -> str:
+    price = perf.get("price")
+    day_pct = perf.get("day_pct")
+    week_pct = perf.get("week_pct")
+    month_pct = perf.get("month_pct")
+
+    price_str = f"{float(price):,.2f} đ" if price is not None else "N/A"
+    day_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
+    week_str = f"{week_pct:+.2f}%" if week_pct is not None else "N/A"
+    month_str = f"{month_pct:+.2f}%" if month_pct is not None else "N/A"
+
+    return (
+        f"- {sym}: giá hiện tại {price_str}, "
+        f"ngày {day_str}, tuần {week_str}, tháng {month_str}"
+    )
+
+def build_prompt_for_symbols(symbols: list[str]) -> str:
+    """
+    Lấy GIÁ + % NGÀY / TUẦN / THÁNG thật từ lịch sử giá,
+    rồi build prompt gửi vào ChatGPT.
+    """
+    lines = []
+    for sym in symbols:
+        perf = get_perf_history(sym)
+        if not perf:
+            continue
+        lines.append(format_perf_line(sym, perf))
+
+    if not lines:
+        return (
+            "Danh mục hiện tại không có dữ liệu giá, hãy trả lời gọn: "
+            "Chưa có dữ liệu để tổng hợp báo cáo hôm nay."
+        )
+
+    data_block = "\n".join(lines)
+
+    prompt = f"""
+Bạn là chuyên gia phân tích chứng khoán Việt Nam.
+
+Hãy viết một bản tin Telegram gửi cho khách hàng sau phiên giao dịch hôm nay.
+
+Dữ liệu danh mục của khách (giá + % thay đổi):
+{data_block}
+
+YÊU CẦU:
+1. Với từng mã, hãy:
+   - Nhắc lại giá hiện tại và % thay đổi trong ngày, tuần, tháng (dựa đúng vào dữ liệu ở trên).
+   - Nếu không có tin mới đáng chú ý, hãy đưa ra nhận định & phân tích:
+     điểm mạnh, rủi ro, và gợi ý chiến lược nắm giữ / chốt lời 
+     (nhưng KHÔNG dùng giọng ép buộc kiểu 'phải mua/bán').
+2. Viết bằng tiếng Việt, giọng điệu chuyên nghiệp nhưng dễ hiểu, phù hợp gửi qua Telegram.
+3. Có thể dùng emoji cho sinh động, nhưng không lạm dụng.
+4. Không đặt câu hỏi ở cuối bản tin, chỉ tóm tắt / kết luận nhẹ.
+
+FORMAT:
+- Mỗi mã theo block:
+
+🔹 MÃ
+- Giá hiện tại: ...
+- Biến động: Ngày ..., Tuần ..., Tháng ...
+- Nhận định: ...
+
+- Cuối cùng thêm 1–2 câu tổng kết chung về danh mục (thiên về ngành nào, rủi ro / cơ hội tổng thể).
+
+Hãy trả về đúng nội dung tin nhắn Telegram, KHÔNG giải thích thêm.
+"""
+    return prompt.strip()
+
+
+def call_chatgpt_for_report(symbols: list[str]) -> str:
+    """Gọi OpenAI để sinh bản tin báo cáo danh mục."""
+    if client is None:
+        return "⚠️ Hệ thống chưa cấu hình OPENAI_API_KEY nên không tạo được báo cáo tự động."
+
+    prompt = build_prompt_for_symbols(symbols)
+
+    completion = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram."
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0.4,
+    )
+    return completion.choices[0].message.content.strip()
+
+def seconds_until_next_1600():
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    target = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target = target + datetime.timedelta(days=1)
+
+    # Nếu rơi vào cuối tuần thì nhảy tới thứ 2
+    while target.weekday() > 4:  # 5 = T7, 6 = CN
+        target = target + datetime.timedelta(days=1)
+
+    return max((target - now).total_seconds(), 0)
+
+async def daily_report_loop():
+    """Gửi báo cáo danh mục cho từng user lúc 16:00 từ thứ 2–6."""
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    while True:
+        loop_id += 1
+        wait_sec = seconds_until_next_1600()
+        log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Ngủ tới 16:00, còn {wait_sec:.0f}s")
+        await asyncio.sleep(wait_sec)
+
+        now = datetime.datetime.now(vn_tz)
+        if now.weekday() > 4:
+            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Rơi vào cuối tuần, bỏ qua.")
+            continue
+
+        try:
+            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo danh mục 16:00")
+            all_watch = get_all_watch()  # từ db_utils, bạn đang dùng cho alert rồi
+
+            for chat_key, user_block in all_watch.items():
+                chat_id = int(chat_key)
+                watch_list = user_block.get("list", []) or []
+                if not watch_list:
+                    continue
+
+                # Nếu không muốn index (VNINDEX, VN30) trong báo cáo:
+                symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+                if not symbols:
+                    continue
+
+                try:
+                    # Gọi ChatGPT sinh nội dung (chạy trong thread tránh block loop)
+                    text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                    send_msg_to(chat_id, text)
+                    log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Đã gửi báo cáo cho {chat_id}")
+                except Exception as e:
+                    log.warning(f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi gửi báo cáo cho {chat_id}: {e}")
+
+        except Exception as e:
+            log.error(f"[{INSTANCE_ID}][DAILY {loop_id}] ERROR: {e}")
+            # Nếu lỗi thì 5 phút sau thử lại
+            await asyncio.sleep(300)
 
 
 def send_msg_to(chat_id: int, text: str):
@@ -344,6 +580,24 @@ async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_watch_list_for_chat(chat_id, [])
 
 
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gửi báo cáo danh mục ngay lập tức cho user để test."""
+    if not update or not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    watch = get_watch_list_for_chat(chat_id)
+    watch_list = watch or []
+
+    symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+    if not symbols:
+        await update.message.reply_text("Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé.")
+        return
+
+    await update.message.reply_text("⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát...")
+    text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+    await update.message.reply_text(text)
+
+
 # ==============================================
 # VÒNG LẶP CẢNH BÁO
 # ==============================================
@@ -490,6 +744,7 @@ async def main():
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
+    tg_app.add_handler(CommandHandler("report", cmd_report))
 
     async def run_telegram():
         await tg_app.initialize()
@@ -502,7 +757,8 @@ async def main():
 
     await asyncio.gather(
         serve(flask_app, config),
-        alert_loop(),
+        alert_loop(),         # loop cảnh báo như cũ
+        daily_report_loop(),  # loop gửi báo cáo 16:00 T2–T6
         run_telegram(),
     )
 
