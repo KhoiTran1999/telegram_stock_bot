@@ -32,8 +32,6 @@ PORT = int(os.getenv("PORT", "10000"))  # Render sẽ set PORT, nếu không th�
 # WATCH_FILE và STATE_FILE không dùng nữa
 # Dữ liệu watch list lưu trong PostgreSQL
 ALERT_STATE = {}          # trạng thái cảnh báo trong RAM
-ALERT_STARTED = False     # đã khởi động alert_loop hay chưa
-ALERT_TASK = None         # task alert_loop (nếu cần debug)
 
 # ⚙️ Trạng thái bot và ID admin
 BOT_ACTIVE = True
@@ -583,8 +581,6 @@ def home():
 # CHẠY SONG SONG: TELEGRAM + FLASK + ALERT
 # =======================
 async def main():
-    global ALERT_STARTED, ALERT_TASK
-
     print(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
 
     # khởi tạo Telegram app
@@ -607,23 +603,26 @@ async def main():
     # khởi tạo DB
     init_db()
 
-    # chỉ khởi động alert_loop đúng 1 lần
-    if not ALERT_STARTED:
-        ALERT_STARTED = True
-        ALERT_TASK = asyncio.create_task(alert_loop())
-        print(f"[{INSTANCE_ID}] 🚀 alert_loop started once")
-    else:
-        print(f"[{INSTANCE_ID}] ⚠️ alert_loop already started, skip duplicate")
-
     # cấu hình Flask / Hypercorn
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
 
-    await asyncio.gather(
-        serve(flask_app, config),
-        tg_app.run_polling(),
-    )
+    # Hàm chạy Telegram bot trong event loop hiện tại
+    async def run_telegram():
+        # khởi tạo & start bot
+        await tg_app.initialize()
+        await tg_app.start()
+        await tg_app.updater.start_polling()
 
+        # giữ cho task này sống mãi (PTB sẽ tự xử lý polling bên trong)
+        await asyncio.Event().wait()
+
+    # Chạy 3 thứ song song: Flask, alert_loop và Telegram bot
+    await asyncio.gather(
+        serve(flask_app, config),  # web server cho Render
+        alert_loop(),              # vòng lặp cảnh báo
+        run_telegram(),            # Telegram polling
+    )
 
 # =======================
 # MAIN
