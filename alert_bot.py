@@ -48,6 +48,9 @@ log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
 BOT_ACTIVE = True
 ALERT_STATE = {}
 
+# Thời gian giãn cách giữa 2 lần báo cùng một mốc cho cùng 1 mã (giây)
+ALERT_COOLDOWN_SECONDS = 15 * 60  # 15 phút
+
 # Ngưỡng cảnh báo
 STOCK_LEVELS = [2, 4, 6.9, -2, -4, -6.9]
 INDEX_POINT_LEVELS = [10, 20, 30, 40, -10, -20, -30, -40]
@@ -294,6 +297,8 @@ async def alert_loop():
                     watch_list = user_block.get("list", [])
                     if not watch_list:
                         continue
+
+                    # Khởi tạo state riêng cho user nếu chưa có
                     if chat_key not in all_state:
                         all_state[chat_key] = {}
                     personal_state = all_state[chat_key]
@@ -304,30 +309,74 @@ async def alert_loop():
                         if not quote:
                             continue
                         price, pct, change_abs = quote["price"], quote["pct"], quote["change_abs"]
+
                         is_index = sym.upper().startswith("VN")
                         metric = change_abs if is_index else pct
                         new_lvl = pick_new_level(
                             metric, INDEX_POINT_LEVELS if is_index else STOCK_LEVELS
                         )
-                        prev_lvl = personal_state.get(sym, 0)
 
-                        if new_lvl and new_lvl != prev_lvl:
-                            personal_state[sym] = new_lvl
+                        # Lấy state cũ (tương thích cả kiểu cũ [int] lẫn kiểu mới [dict])
+                        state_entry = personal_state.get(sym, {})
+                        if isinstance(state_entry, dict):
+                            prev_lvl = state_entry.get("last_level", 0)
+                            last_alert_at_str = state_entry.get("last_alert_at")
+                        else:
+                            # state kiểu cũ chỉ lưu level
+                            prev_lvl = state_entry or 0
+                            last_alert_at_str = None
+
+                        last_alert_at = None
+                        if last_alert_at_str:
+                            try:
+                                last_alert_at = datetime.datetime.fromisoformat(last_alert_at_str)
+                            except Exception:
+                                last_alert_at = None
+
+                        should_alert = False
+
+                        if new_lvl is not None:
+                            if new_lvl != prev_lvl:
+                                # Mốc mới khác mốc lần báo gần nhất -> báo ngay
+                                should_alert = True
+                            else:
+                                # Trùng đúng mốc cũ -> chỉ báo nếu đã qua cooldown
+                                if (
+                                    last_alert_at is None
+                                    or (now - last_alert_at).total_seconds() >= ALERT_COOLDOWN_SECONDS
+                                ):
+                                    should_alert = True
+
+                        if should_alert:
                             icon = "🟢" if new_lvl > 0 else "🔴"
                             fun_line = random.choice(FUN_UP if new_lvl > 0 else FUN_DOWN)
                             price_str = f"{float(price):,.2f}" if price else "N/A"
                             pct_str = f"{float(pct):+.2f}%" if pct else "N/A"
+
                             messages.append(
                                 f"{icon} *{sym} {pct_str}* tại {price_str}\n_{fun_line}_"
                             )
-                        elif new_lvl is None:
-                            personal_state[sym] = 0
 
+                            # Cập nhật state mới: ghi lại mốc và thời gian báo
+                            personal_state[sym] = {
+                                "last_level": new_lvl,
+                                "last_alert_at": now.isoformat(),
+                            }
+                        else:
+                            # Không báo nhưng vẫn giữ lại state cũ để tính cooldown
+                            if sym not in personal_state:
+                                personal_state[sym] = {
+                                    "last_level": 0,
+                                    "last_alert_at": None,
+                                }
+
+                    # Gửi nếu có bất kỳ mã nào cần báo
                     if messages:
                         header = f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n--------------------------------"
                         send_msg_to(chat_id, header + "\n" + "\n".join(messages))
 
                     all_state[chat_key] = personal_state
+
                 save_state_for_all(all_state)
 
         except Exception as e:
