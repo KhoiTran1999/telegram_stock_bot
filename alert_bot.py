@@ -36,7 +36,9 @@ from db_utils import (
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
-ADMIN_ID = os.getenv("ADMIN_ID")
+ADMIN_ID_STR = os.getenv("ADMIN_ID")
+ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
 
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
@@ -246,12 +248,20 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Chưa cấu hình ADMIN_ID thì không cho xài để tránh lộ bot
+    if ADMIN_ID is None:
+        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        return
+
+    # Chỉ cho đúng admin dùng
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Không có quyền.")
         return
+
     if not context.args:
         await update.message.reply_text("⚠️ Dùng: /announce <nội dung>")
         return
+
     text = " ".join(context.args)
     all_watch = get_all_watch()
     count = 0
