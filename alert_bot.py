@@ -29,6 +29,8 @@ from db_utils import (
     get_all_watch,
     get_watch_list_for_chat,
     save_watch_list_for_chat,
+    get_bot_active,
+    set_bot_active,
 )
 
 # ==============================================
@@ -55,7 +57,8 @@ if not OPENROUTER_API_KEY:
         "⚠️ OPENROUTER_API_KEY chưa được cấu hình – chức năng báo cáo 16:00 và /report sẽ không hoạt động."
     )
 
-BOT_ACTIVE = True
+BOT_ACTIVE = None  # Sẽ được load từ DB trong main()
+
 ALERT_STATE = {}
 
 # Thời gian giãn cách giữa 2 lần báo cùng một mốc cho cùng 1 mã (giây)
@@ -645,25 +648,16 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     BOT_ACTIVE = True
+    set_bot_active(True)   # 🔄 Lưu trạng thái vào DB
+
     msg = (
         "✅ *Hệ thống đã hoạt động trở lại.*\n\n"
-        "Cảm ơn bạn đã kiên nhẫn trong thời gian bảo trì. "
-        "Các tính năng cảnh báo và báo cáo đã sẵn sàng phục vụ bạn trở lại. 🚀"
+        "Trạng thái đã được bật và lưu trong cơ sở dữ liệu. "
+        "Người dùng sẽ không được thông báo trong giai đoạn phát triển. 🚀"
     )
 
-    # ✅ Gửi chỉ 1 lần tới toàn bộ user (bao gồm admin)
-    try:
-        all_watch = get_all_watch()
-        count = 0
-        for chat_key in all_watch.keys():
-            chat_id = int(chat_key)
-            send_msg_to(chat_id, msg)
-            count += 1
-        log.info(f"[ADMIN] Đã gửi thông báo bật bot đến {count} user (bao gồm admin).")
-        await update.message.reply_text("✅ Đã bật bot và gửi thông báo cho mọi người.", parse_mode="Markdown")
-    except Exception as e:
-        log.warning(f"[ADMIN] Lỗi broadcast khi bật bot: {e}")
-        await update.message.reply_text("⚠️ Lỗi khi gửi thông báo bật bot.", parse_mode="Markdown")
+    log.info("[ADMIN] Bot đã bật (BOT_ACTIVE=True, lưu vào DB).")
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -678,26 +672,31 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     BOT_ACTIVE = False
+    set_bot_active(False)  # 🔄 Lưu trạng thái vào DB
+
     msg = (
-        "🛠️ *Hệ thống tạm thời bảo trì.*\n\n"
-        "Chúng tôi đang nâng cấp để mang đến trải nghiệm tốt hơn. "
-        "Trong thời gian này, các lệnh tạm thời bị tắt. "
-        "Xin cảm ơn bạn đã thông cảm và chờ đợi. 🙏"
+        "🛠️ *Hệ thống đã chuyển sang chế độ bảo trì.*\n\n"
+        "Tất cả lệnh người dùng sẽ bị tạm ngưng. "
+        "Trạng thái này đã được lưu trong cơ sở dữ liệu và sẽ giữ nguyên sau khi deploy. 🔒"
     )
 
-    # ✅ Gửi chỉ 1 lần tới toàn bộ user (bao gồm admin)
-    try:
-        all_watch = get_all_watch()
-        count = 0
-        for chat_key in all_watch.keys():
-            chat_id = int(chat_key)
-            send_msg_to(chat_id, msg)
-            count += 1
-        log.info(f"[ADMIN] Đã gửi thông báo tắt bot đến {count} user (bao gồm admin).")
-        await update.message.reply_text("🛠️ Đã tắt bot và gửi thông báo cho mọi người.", parse_mode="Markdown")
-    except Exception as e:
-        log.warning(f"[ADMIN] Lỗi broadcast khi tắt bot: {e}")
-        await update.message.reply_text("⚠️ Lỗi khi gửi thông báo tắt bot.", parse_mode="Markdown")
+    log.info("[ADMIN] Bot đã tắt (BOT_ACTIVE=False, lưu vào DB).")
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Hiển thị trạng thái bot hiện tại (admin only)."""
+    if ADMIN_ID is None:
+        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        return
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Không có quyền.")
+        return
+
+    current_state = get_bot_active()
+    status = "🟢 Đang *hoạt động bình thường*" if current_state else "🔴 Đang *bảo trì*"
+    await update.message.reply_text(
+        f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)", parse_mode="Markdown"
+    )
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1033,6 +1032,11 @@ async def main():
     log.info(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
     init_db()
 
+    # 🔄 Load trạng thái bảo trì từ DB
+    global BOT_ACTIVE
+    BOT_ACTIVE = get_bot_active()
+    log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
+
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -1043,6 +1047,7 @@ async def main():
     tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("on", cmd_on))
     tg_app.add_handler(CommandHandler("off", cmd_off))    
+    tg_app.add_handler(CommandHandler("status", cmd_status))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
