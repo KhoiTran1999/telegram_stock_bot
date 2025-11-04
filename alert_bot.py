@@ -32,6 +32,9 @@ from db_utils import (
     get_bot_active,
     set_bot_active,
 )
+import psutil
+import platform
+import time
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -1040,16 +1043,46 @@ async def main():
         # 📨 Gửi thông báo cho admin khi bot khởi động lại
     if ADMIN_ID:
         try:
-            state_text = "🟢 Bot đã khởi động và đang *hoạt động bình thường.*" if BOT_ACTIVE else "🔴 Bot đã khởi động nhưng đang ở *chế độ bảo trì.*"
+            # Lấy thông tin hệ thống
+            cpu_percent = psutil.cpu_percent(interval=1)
+            ram = psutil.virtual_memory()
+            ram_used = ram.used / (1024 * 1024)
+            ram_total = ram.total / (1024 * 1024)
+            uptime_seconds = time.time() - psutil.boot_time()
+            uptime_days = int(uptime_seconds // 86400)
+            uptime_hours = int((uptime_seconds % 86400) // 3600)
+            uptime_mins = int((uptime_seconds % 3600) // 60)
+
+            # Tạo thanh tiến trình emoji cho CPU & RAM
+            def progress_bar(percent: float, length: int = 10):
+                filled = int((percent / 100) * length)
+                empty = length - filled
+                return "█" * filled + "░" * empty
+
+            cpu_bar = progress_bar(cpu_percent)
+            ram_percent = (ram_used / ram_total) * 100
+            ram_bar = progress_bar(ram_percent)
+
+            state_text = (
+                "🟢 Bot đã khởi động và đang *hoạt động bình thường.*"
+                if BOT_ACTIVE
+                else "🔴 Bot đã khởi động nhưng đang ở *chế độ bảo trì.*"
+            )
+
             boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+
             msg = (
                 f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
                 f"🕓 Thời gian: {boot_time}\n"
                 f"{state_text}\n\n"
+                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}% | RAM [{ram_bar}] {ram_percent:.1f}%\n"
+                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n\n"
                 f"🧩 Instance ID: `{INSTANCE_ID}`"
             )
+
             send_msg_to(ADMIN_ID, msg)
-            log.info(f"[{INSTANCE_ID}] Đã gửi thông báo khởi động lại tới admin ({ADMIN_ID}).")
+            log.info(f"[{INSTANCE_ID}] Đã gửi thông báo khởi động lại (có CPU/RAM bar) tới admin ({ADMIN_ID}).")
+
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
 
