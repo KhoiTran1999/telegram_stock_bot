@@ -186,8 +186,23 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🟢 Bot đã bật lại.")
 
 # ======================================================
-# 📢 ANNOUNCE: Admin broadcast đến toàn bộ user đã từng dùng bot
+# 📨 _collector: lưu chat_id của bất kỳ ai từng nhắn cho bot
 # ======================================================
+from db_utils import save_watch_list_for_chat, get_watch_list_for_chat
+
+async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Lưu chat_id vào DB nếu chưa có (để lần sau /announce gửi được).
+    """
+    if update and update.effective_chat:
+        chat_id = update.effective_chat.id
+        lst = get_watch_list_for_chat(chat_id)
+        if lst is None:
+            lst = []
+        # nếu chưa có record -> lưu rỗng
+        save_watch_list_for_chat(chat_id, lst)
+
+
 # ======================================================
 # 📢 ANNOUNCE: Admin broadcast đến toàn bộ user đã từng dùng bot
 # ======================================================
