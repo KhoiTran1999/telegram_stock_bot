@@ -609,24 +609,30 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
     chat_id = update.effective_chat.id
-    save_watch_list_for_chat(chat_id, [])
+
+    # ✅ Chỉ tạo mới nếu user chưa có record
+    lst = get_watch_list_for_chat(chat_id)
+    if lst is None:
+        save_watch_list_for_chat(chat_id, [])
+
     await update.message.reply_text(
-    "╔════════════════════════════════╗\n"
-    "🎯 *Chào mừng nhà đầu tư đến với StockBot!* 🤖💸\n"
-    "╚════════════════════════════════╝\n\n"
-    "Mình là bot cảnh báo chứng khoán realtime, vừa nghiêm túc vừa… hơi cà khịa 😏\n\n"
-    "📊 *Các lệnh bạn có thể dùng:*\n"
-    "• /add <MÃ> – Thêm mã cổ phiếu vào danh sách theo dõi\n"
-    "• /remove <MÃ> – Xóa mã cổ phiếu không còn ưng nữa\n"
-    "• /list – Xem danh sách cổ phiếu bạn đang theo dõi\n"
-    "• /report – Gửi yêu cầu để AI phân tích danh mục của bạn bất cứ lúc nào 🧠\n\n"
-    "🕓 *Báo cáo tự động:* Sau 16:00 hằng ngày, mình sẽ dùng AI để\n"
-    "tổng hợp & phân tích toàn bộ list mã bạn đang theo dõi và gửi\n"
-    "một bản báo cáo riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
-    "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
-    "Hãy thêm vài mã ngay để xem hôm nay mình 'tấu hài' thế nào nhé!\n\n"
-    "🚀 Bắt đầu với lệnh /add nào!"
+        "╔════════════════════════════════╗\n"
+        "🎯 *Chào mừng nhà đầu tư đến với StockBot!* 🤖💸\n"
+        "╚════════════════════════════════╝\n\n"
+        "Mình là bot cảnh báo chứng khoán realtime, vừa nghiêm túc vừa… hơi cà khịa 😏\n\n"
+        "📊 *Các lệnh bạn có thể dùng:*\n"
+        "• /add <MÃ> – Thêm mã cổ phiếu vào danh sách theo dõi\n"
+        "• /remove <MÃ> – Xóa mã cổ phiếu không còn ưng nữa\n"
+        "• /list – Xem danh sách cổ phiếu bạn đang theo dõi\n"
+        "• /report – Gửi yêu cầu để AI phân tích danh mục của bạn bất cứ lúc nào 🧠\n\n"
+        "🕓 *Báo cáo tự động:* Sau 16:00 hằng ngày, mình sẽ dùng AI để\n"
+        "tổng hợp & phân tích toàn bộ list mã bạn đang theo dõi và gửi\n"
+        "một bản báo cáo riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
+        "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
+        "Hãy thêm vài mã ngay để xem hôm nay mình 'tấu hài' thế nào nhé!\n\n"
+        "🚀 Bắt đầu với lệnh /add nào!"
     )
+
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
