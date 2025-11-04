@@ -1,5 +1,5 @@
 # ==============================================
-# alert_bot.py - phiên bản clean & ổn định 100%
+# alert_bot.py - phiên bản dùng OpenRouter + MiniMax M2
 # ==============================================
 import os
 import json
@@ -30,7 +30,6 @@ from db_utils import (
     get_watch_list_for_chat,
     save_watch_list_for_chat,
 )
-from openai import OpenAI
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -49,19 +48,12 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("bot")
 log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
 
-# Thiết lập OpenAI client
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    log.warning("⚠️ OPENAI_API_KEY chưa được cấu hình – chức năng báo cáo 16:00 sẽ không hoạt động.")
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-
-# ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
-INSTANCE_ID = str(uuid.uuid4())[:8]
-
-# Log gọn, không bị Render flush trùng
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger("bot")
-log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
+# Thiết lập OpenRouter API (MiniMax M2)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    log.warning(
+        "⚠️ OPENROUTER_API_KEY chưa được cấu hình – chức năng báo cáo 16:00 và /report sẽ không hoạt động."
+    )
 
 BOT_ACTIVE = True
 ALERT_STATE = {}
@@ -185,6 +177,7 @@ def get_quote(symbol: str):
         log.warning(f"[{INSTANCE_ID}] [QUOTE FAIL] {symbol}: {e}")
         return None
 
+
 def get_perf_history(symbol: str):
     """
     Lấy chính xác:
@@ -257,6 +250,7 @@ def get_perf_history(symbol: str):
         log.warning(f"[{INSTANCE_ID}] [PERF FAIL] {symbol}: {e}")
         return None
 
+
 def format_perf_line(sym: str, perf: dict) -> str:
     price = perf.get("price")
     day_pct = perf.get("day_pct")
@@ -273,10 +267,11 @@ def format_perf_line(sym: str, perf: dict) -> str:
         f"ngày {day_str}, tuần {week_str}, tháng {month_str}"
     )
 
+
 def build_prompt_for_symbols(symbols: list[str]) -> str:
     """
     Lấy GIÁ + % NGÀY / TUẦN / THÁNG thật từ lịch sử giá,
-    rồi build prompt gửi vào ChatGPT.
+    rồi build prompt gửi vào LLM (MiniMax M2 qua OpenRouter).
     """
     lines = []
     for sym in symbols:
@@ -327,27 +322,64 @@ Hãy trả về đúng nội dung tin nhắn Telegram, KHÔNG giải thích thê
 
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
-    """Gọi OpenAI để sinh bản tin báo cáo danh mục."""
-    if client is None:
-        return "⚠️ Hệ thống chưa cấu hình OPENAI_API_KEY nên không tạo được báo cáo tự động."
+    """Gọi OpenRouter (MiniMax M2) để sinh bản tin báo cáo danh mục."""
+    if not OPENROUTER_API_KEY:
+        return (
+            "⚠️ Hệ thống chưa cấu hình OPENROUTER_API_KEY nên chưa tạo được báo cáo tự động."
+        )
 
     prompt = build_prompt_for_symbols(symbols)
 
-    completion = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        # 2 header này OpenRouter khuyến khích gửi thêm
+        "HTTP-Referer": "https://github.com/Thinpad/telegram_stock_bot",
+        "X-Title": "Telegram Stock Bot",
+    }
+    body = {
+        "model": "minimax/minimax-m2:free",  # MiniMax M2 free trên OpenRouter
+        "messages": [
             {
                 "role": "system",
-                "content": "Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram."
+                "content": "Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram.",
             },
             {
                 "role": "user",
                 "content": prompt,
             },
         ],
-        temperature=0.4,
-    )
-    return completion.choices[0].message.content.strip()
+        "temperature": 0.4,
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
+        if resp.status_code != 200:
+            log.warning(
+                f"[{INSTANCE_ID}][LLM ERROR] HTTP {resp.status_code}: {resp.text[:300]}"
+            )
+            return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM trả lỗi HTTP). Bạn thử lại sau nhé."
+
+        data = resp.json()
+        if "error" in data:
+            log.warning(f"[{INSTANCE_ID}][LLM ERROR] {data['error']}")
+            return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM báo lỗi nội bộ)."
+
+        choices = data.get("choices")
+        if not choices:
+            log.warning(
+                f"[{INSTANCE_ID}][LLM ERROR] Response không có 'choices': {list(data.keys())}"
+            )
+            return "⚠️ Hiện tại không tạo được báo cáo danh mục (không nhận được nội dung phù hợp)."
+
+        content = choices[0]["message"]["content"]
+        return content.strip()
+
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][LLM EXCEPTION] {e}")
+        return "⚠️ Hiện tại không tạo được báo cáo danh mục do lỗi kết nối LLM."
+
 
 def seconds_until_next_1600():
     vn_tz = pytz.timezone(TIMEZONE)
@@ -361,6 +393,7 @@ def seconds_until_next_1600():
         target = target + datetime.timedelta(days=1)
 
     return max((target - now).total_seconds(), 0)
+
 
 async def daily_report_loop():
     """Gửi báo cáo danh mục cho từng user lúc 16:00 từ thứ 2–6."""
@@ -378,8 +411,10 @@ async def daily_report_loop():
             continue
 
         try:
-            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo danh mục 16:00")
-            all_watch = get_all_watch()  # từ db_utils, bạn đang dùng cho alert rồi
+            log.info(
+                f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo danh mục 16:00"
+            )
+            all_watch = get_all_watch()  # từ db_utils
 
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
@@ -387,18 +422,22 @@ async def daily_report_loop():
                 if not watch_list:
                     continue
 
-                # Nếu không muốn index (VNINDEX, VN30) trong báo cáo:
+                # Bỏ các index VNINDEX, VN30... khỏi báo cáo nếu không muốn
                 symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
                 if not symbols:
                     continue
 
                 try:
-                    # Gọi ChatGPT sinh nội dung (chạy trong thread tránh block loop)
+                    # Gọi LLM sinh nội dung (chạy trong thread tránh block loop)
                     text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
                     send_msg_to(chat_id, text)
-                    log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Đã gửi báo cáo cho {chat_id}")
+                    log.info(
+                        f"[{INSTANCE_ID}][DAILY {loop_id}] Đã gửi báo cáo cho {chat_id}"
+                    )
                 except Exception as e:
-                    log.warning(f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi gửi báo cáo cho {chat_id}: {e}")
+                    log.warning(
+                        f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi gửi báo cáo cho {chat_id}: {e}"
+                    )
 
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][DAILY {loop_id}] ERROR: {e}")
@@ -510,6 +549,7 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning(f"[WARN] Announce lỗi {chat_id}: {e}")
     await update.message.reply_text(f"✅ Đã gửi đến {count} người.")
 
+
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Chỉ cho admin dùng
     if ADMIN_ID is None:
@@ -590,10 +630,14 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
     if not symbols:
-        await update.message.reply_text("Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé.")
+        await update.message.reply_text(
+            "Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé."
+        )
         return
 
-    await update.message.reply_text("⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát...")
+    await update.message.reply_text(
+        "⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát..."
+    )
     text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
     await update.message.reply_text(text)
 
@@ -632,12 +676,17 @@ async def alert_loop():
                         quote = get_quote(sym)
                         if not quote:
                             continue
-                        price, pct, change_abs = quote["price"], quote["pct"], quote["change_abs"]
+                        price, pct, change_abs = (
+                            quote["price"],
+                            quote["pct"],
+                            quote["change_abs"],
+                        )
 
                         is_index = sym.upper().startswith("VN")
                         metric = change_abs if is_index else pct
                         new_lvl = pick_new_level(
-                            metric, INDEX_POINT_LEVELS if is_index else STOCK_LEVELS
+                            metric,
+                            INDEX_POINT_LEVELS if is_index else STOCK_LEVELS,
                         )
 
                         # Lấy state cũ (tương thích cả kiểu cũ [int] lẫn kiểu mới [dict])
@@ -653,7 +702,9 @@ async def alert_loop():
                         last_alert_at = None
                         if last_alert_at_str:
                             try:
-                                last_alert_at = datetime.datetime.fromisoformat(last_alert_at_str)
+                                last_alert_at = datetime.datetime.fromisoformat(
+                                    last_alert_at_str
+                                )
                             except Exception:
                                 last_alert_at = None
 
@@ -667,15 +718,24 @@ async def alert_loop():
                                 # Trùng đúng mốc cũ -> chỉ báo nếu đã qua cooldown
                                 if (
                                     last_alert_at is None
-                                    or (now - last_alert_at).total_seconds() >= ALERT_COOLDOWN_SECONDS
+                                    or (
+                                        now - last_alert_at
+                                    ).total_seconds()
+                                    >= ALERT_COOLDOWN_SECONDS
                                 ):
                                     should_alert = True
 
                         if should_alert:
                             icon = "🟢" if new_lvl > 0 else "🔴"
-                            fun_line = random.choice(FUN_UP if new_lvl > 0 else FUN_DOWN)
-                            price_str = f"{float(price):,.2f}" if price else "N/A"
-                            pct_str = f"{float(pct):+.2f}%" if pct else "N/A"
+                            fun_line = random.choice(
+                                FUN_UP if new_lvl > 0 else FUN_DOWN
+                            )
+                            price_str = (
+                                f"{float(price):,.2f}" if price is not None else "N/A"
+                            )
+                            pct_str = (
+                                f"{float(pct):+.2f}%" if pct is not None else "N/A"
+                            )
 
                             messages.append(
                                 f"{icon} *{sym} {pct_str}* tại {price_str}\n_{fun_line}_"
@@ -696,7 +756,10 @@ async def alert_loop():
 
                     # Gửi nếu có bất kỳ mã nào cần báo
                     if messages:
-                        header = f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n--------------------------------"
+                        header = (
+                            f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n"
+                            "--------------------------------"
+                        )
                         send_msg_to(chat_id, header + "\n" + "\n".join(messages))
 
                     all_state[chat_key] = personal_state
@@ -757,7 +820,7 @@ async def main():
 
     await asyncio.gather(
         serve(flask_app, config),
-        alert_loop(),         # loop cảnh báo như cũ
+        alert_loop(),         # loop cảnh báo realtime
         daily_report_loop(),  # loop gửi báo cáo 16:00 T2–T6
         run_telegram(),
     )

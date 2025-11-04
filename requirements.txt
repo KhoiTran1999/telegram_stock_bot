@@ -6,4 +6,3 @@ requests
 flask
 hypercorn
 psycopg[binary]
-openai
