@@ -6,7 +6,7 @@ import asyncio
 import pytz
 import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from flask import Flask
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
@@ -67,18 +67,19 @@ def save_state_for_all(all_state):
 # =======================
 def get_quote(symbol: str):
     """
-    Lấy giá realtime từ Trading.price_board().
+    Lấy dữ liệu realtime cho 1 mã (cổ phiếu hoặc index) từ Trading(source='VCI').price_board()
 
     Trả về dict:
     {
-        "price": <giá hiện tại (match_price hoặc ref_price)>,
-        "pct": <% thay đổi so với tham chiếu>,
-        "change_abs": <điểm thay đổi tuyệt đối so với tham chiếu>
+        "price": float | None,        # giá khớp hiện tại
+        "pct": float | None,          # % thay đổi so với tham chiếu
+        "change_abs": float | None    # chênh lệch tuyệt đối so với tham chiếu (dùng cho VNINDEX)
     }
 
-    Nếu không lấy được thì trả None.
+    Nếu không lấy được dữ liệu => return None
     """
     from vnstock import Trading
+    import math
 
     try:
         trading = Trading(source='VCI')
@@ -90,15 +91,37 @@ def get_quote(symbol: str):
 
         row = df.iloc[0]
 
-        match_price = row.get("match_price", None)     # giá khớp hiện tại
-        ref_price = row.get("ref_price", None)         # giá tham chiếu
-        pct_change = row.get("percent_change", None)   # % thay đổi
-        # với index: price_board có thể không trả match_price mà chỉ có ref_price
+        # Helper: convert NaN-like -> None, và numpy scalar -> float bình thường
+        def norm(x):
+            # None
+            if x is None:
+                return None
+            # np types -> cast về float hoặc int bình thường
+            try:
+                # ví dụ np.int64(26700) -> 26700
+                if hasattr(x, "item"):
+                    x = x.item()
+            except Exception:
+                pass
+            # NaN -> None
+            if isinstance(x, float) and math.isnan(x):
+                return None
+            return x
 
-        # chọn giá hiển thị: ưu tiên match_price, fallback ref_price
+        # --- lấy giá khớp hiện tại ---
+        # ('match', 'match_price')
+        match_price = norm(row.get(("match", "match_price")))
+        # --- giá tham chiếu (có thể nằm ở 'match.reference_price' hoặc 'listing.ref_price') ---
+        ref_price = norm(
+            row.get(("match", "reference_price"))
+            if ("match", "reference_price") in row
+            else row.get(("listing", "ref_price"))
+        )
+
+        # fallback price: nếu chưa có match_price (chưa khớp lệnh) thì dùng ref_price
         price = match_price if match_price is not None else ref_price
 
-        # tính chênh lệch tuyệt đối để đo cho index (VNINDEX/VN30)
+        # chênh lệch tuyệt đối (điểm thay đổi)
         change_abs = None
         if match_price is not None and ref_price is not None:
             try:
@@ -106,18 +129,31 @@ def get_quote(symbol: str):
             except Exception:
                 change_abs = None
 
+        # phần trăm thay đổi (%)
+        pct_change = None
+        if match_price is not None and ref_price is not None and ref_price != 0:
+            try:
+                pct_change = (float(match_price) - float(ref_price)) / float(ref_price) * 100.0
+            except Exception:
+                pct_change = None
+
         out = {
-            "price": price,
-            "pct": pct_change,
-            "change_abs": change_abs,
+            "price": price,           # vd 26700
+            "pct": pct_change,        # vd +1.23
+            "change_abs": change_abs  # vd +3.5 điểm
         }
 
+        # In debug chi tiết để theo dõi server trả gì
+        # print("[DEBUG RAW]", symbol, dict(row))
         print(f"[QUOTE OK] {symbol} -> {out}")
+
         return out
 
     except Exception as e:
         print(f"[QUOTE FAIL] {symbol}: {type(e).__name__}: {e}")
         return None
+
+
 
 # =======================
 # GỬI TIN NHẮN TELEGRAM
@@ -148,6 +184,85 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     BOT_ACTIVE = True
     await update.message.reply_text("🟢 Bot đã bật lại.")
+
+# ======================================================
+# 📢 ANNOUNCE: Admin broadcast đến toàn bộ user đã từng dùng bot
+#   - Không tự động chèn VNINDEX/VN30; gửi đúng nguyên văn bạn gõ
+#   - Lấy danh sách chat_id từ watch_list.json và alerts_state.json
+# ======================================================
+
+from typing import Any, Set  # phòng khi chưa có ở đầu file
+
+def _get_all_chat_ids() -> Set[int]:
+    """Gom tập chat_id từng xuất hiện trong WATCH_FILE và STATE_FILE."""
+    ids = set()
+    try:
+        wl = load_json(WATCH_FILE, {})
+        for k in wl.keys():
+            try:
+                ids.add(int(k))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        st = load_json(STATE_FILE, {})
+        for k in st.keys():
+            try:
+                ids.add(int(k))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ids
+
+async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Thu thập chat_id của bất kỳ ai nhắn tin (để lần sau broadcast có người nhận).
+    Nếu chat_id chưa có trong watch_list.json thì tạo entry rỗng.
+    """
+    if update and update.effective_chat:
+        chat_id = update.effective_chat.id
+        all_watch = load_json(WATCH_FILE, {})
+        chat_key = str(chat_id)
+        if chat_key not in all_watch:
+            all_watch[chat_key] = {"list": []}
+            save_json(WATCH_FILE, all_watch)
+
+async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Chỉ ADMIN_ID được dùng: /announce <nội dung>"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Bạn không có quyền dùng /announce.")
+        return
+
+    text_raw = update.message.text or ""
+    parts = text_raw.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        await update.message.reply_text("⚠️ Cách dùng: /announce <nội dung cần gửi>")
+        return
+
+    announcement = parts[1].strip()
+    if len(announcement) > 4096:
+        announcement = announcement[:4096]
+
+    targets = _get_all_chat_ids()
+    if not targets:
+        await update.message.reply_text("ℹ️ Chưa có ai trong danh sách để gửi thông báo.")
+        return
+
+    ok = fail = 0
+    for chat_id in targets:
+        try:
+            # dùng API async chính thức để gửi
+            await context.bot.send_message(chat_id=chat_id, text=announcement, parse_mode="Markdown")
+            ok += 1
+        except Exception as e:
+            print(f"[WARN] Gửi {chat_id} lỗi: {e}")
+            fail += 1
+        await asyncio.sleep(0.05)  # nương tay rate-limit
+
+    await update.message.reply_text(f"✅ Đã gửi: {ok} | ❌ Lỗi: {fail}")
+
 
 # =======================
 # TIỆN ÍCH
@@ -465,6 +580,9 @@ async def main():
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("on", cmd_on))
     tg_app.add_handler(CommandHandler("off", cmd_off))
+    tg_app.add_handler(CommandHandler("announce", cmd_announce))
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector), group=1)
+
 
     print(">> Telegram polling started (Render unified async-safe mode).")
 
