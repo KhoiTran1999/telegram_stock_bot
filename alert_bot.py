@@ -27,12 +27,13 @@ print(f"[BOOT] Instance {INSTANCE_ID} starting...")
 # =======================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TIMEZONE = "Asia/Ho_Chi_Minh"
+PORT = int(os.getenv("PORT", "10000"))  # Render sẽ set PORT, nếu không thì dùng 10000
 
 # WATCH_FILE và STATE_FILE không dùng nữa
 # Dữ liệu watch list lưu trong PostgreSQL
-ALERT_STATE = {}  # chỉ lưu tạm trạng thái cảnh báo trong RAM
-ALERT_RUNNING = False  # chặn không cho alert_loop khởi động lần 2
-ALERT_TASK = None #đảm bảo chỉ chạy 1 lần duy nhất trong main
+ALERT_STATE = {}          # trạng thái cảnh báo trong RAM
+ALERT_STARTED = False     # đã khởi động alert_loop hay chưa
+ALERT_TASK = None         # task alert_loop (nếu cần debug)
 
 # ⚙️ Trạng thái bot và ID admin
 BOT_ACTIVE = True
@@ -308,12 +309,6 @@ def in_session_vietnam():
 # VÒNG LẶP CẢNH BÁO
 # =======================
 async def alert_loop():
-    global ALERT_RUNNING
-    if ALERT_RUNNING:
-        print(f"[{INSTANCE_ID}] ⚠️ alert_loop already running, skip second start")
-        return
-    ALERT_RUNNING = True
-
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
 
@@ -588,13 +583,8 @@ def home():
 # CHẠY SONG SONG: TELEGRAM + FLASK + ALERT
 # =======================
 async def main():
-    global ALERT_RUNNING, ALERT_TASK
+    global ALERT_STARTED, ALERT_TASK
 
-    if ALERT_RUNNING:
-        print(f"[{INSTANCE_ID}] ⚠️ alert_loop already running at startup, skip duplicate main()")
-        return
-
-    ALERT_RUNNING = True
     print(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
 
     # khởi tạo Telegram app
@@ -617,23 +607,23 @@ async def main():
     # khởi tạo DB
     init_db()
 
-    # chạy Flask + Telegram polling + alert_loop (nhưng alert_loop chỉ 1 lần)
-    async def run_alert_once():
-        global ALERT_TASK
-        if ALERT_TASK is None:
-            ALERT_TASK = asyncio.create_task(alert_loop())
-            print(f"[{INSTANCE_ID}] 🚀 alert_loop started once")
-        else:
-            print(f"[{INSTANCE_ID}] ⚠️ alert_loop already exists")
+    # chỉ khởi động alert_loop đúng 1 lần
+    if not ALERT_STARTED:
+        ALERT_STARTED = True
+        ALERT_TASK = asyncio.create_task(alert_loop())
+        print(f"[{INSTANCE_ID}] 🚀 alert_loop started once")
+    else:
+        print(f"[{INSTANCE_ID}] ⚠️ alert_loop already started, skip duplicate")
 
-    await run_alert_once()
-
+    # cấu hình Flask / Hypercorn
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
+
     await asyncio.gather(
         serve(flask_app, config),
         tg_app.run_polling(),
     )
+
 
 # =======================
 # MAIN
