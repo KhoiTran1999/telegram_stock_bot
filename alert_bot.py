@@ -187,54 +187,17 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ======================================================
 # 📢 ANNOUNCE: Admin broadcast đến toàn bộ user đã từng dùng bot
-#   - Không tự động chèn VNINDEX/VN30; gửi đúng nguyên văn bạn gõ
-#   - Lấy danh sách chat_id từ watch_list.json và alerts_state.json
 # ======================================================
-
-from typing import Any, Set  # phòng khi chưa có ở đầu file
-
-def _get_all_chat_ids() -> Set[int]:
-    """Gom tập chat_id từng xuất hiện trong WATCH_FILE và STATE_FILE."""
-    ids = set()
-    try:
-        wl = load_json(WATCH_FILE, {})
-        for k in wl.keys():
-            try:
-                ids.add(int(k))
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        st = load_json(STATE_FILE, {})
-        for k in st.keys():
-            try:
-                ids.add(int(k))
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return ids
-
-async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Thu thập chat_id của bất kỳ ai nhắn tin (để lần sau broadcast có người nhận).
-    Nếu chat_id chưa có trong watch_list.json thì tạo entry rỗng.
-    """
-    if update and update.effective_chat:
-        chat_id = update.effective_chat.id
-        all_watch = load_json(WATCH_FILE, {})
-        chat_key = str(chat_id)
-        if chat_key not in all_watch:
-            all_watch[chat_key] = {"list": []}
-            save_json(WATCH_FILE, all_watch)
-
+# ======================================================
+# 📢 ANNOUNCE: Admin broadcast đến toàn bộ user đã từng dùng bot
+# ======================================================
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Chỉ ADMIN_ID được dùng: /announce <nội dung>"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Bạn không có quyền dùng /announce.")
         return
 
+    # Lấy nội dung sau /announce
     text_raw = update.message.text or ""
     parts = text_raw.split(" ", 1)
     if len(parts) < 2 or not parts[1].strip():
@@ -245,24 +208,25 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(announcement) > 4096:
         announcement = announcement[:4096]
 
-    targets = _get_all_chat_ids()
-    if not targets:
+    # 🔹 Lấy danh sách người dùng từ DB
+    from db_utils import get_all_watch
+    all_watch = get_all_watch()
+    if not all_watch:
         await update.message.reply_text("ℹ️ Chưa có ai trong danh sách để gửi thông báo.")
         return
 
     ok = fail = 0
-    for chat_id in targets:
+    for chat_key in all_watch.keys():
+        chat_id = int(chat_key)
         try:
-            # dùng API async chính thức để gửi
             await context.bot.send_message(chat_id=chat_id, text=announcement, parse_mode="Markdown")
             ok += 1
         except Exception as e:
             print(f"[WARN] Gửi {chat_id} lỗi: {e}")
             fail += 1
-        await asyncio.sleep(0.05)  # nương tay rate-limit
+        await asyncio.sleep(0.05)
 
     await update.message.reply_text(f"✅ Đã gửi: {ok} | ❌ Lỗi: {fail}")
-
 
 # =======================
 # TIỆN ÍCH
@@ -419,12 +383,12 @@ async def alert_loop():
 # =======================
 # COMMAND HANDLERS
 # =======================
+from db_utils import save_watch_list_for_chat
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì, vui lòng quay lại sau.")
         return
-
     await update.message.reply_text(
         "👋 Xin chào! Mình là bot cảnh báo chứng khoán realtime.\n\n"
         "Lệnh:\n"
@@ -433,6 +397,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /list – xem danh sách của bạn\n\n"
         "Bot sẽ gửi cảnh báo khi mã hoặc chỉ số biến động mạnh trong giờ giao dịch."
     )
+    chat_id = update.effective_chat.id
+    save_watch_list_for_chat(chat_id, [])
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
