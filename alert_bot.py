@@ -36,7 +36,7 @@ from db_utils import (
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
-ADMIN_ID = 1088200599
+ADMIN_ID = os.getenv("ADMIN_ID")
 
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
