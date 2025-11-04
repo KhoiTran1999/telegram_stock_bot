@@ -32,6 +32,7 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 # Dữ liệu watch list lưu trong PostgreSQL
 ALERT_STATE = {}  # chỉ lưu tạm trạng thái cảnh báo trong RAM
 ALERT_RUNNING = False  # chặn không cho alert_loop khởi động lần 2
+ALERT_TASK = None #đảm bảo chỉ chạy 1 lần duy nhất trong main
 
 # ⚙️ Trạng thái bot và ID admin
 BOT_ACTIVE = True
@@ -587,11 +588,16 @@ def home():
 # CHẠY SONG SONG: TELEGRAM + FLASK + ALERT
 # =======================
 async def main():
-    if not TOKEN:
-        raise RuntimeError("❌ Thiếu TELEGRAM_TOKEN trong biến môi trường!")
-    
-    init_db()
+    global ALERT_RUNNING, ALERT_TASK
 
+    if ALERT_RUNNING:
+        print(f"[{INSTANCE_ID}] ⚠️ alert_loop already running at startup, skip duplicate main()")
+        return
+
+    ALERT_RUNNING = True
+    print(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
+
+    # khởi tạo Telegram app
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -599,40 +605,35 @@ async def main():
         .build()
     )
 
+    # đăng ký các handler
     tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
-    tg_app.add_handler(CommandHandler("on", cmd_on))
-    tg_app.add_handler(CommandHandler("off", cmd_off))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector), group=1)
     tg_app.add_handler(CommandHandler("debug_watch", cmd_debug_watch))
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector), group=1)
 
-    print(">> Telegram polling started (Render unified async-safe mode).")
+    # khởi tạo DB
+    init_db()
+
+    # chạy Flask + Telegram polling + alert_loop (nhưng alert_loop chỉ 1 lần)
+    async def run_alert_once():
+        global ALERT_TASK
+        if ALERT_TASK is None:
+            ALERT_TASK = asyncio.create_task(alert_loop())
+            print(f"[{INSTANCE_ID}] 🚀 alert_loop started once")
+        else:
+            print(f"[{INSTANCE_ID}] ⚠️ alert_loop already exists")
+
+    await run_alert_once()
 
     config = Config()
-    config.bind = ["0.0.0.0:10000"]
-
-    # tránh conflict khi redeploy
-    print(">> Waiting 10s before starting polling (avoid Telegram conflict)...")
-    await asyncio.sleep(10)
-
-    await tg_app.initialize()
-    await tg_app.start()
-    await tg_app.updater.start_polling()
-
-    try:
-        # chạy Flask và alert loop song song
-        await asyncio.gather(
-            serve(flask_app, config),
-            alert_loop(),
-        )
-    finally:
-        # dọn dẹp khi Render dừng service
-        await tg_app.updater.stop()
-        await tg_app.stop()
-        await tg_app.shutdown()
+    config.bind = [f"0.0.0.0:{PORT}"]
+    await asyncio.gather(
+        serve(flask_app, config),
+        tg_app.run_polling(),
+    )
 
 # =======================
 # MAIN
