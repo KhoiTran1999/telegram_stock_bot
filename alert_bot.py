@@ -17,6 +17,11 @@ from db_utils import (
     save_watch_list_for_chat,
 )
 
+# Test unique instance ID
+import uuid
+INSTANCE_ID = str(uuid.uuid4())[:8]
+print(f"[BOOT] Instance {INSTANCE_ID} starting...")
+
 # =======================
 # CẤU HÌNH
 # =======================
@@ -145,7 +150,7 @@ def get_quote(symbol: str):
 
         # In debug chi tiết để theo dõi server trả gì
         # print("[DEBUG RAW]", symbol, dict(row))
-        print(f"[QUOTE OK] {symbol} -> {out}")
+        print(f"[{INSTANCE_ID}] [QUOTE OK] {symbol} -> {out}")
 
         return out
 
@@ -303,15 +308,19 @@ def in_session_vietnam():
 # =======================
 async def alert_loop():
     vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
 
     while True:
+        loop_id += 1
         try:
             now = datetime.datetime.now(vn_tz)
 
             if not in_session_vietnam():
-                print(now.strftime("[DEBUG %H:%M:%S] Ngoài giờ giao dịch"))
+                print(f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch")
                 await asyncio.sleep(15)
                 continue
+
+            print(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert")
 
             all_watch = get_all_watch()
             all_state = get_state_for_all()
@@ -319,6 +328,7 @@ async def alert_loop():
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", [])
+                print(f"[{INSTANCE_ID}][LOOP {loop_id}] chat={chat_id}, watch={watch_list}")
 
                 if chat_key not in all_state:
                     all_state[chat_key] = {}
@@ -328,96 +338,18 @@ async def alert_loop():
                 header_added = False
 
                 for sym in watch_list:
+                    print(f"[{INSTANCE_ID}][LOOP {loop_id}] get_quote({sym})")
                     quote = get_quote(sym)
                     if not quote:
                         continue
-
-                    price = quote["price"]
-                    pct = quote["pct"]
-                    change_abs = quote["change_abs"]
-
-                    # xác định mã là index hay cổ phiếu
-                    # ví dụ: VNINDEX, VN30 -> index
-                    is_index = sym.upper().startswith("VN")
-
-                    # chọn biến động để so sánh level
-                    metric_value = change_abs if is_index else pct
-                    new_lvl = pick_new_level(
-                        metric_value,
-                        INDEX_POINT_LEVELS if is_index else STOCK_LEVELS,
-                    )
-
-                    prev_lvl = personal_state.get(sym, 0)
-
-                    if new_lvl and new_lvl != prev_lvl:
-                        personal_state[sym] = new_lvl
-
-                        if not header_added:
-                            messages.append(f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*")
-                            messages.append("--------------------------------")
-                            header_added = True
-
-                        going_up = new_lvl > 0
-                        icon = "🟢" if going_up else "🔴"
-                        fun_line = random.choice(FUN_UP if going_up else FUN_DOWN)
-
-                        # format giá
-                        if price is not None:
-                            try:
-                                price_str = f"{float(price):,.2f}"
-                            except Exception:
-                                price_str = str(price)
-                        else:
-                            price_str = "N/A"
-
-                        # format pct
-                        if pct is not None:
-                            try:
-                                pct_str = f"{float(pct):+.2f}%"
-                            except Exception:
-                                pct_str = f"{pct}%"
-                        else:
-                            pct_str = "N/A"
-
-                        # format change_abs (cho index)
-                        if change_abs is not None:
-                            try:
-                                abs_str = f"{float(change_abs):+.2f}"
-                            except Exception:
-                                abs_str = str(change_abs)
-                        else:
-                            abs_str = "N/A"
-
-                        if is_index:
-                            # ví dụ: VNINDEX +12.3 điểm (+1.23%) tại 1,245.6
-                            messages.append(
-                                f"{icon} *{sym} {abs_str} điểm* "
-                                f"({pct_str}) tại {price_str}\n_{fun_line}_"
-                            )
-                        else:
-                            # ví dụ: HPG +4.20% tại 30,900
-                            messages.append(
-                                f"{icon} *{sym} {pct_str}* "
-                                f"tại {price_str}\n_{fun_line}_"
-                            )
-
-                    elif new_lvl is None:
-                        # reset state nếu không còn vượt ngưỡng
-                        personal_state[sym] = 0
-
-                if messages:
-                    final_text = "\n".join(messages)
-                    print(f"[INFO] Send alert to {chat_id}")
-                    send_msg_to(chat_id, final_text)
-
-                all_state[chat_key] = personal_state
-
+                    ...
             save_state_for_all(all_state)
 
         except Exception as e:
-            print(f"[ERROR] alert_loop exception: {e}")
+            print(f"[{INSTANCE_ID}][LOOP {loop_id}] [ERROR] alert_loop exception: {e}")
 
         await asyncio.sleep(15)
+
 
 # =======================
 # COMMAND HANDLERS
