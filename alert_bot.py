@@ -10,6 +10,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
+from db_utils import (
+    init_db,
+    get_all_watch,
+    get_watch_list_for_chat,
+    save_watch_list_for_chat,
+)
 
 # =======================
 # CẤU HÌNH
@@ -17,8 +23,10 @@ from hypercorn.config import Config
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 TIMEZONE = "Asia/Ho_Chi_Minh"
 
-WATCH_FILE = "watch_list.json"
-STATE_FILE = "alerts_state.json"
+# WATCH_FILE và STATE_FILE không dùng nữa
+# Dữ liệu watch list lưu trong PostgreSQL
+ALERT_STATE = {}  # chỉ lưu tạm trạng thái cảnh báo trong RAM
+
 
 # ⚙️ Trạng thái bot và ID admin
 BOT_ACTIVE = True
@@ -42,39 +50,17 @@ FUN_DOWN = [
 ]
 
 # =======================
-# HÀM ĐỌC / GHI JSON
+# DỮ LIỆU NGƯỜI DÙNG (Postgres + RAM)
 # =======================
-def load_json(path, default=None):
-    if not os.path.exists(path):
-        return default or {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return default or {}
-
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-# =======================
-# DỮ LIỆU THEO USER
-# =======================
-def get_watch_for_chat(chat_id: int):
-    all_watch = load_json(WATCH_FILE, {})
-    chat_key = str(chat_id)
-    if chat_key not in all_watch:
-        all_watch[chat_key] = {"list": []}
-    return all_watch, chat_key, all_watch[chat_key]["list"]
-
-def update_watch_for_chat(all_watch):
-    save_json(WATCH_FILE, all_watch)
 
 def get_state_for_all():
-    return load_json(STATE_FILE, {})
+    global ALERT_STATE
+    return ALERT_STATE
 
 def save_state_for_all(all_state):
-    save_json(STATE_FILE, all_state)
+    global ALERT_STATE
+    ALERT_STATE = all_state
+
 
 # =======================
 # LẤY GIÁ (Realtime từ Trading.price_board)
@@ -209,7 +195,7 @@ async def alert_loop():
                 await asyncio.sleep(15)
                 continue
 
-            all_watch = load_json(WATCH_FILE, {})
+            all_watch = get_all_watch()
             all_state = get_state_for_all()
 
             for chat_key, user_block in all_watch.items():
@@ -351,14 +337,14 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     quote_test = get_quote(symbol)
 
     # load watchlist user
-    all_watch, chat_key, lst = get_watch_for_chat(chat_id)
+    lst = get_watch_list_for_chat(chat_id)
+
 
     # thêm mã vào watchlist nếu chưa có
     just_added = False
     if symbol not in lst:
         lst.append(symbol)
-        all_watch[chat_key]["list"] = lst
-        update_watch_for_chat(all_watch)
+        save_watch_list_for_chat(chat_id, lst)
         just_added = True
 
     # phản hồi cho user
@@ -423,12 +409,13 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     symbol = context.args[0].upper().strip()
-    all_watch, chat_key, lst = get_watch_for_chat(chat_id)
+    lst = get_watch_list_for_chat(chat_id)
+
 
     if symbol in lst:
         lst.remove(symbol)
-        all_watch[chat_key]["list"] = lst
-        update_watch_for_chat(all_watch)
+        save_watch_list_for_chat(chat_id, lst)
+
         await update.message.reply_text(f"🗑️ Đã xoá {symbol} khỏi danh sách.")
     else:
         await update.message.reply_text(f"❌ {symbol} không có trong danh sách.")
@@ -440,7 +427,8 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    _, _, lst = get_watch_for_chat(chat_id)
+    lst = get_watch_list_for_chat(chat_id)
+
     if not lst:
         await update.message.reply_text("📭 Bạn chưa theo dõi mã nào.")
     else:
@@ -461,6 +449,8 @@ def home():
 async def main():
     if not TOKEN:
         raise RuntimeError("❌ Thiếu TELEGRAM_TOKEN trong biến môi trường!")
+    
+    init_db()
 
     tg_app = (
         ApplicationBuilder()
