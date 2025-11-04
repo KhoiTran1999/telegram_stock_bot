@@ -31,7 +31,7 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 # WATCH_FILE và STATE_FILE không dùng nữa
 # Dữ liệu watch list lưu trong PostgreSQL
 ALERT_STATE = {}  # chỉ lưu tạm trạng thái cảnh báo trong RAM
-
+ALERT_RUNNING = False  # chặn không cho alert_loop khởi động lần 2
 
 # ⚙️ Trạng thái bot và ID admin
 BOT_ACTIVE = True
