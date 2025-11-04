@@ -703,21 +703,108 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /add <MÃ>
+
+    ✅ Yêu cầu:
+    - Mã phải là 3 chữ cái (A–Z)
+    - Không cho add các chỉ số như VNINDEX, VN30,...
+    - Chỉ add nếu có dữ liệu thực
+    - Sau khi add, bot tóm tắt thông tin cơ bản cho user
+    """
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
+
     chat_id = update.effective_chat.id
+
+    # Không truyền mã -> hướng dẫn
     if not context.args:
-        await update.message.reply_text("⚠️ Ví dụ: /add HPG hoặc /add VNINDEX")
+        await update.message.reply_text(
+            "⚠️ Cách dùng: /add <MÃ>\n"
+            "Ví dụ: /add HPG, /add SSI, /add VNM\n"
+            "(*Chỉ hỗ trợ mã cổ phiếu gồm 3 chữ cái.*)"
+        )
         return
-    symbol = context.args[0].upper().strip()
-    lst = get_watch_list_for_chat(chat_id)
-    if symbol not in lst:
-        lst.append(symbol)
-        save_watch_list_for_chat(chat_id, lst)
-        await update.message.reply_text(f"✅ Đã thêm {symbol} vào danh sách.")
-    else:
-        await update.message.reply_text(f"ℹ️ {symbol} đã có trong danh sách.")
+
+    symbol = context.args[0].strip().upper()
+
+    # 1️⃣ Kiểm tra định dạng: đúng 3 chữ cái A–Z
+    if len(symbol) != 3 or not symbol.isalpha():
+        await update.message.reply_text(
+            "⚠️ Mã không hợp lệ.\n"
+            "Hiện bot chỉ cho phép thêm *mã cổ phiếu* gồm đúng 3 chữ cái HOSE/HNX/UPCOM, "
+            "ví dụ: HPG, SSI, VNM.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 2️⃣ Chặn các mã bắt đầu bằng VN (index)
+    if symbol.startswith("VN"):
+        await update.message.reply_text(
+            "⚠️ Bot chỉ hỗ trợ thêm *mã cổ phiếu*, không hỗ trợ chỉ số như VNINDEX, VN30,...",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 3️⃣ Lấy dữ liệu thực tế để kiểm tra hợp lệ
+    quote_data = get_quote(symbol)
+    if not quote_data or quote_data.get("price") is None:
+        await update.message.reply_text(
+            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
+            "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
+            parse_mode="Markdown",
+        )
+        return
+
+    # 4️⃣ Nếu có dữ liệu thì add vào danh sách
+    lst = get_watch_list_for_chat(chat_id) or []
+    if symbol in lst:
+        await update.message.reply_text(f"ℹ️ {symbol} đã có trong danh sách theo dõi rồi.")
+        return
+
+    lst.append(symbol)
+    save_watch_list_for_chat(chat_id, lst)
+
+    # 5️⃣ Chuẩn bị phần tóm tắt thông tin cổ phiếu
+    try:
+        price = quote_data.get("price")
+        pct = quote_data.get("pct")
+        change_abs = quote_data.get("change_abs")
+        # format dấu +/-
+        change_sign = "+" if (pct is not None and pct >= 0) else ""
+        pct_text = f"{change_sign}{pct:.2f}%" if pct is not None else "—"
+        abs_text = f"{change_sign}{change_abs:,.0f}" if change_abs is not None else "—"
+
+        summary = (
+            f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
+            f"💰 Giá hiện tại: *{price:,.2f}*\n"
+            f"📊 Thay đổi: *{pct_text}* ({abs_text})\n"
+        )
+
+        # lấy thêm thông tin sàn, khối lượng nếu có
+        try:
+            trading = Trading(source="VCI")
+            df = trading.price_board([symbol])
+            if df is not None and not df.empty:
+                row = df.iloc[0]
+                exch = row.get(("listing", "exchange"), "—")
+                vol = row.get(("match", "accumulated_vol"), None)
+                if vol is not None:
+                    summary += f"📦 Khối lượng: *{int(vol):,}* cp\n"
+                summary += f"🏛️ Sàn: *{exch}*"
+        except Exception:
+            pass
+
+        await update.message.reply_text(summary, parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"✅ Đã thêm {symbol} vào danh sách theo dõi.\n⚠️ (Không thể tóm tắt dữ liệu: {e})"
+        )
+
+
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
