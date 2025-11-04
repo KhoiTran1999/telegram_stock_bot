@@ -12,7 +12,7 @@ import pandas as pd
 import math
 import uuid
 import logging
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -35,6 +35,30 @@ from db_utils import (
 import psutil
 import platform
 import time
+
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+# ...
+
+# ==============================================
+# PERSISTENT KEYBOARD (MENU LỆNH NHANH)
+# ==============================================
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Keyboard cố định dưới ô chat để user bấm nhanh /add, /remove, /list.
+    Có thể thêm /report cho tiện nếu muốn.
+    """
+    keyboard = [
+        [KeyboardButton("/add"), KeyboardButton("/remove")],
+        [KeyboardButton("/list")],
+        # Nếu muốn thêm /report thì mở dòng dưới:
+        # [KeyboardButton("/report")],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,   # Thu nhỏ cho gọn
+        one_time_keyboard=False # Giữ lại sau khi bấm
+    )
+
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -636,8 +660,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "một bản báo cáo riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
         "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
         "Hãy thêm vài mã ngay để xem hôm nay mình 'tấu hài' thế nào nhé!\n\n"
-        "🚀 Bắt đầu với lệnh /add nào!"
+        "🚀 Bắt đầu với lệnh /add nào!",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(),   # 👈 GẮN MENU Ở ĐÂY
     )
+
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin)."""
@@ -708,16 +735,27 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     if not context.args:
-        await update.message.reply_text("⚠️ Ví dụ: /add HPG hoặc /add VNINDEX")
+        await update.message.reply_text(
+            "⚠️ Ví dụ: /add HPG hoặc /add VNINDEX",
+            reply_markup=get_main_keyboard(),
+        )
         return
+
     symbol = context.args[0].upper().strip()
     lst = get_watch_list_for_chat(chat_id)
     if symbol not in lst:
         lst.append(symbol)
         save_watch_list_for_chat(chat_id, lst)
-        await update.message.reply_text(f"✅ Đã thêm {symbol} vào danh sách.")
+        await update.message.reply_text(
+            f"✅ Đã thêm {symbol} vào danh sách.",
+            reply_markup=get_main_keyboard(),
+        )
     else:
-        await update.message.reply_text(f"ℹ️ {symbol} đã có trong danh sách.")
+        await update.message.reply_text(
+            f"ℹ️ {symbol} đã có trong danh sách.",
+            reply_markup=get_main_keyboard(),
+        )
+
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -726,16 +764,27 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     if not context.args:
-        await update.message.reply_text("⚠️ Ví dụ: /remove SSI")
+        await update.message.reply_text(
+            "⚠️ Ví dụ: /remove SSI",
+            reply_markup=get_main_keyboard(),
+        )
         return
+
     symbol = context.args[0].upper().strip()
     lst = get_watch_list_for_chat(chat_id)
     if symbol in lst:
         lst.remove(symbol)
         save_watch_list_for_chat(chat_id, lst)
-        await update.message.reply_text(f"🗑️ Đã xoá {symbol} khỏi danh sách.")
+        await update.message.reply_text(
+            f"🗑️ Đã xoá {symbol} khỏi danh sách.",
+            reply_markup=get_main_keyboard(),
+        )
     else:
-        await update.message.reply_text(f"❌ {symbol} không có trong danh sách.")
+        await update.message.reply_text(
+            f"❌ {symbol} không có trong danh sách.",
+            reply_markup=get_main_keyboard(),
+        )
+
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -745,9 +794,16 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     lst = get_watch_list_for_chat(chat_id)
     if not lst:
-        await update.message.reply_text("📭 Danh sách trống.")
+        await update.message.reply_text(
+            "📭 Danh sách trống.",
+            reply_markup=get_main_keyboard(),
+        )
     else:
-        await update.message.reply_text("📊 Danh sách theo dõi:\n" + ", ".join(lst))
+        await update.message.reply_text(
+            "📊 Danh sách theo dõi:\n" + ", ".join(lst),
+            reply_markup=get_main_keyboard(),
+        )
+
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -863,15 +919,21 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
     if not symbols:
         await update.message.reply_text(
-            "Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé."
+            "Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé.",
+            reply_markup=get_main_keyboard(),
         )
         return
 
     await update.message.reply_text(
-        "⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát..."
+        "⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát...",
+        reply_markup=get_main_keyboard(),
     )
     text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        text,
+        reply_markup=get_main_keyboard(),
+    )
+
 
 
 # ==============================================
