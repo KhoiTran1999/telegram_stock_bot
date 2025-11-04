@@ -633,6 +633,38 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 Bắt đầu với lệnh /add nào!"
     )
 
+async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bật bot (chỉ admin)."""
+    global BOT_ACTIVE
+
+    if ADMIN_ID is None:
+        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        return
+
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Không có quyền.")
+        return
+
+    BOT_ACTIVE = True
+    await update.message.reply_text("🟢 Bot đã *ON* trở lại. User có thể dùng lệnh bình thường.")
+    
+
+async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tắt bot (chỉ admin)."""
+    global BOT_ACTIVE
+
+    if ADMIN_ID is None:
+        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        return
+
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Không có quyền.")
+        return
+
+    BOT_ACTIVE = False
+    await update.message.reply_text(
+        "🔴 Bot đã *OFF*. Tạm thời chặn user gửi lệnh (hiện lệnh sẽ trả về 'Bot đang bảo trì')."
+    )
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -783,6 +815,10 @@ async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gửi báo cáo danh mục ngay lập tức cho user để test."""
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        return
+    
     if not update or not update.effective_chat:
         return
     chat_id = update.effective_chat.id
@@ -972,6 +1008,8 @@ async def main():
     )
 
     tg_app.add_handler(CommandHandler("start", cmd_start))
+    tg_app.add_handler(CommandHandler("on", cmd_on))
+    tg_app.add_handler(CommandHandler("off", cmd_off))    
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
