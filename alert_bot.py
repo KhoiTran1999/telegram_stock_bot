@@ -1037,6 +1037,23 @@ async def main():
     BOT_ACTIVE = get_bot_active()
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
+        # 📨 Gửi thông báo cho admin khi bot khởi động lại
+    if ADMIN_ID:
+        try:
+            state_text = "🟢 Bot đã khởi động và đang *hoạt động bình thường.*" if BOT_ACTIVE else "🔴 Bot đã khởi động nhưng đang ở *chế độ bảo trì.*"
+            boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+            msg = (
+                f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
+                f"🕓 Thời gian: {boot_time}\n"
+                f"{state_text}\n\n"
+                f"🧩 Instance ID: `{INSTANCE_ID}`"
+            )
+            send_msg_to(ADMIN_ID, msg)
+            log.info(f"[{INSTANCE_ID}] Đã gửi thông báo khởi động lại tới admin ({ADMIN_ID}).")
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
+
+
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
