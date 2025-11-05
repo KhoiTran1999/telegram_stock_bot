@@ -1649,13 +1649,13 @@ async def main():
 
             # Ghép message theo từng block cho dễ chỉnh sửa / thêm bớt
             parts = [
-                "🚀 *Chatbot đã khởi động lại thành công!*",
-                f"🕓 Thời gian: {boot_time}",
-                state_text,
-                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%",
-                f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%",
-                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m",
-                f"🧩 Instance ID: `{INSTANCE_ID}`",
+                f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
+                f"🕓 Thời gian: {boot_time}\n"
+                f"{state_text}\n\n"
+                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
+                f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
+                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
+                f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
             ]
 
             if git_info:
