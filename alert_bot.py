@@ -1041,34 +1041,86 @@ async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if lst is None:
             save_watch_list_for_chat(chat_id, [])
 
+# ==============================================
+# COMMAND: /report (CÓ CACHE + COOLDOWN + RETRY)
+# Cache nội dung report theo danh mục
+REPORT_CACHE = {}
+REPORT_COOLDOWN = {}  # {chat_id: last_time}
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gửi báo cáo danh mục ngay lập tức cho user để test."""
+    """Gửi báo cáo danh mục ngay lập tức cho user (có cache & cooldown)."""
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
-    
+
     if not update or not update.effective_chat:
         return
-    
+
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/report")   # 🆕 ghi log
+    log_command_usage(chat_id, "/report")   # Ghi log
 
-    watch = get_watch_list_for_chat(chat_id)
-    watch_list = watch or []
-
-    symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
-    if not symbols:
-        await update.message.reply_text(
-            "Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé."
-        )
+    # Cooldown chống spam (15 phút)
+    now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+    last_time = REPORT_COOLDOWN.get(chat_id)
+    if last_time and (now - last_time).total_seconds() < 900:  # 900s = 15 phút
+        remaining = int(900 - (now - last_time).total_seconds())
+        mins = remaining // 60
+        secs = remaining % 60
+        await update.message.reply_text(f"⏳ Bạn đã dùng /report gần đây. Vui lòng thử lại sau {mins} phút {secs} giây.")
         return
 
-    await update.message.reply_text(
-        "⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát..."
-    )
-    text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-    await update.message.reply_text(text)
+    REPORT_COOLDOWN[chat_id] = now
+
+    # Lấy danh mục
+    watch = get_watch_list_for_chat(chat_id)
+    symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
+
+    if not symbols:
+        await update.message.reply_text("📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
+        return
+
+    # Tạo key cache
+    cache_key = "-".join(sorted(symbols))
+
+    await update.message.reply_text("⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi vài giây...")
+
+    # Dùng cache nếu có
+    if cache_key in REPORT_CACHE:
+        log.info(f"[{INSTANCE_ID}] /report cache hit for {chat_id} ({cache_key})")
+        cached_text, cached_time = REPORT_CACHE[cache_key]
+        # Nếu cache dưới 12 tiếng thì dùng lại
+        if (now - cached_time).total_seconds() < 12 * 3600:
+            await update.message.reply_text(cached_text)
+            return
+
+    # Gọi OpenRouter (có retry)
+    async def fetch_report_with_retry():
+        retry = 0
+        while retry < 3:
+            start = time.time()
+            text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+            duration = time.time() - start
+            log.info(f"[{INSTANCE_ID}] /report round {retry+1} done in {duration:.2f}s")
+
+            if "⚠️ Hiện tại không tạo được" not in text and "429" not in text:
+                return text
+            retry += 1
+            await asyncio.sleep(10 * retry)
+        return text
+
+    text = await fetch_report_with_retry()
+
+    # Lưu cache
+    REPORT_CACHE[cache_key] = (text, now)
+
+    # Gửi báo cáo
+    try:
+        await update.message.reply_text(text)
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] Lỗi gửi báo cáo /report cho {chat_id}: {e}")
+        # Gửi fallback rút gọn nếu lỗi parse Markdown
+        await update.message.reply_text("📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.")
+
 
 # ==============================================
 # VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL)
