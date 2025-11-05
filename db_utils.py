@@ -55,7 +55,7 @@ def get_watch_list_for_chat(chat_id: int):
         with conn.cursor() as cur:
             cur.execute("SELECT watch_list FROM bot_watch WHERE chat_id = %s", (chat_id,))
             row = cur.fetchone()
-    return row[0] if row else []
+    return row[0] if row else None
 
 def save_watch_list_for_chat(chat_id: int, watch_list):
     with get_conn() as conn:

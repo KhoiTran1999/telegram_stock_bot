@@ -35,7 +35,6 @@ from db_utils import (
     get_command_stats
 )
 import psutil
-import platform
 import time
 
 # ==============================================
@@ -132,26 +131,26 @@ NOTICE_SPECS = [
     {
         "label": "MORNING_OPEN",
         "hour": 9,
-        "minute": 10,  # trước mở phiên sáng 5 phút (09:15)
+        "minute": 10,  # trước mở phiên sáng 5 phút (09:10)
         "text": "⏰ Phiên sáng sắp mở lúc 09:15. Bạn tranh thủ xem lại danh mục và các mức giá mục tiêu nhé.",
     },
     {
         "label": "MORNING_CLOSE",
         "hour": 11,
-        "minute": 25,  # trước đóng phiên sáng 5 phút (11:30)
+        "minute": 25,  # trước đóng phiên sáng 5 phút (11:25)
         "text": "🔔 Phiên sáng sắp kết thúc lúc 11:30. Bạn cân nhắc các lệnh còn treo nhé.",
     },
     {
         "label": "AFTERNOON_OPEN",
         "hour": 12,
-        "minute": 55,  # trước mở phiên chiều 5 phút (13:00)
+        "minute": 55,  # trước mở phiên chiều 5 phút (12:55)
         "text": "⏰ Phiên chiều sắp mở lúc 13:00. Nhớ kiểm tra lại danh mục và chiến lược giao dịch.",
     },
     {
-        "label": "AFTERNOON_CLOSE",
-        "hour": 14,
-        "minute": 42,  # trước đóng phiên chiều 5 phút (14:25)
-        "text": "🔔 Phiên chiều sắp đóng lúc 14:30. Bạn xem lại các vị thế cần chốt trong ngày nhé.",
+    "label": "AFTERNOON_CLOSE",
+    "hour": 14,
+    "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
+    "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:30. Quý nhà đầu tư vui lòng rà soát lại các vị thế trong ngày. Báo cáo tổng hợp tự động sẽ được gửi lúc 16:00 — hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
     },
 ]
 
@@ -204,6 +203,7 @@ async def session_notice_loop():
     - Sắp đóng phiên sáng / chiều
     Chạy song song với alert_loop, không ảnh hưởng gì tới lệnh Telegram.
     """
+    
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
     while True:
@@ -583,6 +583,10 @@ async def daily_report_loop():
     loop_id = 0
 
     while True:
+        if not OPENROUTER_API_KEY:
+            log.warning(f"[{INSTANCE_ID}][DAILY {loop_id}] Chưa có OPENROUTER_API_KEY, bỏ qua gửi báo cáo.")
+            continue
+
         loop_id += 1
         wait_sec = seconds_until_next_1600()
         log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Ngủ tới 16:00, còn {wait_sec:.0f}s")
