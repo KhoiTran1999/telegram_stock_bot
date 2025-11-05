@@ -1261,7 +1261,8 @@ async def main():
                 f"{state_text}\n\n"
                 f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}% | RAM [{ram_bar}] {ram_percent:.1f}%\n"
                 f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n\n"
-                f"🧩 Instance ID: `{INSTANCE_ID}`"
+                f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
+                f"🎯 Hãy chờ và khởi động lại bot sau 2 phút nữa!!!"
             )
 
             send_msg_to(ADMIN_ID, msg)
