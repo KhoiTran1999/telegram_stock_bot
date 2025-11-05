@@ -20,7 +20,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from flask import Flask
+from flask import Flask, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from vnstock import Trading, Quote
@@ -44,6 +44,9 @@ PORT = int(os.getenv("PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# 🧠 Application Telegram dùng chung cho webhook
+tg_app = None
 
 # ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
 INSTANCE_ID = str(uuid.uuid4())[:8]
@@ -1142,6 +1145,29 @@ flask_app = Flask(__name__)
 def home():
     return f"✅ Bot is alive. Instance {INSTANCE_ID}"
 
+@flask_app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    """
+    Endpoint để Telegram gửi update (webhook).
+    Flask là sync, nên mình chỉ việc đẩy update vào event loop của asyncio.
+    """
+    global tg_app
+    if tg_app is None:
+        return "Bot not ready", 503
+
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return "Bad Request", 400
+
+    # Chuyển JSON thành đối tượng Update của PTB
+    update = Update.de_json(data, tg_app.bot)
+
+    # Đẩy xử lý update vào event loop hiện tại (không block Flask)
+    asyncio.get_event_loop().create_task(tg_app.process_update(update))
+
+    return "OK", 200
+
 
 # ==============================================
 # MAIN
@@ -1155,7 +1181,7 @@ async def main():
     BOT_ACTIVE = get_bot_active()
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
-        # 📨 Gửi thông báo cho admin khi bot khởi động lại
+    # 📨 Gửi thông báo cho admin khi bot khởi động lại
     if ADMIN_ID:
         try:
             # Lấy thông tin hệ thống
@@ -1202,6 +1228,7 @@ async def main():
             log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
 
 
+    global tg_app
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -1224,7 +1251,28 @@ async def main():
     async def run_telegram():
         await tg_app.initialize()
         await tg_app.start()
-        await tg_app.updater.start_polling()
+        
+        # 🔗 Thiết lập webhook URL
+        webhook_url = os.getenv("WEBHOOK_URL")
+
+        # Nếu không set tay, auto lấy từ Render
+        if not webhook_url:
+            host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+            if host:
+                webhook_url = f"https://{host}/webhook"
+
+        if not webhook_url:
+            log.warning(
+                f"[{INSTANCE_ID}] ⚠️ Chưa cấu hình WEBHOOK_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
+                "bot sẽ KHÔNG nhận được update từ Telegram!"
+            )
+        else:
+            await tg_app.bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True,  # bỏ update cũ lúc bot offline
+            )
+            log.info(f"[{INSTANCE_ID}] ✅ Webhook đã set: {webhook_url}")
+
         await asyncio.Event().wait()
 
     config = Config()
