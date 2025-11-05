@@ -413,7 +413,7 @@ def format_perf_line(sym: str, perf: dict) -> str:
     week_pct = perf.get("week_pct")
     month_pct = perf.get("month_pct")
 
-    price_str = f"{float(price):,.2f} đ" if price is not None else "N/A"
+    price_str = f"{float(price):,.0f} đ" if price is not None else "N/A"
     day_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
     week_str = f"{week_pct:+.2f}%" if week_pct is not None else "N/A"
     month_str = f"{month_pct:+.2f}%" if month_pct is not None else "N/A"
@@ -785,7 +785,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         summary = (
             f"✅ *Đã thêm {symbol} vào danh sách theo dõi.*\n\n"
-            f"💰 Giá hiện tại: *{price:,.2f}*\n"
+            f"💰 Giá hiện tại: *{price:,.0f}*\n"
             f"📊 Thay đổi: *{pct_text}* ({abs_text})\n"
         )
 
@@ -1102,7 +1102,7 @@ async def alert_loop():
                             FUN_UP if new_lvl > 0 else FUN_DOWN
                         )
                         price_str = (
-                            f"{float(price):,.2f}" if price is not None else "N/A"
+                            f"{float(price):,.0f}" if price is not None else "N/A"
                         )
                         pct_str = (
                             f"{float(pct):+.2f}%" if pct is not None else "N/A"
