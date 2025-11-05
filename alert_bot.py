@@ -776,7 +776,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "một bản báo cáo tổng kết riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
         "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
         "Hãy thêm vài mã ngay để xem hôm nay mình 'tấu hài' thế nào nhé!\n\n"
-        "🚀 Bắt đầu với lệnh /add nào!"
+        "🚀 Bắt đầu với lệnh /add nào!!"
     )
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
