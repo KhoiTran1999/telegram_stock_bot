@@ -1,7 +1,7 @@
 ```markdown
 # 📈 Telegram Stock Alert Bot
 
-Một chatbot Telegram giúp **theo dõi và cảnh báo biến động chứng khoán Việt Nam** theo thời gian thực, đồng thời tự động **gửi báo cáo phân tích danh mục bằng AI (MiniMax M2 qua OpenRouter)** sau 16:00 mỗi ngày.
+Một chatbot Telegram giúp **theo dõi và cảnh báo biến động chứng khoán Việt Nam** theo thời gian thực, đồng thời tự động **gửi báo cáo phân tích danh mục bằng AI (MiniMax M2 qua OpenRouter)** vào lúc 09:00am chủ nhật hằng tuần .
 
 > Dự án này được viết hoàn toàn bằng **Python (async)**, dùng `python-telegram-bot`, `vnstock3`, và `Flask` để hoạt động ổn định trên Render hoặc server cá nhân.
 
