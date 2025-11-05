@@ -574,10 +574,14 @@ def seconds_until_next_1600():
     return max((target - now).total_seconds(), 0)
 
 
+# ==============================================
+# TỰ ĐỘNG GỬI BÁO CÁO 16:00 (CÓ CACHE + RETRY)
+# ==============================================
 async def daily_report_loop():
-    """Gửi báo cáo danh mục cho từng user lúc 16:00 từ thứ 2–6."""
+    """Gửi báo cáo danh mục cho từng user lúc 16:00 (T2–T6) có cache + retry."""
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
+
     while True:
         loop_id += 1
         wait_sec = seconds_until_next_1600()
@@ -585,43 +589,78 @@ async def daily_report_loop():
         await asyncio.sleep(wait_sec)
 
         now = datetime.datetime.now(vn_tz)
-        if now.weekday() > 4:
-            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Rơi vào cuối tuần, bỏ qua.")
+        if now.weekday() > 4:  # Thứ 7, CN
+            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Cuối tuần, bỏ qua gửi báo cáo.")
             continue
 
         try:
-            log.info(
-                f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo danh mục 16:00"
-            )
-            all_watch = get_all_watch()  # từ db_utils
+            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo 16:00")
+            all_watch = get_all_watch()
+
+            if not all_watch:
+                log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Không có user nào theo dõi, bỏ qua.")
+                continue
+
+            sent_count = 0
+            skipped_count = 0
 
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", []) or []
                 if not watch_list:
+                    skipped_count += 1
                     continue
 
-                # Bỏ các index VNINDEX, VN30... khỏi báo cáo nếu không muốn
                 symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
                 if not symbols:
+                    skipped_count += 1
                     continue
 
+                cache_key = "-".join(sorted(symbols))
+                now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+
+                # 🧠 Dùng cache nếu có
+                if cache_key in REPORT_CACHE:
+                    cached_text, cached_time = REPORT_CACHE[cache_key]
+                    if (now - cached_time).total_seconds() < 12 * 3600:
+                        send_msg_to(chat_id, cached_text)
+                        log.info(f"[{INSTANCE_ID}][DAILY] Cache hit cho {chat_id} ({cache_key})")
+                        await asyncio.sleep(1.5)
+                        sent_count += 1
+                        continue
+
+                # 🧩 Gọi AI (có retry)
+                async def fetch_report_with_retry():
+                    retry = 0
+                    while retry < 3:
+                        start = time.time()
+                        text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                        duration = time.time() - start
+                        log.info(f"[{INSTANCE_ID}][DAILY] Round {retry+1} cho {chat_id} ({duration:.1f}s)")
+
+                        if "⚠️" not in text and "429" not in text:
+                            return text
+                        retry += 1
+                        await asyncio.sleep(10 * retry)
+                    return text
+
                 try:
-                    # Gọi LLM sinh nội dung (chạy trong thread tránh block loop)
-                    text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                    text = await fetch_report_with_retry()
+                    REPORT_CACHE[cache_key] = (text, now)
                     send_msg_to(chat_id, text)
-                    log.info(
-                        f"[{INSTANCE_ID}][DAILY {loop_id}] Đã gửi báo cáo cho {chat_id}"
-                    )
+                    log.info(f"[{INSTANCE_ID}][DAILY] Đã gửi báo cáo cho {chat_id}")
+                    sent_count += 1
                 except Exception as e:
-                    log.warning(
-                        f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi gửi báo cáo cho {chat_id}: {e}"
-                    )
+                    log.warning(f"[{INSTANCE_ID}][DAILY] Lỗi gửi cho {chat_id}: {e}")
+
+                # Giãn nhịp gửi để tránh spam Telegram (3s/user)
+                await asyncio.sleep(3)
+
+            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Hoàn tất — gửi {sent_count}, bỏ qua {skipped_count} user.")
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][DAILY {loop_id}] ERROR: {e}")
-            # Nếu lỗi thì 5 phút sau thử lại
-            await asyncio.sleep(300)
+            log.error(f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi tổng quát: {e}")
+            await asyncio.sleep(300)  # 5 phút retry nếu lỗi tổng
 
 
 def send_msg_to(chat_id: int, text: str):
@@ -1428,6 +1467,7 @@ async def main():
         serve(flask_app, config),
         alert_loop(),           # cảnh báo realtime trong giờ giao dịch
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
+        daily_report_loop(),     # 🧠 gửi báo cáo tự động 16:00
         run_telegram(),
         auto_on_after_delay(),  # tự động /on sau 2 phút nếu đang OFF
     )
