@@ -679,10 +679,10 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_bot_active(True)   # 🔄 Lưu trạng thái vào DB
 
     msg = (
-        "✅ *Hệ thống đã hoạt động trở lại.*\n\n"
-        "Trạng thái đã được bật và lưu trong cơ sở dữ liệu. "
-        "Người dùng sẽ không được thông báo trong giai đoạn phát triển. 🚀"
+    "✅ *Hệ thống đã được kích hoạt trở lại.*\n\n"
+    "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
     )
+
 
     log.info("[ADMIN] Bot đã bật (BOT_ACTIVE=True, lưu vào DB).")
     await update.message.reply_text(msg, parse_mode="Markdown")
