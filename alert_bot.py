@@ -1141,9 +1141,9 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(args) < 4:
         await update.message.reply_text(
             "❗ Cú pháp: /delete_range <từ ngày> <giờ> <đến ngày> <giờ>\n"
-            "Ví dụ: `/delete_range 2025-03-01 09:00 2025-03-01 10:30`",
-            parse_mode="Markdown",
+            "Ví dụ: /delete_range 2025-03-01 09:00 2025-03-01 10:30"
         )
+
         return
 
     try:
