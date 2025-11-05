@@ -1032,31 +1032,31 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Chưa cấu hình ADMIN_ID thì không cho xài để tránh lộ bot
-    if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
-
-    # Chỉ cho đúng admin dùng
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Không có quyền.")
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ Dùng: /announce <nội dung>")
+        await update.message.reply_text("❗ Vui lòng nhập nội dung thông báo sau lệnh /announce.")
         return
 
     text = " ".join(context.args)
+    text = text.replace("/n", "\n").replace("\\n", "\n")  # ✨ xử lý xuống dòng
+
+    # Gửi cho tất cả user
     all_watch = get_all_watch()
-    count = 0
+    sent = 0
     for chat_key in all_watch.keys():
-        chat_id = int(chat_key)
         try:
-            await context.bot.send_message(chat_id, f"📢 {text}")
-            count += 1
+            send_msg_to(int(chat_key), text)
+            sent += 1
+            await asyncio.sleep(0.1)
         except Exception as e:
-            log.warning(f"[WARN] Announce lỗi {chat_id}: {e}")
-    await update.message.reply_text(f"✅ Đã gửi đến {count} người.")
+            log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
+
+    await update.message.reply_text(f"✅ Đã gửi thông báo tới {sent} người dùng.", parse_mode="Markdown")
+
 
 
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
