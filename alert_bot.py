@@ -39,6 +39,7 @@ from db_utils import (
 )
 import psutil
 import time
+import subprocess
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -158,6 +159,50 @@ NOTICE_SPECS = [
 
 ]
 
+def get_git_deploy_info() -> str | None:
+    """
+    Lấy thông tin phiên bản đang chạy từ Git/Render:
+    - Branch
+    - Commit hash
+    - Commit message (nội dung những gì bạn đã làm)
+
+    Trả về chuỗi Markdown, hoặc None nếu không lấy được.
+    """
+    # Render thường có sẵn các biến này
+    commit_hash = os.getenv("RENDER_GIT_COMMIT")
+    branch = os.getenv("RENDER_GIT_BRANCH")
+
+    # Thử lấy commit message từ git log (nếu thư mục deploy còn giữ .git)
+    commit_message = None
+    try:
+        commit_message = subprocess.check_output(
+            ["git", "log", "-1", "--pretty=%B"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip() or None
+    except Exception:
+        # Ở môi trường production đôi khi không có .git, bỏ qua
+        pass
+
+    # Không có gì thì trả về None
+    if not any([commit_hash, branch, commit_message]):
+        return None
+
+    # Làm sạch commit message để tránh lỗi Markdown
+    if commit_message:
+        commit_message = commit_message.replace("*", "").replace("`", "'")
+
+    lines = ["📦 *Thông tin phiên bản đang chạy:*"]
+    if branch:
+        lines.append(f"• Branch: `{branch}`")
+    if commit_hash:
+        lines.append(f"• Commit: `{commit_hash[:7]}`")
+    if commit_message:
+        # Gộp nhiều dòng commit thành 1 – dễ đọc trên Telegram
+        short_msg = commit_message.replace("\n", " / ")
+        lines.append(f"• Nội dung commit: _{short_msg}_")
+
+    return "\n".join(lines)
 
 def broadcast_to_all_watchers(text: str):
     """Gửi 1 thông báo tới tất cả user đã từng lưu danh sách theo dõi."""
@@ -1599,16 +1644,27 @@ async def main():
             if not BOT_ACTIVE:
                 auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại sau 2 phút (auto /on).*"
 
-            msg = (
-                f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
-                f"🕓 Thời gian: {boot_time}\n"
-                f"{state_text}\n\n"
-                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
-                f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
-                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
-                f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
-                f"{auto_on_notice}"
-            )
+            # 🧩 Thông tin phiên bản (branch, commit, commit message)
+            git_info = get_git_deploy_info()
+
+            # Ghép message theo từng block cho dễ chỉnh sửa / thêm bớt
+            parts = [
+                "🚀 *Chatbot đã khởi động lại thành công!*",
+                f"🕓 Thời gian: {boot_time}",
+                state_text,
+                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%",
+                f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%",
+                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m",
+                f"🧩 Instance ID: `{INSTANCE_ID}`",
+            ]
+
+            if git_info:
+                parts.append(git_info)
+            if auto_on_notice:
+                parts.append(auto_on_notice)
+
+            msg = "\n\n".join(parts)
+
 
 
             send_msg_to(ADMIN_ID, msg)
