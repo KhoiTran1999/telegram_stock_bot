@@ -764,8 +764,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
+    
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/start")   # 🆕 ghi log
+    log_command_usage(chat_id, "/start", ADMIN_ID)   # 🆕 ghi log
+
     # ✅ Chỉ tạo mới nếu user chưa có record
     lst = get_watch_list_for_chat(chat_id)
     if lst is None:
@@ -786,7 +788,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• /report – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n\n"
     "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
-    "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!"
+    "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!", parse_mode="Markdown"
     )
 
 
@@ -868,7 +870,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/add")   # 🆕 ghi log
+    log_command_usage(chat_id, "/add", ADMIN_ID)   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -974,7 +976,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/remove")   # 🆕 ghi log
+    log_command_usage(chat_id, "/remove", ADMIN_ID)   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -1023,7 +1025,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/list")   # 🆕 ghi log
+    log_command_usage(chat_id, "/list", ADMIN_ID)   # 🆕 ghi log
     lst = get_watch_list_for_chat(chat_id)
 
     if not lst:
@@ -1220,7 +1222,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     REPORT_COOLDOWN[chat_id] = now
-    log_command_usage(chat_id, "/report")   # Ghi log
+    log_command_usage(chat_id, "/report", ADMIN_ID)   # Ghi log
 
     # Lấy danh mục
     watch = get_watch_list_for_chat(chat_id)

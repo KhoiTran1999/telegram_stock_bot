@@ -96,8 +96,11 @@ def set_bot_active(is_active: bool):
 # 🧠 GHI NHẬT KÝ LỆNH
 # ==============================
 
-def log_command_usage(chat_id: int, command: str):
-    """Ghi lại mỗi lần user dùng lệnh."""
+def log_command_usage(chat_id: int, command: str, admin_id: int = None):
+    """Ghi lại mỗi lần user dùng lệnh (bỏ qua admin)."""
+    if admin_id is not None and chat_id == admin_id:
+        return  # ❌ bỏ qua log nếu là admin
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -105,6 +108,7 @@ def log_command_usage(chat_id: int, command: str):
                 (chat_id, command),
             )
         conn.commit()
+
 
 def get_command_stats():
     """Trả về thống kê số lần gọi theo ngày / tháng / tổng cộng cho từng lệnh."""
