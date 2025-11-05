@@ -327,14 +327,27 @@ def get_quote(symbol: str):
         )
 
         out = {"price": price, "pct": pct_change, "change_abs": change_abs}
-        # Làm đẹp log: hiển thị phần trăm có 2 chữ số, thêm ký hiệu %
+        
+        # Làm đẹp log: hiển thị phần trăm, giá, và thay đổi tuyệt đối gọn hơn
+        price_display = (
+            f"{float(out['price']):,.0f}".replace(",", ".")
+            if out.get("price") is not None
+            else "None"
+        )
         pct_display = (
             f"{out['pct']:+.2f}%" if out.get("pct") is not None else "None"
-            )
+        )
+        change_abs_display = (
+            f"{int(out['change_abs']):,}".replace(",", ".")
+            if out.get("change_abs") is not None
+            else "None"
+        )
+
         log.info(
             f"[{INSTANCE_ID}] [QUOTE OK] {symbol} -> "
-            f"price={out.get('price', 'None')}, pct={pct_display}, change_abs={out.get('change_abs', 'None')}"
+            f"price={price_display}, pct={pct_display}, change_abs={change_abs_display}"
         )
+
 
         return out
     except Exception as e:
