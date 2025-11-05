@@ -20,7 +20,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from flask import Flask
+from flask import Flask, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from vnstock import Trading, Quote
@@ -31,9 +31,13 @@ from db_utils import (
     save_watch_list_for_chat,
     get_bot_active,
     set_bot_active,
+    log_command_usage,
+    get_command_stats,
+    save_bot_message,
+    get_bot_messages_in_range,
+    delete_bot_messages_in_range,
 )
 import psutil
-import platform
 import time
 
 # ==============================================
@@ -44,6 +48,10 @@ PORT = int(os.getenv("PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# 🧠 Application Telegram dùng chung cho webhook
+tg_app = None
+MAIN_LOOP = None
 
 # ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
 INSTANCE_ID = str(uuid.uuid4())[:8]
@@ -126,27 +134,28 @@ NOTICE_SPECS = [
     {
         "label": "MORNING_OPEN",
         "hour": 9,
-        "minute": 10,  # trước mở phiên sáng 5 phút (09:15)
+        "minute": 10,  # trước mở phiên sáng 5 phút (09:10)
         "text": "⏰ Phiên sáng sắp mở lúc 09:15. Bạn tranh thủ xem lại danh mục và các mức giá mục tiêu nhé.",
     },
     {
         "label": "MORNING_CLOSE",
         "hour": 11,
-        "minute": 25,  # trước đóng phiên sáng 5 phút (11:30)
+        "minute": 25,  # trước đóng phiên sáng 5 phút (11:25)
         "text": "🔔 Phiên sáng sắp kết thúc lúc 11:30. Bạn cân nhắc các lệnh còn treo nhé.",
     },
     {
         "label": "AFTERNOON_OPEN",
         "hour": 12,
-        "minute": 55,  # trước mở phiên chiều 5 phút (13:00)
+        "minute": 55,  # trước mở phiên chiều 5 phút (12:55)
         "text": "⏰ Phiên chiều sắp mở lúc 13:00. Nhớ kiểm tra lại danh mục và chiến lược giao dịch.",
     },
     {
-        "label": "AFTERNOON_CLOSE",
-        "hour": 14,
-        "minute": 42,  # trước đóng phiên chiều 5 phút (14:25)
-        "text": "🔔 Phiên chiều sắp đóng lúc 14:30. Bạn xem lại các vị thế cần chốt trong ngày nhé.",
-    },
+    "label": "AFTERNOON_CLOSE",
+    "hour": 14,
+    "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
+    "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:30. Quý nhà đầu tư vui lòng rà soát lại các vị thế trong ngày. Báo cáo tổng kết tuần sẽ được gửi vào 09:00 sáng Chủ Nhật — hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
+},
+
 ]
 
 
@@ -198,6 +207,7 @@ async def session_notice_loop():
     - Sắp đóng phiên sáng / chiều
     Chạy song song với alert_loop, không ảnh hưởng gì tới lệnh Telegram.
     """
+    
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
     while True:
@@ -323,7 +333,28 @@ def get_quote(symbol: str):
         )
 
         out = {"price": price, "pct": pct_change, "change_abs": change_abs}
-        log.info(f"[{INSTANCE_ID}] [QUOTE OK] {symbol} -> {out}")
+        
+        # Làm đẹp log: hiển thị phần trăm, giá, và thay đổi tuyệt đối gọn hơn
+        price_display = (
+            f"{float(out['price']):,.0f}".replace(",", ".")
+            if out.get("price") is not None
+            else "None"
+        )
+        pct_display = (
+            f"{out['pct']:+.2f}%" if out.get("pct") is not None else "None"
+        )
+        change_abs_display = (
+            f"{int(out['change_abs']):,}".replace(",", ".")
+            if out.get("change_abs") is not None
+            else "None"
+        )
+
+        log.info(
+            f"[{INSTANCE_ID}] [QUOTE OK] {symbol} -> "
+            f"price={price_display}, pct={pct_display}, change_abs={change_abs_display}"
+        )
+
+
         return out
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [QUOTE FAIL] {symbol}: {e}")
@@ -409,7 +440,7 @@ def format_perf_line(sym: str, perf: dict) -> str:
     week_pct = perf.get("week_pct")
     month_pct = perf.get("month_pct")
 
-    price_str = f"{float(price):,.2f} đ" if price is not None else "N/A"
+    price_str = f"{float(price):,.0f} đ" if price is not None else "N/A"
     day_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
     week_str = f"{week_pct:+.2f}%" if week_pct is not None else "N/A"
     month_str = f"{month_pct:+.2f}%" if month_pct is not None else "N/A"
@@ -450,13 +481,14 @@ Dữ liệu danh mục của khách (giá + % thay đổi):
 
 YÊU CẦU:
 1. Với từng mã, hãy:
-   - Nhắc lại giá hiện tại và % thay đổi trong ngày, tuần, tháng (dựa đúng vào dữ liệu ở trên).
-   - Nếu không có tin mới đáng chú ý, hãy đưa ra nhận định & phân tích:
+   - Nhắc lại giá hiện tại và % thay đổi trong ngày, tuần, tháng (dựa đúng vào dữ liệu ở trên). Định dạng giá cổ phiếu ví dụ sẽ là 10.000đ
+   - Hãy cập nhật thông tin mới nhất về mã cổ phiếu, nếu không có gì mới, hãy đưa ra nhận định & phân tích về giao dịch trong ngày (cho thêm tí emoji cho sinh động):
      điểm mạnh, rủi ro, và gợi ý chiến lược nắm giữ / chốt lời 
      (nhưng KHÔNG dùng giọng ép buộc kiểu 'phải mua/bán').
-2. Viết bằng tiếng Việt, giọng điệu chuyên nghiệp nhưng dễ hiểu, phù hợp gửi qua Telegram.
+2. Viết bằng tiếng Việt, giọng điệu dễ gần thậm chí là cà khịa nhưng dễ hiểu, phù hợp gửi qua Telegram.
 3. Có thể dùng emoji cho sinh động, nhưng không lạm dụng.
 4. Không đặt câu hỏi ở cuối bản tin, chỉ tóm tắt / kết luận nhẹ.
+5. Quan trọng là không được đưa ra khuyến nghị mua bán cụ thể, chỉ phân tích và nhận định chung.
 
 FORMAT:
 - Mỗi mã theo block:
@@ -464,6 +496,7 @@ FORMAT:
 🔹 MÃ
 - Giá hiện tại: ...
 - Biến động: Ngày ..., Tuần ..., Tháng ...
+- Thông tin mới: ...
 - Nhận định: ...
 
 - Cuối cùng thêm 1–2 câu tổng kết chung về danh mục (thiên về ngành nào, rủi ro / cơ hội tổng thể).
@@ -533,78 +566,195 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
         return "⚠️ Hiện tại không tạo được báo cáo danh mục do lỗi kết nối LLM."
 
 
-def seconds_until_next_1600():
+def seconds_until_next_weekly_report():
+    """
+    Tính số giây tới 09:00 sáng Chủ Nhật gần nhất (report tuần).
+    - Nếu hôm nay là Chủ Nhật và giờ < 09:00 -> lấy 09:00 hôm nay.
+    - Ngược lại -> 09:00 Chủ Nhật tuần kế tiếp.
+    """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
-    target = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    if now >= target:
-        target = target + datetime.timedelta(days=1)
 
-    # Nếu rơi vào cuối tuần thì nhảy tới thứ 2
-    while target.weekday() > 4:  # 5 = T7, 6 = CN
-        target = target + datetime.timedelta(days=1)
+    # Chủ Nhật = 6 trong weekday()
+    SUNDAY = 6
+    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+
+    if now.weekday() != SUNDAY or now >= target:
+        # Tìm Chủ Nhật kế tiếp
+        days_ahead = (SUNDAY - now.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        next_date = now.date() + datetime.timedelta(days=days_ahead)
+        target = datetime.datetime(
+            next_date.year, next_date.month, next_date.day, 9, 0, 0, tzinfo=vn_tz
+        )
 
     return max((target - now).total_seconds(), 0)
 
 
+
+# ==============================================
+# BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
+# ==============================================
 async def daily_report_loop():
-    """Gửi báo cáo danh mục cho từng user lúc 16:00 từ thứ 2–6."""
+    """
+    Gửi báo cáo danh mục cho từng user vào 09:00 sáng Chủ Nhật hằng tuần
+    (dùng chung cache với /report, có retry nếu lỗi LLM).
+    """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
+
     while True:
         loop_id += 1
-        wait_sec = seconds_until_next_1600()
-        log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Ngủ tới 16:00, còn {wait_sec:.0f}s")
+
+        if not OPENROUTER_API_KEY:
+            log.warning(
+                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Chưa có OPENROUTER_API_KEY, "
+                "bỏ qua gửi báo cáo tuần, sleep 3600s."
+            )
+            await asyncio.sleep(3600)
+            continue
+
+        wait_sec = seconds_until_next_weekly_report()
+        log.info(
+            f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
+        )
         await asyncio.sleep(wait_sec)
 
         now = datetime.datetime.now(vn_tz)
-        if now.weekday() > 4:
-            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Rơi vào cuối tuần, bỏ qua.")
+        if now.weekday() != 6:  # không phải Chủ Nhật thì bỏ qua (phòng trường hợp lệch giờ)
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Không phải Chủ Nhật, bỏ qua.")
             continue
 
         try:
-            log.info(
-                f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo danh mục 16:00"
-            )
-            all_watch = get_all_watch()  # từ db_utils
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bắt đầu gửi báo cáo tuần")
+            all_watch = get_all_watch()
+
+            if not all_watch:
+                log.info(
+                    f"[{INSTANCE_ID}][WEEKLY {loop_id}] Không có user nào theo dõi, bỏ qua."
+                )
+                continue
+
+            sent_count = 0
+            skipped_count = 0
 
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", []) or []
                 if not watch_list:
+                    skipped_count += 1
                     continue
 
-                # Bỏ các index VNINDEX, VN30... khỏi báo cáo nếu không muốn
-                symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+                symbols = [
+                    s.upper()
+                    for s in watch_list
+                    if not s.upper().startswith("VN")
+                ]
                 if not symbols:
+                    skipped_count += 1
                     continue
+
+                cache_key = "-".join(sorted(symbols))
+                now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+
+                # 🧠 Dùng cache nếu còn hạn (12h) để tiết kiệm token
+                if cache_key in REPORT_CACHE:
+                    cached_text, cached_time = REPORT_CACHE[cache_key]
+                    if (now - cached_time).total_seconds() < 12 * 3600:
+                        send_msg_to(chat_id, cached_text)
+                        log.info(
+                            f"[{INSTANCE_ID}][WEEKLY] Cache hit cho {chat_id} ({cache_key})"
+                        )
+                        await asyncio.sleep(1.5)
+                        sent_count += 1
+                        continue
+
+                # 🧩 Gọi AI (có retry)
+                async def fetch_report_with_retry():
+                    retry = 0
+                    while retry < 3:
+                        start = time.time()
+                        text = await asyncio.to_thread(
+                            call_chatgpt_for_report, symbols
+                        )
+                        duration = time.time() - start
+                        log.info(
+                            f"[{INSTANCE_ID}][WEEKLY] Round {retry+1} cho {chat_id} ({duration:.1f}s)"
+                        )
+
+                        if "⚠️" not in text and "429" not in text:
+                            return text
+                        retry += 1
+                        await asyncio.sleep(10 * retry)
+                    return text
 
                 try:
-                    # Gọi LLM sinh nội dung (chạy trong thread tránh block loop)
-                    text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                    text = await fetch_report_with_retry()
+                    REPORT_CACHE[cache_key] = (text, now)
                     send_msg_to(chat_id, text)
                     log.info(
-                        f"[{INSTANCE_ID}][DAILY {loop_id}] Đã gửi báo cáo cho {chat_id}"
+                        f"[{INSTANCE_ID}][WEEKLY] Đã gửi báo cáo tuần cho {chat_id}"
                     )
+                    sent_count += 1
                 except Exception as e:
                     log.warning(
-                        f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi gửi báo cáo cho {chat_id}: {e}"
+                        f"[{INSTANCE_ID}][WEEKLY] Lỗi gửi cho {chat_id}: {e}"
                     )
 
+                # Giãn nhịp gửi để tránh spam Telegram (3s/user)
+                await asyncio.sleep(3)
+
+            log.info(
+                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Hoàn tất — gửi {sent_count}, bỏ qua {skipped_count} user."
+            )
+
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][DAILY {loop_id}] ERROR: {e}")
-            # Nếu lỗi thì 5 phút sau thử lại
-            await asyncio.sleep(300)
+            log.error(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi tổng quát: {e}")
+            await asyncio.sleep(300)  # 5 phút retry nếu lỗi tổng
 
 
 def send_msg_to(chat_id: int, text: str):
-    """Gửi tin nhắn Telegram trực tiếp (ít lỗi hơn PTB trong async)."""
+    """Gửi tin nhắn Telegram trực tiếp và lưu log (để có thể xoá theo thời gian)."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     params = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     try:
-        requests.get(url, params=params, timeout=10)
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
+        if data.get("ok") and "result" in data:
+            msg_id = data["result"]["message_id"]
+            save_bot_message(chat_id, msg_id)
+        else:
+            log.warning(f"[WARN] Telegram send failed: {data}")
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
+
+
+async def auto_on_after_delay():
+    """
+    Tự động bật lại bot sau 2 phút kể từ khi khởi động,
+    nếu BOT_ACTIVE hiện đang là False.
+    """
+    global BOT_ACTIVE
+
+    await asyncio.sleep(120)  # 2 phút
+
+    if not BOT_ACTIVE:
+        BOT_ACTIVE = True
+        set_bot_active(True)
+        log.info(f"[{INSTANCE_ID}] BOT auto switched ON after 2 minutes.")
+
+        # Báo riêng cho admin nếu có
+        if ADMIN_ID:
+            try:
+                send_msg_to(
+                    ADMIN_ID,
+                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on).*\n\n"
+                    "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
+                )
+            except Exception as e:
+                log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
+
 
 
 # ==============================================
@@ -615,29 +765,30 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
     chat_id = update.effective_chat.id
-
+    log_command_usage(chat_id, "/start")   # 🆕 ghi log
     # ✅ Chỉ tạo mới nếu user chưa có record
     lst = get_watch_list_for_chat(chat_id)
     if lst is None:
         save_watch_list_for_chat(chat_id, [])
 
     await update.message.reply_text(
-        "╔════════════════════════════════╗\n"
-        "🎯 *Chào mừng nhà đầu tư đến với StockBot!* 🤖💸\n"
-        "╚════════════════════════════════╝\n\n"
-        "Mình là bot cảnh báo chứng khoán realtime, vừa nghiêm túc vừa… hơi cà khịa 😏\n\n"
-        "📊 *Các lệnh bạn có thể dùng:*\n"
-        "• /add <MÃ> – Thêm mã cổ phiếu vào danh sách theo dõi\n"
-        "• /remove <MÃ> – Xóa mã cổ phiếu không còn ưng nữa\n"
-        "• /list – Xem danh sách cổ phiếu bạn đang theo dõi\n"
-        "• /report – Gửi yêu cầu để AI phân tích danh mục của bạn bất cứ lúc nào 🧠\n\n"
-        "🕓 *Báo cáo tự động:* Sau 16:00 hằng ngày, mình sẽ dùng AI để\n"
-        "tổng hợp & phân tích toàn bộ list mã bạn đang theo dõi và gửi\n"
-        "một bản báo cáo riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
-        "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
-        "Hãy thêm vài mã ngay để xem hôm nay mình 'tấu hài' thế nào nhé!\n\n"
-        "🚀 Bắt đầu với lệnh /add nào!"
+    "╔════════════════════════════════╗\n"
+    "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n"
+    "╚════════════════════════════════╝\n\n"
+    "StockBot là trợ lý cảnh báo chứng khoán realtime, giúp bạn theo dõi biến động giá một cách nhanh chóng và chính xác.\n\n"
+    "📈 *Cách hoạt động:*\n"
+    "• Khi giá cổ phiếu trong danh sách của bạn *tăng hoặc giảm 2%, 4%, 6%* so với giá tham chiếu, hệ thống sẽ tự động gửi cảnh báo ngay lập tức.\n"
+    "• Mỗi cảnh báo đều hiển thị phần trăm thay đổi, xu hướng và thông tin liên quan để bạn dễ dàng nắm bắt tình hình thị trường.\n\n"
+    "📊 *Các lệnh bạn có thể sử dụng:*\n"
+    "• /add <MÃ> – Thêm mã cổ phiếu vào danh sách theo dõi\n"
+    "• /remove <MÃ> – Xóa mã cổ phiếu khỏi danh sách\n"
+    "• /list – Xem danh sách cổ phiếu đang theo dõi\n"
+    "• /report – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n\n"
+    "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
+    "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
+    "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!"
     )
+
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin)."""
@@ -654,10 +805,10 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_bot_active(True)   # 🔄 Lưu trạng thái vào DB
 
     msg = (
-        "✅ *Hệ thống đã hoạt động trở lại.*\n\n"
-        "Trạng thái đã được bật và lưu trong cơ sở dữ liệu. "
-        "Người dùng sẽ không được thông báo trong giai đoạn phát triển. 🚀"
+    "✅ *Hệ thống đã được kích hoạt trở lại.*\n\n"
+    "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
     )
+
 
     log.info("[ADMIN] Bot đã bật (BOT_ACTIVE=True, lưu vào DB).")
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -717,6 +868,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/add")   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -739,21 +891,23 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2️⃣ Chặn các mã bắt đầu bằng VN (index)
-    if symbol.startswith("VN"):
-        await update.message.reply_text(
-            "⚠️ Bot chỉ hỗ trợ thêm *mã cổ phiếu*, không hỗ trợ chỉ số như VNINDEX, VN30,...",
-            parse_mode="Markdown",
-        )
-        return
-
-    # 3️⃣ Lấy dữ liệu thực tế để kiểm tra hợp lệ
+    # 2️⃣ Lấy dữ liệu thực tế để kiểm tra hợp lệ
     quote_data = get_quote(symbol)
     if not quote_data or quote_data.get("price") is None:
         await update.message.reply_text(
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
             "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCoM.*)",
+            parse_mode="Markdown",
+        )
+        return
+    
+    # 3️⃣ Kiểm tra giá bằng 0 (trước giờ mở cửa)
+    if quote_data.get("price") == 0:
+        await update.message.reply_text(
+            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
+            "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
             parse_mode="Markdown",
         )
         return
@@ -767,7 +921,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lst.append(symbol)
     save_watch_list_for_chat(chat_id, lst)
 
-    # 5️⃣ Tóm tắt thông tin mã vừa thêm
+    # 5️⃣ Chuẩn bị phần tóm tắt thông tin cổ phiếu
     try:
         price = quote_data.get("price")
         pct = quote_data.get("pct")
@@ -777,7 +931,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         abs_text = f"{change_sign}{change_abs:,.0f}" if change_abs is not None else "—"
 
         summary = (
-            f"✅ *Đã thêm {symbol} vào danh sách theo dõi.*\n\n"
+            f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
             f"💰 Giá hiện tại: *{price:,.2f}*\n"
             f"📊 Thay đổi: *{pct_text}* ({abs_text})\n"
         )
@@ -796,19 +950,12 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # 6️⃣ Hiển thị danh sách hiện tại
-        if lst:
-            summary += "\n📋 *Danh sách hiện tại của bạn:*\n" + ", ".join(lst)
-
         await update.message.reply_text(summary, parse_mode="Markdown")
 
     except Exception as e:
         await update.message.reply_text(
             f"✅ Đã thêm {symbol} vào danh sách theo dõi.\n⚠️ (Không thể tóm tắt dữ liệu: {e})"
         )
-
-
-
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -822,8 +969,6 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-
-    # Không truyền mã -> hướng dẫn
     if not context.args:
         await update.message.reply_text("⚠️ Ví dụ: /remove SSI")
         return
@@ -837,23 +982,19 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Xoá mã khỏi danh sách và lưu lại
         lst.remove(symbol)
         save_watch_list_for_chat(chat_id, lst)
+        await update.message.reply_text(f"🗑️ Đã xoá {symbol} khỏi danh sách.")
+    else:
+        await update.message.reply_text(f"❌ {symbol} không có trong danh sách.")
 
-        # Chuẩn bị message cập nhật danh sách
-        if lst:
-            current_list = ", ".join(lst)
-            msg = (
-                f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
-                f"📊 *Danh sách hiện tại của bạn:*\n{current_list}"
-            )
-        else:
-            msg = (
-                f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
-                "📭 Hiện bạn *không còn theo dõi mã nào*.\n"
-                "Bạn có thể dùng /add để thêm mã mới."
-            )
 
-        await update.message.reply_text(msg, parse_mode="Markdown")
-
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        return
+    chat_id = update.effective_chat.id
+    lst = get_watch_list_for_chat(chat_id)
+    if not lst:
+        await update.message.reply_text("📭 Danh sách trống.")
     else:
         # Mã không nằm trong danh sách
         await update.message.reply_text(
@@ -864,31 +1005,31 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Chưa cấu hình ADMIN_ID thì không cho xài để tránh lộ bot
-    if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
-
-    # Chỉ cho đúng admin dùng
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Không có quyền.")
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ Dùng: /announce <nội dung>")
+        await update.message.reply_text("❗ Vui lòng nhập nội dung thông báo sau lệnh /announce.")
         return
 
     text = " ".join(context.args)
+    text = text.replace("/n", "\n").replace("\\n", "\n")  # ✨ xử lý xuống dòng
+
+    # Gửi cho tất cả user
     all_watch = get_all_watch()
-    count = 0
+    sent = 0
     for chat_key in all_watch.keys():
-        chat_id = int(chat_key)
         try:
-            await context.bot.send_message(chat_id, f"📢 {text}")
-            count += 1
+            send_msg_to(int(chat_key), text)
+            sent += 1
+            await asyncio.sleep(0.1)
         except Exception as e:
-            log.warning(f"[WARN] Announce lỗi {chat_id}: {e}")
-    await update.message.reply_text(f"✅ Đã gửi đến {count} người.")
+            log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
+
+    await update.message.reply_text(f"✅ Đã gửi thông báo tới {sent} người dùng.", parse_mode="Markdown")
+
 
 
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -927,7 +1068,17 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for sym, cnt in sorted(symbol_counts.items()):
         stats_lines.append(f"{sym}: {cnt} user")
 
+    cmd_stats = get_command_stats()
+    if cmd_stats:
+        cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
+        for row in cmd_stats:
+            cmd_summary += f"{row['command']}: {row['day']} hôm nay | {row['month']} tháng này | {row['total']} tổng cộng\n"
+        cmd_summary += "\n"
+    else:
+        cmd_summary = "📊 *Chưa có dữ liệu lệnh được sử dụng.*\n\n"
+
     header = (
+        cmd_summary +
         "📋 *Tổng hợp danh sách mã đang được theo dõi*\n"
         f"👥 Tổng số user: {len(all_watch)}\n"
         f"🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
@@ -951,6 +1102,53 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for part in parts:
         await update.message.reply_text(part, parse_mode="Markdown")
 
+# COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
+async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xoá các tin nhắn do bot gửi trong khoảng thời gian chỉ định."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Chỉ admin mới có quyền xoá tin nhắn.")
+        return
+
+    args = context.args
+    if len(args) < 4:
+        await update.message.reply_text(
+            "❗ Cú pháp: /delete_range <từ ngày> <giờ> <đến ngày> <giờ>\n"
+            "Ví dụ: /delete_range 2025-03-01 09:00 2025-03-01 10:30"
+        )
+
+        return
+
+    try:
+        vn_tz = pytz.timezone(TIMEZONE)
+        start_str = f"{args[0]} {args[1]}"
+        end_str = f"{args[2]} {args[3]}"
+        start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
+        end_time = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
+
+        records = get_bot_messages_in_range(start_time, end_time)
+        if not records:
+            await update.message.reply_text("📭 Không có tin nhắn nào trong khoảng thời gian này.")
+            return
+
+        deleted = 0
+        for chat_id, msg_id in records:
+            try:
+                url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
+                params = {"chat_id": chat_id, "message_id": msg_id}
+                requests.get(url, params=params, timeout=10)
+                deleted += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
+
+        delete_bot_messages_in_range(start_time, end_time)
+        await update.message.reply_text(f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
+
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Lỗi xử lý: {e}")
+
+
 
 async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tự động lưu chat_id vào DB nếu chưa có."""
@@ -960,173 +1158,231 @@ async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if lst is None:
             save_watch_list_for_chat(chat_id, [])
 
+# ==============================================
+# COMMAND: /report (CÓ CACHE + COOLDOWN + RETRY)
+# Cache nội dung report theo danh mục
+REPORT_CACHE = {}
+REPORT_COOLDOWN = {}  # {chat_id: last_time}
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gửi báo cáo danh mục ngay lập tức cho user để test."""
+    """Gửi báo cáo danh mục ngay lập tức cho user (có cache & cooldown)."""
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
-    
+
     if not update or not update.effective_chat:
         return
-    chat_id = update.effective_chat.id
-    watch = get_watch_list_for_chat(chat_id)
-    watch_list = watch or []
 
-    symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
-    if not symbols:
+    chat_id = update.effective_chat.id
+
+    # Cooldown chống spam: mỗi user chỉ được dùng /report 1 lần / ngày
+    now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+    COOLDOWN_SECONDS = 24 * 3600  # 24 giờ
+
+    last_time = REPORT_COOLDOWN.get(chat_id)
+    if last_time and (now - last_time).total_seconds() < COOLDOWN_SECONDS:
+        remaining = int(COOLDOWN_SECONDS - (now - last_time).total_seconds())
+        hours = remaining // 3600
+        mins = (remaining % 3600) // 60
         await update.message.reply_text(
-            "Danh mục của bạn hiện đang trống, hãy /add mã trước đã nhé."
+            f"⏳ /report chỉ được dùng 1 lần mỗi ngày. "
+            f"Vui lòng thử lại sau {hours} giờ {mins} phút."
         )
         return
 
-    await update.message.reply_text(
-        "⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi trong giây lát..."
-    )
-    text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-    await update.message.reply_text(text)
+
+    REPORT_COOLDOWN[chat_id] = now
+    log_command_usage(chat_id, "/report")   # Ghi log
+
+    # Lấy danh mục
+    watch = get_watch_list_for_chat(chat_id)
+    symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
+
+    if not symbols:
+        await update.message.reply_text("📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
+        return
+
+    # Tạo key cache
+    cache_key = "-".join(sorted(symbols))
+
+    await update.message.reply_text("⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi vài giây...")
+
+    # Dùng cache nếu có
+    if cache_key in REPORT_CACHE:
+        log.info(f"[{INSTANCE_ID}] /report cache hit for {chat_id} ({cache_key})")
+        cached_text, cached_time = REPORT_CACHE[cache_key]
+        # Nếu cache dưới 12 tiếng thì dùng lại
+        if (now - cached_time).total_seconds() < 12 * 3600:
+            await update.message.reply_text(cached_text)
+            return
+
+    # Gọi OpenRouter (có retry)
+    async def fetch_report_with_retry():
+        retry = 0
+        while retry < 3:
+            start = time.time()
+            text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+            duration = time.time() - start
+            log.info(f"[{INSTANCE_ID}] /report round {retry+1} done in {duration:.2f}s")
+
+            if "⚠️ Hiện tại không tạo được" not in text and "429" not in text:
+                return text
+            retry += 1
+            await asyncio.sleep(10 * retry)
+        return text
+
+    text = await fetch_report_with_retry()
+
+    # Lưu cache
+    REPORT_CACHE[cache_key] = (text, now)
+
+    # Gửi báo cáo
+    try:
+        await update.message.reply_text(text)
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] Lỗi gửi báo cáo /report cho {chat_id}: {e}")
+        # Gửi fallback rút gọn nếu lỗi parse Markdown
+        await update.message.reply_text("📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.")
 
 
 # ==============================================
-# VÒNG LẶP CẢNH BÁO
+# VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL)
 # ==============================================
 async def alert_loop():
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
+    TARGET_INTERVAL = 15  # giãn cách giữa 2 vòng quét (giây)
+
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
-        # Nếu ngoài giờ giao dịch -> ngủ tới sát phiên tiếp theo, không spam 15s/lần nữa
+        # Nếu ngoài giờ giao dịch -> ngủ tới phiên tiếp theo
         if not in_session_vietnam():
             next_start = next_session_start(now)
             delay = max((next_start - now).total_seconds(), 60.0)
             log.info(
-                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch, sleep {delay:.0f}s tới phiên tiếp theo "
-                f"{next_start.strftime('%Y-%m-%d %H:%M')}"
+                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch, sleep {delay:.0f}s tới {next_start.strftime('%Y-%m-%d %H:%M')}"
             )
             await asyncio.sleep(delay)
             continue
 
-        # Trong giờ giao dịch -> chạy như cũ (15s/lần)
         loop_start = now
         try:
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert")
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert (có cache)")
+
             all_watch = get_all_watch()
             all_state = get_state_for_all()
 
+            # 🧩 1️⃣ Gom tất cả symbol cần theo dõi
+            all_symbols = set()
+            for block in all_watch.values():
+                for sym in (block.get("list", []) or []):
+                    all_symbols.add(sym.upper())
+
+            if not all_symbols:
+                log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Không có symbol nào, sleep 60s.")
+                await asyncio.sleep(60)
+                continue
+
+            # 🧩 2️⃣ Cache dữ liệu quote cho từng symbol
+            quote_cache = {}
+            for sym in all_symbols:
+                data = get_quote(sym)
+                if data:
+                    quote_cache[sym] = data
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Đã lấy dữ liệu cho {len(quote_cache)}/{len(all_symbols)} symbol.")
+
+            # 🧩 3️⃣ Duyệt từng user & xử lý cảnh báo
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
-                watch_list = user_block.get("list", [])
+                watch_list = user_block.get("list", []) or []
                 if not watch_list:
                     continue
 
-                # Khởi tạo state riêng cho user nếu chưa có
                 if chat_key not in all_state:
                     all_state[chat_key] = {}
                 personal_state = all_state[chat_key]
-
                 messages = []
+
                 for sym in watch_list:
-                    quote = get_quote(sym)
+                    sym_u = sym.upper()
+                    quote = quote_cache.get(sym_u)
                     if not quote:
                         continue
+
                     price, pct, change_abs = (
                         quote["price"],
                         quote["pct"],
                         quote["change_abs"],
                     )
 
-                    is_index = sym.upper().startswith("VN")
+                    is_index = sym_u.startswith("VN")
                     metric = change_abs if is_index else pct
                     new_lvl = pick_new_level(
                         metric, INDEX_POINT_LEVELS if is_index else STOCK_LEVELS
                     )
 
-                    # Lấy state cũ (tương thích cả kiểu cũ [int] lẫn kiểu mới [dict])
-                    state_entry = personal_state.get(sym, {})
+                    state_entry = personal_state.get(sym_u, {})
                     if isinstance(state_entry, dict):
                         prev_lvl = state_entry.get("last_level", 0)
                         last_alert_at_str = state_entry.get("last_alert_at")
                     else:
-                        # state kiểu cũ chỉ lưu level
                         prev_lvl = state_entry or 0
                         last_alert_at_str = None
 
                     last_alert_at = None
                     if last_alert_at_str:
                         try:
-                            last_alert_at = datetime.datetime.fromisoformat(
-                                last_alert_at_str
-                            )
+                            last_alert_at = datetime.datetime.fromisoformat(last_alert_at_str)
                         except Exception:
                             last_alert_at = None
 
                     should_alert = False
-
                     if new_lvl is not None:
                         if new_lvl != prev_lvl:
-                            # Mốc mới khác mốc lần báo gần nhất -> báo ngay
                             should_alert = True
-                        else:
-                            # Trùng đúng mốc cũ -> chỉ báo nếu đã qua cooldown
-                            if (
-                                last_alert_at is None
-                                or (
-                                    now - last_alert_at
-                                ).total_seconds()
-                                >= ALERT_COOLDOWN_SECONDS
-                            ):
-                                should_alert = True
+                        elif (
+                            last_alert_at is None
+                            or (now - last_alert_at).total_seconds() >= ALERT_COOLDOWN_SECONDS
+                        ):
+                            should_alert = True
 
                     if should_alert:
                         icon = "🟢" if new_lvl > 0 else "🔴"
-                        fun_line = random.choice(
-                            FUN_UP if new_lvl > 0 else FUN_DOWN
-                        )
-                        price_str = (
-                            f"{float(price):,.2f}" if price is not None else "N/A"
-                        )
-                        pct_str = (
-                            f"{float(pct):+.2f}%" if pct is not None else "N/A"
-                        )
+                        fun_line = random.choice(FUN_UP if new_lvl > 0 else FUN_DOWN)
+                        price_str = f"{float(price):,.0f}" if price is not None else "N/A"
+                        pct_str = f"{float(pct):+.2f}%" if pct is not None else "N/A"
 
                         messages.append(
-                            f"{icon} *{sym} {pct_str}* tại {price_str}\n_{fun_line}_"
+                            f"{icon} *{sym_u} {pct_str}* tại {price_str}\n_{fun_line}_"
                         )
 
-                        # Cập nhật state mới: ghi lại mốc và thời gian báo
-                        personal_state[sym] = {
+                        personal_state[sym_u] = {
                             "last_level": new_lvl,
                             "last_alert_at": now.isoformat(),
                         }
                     else:
-                        # Không báo nhưng vẫn giữ lại state cũ để tính cooldown
-                        if sym not in personal_state:
-                            personal_state[sym] = {
-                                "last_level": 0,
-                                "last_alert_at": None,
-                            }
+                        if sym_u not in personal_state:
+                            personal_state[sym_u] = {"last_level": 0, "last_alert_at": None}
 
-                # Gửi nếu có bất kỳ mã nào cần báo
+                # Gửi nếu có thông báo
                 if messages:
-                    header = (
-                        f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n"
-                        "--------------------------------"
-                    )
+                    header = f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n--------------------------------"
                     send_msg_to(chat_id, header + "\n" + "\n".join(messages))
 
                 all_state[chat_key] = personal_state
 
+            # 🧩 4️⃣ Lưu lại state
             save_state_for_all(all_state)
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}] ERROR: {e}")
+            log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] ERROR: {e}")
 
-        # Trong giờ giao dịch vẫn giữ nhịp ~15s/lần
+        # 🕒 Giữ nhịp cố định
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
-        delay = max(15 - elapsed, 1)
-        log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s")
+        delay = max(TARGET_INTERVAL - elapsed, 1)
+        log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s\n")
         await asyncio.sleep(delay)
 
 
@@ -1140,6 +1396,34 @@ flask_app = Flask(__name__)
 def home():
     return f"✅ Bot is alive. Instance {INSTANCE_ID}"
 
+@flask_app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    """
+    Endpoint để Telegram gửi update (webhook).
+    Flask chạy trong thread riêng, nên phải đẩy coroutine sang event loop chính.
+    """
+    global tg_app, MAIN_LOOP
+
+    if tg_app is None or MAIN_LOOP is None:
+        return "Bot not ready", 503
+
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return "Bad Request", 400
+
+    # Chuyển JSON thành đối tượng Update của PTB
+    update = Update.de_json(data, tg_app.bot)
+
+    # Đẩy xử lý update sang event loop chính (thread-safe)
+    asyncio.run_coroutine_threadsafe(
+        tg_app.process_update(update),
+        MAIN_LOOP,
+    )
+
+    return "OK", 200
+
+
 
 # ==============================================
 # MAIN
@@ -1149,11 +1433,16 @@ async def main():
     init_db()
 
     # 🔄 Load trạng thái bảo trì từ DB
-    global BOT_ACTIVE
+    global BOT_ACTIVE, MAIN_LOOP, tg_app
+
+    # 🔁 Lưu event loop chính để dùng trong Flask thread
+    MAIN_LOOP = asyncio.get_running_loop()
+
+    # 🔄 Load trạng thái bảo trì từ DB
     BOT_ACTIVE = get_bot_active()
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
-        # 📨 Gửi thông báo cho admin khi bot khởi động lại
+    # 📨 Gửi thông báo cho admin khi bot khởi động lại
     if ADMIN_ID:
         try:
             # Lấy thông tin hệ thống
@@ -1184,14 +1473,22 @@ async def main():
 
             boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
 
+            # Thêm dòng cảnh báo nếu bot đang tắt
+            auto_on_notice = ""
+            if not BOT_ACTIVE:
+                auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại sau 2 phút (auto /on).*"
+
             msg = (
                 f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
                 f"🕓 Thời gian: {boot_time}\n"
                 f"{state_text}\n\n"
-                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}% | RAM [{ram_bar}] {ram_percent:.1f}%\n"
-                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n\n"
-                f"🧩 Instance ID: `{INSTANCE_ID}`"
+                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
+                f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
+                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
+                f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
+                f"{auto_on_notice}"
             )
+
 
             send_msg_to(ADMIN_ID, msg)
             log.info(f"[{INSTANCE_ID}] Đã gửi thông báo khởi động lại (có CPU/RAM bar) tới admin ({ADMIN_ID}).")
@@ -1200,6 +1497,7 @@ async def main():
             log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
 
 
+    global tg_app
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -1216,13 +1514,35 @@ async def main():
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
+    tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
     tg_app.add_handler(CommandHandler("report", cmd_report))
 
     async def run_telegram():
         await tg_app.initialize()
         await tg_app.start()
-        await tg_app.updater.start_polling()
+        
+        # 🔗 Thiết lập webhook URL
+        webhook_url = os.getenv("WEBHOOK_URL")
+
+        # Nếu không set tay, auto lấy từ Render
+        if not webhook_url:
+            host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+            if host:
+                webhook_url = f"https://{host}/webhook"
+
+        if not webhook_url:
+            log.warning(
+                f"[{INSTANCE_ID}] ⚠️ Chưa cấu hình WEBHOOK_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
+                "bot sẽ KHÔNG nhận được update từ Telegram!"
+            )
+        else:
+            await tg_app.bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True,  # bỏ update cũ lúc bot offline
+            )
+            log.info(f"[{INSTANCE_ID}] ✅ Webhook đã set: {webhook_url}")
+
         await asyncio.Event().wait()
 
     config = Config()
@@ -1230,10 +1550,13 @@ async def main():
 
     await asyncio.gather(
         serve(flask_app, config),
-        alert_loop(),          # cảnh báo realtime trong giờ giao dịch
-        session_notice_loop(), # thông báo sắp mở / sắp đóng phiên
+        alert_loop(),           # cảnh báo realtime trong giờ giao dịch
+        session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
+        daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
         run_telegram(),
+        auto_on_after_delay(),  # tự động /on sau 2 phút nếu đang OFF
     )
+
 
 
 
