@@ -12,7 +12,7 @@ Một chatbot Telegram giúp **theo dõi và cảnh báo biến động chứng 
 - **Theo dõi realtime** giá cổ phiếu VN (nguồn: `vnstock3` – VCI)
 - **Cảnh báo tự động** khi biến động mạnh (±2%, ±4%, ±6.9%)
 - **Thông báo giờ mở / đóng phiên** chứng khoán Việt Nam
-- **Tự động tổng hợp danh mục & phân tích bằng AI lúc 16:00** (qua OpenRouter MiniMax M2)
+- **Tự động tổng hợp danh mục & phân tích bằng AI lúc 09:00am chủ nhật hằng tuần** (qua OpenRouter MiniMax M2)
 - **Lưu trạng thái & danh mục user trong PostgreSQL** (bền vững qua restart / deploy)
 - **Chế độ bảo trì (on/off)** lưu trong DB — không bị mất sau khi push code
 - **Giao diện vui nhộn**, có câu thoại cà khịa khi giá tăng hoặc giảm 😏
