@@ -153,7 +153,7 @@ NOTICE_SPECS = [
     "label": "AFTERNOON_CLOSE",
     "hour": 14,
     "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
-    "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:30. Quý nhà đầu tư vui lòng rà soát lại các vị thế trong ngày. Báo cáo tổng kết tuần sẽ được gửi vào 09:00 sáng Chủ Nhật — hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
+    "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:45. Quý nhà đầu tư vui lòng rà soát lại các vị thế trong ngày. Báo cáo tổng kết tuần sẽ được gửi vào 09:00 sáng Chủ Nhật — hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
 },
 
 ]
@@ -730,31 +730,34 @@ def send_msg_to(chat_id: int, text: str):
         log.warning(f"[WARN] Telegram send error: {e}")
 
 
-async def auto_on_after_delay():
+async def auto_on_after_delay(initial_active: bool):
     """
     Tự động bật lại bot sau 2 phút kể từ khi khởi động,
-    nếu BOT_ACTIVE hiện đang là False.
+    *chỉ khi* trạng thái ban đầu là OFF và sau 2 phút vẫn còn OFF.
     """
     global BOT_ACTIVE
 
+    # Nếu lúc start bot đang ON thì khỏi cần auto /on
+    if initial_active:
+        return
+
     await asyncio.sleep(120)  # 2 phút
 
-    if not BOT_ACTIVE:
+    # Chỉ auto /on nếu tới lúc này bot vẫn đang OFF
+    if BOT_ACTIVE is False:
         BOT_ACTIVE = True
         set_bot_active(True)
-        log.info(f"[{INSTANCE_ID}] BOT auto switched ON after 2 minutes.")
+        log.info(f"[{INSTANCE_ID}] BOT auto switched ON after 2 minutes (initial OFF).")
 
-        # Báo riêng cho admin nếu có
         if ADMIN_ID:
             try:
                 send_msg_to(
                     ADMIN_ID,
-                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on).*\n\n"
+                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on sau 2 phút).* \n\n"
                     "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
                 )
             except Exception as e:
                 log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
-
 
 
 # ==============================================
@@ -870,20 +873,21 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/add", ADMIN_ID)   # ghi log (bỏ qua admin trong hàm log)
+    log_command_usage(chat_id, "/add", ADMIN_ID)  # ghi log (bỏ qua admin trong hàm log)
 
-    # Không truyền mã -> hướng dẫn
+    # 1️⃣ Kiểm tra tham số
     if not context.args:
         await update.message.reply_text(
             "⚠️ Cách dùng: /add <MÃ>\n"
             "Ví dụ: /add HPG, /add SSI, /add VNM\n"
-            "(*Chỉ hỗ trợ mã cổ phiếu gồm 3 chữ cái.*)"
+            "(*Chỉ hỗ trợ mã cổ phiếu gồm 3 chữ cái.*)",
+            parse_mode="Markdown",
         )
         return
 
     symbol = context.args[0].strip().upper()
 
-    # 1️⃣ Kiểm tra định dạng: đúng 3 chữ cái A–Z
+    # 2️⃣ Kiểm tra định dạng mã: đúng 3 chữ cái A–Z
     if len(symbol) != 3 or not symbol.isalpha():
         await update.message.reply_text(
             "⚠️ Mã không hợp lệ.\n"
@@ -893,35 +897,101 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2️⃣ Lấy dữ liệu thực tế để kiểm tra hợp lệ
-    quote_data = get_quote(symbol)
-    if not quote_data or quote_data.get("price") is None:
+    # 3️⃣ Gọi dữ liệu realtime duy nhất 1 lần
+    try:
+        trading = Trading(source="VCI")
+        df = trading.price_board([symbol])
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi gọi price_board cho {symbol}: {e}")
+        await update.message.reply_text(
+            f"⚠️ Không lấy được dữ liệu cho mã *{symbol}*. Vui lòng thử lại sau.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Không có dữ liệu -> xem như mã không hợp lệ / không giao dịch
+    if df is None or len(df) == 0:
         await update.message.reply_text(
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCoM.*)",
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
             parse_mode="Markdown",
         )
         return
 
-    # 3️⃣ Kiểm tra giá bằng 0 (thường là trước giờ giao dịch)
-    if quote_data.get("price") == 0:
+    row = df.iloc[0]
+
+    # Hàm chuẩn hoá giá trị về float / int nếu được
+    def norm(x):
+        if x is None:
+            return None
+        try:
+            if hasattr(x, "item"):
+                x = x.item()
+        except Exception:
+            pass
+        if isinstance(x, (int, float)):
+            return x
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    # Lấy các field chính từ price_board
+    price = None
+    pct = None
+    change_abs = None
+    volume = None
+    exchange = None
+
+    # Tùy cấu trúc MultiIndex của vnstock, ta cố lấy các cột cần thiết
+    try:
+        price = norm(row.get(("match", "match_price"), None))
+    except Exception:
+        pass
+    try:
+        pct = norm(row.get(("match", "price_change_rate"), None))
+    except Exception:
+        pass
+    try:
+        change_abs = norm(row.get(("match", "price_change"), None))
+    except Exception:
+        pass
+    try:
+        volume = norm(row.get(("match", "accumulated_vol"), None))
+    except Exception:
+        pass
+    try:
+        exchange = row.get(("listing", "exchange"), None)
+    except Exception:
+        exchange = None
+
+    # 4️⃣ Trường hợp giá = 0 (thường là trước giờ giao dịch)
+    if price is None:
+        await update.message.reply_text(
+            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
+            "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
+            parse_mode="Markdown",
+        )
+        return
+
+    if price == 0:
         await update.message.reply_text(
             f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
-            "🕒 Trong vòng *2 tiếng trước khi thị trường mở cửa*, hệ thống có thể tạm thời "
-            "không thể thêm mã mới do chưa có dữ liệu cập nhật từ sàn.\n\n"
-            "👉 Vui lòng thử lại sau khi phiên giao dịch bắt đầu để đảm bảo dữ liệu chính xác.",
+            "🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
+            "tạm thời không thêm được mã mới do sàn chưa cập nhật dữ liệu.\n\n"
+            "👉 Vui lòng thử lại sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác.",
             parse_mode="Markdown",
         )
         return
 
-
-    # 4️⃣ Nếu có dữ liệu thì add vào danh sách
+    # 5️⃣ Lấy danh sách hiện tại
     lst = get_watch_list_for_chat(chat_id) or []
 
-    # Nếu đã tồn tại: báo + show luôn list hiện tại
+    # Nếu đã tồn tại: báo + show luôn list
     if symbol in lst:
-        symbols_text = "\n".join(f"• {sym}" for sym in lst) if lst else "—"
+        symbols_text = ", ".join(lst) if lst else "—"
         msg = (
             f"ℹ️ *{symbol}* đã có trong danh sách theo dõi rồi.\n\n"
             "📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
@@ -930,25 +1000,25 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    # Thêm mã mới
+    # 6️⃣ Thêm mã mới vào danh sách
     lst.append(symbol)
     save_watch_list_for_chat(chat_id, lst)
 
     # Chuẩn bị đoạn danh sách hiện tại để ghép thêm vào message
-    symbols_text = "\n".join(f"• {sym}" for sym in lst)
+    symbols_text = ", ".join(lst)
     watchlist_section = (
         "\n\n📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
         f"{symbols_text}"
     )
 
-    # 5️⃣ Chuẩn bị phần tóm tắt thông tin cổ phiếu
+    # 7️⃣ Tóm tắt thông tin cổ phiếu + danh sách cuối cùng
     try:
-        price = quote_data.get("price")
-        pct = quote_data.get("pct")
-        change_abs = quote_data.get("change_abs")
         change_sign = "+" if (pct is not None and pct >= 0) else ""
         pct_text = f"{change_sign}{pct:.2f}%" if pct is not None else "—"
-        abs_text = f"{change_sign}{change_abs:,.0f}" if change_abs is not None else "—"
+        abs_text = (
+            f"{change_sign}{int(change_abs):,}".replace(",", ".")
+            if change_abs is not None else "—"
+        )
 
         summary = (
             f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
@@ -956,31 +1026,19 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Thay đổi: *{pct_text}* ({abs_text})\n"
         )
 
-        # Lấy thêm sàn & khối lượng nếu có
-        try:
-            trading = Trading(source="VCI")
-            df = trading.price_board([symbol])
-            if df is not None and not df.empty:
-                row = df.iloc[0]
-                exch = row.get(("listing", "exchange"), "—")
-                vol = row.get(("match", "accumulated_vol"), None)
-                if vol is not None:
-                    summary += f"📦 Khối lượng: *{int(vol):,}* cp\n"
-                summary += f"🏛️ Sàn: *{exch}*\n"
-        except Exception:
-            # Nếu lỗi phần này thì bỏ qua, không kill cả hàm
-            pass
+        if volume is not None:
+            summary += f"📦 Khối lượng: *{int(volume):,}* cp\n"
+        if exchange:
+            summary += f"🏛️ Sàn: *{exchange}*\n"
 
-        # Ghép thêm danh sách hiện tại vào cuối message
         summary += watchlist_section
 
         await update.message.reply_text(summary, parse_mode="Markdown")
 
     except Exception as e:
-        # Trường hợp lỗi khi tóm tắt dữ liệu, vẫn báo đã thêm + show list
+        log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi format summary cho {symbol}: {e}")
         fallback_msg = (
             f"✅ Đã thêm *{symbol}* vào danh sách theo dõi.\n"
-            f"⚠️ (Không thể tóm tắt dữ liệu: {e})"
             f"{watchlist_section}"
         )
         await update.message.reply_text(fallback_msg, parse_mode="Markdown")
@@ -1013,7 +1071,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_watch_list_for_chat(chat_id, lst)
 
         if lst:
-            symbols_text = "\n".join(f"• {sym}" for sym in lst)
+            symbols_text = ", ".join(lst)
             msg = (
                 f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
                 "📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
@@ -1055,7 +1113,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Format danh sách cho đẹp
-    symbols_text = "\n".join(f"• {sym}" for sym in lst)
+    symbols_text = ", ".join(lst)
 
     msg = (
         "📋 *Danh sách mã bạn đang theo dõi:*\n"
@@ -1610,6 +1668,7 @@ async def main():
 
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
+    initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu để truyền vào hàm auto_on
 
     await asyncio.gather(
         serve(flask_app, config),
@@ -1617,7 +1676,7 @@ async def main():
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
         run_telegram(),
-        auto_on_after_delay(),  # tự động /on sau 2 phút nếu đang OFF
+        auto_on_after_delay(initial_active),  # ✅ truyền trạng thái ban đầu
     )
 
 

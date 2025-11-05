@@ -56,7 +56,7 @@ Tạo file `.env` (hoặc cấu hình trong Render) với nội dung:
 ```bash
 TELEGRAM_TOKEN=<token_bot_của_bạn>
 ADMIN_ID=<chat_id_admin>
-OPENROUTER_API_KEY=<api_key_openrouter>   # (tùy chọn, nếu muốn dùng /report và báo cáo 16:00)
+OPENROUTER_API_KEY=<api_key_openrouter>   # (tùy chọn, nếu muốn dùng /report và báo cáo 09:00 Chủ Nhật)
 DATABASE_URL=postgresql://user:password@host:port/dbname
 WEBHOOK_URL=https://<tên-miền-hoặc-render-app>/webhook
 PORT=10000
