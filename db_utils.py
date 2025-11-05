@@ -130,3 +130,49 @@ def get_command_stats():
             "total": total,
         })
     return stats
+
+# ==============================
+# 🧠 LƯU & XOÁ THEO KHOẢNG THỜI GIAN
+# ==============================
+
+def save_bot_message(chat_id: int, message_id: int):
+    """Lưu log mỗi tin nhắn bot gửi."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_msg_log (
+                    id SERIAL PRIMARY KEY,
+                    chat_id BIGINT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    sent_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute(
+                "INSERT INTO bot_msg_log (chat_id, message_id) VALUES (%s, %s)",
+                (chat_id, message_id),
+            )
+        conn.commit()
+
+
+def get_bot_messages_in_range(start_time, end_time):
+    """Lấy danh sách tin bot gửi trong khoảng thời gian."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id, message_id
+                FROM bot_msg_log
+                WHERE sent_at BETWEEN %s AND %s
+            """, (start_time, end_time))
+            return cur.fetchall()
+
+
+def delete_bot_messages_in_range(start_time, end_time):
+    """Xoá record log khỏi DB sau khi xoá trên Telegram."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM bot_msg_log
+                WHERE sent_at BETWEEN %s AND %s
+            """, (start_time, end_time))
+        conn.commit()
+

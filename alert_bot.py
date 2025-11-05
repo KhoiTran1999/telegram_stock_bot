@@ -32,7 +32,10 @@ from db_utils import (
     get_bot_active,
     set_bot_active,
     log_command_usage,
-    get_command_stats
+    get_command_stats,
+    save_bot_message,
+    get_bot_messages_in_range,
+    delete_bot_messages_in_range,
 )
 import psutil
 import time
@@ -712,13 +715,20 @@ async def daily_report_loop():
 
 
 def send_msg_to(chat_id: int, text: str):
-    """Gửi tin nhắn Telegram trực tiếp (ít lỗi hơn PTB trong async)."""
+    """Gửi tin nhắn Telegram trực tiếp và lưu log (để có thể xoá theo thời gian)."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     params = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     try:
-        requests.get(url, params=params, timeout=10)
+        res = requests.get(url, params=params, timeout=10)
+        data = res.json()
+        if data.get("ok") and "result" in data:
+            msg_id = data["result"]["message_id"]
+            save_bot_message(chat_id, msg_id)
+        else:
+            log.warning(f"[WARN] Telegram send failed: {data}")
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
+
 
 async def auto_on_after_delay():
     """
@@ -1119,6 +1129,53 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for part in parts:
         await update.message.reply_text(part, parse_mode="Markdown")
 
+# COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
+async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xoá các tin nhắn do bot gửi trong khoảng thời gian chỉ định."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Chỉ admin mới có quyền xoá tin nhắn.")
+        return
+
+    args = context.args
+    if len(args) < 4:
+        await update.message.reply_text(
+            "❗ Cú pháp: /delete_range <từ ngày> <giờ> <đến ngày> <giờ>\n"
+            "Ví dụ: `/delete_range 2025-03-01 09:00 2025-03-01 10:30`",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        vn_tz = pytz.timezone(TIMEZONE)
+        start_str = f"{args[0]} {args[1]}"
+        end_str = f"{args[2]} {args[3]}"
+        start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
+        end_time = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
+
+        records = get_bot_messages_in_range(start_time, end_time)
+        if not records:
+            await update.message.reply_text("📭 Không có tin nhắn nào trong khoảng thời gian này.")
+            return
+
+        deleted = 0
+        for chat_id, msg_id in records:
+            try:
+                url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
+                params = {"chat_id": chat_id, "message_id": msg_id}
+                requests.get(url, params=params, timeout=10)
+                deleted += 1
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
+
+        delete_bot_messages_in_range(start_time, end_time)
+        await update.message.reply_text(f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
+
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Lỗi xử lý: {e}")
+
+
 
 async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tự động lưu chat_id vào DB nếu chưa có."""
@@ -1484,6 +1541,7 @@ async def main():
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
+    tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
     tg_app.add_handler(CommandHandler("report", cmd_report))
 
