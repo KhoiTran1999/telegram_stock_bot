@@ -47,6 +47,7 @@ ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
 # 🧠 Application Telegram dùng chung cho webhook
 tg_app = None
+MAIN_LOOP = None
 
 # ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
 INSTANCE_ID = str(uuid.uuid4())[:8]
@@ -1149,10 +1150,11 @@ def home():
 def telegram_webhook():
     """
     Endpoint để Telegram gửi update (webhook).
-    Flask là sync, nên mình chỉ việc đẩy update vào event loop của asyncio.
+    Flask chạy trong thread riêng, nên phải đẩy coroutine sang event loop chính.
     """
-    global tg_app
-    if tg_app is None:
+    global tg_app, MAIN_LOOP
+
+    if tg_app is None or MAIN_LOOP is None:
         return "Bot not ready", 503
 
     try:
@@ -1163,10 +1165,14 @@ def telegram_webhook():
     # Chuyển JSON thành đối tượng Update của PTB
     update = Update.de_json(data, tg_app.bot)
 
-    # Đẩy xử lý update vào event loop hiện tại (không block Flask)
-    asyncio.get_event_loop().create_task(tg_app.process_update(update))
+    # Đẩy xử lý update sang event loop chính (thread-safe)
+    asyncio.run_coroutine_threadsafe(
+        tg_app.process_update(update),
+        MAIN_LOOP,
+    )
 
     return "OK", 200
+
 
 
 # ==============================================
@@ -1177,7 +1183,12 @@ async def main():
     init_db()
 
     # 🔄 Load trạng thái bảo trì từ DB
-    global BOT_ACTIVE
+    global BOT_ACTIVE, MAIN_LOOP, tg_app
+
+    # 🔁 Lưu event loop chính để dùng trong Flask thread
+    MAIN_LOOP = asyncio.get_running_loop()
+
+    # 🔄 Load trạng thái bảo trì từ DB
     BOT_ACTIVE = get_bot_active()
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
