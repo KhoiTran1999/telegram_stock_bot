@@ -668,7 +668,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/report")   # 🆕 ghi log
+    log_command_usage(chat_id, "/start")   # 🆕 ghi log
     # ✅ Chỉ tạo mới nếu user chưa có record
     lst = get_watch_list_for_chat(chat_id)
     if lst is None:
@@ -770,7 +770,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/report")   # 🆕 ghi log
+    log_command_usage(chat_id, "/add")   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -876,7 +876,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/report")   # 🆕 ghi log
+    log_command_usage(chat_id, "/remove")   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -925,7 +925,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/report")   # 🆕 ghi log
+    log_command_usage(chat_id, "/list")   # 🆕 ghi log
     lst = get_watch_list_for_chat(chat_id)
 
     if not lst:
