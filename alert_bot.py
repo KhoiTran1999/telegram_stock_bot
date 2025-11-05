@@ -1284,7 +1284,7 @@ async def main():
             # Thêm dòng cảnh báo nếu bot đang tắt
             auto_on_notice = ""
             if not BOT_ACTIVE:
-                auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại (auto /on sau 2 phút).*"
+                auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại sau 2 phút (auto /on).*"
 
             msg = (
                 f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
