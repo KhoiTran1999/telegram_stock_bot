@@ -631,6 +631,32 @@ def send_msg_to(chat_id: int, text: str):
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
 
+async def auto_on_after_delay():
+    """
+    Tự động bật lại bot sau 2 phút kể từ khi khởi động,
+    nếu BOT_ACTIVE hiện đang là False.
+    """
+    global BOT_ACTIVE
+
+    await asyncio.sleep(120)  # 2 phút
+
+    if not BOT_ACTIVE:
+        BOT_ACTIVE = True
+        set_bot_active(True)
+        log.info(f"[{INSTANCE_ID}] BOT auto switched ON after 2 minutes.")
+
+        # Báo riêng cho admin nếu có
+        if ADMIN_ID:
+            try:
+                send_msg_to(
+                    ADMIN_ID,
+                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on sau 2 phút).*\n\n"
+                    "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
+                )
+            except Exception as e:
+                log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
+
+
 
 # ==============================================
 # COMMAND HANDLERS
@@ -1324,10 +1350,12 @@ async def main():
 
     await asyncio.gather(
         serve(flask_app, config),
-        alert_loop(),          # cảnh báo realtime trong giờ giao dịch
-        session_notice_loop(), # thông báo sắp mở / sắp đóng phiên
+        alert_loop(),           # cảnh báo realtime trong giờ giao dịch
+        session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         run_telegram(),
+        auto_on_after_delay(),  # tự động /on sau 2 phút nếu đang OFF
     )
+
 
 
 
