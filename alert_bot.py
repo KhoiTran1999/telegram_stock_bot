@@ -1022,7 +1022,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         summary = (
             f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
-            f"💰 Giá hiện tại: *{price:,.2f}*\n"
+            f"💰 Giá hiện tại: *{price:,.0f}*\n"
             f"📊 Thay đổi: *{pct_text}* ({abs_text})\n"
         )
 
