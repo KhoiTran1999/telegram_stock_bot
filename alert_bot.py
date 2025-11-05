@@ -477,13 +477,14 @@ Dữ liệu danh mục của khách (giá + % thay đổi):
 
 YÊU CẦU:
 1. Với từng mã, hãy:
-   - Nhắc lại giá hiện tại và % thay đổi trong ngày, tuần, tháng (dựa đúng vào dữ liệu ở trên).
-   - Nếu không có tin mới đáng chú ý, hãy đưa ra nhận định & phân tích:
+   - Nhắc lại giá hiện tại và % thay đổi trong ngày, tuần, tháng (dựa đúng vào dữ liệu ở trên). Định dạng giá cổ phiếu ví dụ sẽ là 10.000đ
+   - Hãy cập nhật thông tin mới nhất về mã cổ phiếu, nếu không có gì mới, hãy đưa ra nhận định & phân tích về giao dịch trong ngày (cho thêm tí emoji cho sinh động):
      điểm mạnh, rủi ro, và gợi ý chiến lược nắm giữ / chốt lời 
      (nhưng KHÔNG dùng giọng ép buộc kiểu 'phải mua/bán').
-2. Viết bằng tiếng Việt, giọng điệu chuyên nghiệp nhưng dễ hiểu, phù hợp gửi qua Telegram.
+2. Viết bằng tiếng Việt, giọng điệu dễ gần thậm chí là cà khịa nhưng dễ hiểu, phù hợp gửi qua Telegram.
 3. Có thể dùng emoji cho sinh động, nhưng không lạm dụng.
 4. Không đặt câu hỏi ở cuối bản tin, chỉ tóm tắt / kết luận nhẹ.
+5. Quan trọng là không được đưa ra khuyến nghị mua bán cụ thể, chỉ phân tích và nhận định chung.
 
 FORMAT:
 - Mỗi mã theo block:
@@ -491,6 +492,7 @@ FORMAT:
 🔹 MÃ
 - Giá hiện tại: ...
 - Biến động: Ngày ..., Tuần ..., Tháng ...
+- Thông tin mới: ...
 - Nhận định: ...
 
 - Cuối cùng thêm 1–2 câu tổng kết chung về danh mục (thiên về ngành nào, rủi ro / cơ hội tổng thể).
@@ -1100,7 +1102,6 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/report")   # Ghi log
 
     # Cooldown chống spam (15 phút)
     now = datetime.datetime.now(pytz.timezone(TIMEZONE))
@@ -1113,6 +1114,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     REPORT_COOLDOWN[chat_id] = now
+    log_command_usage(chat_id, "/report")   # Ghi log
 
     # Lấy danh mục
     watch = get_watch_list_for_chat(chat_id)
