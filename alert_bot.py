@@ -996,18 +996,30 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
+
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/list")   # 🆕 ghi log
-    lst = get_watch_list_for_chat(chat_id)
+    log_command_usage(chat_id, "/list", ADMIN_ID)   # ghi log nhưng bỏ qua admin
+
+    lst = get_watch_list_for_chat(chat_id) or []
+
     if not lst:
-        await update.message.reply_text("📭 Danh sách trống.")
-    else:
-        # Mã không nằm trong danh sách
         await update.message.reply_text(
-            f"❌ *{symbol}* không có trong danh sách theo dõi.\n"
-            "Bạn có thể dùng /list để xem lại danh sách hiện tại.",
-            parse_mode="Markdown",
+            "📭 Danh sách theo dõi hiện đang trống.\n"
+            "Bạn có thể dùng lệnh /add <MÃ> để thêm cổ phiếu vào danh sách.",
         )
+        return
+
+    # Format danh sách cho đẹp
+    symbols_text = "\n".join(f"• {sym}" for sym in lst)
+
+    msg = (
+        "📋 *Danh sách mã bạn đang theo dõi:*\n"
+        f"{symbols_text}\n\n"
+        "Bạn có thể dùng /remove <MÃ> để xoá một mã khỏi danh sách."
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
