@@ -1289,9 +1289,9 @@ async def main():
             msg = (
                 f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
                 f"🕓 Thời gian: {boot_time}\n"
-                f"{state_text}\n/n"
+                f"{state_text}\n\n"
                 f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}% | RAM [{ram_bar}] {ram_percent:.1f}%\n"
-                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n\n"
+                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
                 f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
                 f"{auto_on_notice}"
             )
