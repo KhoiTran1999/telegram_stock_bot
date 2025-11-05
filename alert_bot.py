@@ -745,7 +745,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2️⃣ Lấy dữ liệu thực tế để kiểm tra hợp lệ
     quote_data = get_quote(symbol)
-    if not quote_data or quote_data.get("price") is None or quote_data.get("price") == 0:
+    if not quote_data or quote_data.get("price") is None:
         await update.message.reply_text(
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
@@ -753,8 +753,19 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         return
+    
+    # 3️⃣ Kiểm tra giá bằng 0 (trước giờ mở cửa)
+    if quote_data.get("price") == 0:
+        await update.message.reply_text(
+            f"⚙️ Hiện tại là *trước giờ mở cửa giao dịch khoảng 2 tiếng* nên hệ thống dữ liệu "
+            f"chưa cung cấp giá realtime cho mã *{symbol}*.\n\n"
+            "⏳ Bạn tạm thời *không thể thêm cổ phiếu* trong giai đoạn này. "
+            "Sau khi thị trường mở (khoảng 09:15), bạn có thể /add lại bình thường nhé!",
+            parse_mode="Markdown",
+        )
+        return
 
-    # 3️⃣ Nếu có dữ liệu thì add vào danh sách
+    # 4️⃣ Nếu có dữ liệu thì add vào danh sách
     lst = get_watch_list_for_chat(chat_id) or []
     if symbol in lst:
         await update.message.reply_text(f"ℹ️ {symbol} đã có trong danh sách theo dõi rồi.")
@@ -763,7 +774,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lst.append(symbol)
     save_watch_list_for_chat(chat_id, lst)
 
-    #4️⃣ Tóm tắt thông tin mã vừa thêm
+    #5️⃣ Tóm tắt thông tin mã vừa thêm
     try:
         price = quote_data.get("price")
         pct = quote_data.get("pct")
@@ -792,7 +803,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        #5️⃣ Hiển thị danh sách hiện tại
+        #6 Hiển thị danh sách hiện tại
         if lst:
             summary += "\n📋 *Danh sách hiện tại của bạn:*\n" + ", ".join(lst)
 
