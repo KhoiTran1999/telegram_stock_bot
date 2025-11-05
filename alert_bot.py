@@ -1655,7 +1655,7 @@ async def main():
                 f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
                 f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
                 f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
-                f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
+                f"🧩 Instance ID: `{INSTANCE_ID}`"
             ]
 
             if git_info:
