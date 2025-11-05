@@ -1281,15 +1281,21 @@ async def main():
 
             boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
 
+            # Thêm dòng cảnh báo nếu bot đang tắt
+            auto_on_notice = ""
+            if not BOT_ACTIVE:
+                auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại (auto /on sau 2 phút).*"
+
             msg = (
                 f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
                 f"🕓 Thời gian: {boot_time}\n"
-                f"{state_text}\n\n"
+                f"{state_text}\n/n"
                 f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}% | RAM [{ram_bar}] {ram_percent:.1f}%\n"
                 f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n\n"
                 f"🧩 Instance ID: `{INSTANCE_ID}`\n\n"
-                f"🎯 Hãy chờ và khởi động lại bot sau 2 phút nữa!!!"
+                f"{auto_on_notice}"
             )
+
 
             send_msg_to(ADMIN_ID, msg)
             log.info(f"[{INSTANCE_ID}] Đã gửi thông báo khởi động lại (có CPU/RAM bar) tới admin ({ADMIN_ID}).")
