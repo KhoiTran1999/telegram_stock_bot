@@ -781,7 +781,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /remove <MÃ> – Xóa mã cổ phiếu không còn ưng nữa\n"
         "• /list – Xem danh sách cổ phiếu bạn đang theo dõi\n"
         "• /report – Gửi yêu cầu để AI phân tích danh mục của bạn bất cứ lúc nào 🧠\n\n"
-        "🕓 *Báo cáo tự động:* Vào 09:00 sáng Chủ Nhật hằng tuần, mình sẽ dùng AI để\n"
+        "🕓 *Báo cáo tự động:* Vào 09:00 sáng Chủ Nhật hằng tuần, mình sẽ dùng AI để "
         "tổng hợp & phân tích toàn bộ list mã bạn đang theo dõi trong tuần và gửi "
         "một bản báo cáo tổng kết riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
         "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
