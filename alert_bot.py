@@ -150,8 +150,9 @@ NOTICE_SPECS = [
     "label": "AFTERNOON_CLOSE",
     "hour": 14,
     "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
-    "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:30. Quý nhà đầu tư vui lòng rà soát lại các vị thế trong ngày. Báo cáo tổng hợp tự động sẽ được gửi lúc 16:00 — hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
-    },
+    "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:30. Quý nhà đầu tư vui lòng rà soát lại các vị thế trong ngày. Báo cáo tổng kết tuần sẽ được gửi vào 09:00 sáng Chủ Nhật — hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
+},
+
 ]
 
 
@@ -562,49 +563,74 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
         return "⚠️ Hiện tại không tạo được báo cáo danh mục do lỗi kết nối LLM."
 
 
-def seconds_until_next_1600():
+def seconds_until_next_weekly_report():
+    """
+    Tính số giây tới 09:00 sáng Chủ Nhật gần nhất (report tuần).
+    - Nếu hôm nay là Chủ Nhật và giờ < 09:00 -> lấy 09:00 hôm nay.
+    - Ngược lại -> 09:00 Chủ Nhật tuần kế tiếp.
+    """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
-    target = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    if now >= target:
-        target = target + datetime.timedelta(days=1)
 
-    # Nếu rơi vào cuối tuần thì nhảy tới thứ 2
-    while target.weekday() > 4:  # 5 = T7, 6 = CN
-        target = target + datetime.timedelta(days=1)
+    # Chủ Nhật = 6 trong weekday()
+    SUNDAY = 6
+    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+
+    if now.weekday() != SUNDAY or now >= target:
+        # Tìm Chủ Nhật kế tiếp
+        days_ahead = (SUNDAY - now.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        next_date = now.date() + datetime.timedelta(days=days_ahead)
+        target = datetime.datetime(
+            next_date.year, next_date.month, next_date.day, 9, 0, 0, tzinfo=vn_tz
+        )
 
     return max((target - now).total_seconds(), 0)
 
 
+
 # ==============================================
-# TỰ ĐỘNG GỬI BÁO CÁO 16:00 (CÓ CACHE + RETRY)
+# BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
 # ==============================================
 async def daily_report_loop():
-    """Gửi báo cáo danh mục cho từng user lúc 16:00 (T2–T6) có cache + retry."""
+    """
+    Gửi báo cáo danh mục cho từng user vào 09:00 sáng Chủ Nhật hằng tuần
+    (dùng chung cache với /report, có retry nếu lỗi LLM).
+    """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
 
     while True:
+        loop_id += 1
+
         if not OPENROUTER_API_KEY:
-            log.warning(f"[{INSTANCE_ID}][DAILY {loop_id}] Chưa có OPENROUTER_API_KEY, bỏ qua gửi báo cáo.")
+            log.warning(
+                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Chưa có OPENROUTER_API_KEY, "
+                "bỏ qua gửi báo cáo tuần, sleep 3600s."
+            )
+            await asyncio.sleep(3600)
             continue
 
-        loop_id += 1
-        wait_sec = seconds_until_next_1600()
-        log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Ngủ tới 16:00, còn {wait_sec:.0f}s")
+        wait_sec = seconds_until_next_weekly_report()
+        log.info(
+            f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
+        )
         await asyncio.sleep(wait_sec)
 
         now = datetime.datetime.now(vn_tz)
-        if now.weekday() > 4:  # Thứ 7, CN
-            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Cuối tuần, bỏ qua gửi báo cáo.")
+        if now.weekday() != 6:  # không phải Chủ Nhật thì bỏ qua (phòng trường hợp lệch giờ)
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Không phải Chủ Nhật, bỏ qua.")
             continue
 
         try:
-            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Bắt đầu gửi báo cáo 16:00")
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bắt đầu gửi báo cáo tuần")
             all_watch = get_all_watch()
 
             if not all_watch:
-                log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Không có user nào theo dõi, bỏ qua.")
+                log.info(
+                    f"[{INSTANCE_ID}][WEEKLY {loop_id}] Không có user nào theo dõi, bỏ qua."
+                )
                 continue
 
             sent_count = 0
@@ -617,7 +643,11 @@ async def daily_report_loop():
                     skipped_count += 1
                     continue
 
-                symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+                symbols = [
+                    s.upper()
+                    for s in watch_list
+                    if not s.upper().startswith("VN")
+                ]
                 if not symbols:
                     skipped_count += 1
                     continue
@@ -625,12 +655,14 @@ async def daily_report_loop():
                 cache_key = "-".join(sorted(symbols))
                 now = datetime.datetime.now(pytz.timezone(TIMEZONE))
 
-                # 🧠 Dùng cache nếu có
+                # 🧠 Dùng cache nếu còn hạn (12h) để tiết kiệm token
                 if cache_key in REPORT_CACHE:
                     cached_text, cached_time = REPORT_CACHE[cache_key]
                     if (now - cached_time).total_seconds() < 12 * 3600:
                         send_msg_to(chat_id, cached_text)
-                        log.info(f"[{INSTANCE_ID}][DAILY] Cache hit cho {chat_id} ({cache_key})")
+                        log.info(
+                            f"[{INSTANCE_ID}][WEEKLY] Cache hit cho {chat_id} ({cache_key})"
+                        )
                         await asyncio.sleep(1.5)
                         sent_count += 1
                         continue
@@ -640,9 +672,13 @@ async def daily_report_loop():
                     retry = 0
                     while retry < 3:
                         start = time.time()
-                        text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                        text = await asyncio.to_thread(
+                            call_chatgpt_for_report, symbols
+                        )
                         duration = time.time() - start
-                        log.info(f"[{INSTANCE_ID}][DAILY] Round {retry+1} cho {chat_id} ({duration:.1f}s)")
+                        log.info(
+                            f"[{INSTANCE_ID}][WEEKLY] Round {retry+1} cho {chat_id} ({duration:.1f}s)"
+                        )
 
                         if "⚠️" not in text and "429" not in text:
                             return text
@@ -654,18 +690,24 @@ async def daily_report_loop():
                     text = await fetch_report_with_retry()
                     REPORT_CACHE[cache_key] = (text, now)
                     send_msg_to(chat_id, text)
-                    log.info(f"[{INSTANCE_ID}][DAILY] Đã gửi báo cáo cho {chat_id}")
+                    log.info(
+                        f"[{INSTANCE_ID}][WEEKLY] Đã gửi báo cáo tuần cho {chat_id}"
+                    )
                     sent_count += 1
                 except Exception as e:
-                    log.warning(f"[{INSTANCE_ID}][DAILY] Lỗi gửi cho {chat_id}: {e}")
+                    log.warning(
+                        f"[{INSTANCE_ID}][WEEKLY] Lỗi gửi cho {chat_id}: {e}"
+                    )
 
                 # Giãn nhịp gửi để tránh spam Telegram (3s/user)
                 await asyncio.sleep(3)
 
-            log.info(f"[{INSTANCE_ID}][DAILY {loop_id}] Hoàn tất — gửi {sent_count}, bỏ qua {skipped_count} user.")
+            log.info(
+                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Hoàn tất — gửi {sent_count}, bỏ qua {skipped_count} user."
+            )
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][DAILY {loop_id}] Lỗi tổng quát: {e}")
+            log.error(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi tổng quát: {e}")
             await asyncio.sleep(300)  # 5 phút retry nếu lỗi tổng
 
 
@@ -729,9 +771,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /remove <MÃ> – Xóa mã cổ phiếu không còn ưng nữa\n"
         "• /list – Xem danh sách cổ phiếu bạn đang theo dõi\n"
         "• /report – Gửi yêu cầu để AI phân tích danh mục của bạn bất cứ lúc nào 🧠\n\n"
-        "🕓 *Báo cáo tự động:* Sau 16:00 hằng ngày, mình sẽ dùng AI để\n"
-        "tổng hợp & phân tích toàn bộ list mã bạn đang theo dõi và gửi\n"
-        "một bản báo cáo riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
+        "🕓 *Báo cáo tự động:* Vào 09:00 sáng Chủ Nhật hằng tuần, mình sẽ dùng AI để\n"
+        "tổng hợp & phân tích toàn bộ list mã bạn đang theo dõi trong tuần và gửi\n"
+        "một bản báo cáo tổng kết riêng cho bạn. Nhớ /add vài mã trước nhé!\n\n"
         "💬 Giá tăng thì mình cà khịa 😜, giá giảm thì mình an ủi nhẹ 💔\n"
         "Hãy thêm vài mã ngay để xem hôm nay mình 'tấu hài' thế nào nhé!\n\n"
         "🚀 Bắt đầu với lệnh /add nào!"
@@ -1103,15 +1145,21 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
 
-    # Cooldown chống spam (15 phút)
+    # Cooldown chống spam: mỗi user chỉ được dùng /report 1 lần / ngày
     now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+    COOLDOWN_SECONDS = 24 * 3600  # 24 giờ
+
     last_time = REPORT_COOLDOWN.get(chat_id)
-    if last_time and (now - last_time).total_seconds() < 900:  # 900s = 15 phút
-        remaining = int(900 - (now - last_time).total_seconds())
-        mins = remaining // 60
-        secs = remaining % 60
-        await update.message.reply_text(f"⏳ Bạn đã dùng /report gần đây. Vui lòng thử lại sau {mins} phút {secs} giây.")
+    if last_time and (now - last_time).total_seconds() < COOLDOWN_SECONDS:
+        remaining = int(COOLDOWN_SECONDS - (now - last_time).total_seconds())
+        hours = remaining // 3600
+        mins = (remaining % 3600) // 60
+        await update.message.reply_text(
+            f"⏳ /report chỉ được dùng 1 lần mỗi ngày. "
+            f"Vui lòng thử lại sau {hours} giờ {mins} phút."
+        )
         return
+
 
     REPORT_COOLDOWN[chat_id] = now
     log_command_usage(chat_id, "/report")   # Ghi log
@@ -1473,7 +1521,7 @@ async def main():
         serve(flask_app, config),
         alert_loop(),           # cảnh báo realtime trong giờ giao dịch
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
-        daily_report_loop(),     # 🧠 gửi báo cáo tự động 16:00
+        daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
         run_telegram(),
         auto_on_after_delay(),  # tự động /on sau 2 phút nếu đang OFF
     )
