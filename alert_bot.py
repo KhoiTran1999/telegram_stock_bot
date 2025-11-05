@@ -31,6 +31,8 @@ from db_utils import (
     save_watch_list_for_chat,
     get_bot_active,
     set_bot_active,
+    log_command_usage,
+    get_command_stats
 )
 import psutil
 import platform
@@ -666,7 +668,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
     chat_id = update.effective_chat.id
-
+    log_command_usage(chat_id, "/report")   # 🆕 ghi log
     # ✅ Chỉ tạo mới nếu user chưa có record
     lst = get_watch_list_for_chat(chat_id)
     if lst is None:
@@ -768,6 +770,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/report")   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -873,6 +876,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/report")   # 🆕 ghi log
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -919,8 +923,11 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
         return
+    
     chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/report")   # 🆕 ghi log
     lst = get_watch_list_for_chat(chat_id)
+
     if not lst:
         await update.message.reply_text("📭 Danh sách trống.")
     else:
@@ -991,7 +998,17 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for sym, cnt in sorted(symbol_counts.items()):
         stats_lines.append(f"{sym}: {cnt} user")
 
+    cmd_stats = get_command_stats()
+    if cmd_stats:
+        cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
+        for row in cmd_stats:
+            cmd_summary += f"{row['command']}: {row['day']} hôm nay | {row['month']} tháng này | {row['total']} tổng cộng\n"
+        cmd_summary += "\n"
+    else:
+        cmd_summary = "📊 *Chưa có dữ liệu lệnh được sử dụng.*\n\n"
+
     header = (
+        cmd_summary +
         "📋 *Tổng hợp danh sách mã đang được theo dõi*\n"
         f"👥 Tổng số user: {len(all_watch)}\n"
         f"🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
@@ -1033,7 +1050,10 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not update or not update.effective_chat:
         return
+    
     chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/report")   # 🆕 ghi log
+
     watch = get_watch_list_for_chat(chat_id)
     watch_list = watch or []
 
