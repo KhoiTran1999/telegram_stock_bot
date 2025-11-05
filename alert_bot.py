@@ -1070,147 +1070,144 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
     await update.message.reply_text(text)
 
-
 # ==============================================
-# VÒNG LẶP CẢNH BÁO
+# VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL)
 # ==============================================
 async def alert_loop():
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
+    TARGET_INTERVAL = 15  # giãn cách giữa 2 vòng quét (giây)
+
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
-        # Nếu ngoài giờ giao dịch -> ngủ tới sát phiên tiếp theo, không spam 15s/lần nữa
+        # Nếu ngoài giờ giao dịch -> ngủ tới phiên tiếp theo
         if not in_session_vietnam():
             next_start = next_session_start(now)
             delay = max((next_start - now).total_seconds(), 60.0)
             log.info(
-                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch, sleep {delay:.0f}s tới phiên tiếp theo "
-                f"{next_start.strftime('%Y-%m-%d %H:%M')}"
+                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch, sleep {delay:.0f}s tới {next_start.strftime('%Y-%m-%d %H:%M')}"
             )
             await asyncio.sleep(delay)
             continue
 
-        # Trong giờ giao dịch -> chạy như cũ (15s/lần)
         loop_start = now
         try:
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert")
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert (có cache)")
+
             all_watch = get_all_watch()
             all_state = get_state_for_all()
 
+            # 🧩 1️⃣ Gom tất cả symbol cần theo dõi
+            all_symbols = set()
+            for block in all_watch.values():
+                for sym in (block.get("list", []) or []):
+                    all_symbols.add(sym.upper())
+
+            if not all_symbols:
+                log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Không có symbol nào, sleep 60s.")
+                await asyncio.sleep(60)
+                continue
+
+            # 🧩 2️⃣ Cache dữ liệu quote cho từng symbol
+            quote_cache = {}
+            for sym in all_symbols:
+                data = get_quote(sym)
+                if data:
+                    quote_cache[sym] = data
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Đã lấy dữ liệu cho {len(quote_cache)}/{len(all_symbols)} symbol.")
+
+            # 🧩 3️⃣ Duyệt từng user & xử lý cảnh báo
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
-                watch_list = user_block.get("list", [])
+                watch_list = user_block.get("list", []) or []
                 if not watch_list:
                     continue
 
-                # Khởi tạo state riêng cho user nếu chưa có
                 if chat_key not in all_state:
                     all_state[chat_key] = {}
                 personal_state = all_state[chat_key]
-
                 messages = []
+
                 for sym in watch_list:
-                    quote = get_quote(sym)
+                    sym_u = sym.upper()
+                    quote = quote_cache.get(sym_u)
                     if not quote:
                         continue
+
                     price, pct, change_abs = (
                         quote["price"],
                         quote["pct"],
                         quote["change_abs"],
                     )
 
-                    is_index = sym.upper().startswith("VN")
+                    is_index = sym_u.startswith("VN")
                     metric = change_abs if is_index else pct
                     new_lvl = pick_new_level(
                         metric, INDEX_POINT_LEVELS if is_index else STOCK_LEVELS
                     )
 
-                    # Lấy state cũ (tương thích cả kiểu cũ [int] lẫn kiểu mới [dict])
-                    state_entry = personal_state.get(sym, {})
+                    state_entry = personal_state.get(sym_u, {})
                     if isinstance(state_entry, dict):
                         prev_lvl = state_entry.get("last_level", 0)
                         last_alert_at_str = state_entry.get("last_alert_at")
                     else:
-                        # state kiểu cũ chỉ lưu level
                         prev_lvl = state_entry or 0
                         last_alert_at_str = None
 
                     last_alert_at = None
                     if last_alert_at_str:
                         try:
-                            last_alert_at = datetime.datetime.fromisoformat(
-                                last_alert_at_str
-                            )
+                            last_alert_at = datetime.datetime.fromisoformat(last_alert_at_str)
                         except Exception:
                             last_alert_at = None
 
                     should_alert = False
-
                     if new_lvl is not None:
                         if new_lvl != prev_lvl:
-                            # Mốc mới khác mốc lần báo gần nhất -> báo ngay
                             should_alert = True
-                        else:
-                            # Trùng đúng mốc cũ -> chỉ báo nếu đã qua cooldown
-                            if (
-                                last_alert_at is None
-                                or (
-                                    now - last_alert_at
-                                ).total_seconds()
-                                >= ALERT_COOLDOWN_SECONDS
-                            ):
-                                should_alert = True
+                        elif (
+                            last_alert_at is None
+                            or (now - last_alert_at).total_seconds() >= ALERT_COOLDOWN_SECONDS
+                        ):
+                            should_alert = True
 
                     if should_alert:
                         icon = "🟢" if new_lvl > 0 else "🔴"
-                        fun_line = random.choice(
-                            FUN_UP if new_lvl > 0 else FUN_DOWN
-                        )
-                        price_str = (
-                            f"{float(price):,.0f}" if price is not None else "N/A"
-                        )
-                        pct_str = (
-                            f"{float(pct):+.2f}%" if pct is not None else "N/A"
-                        )
+                        fun_line = random.choice(FUN_UP if new_lvl > 0 else FUN_DOWN)
+                        price_str = f"{float(price):,.0f}" if price is not None else "N/A"
+                        pct_str = f"{float(pct):+.2f}%" if pct is not None else "N/A"
 
                         messages.append(
-                            f"{icon} *{sym} {pct_str}* tại {price_str}\n_{fun_line}_"
+                            f"{icon} *{sym_u} {pct_str}* tại {price_str}\n_{fun_line}_"
                         )
 
-                        # Cập nhật state mới: ghi lại mốc và thời gian báo
-                        personal_state[sym] = {
+                        personal_state[sym_u] = {
                             "last_level": new_lvl,
                             "last_alert_at": now.isoformat(),
                         }
                     else:
-                        # Không báo nhưng vẫn giữ lại state cũ để tính cooldown
-                        if sym not in personal_state:
-                            personal_state[sym] = {
-                                "last_level": 0,
-                                "last_alert_at": None,
-                            }
+                        if sym_u not in personal_state:
+                            personal_state[sym_u] = {"last_level": 0, "last_alert_at": None}
 
-                # Gửi nếu có bất kỳ mã nào cần báo
+                # Gửi nếu có thông báo
                 if messages:
-                    header = (
-                        f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n"
-                        "--------------------------------"
-                    )
+                    header = f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n--------------------------------"
                     send_msg_to(chat_id, header + "\n" + "\n".join(messages))
 
                 all_state[chat_key] = personal_state
 
+            # 🧩 4️⃣ Lưu lại state
             save_state_for_all(all_state)
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}] ERROR: {e}")
+            log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] ERROR: {e}")
 
-        # Trong giờ giao dịch vẫn giữ nhịp ~15s/lần
+        # 🕒 Giữ nhịp cố định
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
-        delay = max(15 - elapsed, 1)
-        log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s")
+        delay = max(TARGET_INTERVAL - elapsed, 1)
+        log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s\n")
         await asyncio.sleep(delay)
 
 
