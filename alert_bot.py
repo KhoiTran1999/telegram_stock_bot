@@ -650,7 +650,7 @@ async def auto_on_after_delay():
             try:
                 send_msg_to(
                     ADMIN_ID,
-                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on sau 2 phút).*\n\n"
+                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on).*\n\n"
                     "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
                 )
             except Exception as e:
