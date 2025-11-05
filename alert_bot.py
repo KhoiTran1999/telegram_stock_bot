@@ -870,7 +870,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/add", ADMIN_ID)   # 🆕 ghi log
+    log_command_usage(chat_id, "/add", ADMIN_ID)   # ghi log (bỏ qua admin trong hàm log)
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
@@ -903,25 +903,43 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
         return
-    
-    # 3️⃣ Kiểm tra giá bằng 0 (trước giờ mở cửa)
+
+    # 3️⃣ Kiểm tra giá bằng 0 (thường là trước giờ giao dịch)
     if quote_data.get("price") == 0:
         await update.message.reply_text(
-            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
-            "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
+            f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
+            "🕒 Trong vòng *2 tiếng trước khi thị trường mở cửa*, hệ thống có thể tạm thời "
+            "không thể thêm mã mới do chưa có dữ liệu cập nhật từ sàn.\n\n"
+            "👉 Vui lòng thử lại sau khi phiên giao dịch bắt đầu để đảm bảo dữ liệu chính xác.",
             parse_mode="Markdown",
         )
         return
 
+
     # 4️⃣ Nếu có dữ liệu thì add vào danh sách
     lst = get_watch_list_for_chat(chat_id) or []
+
+    # Nếu đã tồn tại: báo + show luôn list hiện tại
     if symbol in lst:
-        await update.message.reply_text(f"ℹ️ {symbol} đã có trong danh sách theo dõi rồi.")
+        symbols_text = "\n".join(f"• {sym}" for sym in lst) if lst else "—"
+        msg = (
+            f"ℹ️ *{symbol}* đã có trong danh sách theo dõi rồi.\n\n"
+            "📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
+            f"{symbols_text}"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
+    # Thêm mã mới
     lst.append(symbol)
     save_watch_list_for_chat(chat_id, lst)
+
+    # Chuẩn bị đoạn danh sách hiện tại để ghép thêm vào message
+    symbols_text = "\n".join(f"• {sym}" for sym in lst)
+    watchlist_section = (
+        "\n\n📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
+        f"{symbols_text}"
+    )
 
     # 5️⃣ Chuẩn bị phần tóm tắt thông tin cổ phiếu
     try:
@@ -950,14 +968,23 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     summary += f"📦 Khối lượng: *{int(vol):,}* cp\n"
                 summary += f"🏛️ Sàn: *{exch}*\n"
         except Exception:
+            # Nếu lỗi phần này thì bỏ qua, không kill cả hàm
             pass
+
+        # Ghép thêm danh sách hiện tại vào cuối message
+        summary += watchlist_section
 
         await update.message.reply_text(summary, parse_mode="Markdown")
 
     except Exception as e:
-        await update.message.reply_text(
-            f"✅ Đã thêm {symbol} vào danh sách theo dõi.\n⚠️ (Không thể tóm tắt dữ liệu: {e})"
+        # Trường hợp lỗi khi tóm tắt dữ liệu, vẫn báo đã thêm + show list
+        fallback_msg = (
+            f"✅ Đã thêm *{symbol}* vào danh sách theo dõi.\n"
+            f"⚠️ (Không thể tóm tắt dữ liệu: {e})"
+            f"{watchlist_section}"
         )
+        await update.message.reply_text(fallback_msg, parse_mode="Markdown")
+
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -971,25 +998,43 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/remove")   # 🆕 ghi log
+    log_command_usage(chat_id, "/remove", ADMIN_ID)   # bỏ qua admin trong thống kê
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
-        await update.message.reply_text("⚠️ Ví dụ: /remove SSI")
+        await update.message.reply_text("⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
         return
 
     symbol = context.args[0].upper().strip()
-
-    # Lấy danh sách hiện tại (nếu chưa có thì coi như danh sách trống)
     lst = get_watch_list_for_chat(chat_id) or []
 
     if symbol in lst:
-        # Xoá mã khỏi danh sách và lưu lại
         lst.remove(symbol)
         save_watch_list_for_chat(chat_id, lst)
-        await update.message.reply_text(f"🗑️ Đã xoá {symbol} khỏi danh sách.")
+
+        if lst:
+            symbols_text = "\n".join(f"• {sym}" for sym in lst)
+            msg = (
+                f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
+                "📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
+                f"{symbols_text}\n\n"
+                "Bạn có thể dùng /add <MÃ> để thêm cổ phiếu mới."
+            )
+        else:
+            msg = (
+                f"🗑️ Đã xoá *{symbol}* khỏi danh sách theo dõi.\n\n"
+                "📭 Hiện bạn không còn theo dõi mã nào.\n"
+                "Dùng /add <MÃ> để bắt đầu thêm lại danh mục."
+            )
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
     else:
-        await update.message.reply_text(f"❌ {symbol} không có trong danh sách.")
+        await update.message.reply_text(
+            f"❌ *{symbol}* không có trong danh sách theo dõi.\n"
+            "Bạn có thể dùng /list để kiểm tra lại danh sách hiện tại.",
+            parse_mode="Markdown",
+        )
+
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
