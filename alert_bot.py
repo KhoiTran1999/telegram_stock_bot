@@ -1310,10 +1310,10 @@ async def reply_md(update: Update, text: str, **kwargs):
     """
     Gửi tin nhắn Markdown an toàn:
     - Lần 1: gửi nguyên văn (giữ format bạn viết).
-    - Nếu lỗi 'Can't parse entities': log lại, escape toàn bộ và gửi lại.
+    - Nếu lỗi 'Can't parse entities': escape toàn bộ rồi gửi lại.
     """
     try:
-        return await reply_md(
+        return await update.message.reply_text(
             text,
             parse_mode="Markdown",
             **kwargs,
@@ -1321,7 +1321,7 @@ async def reply_md(update: Update, text: str, **kwargs):
     except BadRequest as e:
         logging.warning(f"[Markdown error] {e} | text={text!r}")
         safe_text = escape_markdown_v2(text)
-        return await reply_md(
+        return await update.message.reply_text(
             safe_text,
             parse_mode="Markdown",
             **kwargs,
