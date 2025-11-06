@@ -967,29 +967,8 @@ def compute_value_screener(
     max_industries: int = 10,
 ):
     """
-    Đọc dữ liệu từ DB (stock_value_cache), lọc theo:
-        - P/E < P/E ngành
-        - P/B < P/B ngành
-        - ROE > ROE ngành
-
-    Sau đó:
-        - Tính value_score cho từng mã
-        - Chia theo ngành
-        - Mỗi ngành lấy tối đa top_per_industry mã có value_score cao nhất
-        - Chỉ hiển thị tối đa max_industries ngành (tránh tin nhắn Telegram quá dài)
-
-    Trả về:
-    {
-        "as_of": "YYYY-MM-DD HH:MM:SS" hoặc None,
-        "industries": [
-            {
-                "industry": "Ngân hàng",
-                "rows": [ {...}, {...}, {...} ]
-            },
-            ...
-        ]
-    }
-    hoặc None nếu không có data hợp lệ.
+    So sánh toàn bộ cổ phiếu trong ngành và tính điểm value_score.
+    Không loại bỏ mã nào; chỉ xếp hạng top 3 cổ phiếu tốt nhất mỗi ngành.
     """
     rows = load_stock_value_cache()
     if not rows:
@@ -998,35 +977,29 @@ def compute_value_screener(
     df = pd.DataFrame(rows)
     required_cols = {"symbol", "industry", "pe", "pb", "roe"}
     if not required_cols.issubset(df.columns):
-        log.error(
-            f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột bắt buộc. Columns: {df.columns.tolist()}"
-        )
+        log.error(f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột. Columns: {df.columns.tolist()}")
         return None
 
-    # 🔹 Chỉ giữ các mã có trong file CSV (Topi) nếu file load được
+    # 🔹 Lọc theo CSV Topi
     try:
         industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
     except Exception as e:
-        log.warning(
-            f"[{INSTANCE_ID}][VALUE] Lỗi load industry_map_from_topi.csv trong compute_value_screener: {e}"
-        )
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi load industry_map_from_topi.csv: {e}")
         industry_map = {}
 
     if industry_map:
         df = df[df["symbol"].isin(industry_map.keys())]
         if df.empty:
-            log.warning(
-                f"[{INSTANCE_ID}][VALUE] Sau khi lọc theo industry_map_from_topi.csv thì không còn mã nào."
-            )
+            log.warning(f"[{INSTANCE_ID}][VALUE] Không còn mã sau khi lọc industry_map.")
             return None
 
-    # Xử lý dữ liệu hợp lệ
+    # Bỏ giá trị không hợp lệ
     df = df.dropna(subset=["pe", "pb", "roe", "industry"])
     df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
     if df.empty:
         return None
 
-    # Tính trung bình ngành
+    # Trung bình ngành
     industry_group = df.groupby("industry").agg(
         pe_industry=("pe", "mean"),
         pb_industry=("pb", "mean"),
@@ -1034,28 +1007,19 @@ def compute_value_screener(
     )
     df = df.join(industry_group, on="industry")
 
-    # Bỏ ngành có ROE ngành <= 0 để tránh chia 0
+    # Bỏ ngành có ROE ngành <= 0
     df = df[df["roe_industry"] > 0]
     if df.empty:
         return None
 
-    # Lọc theo tiêu chí Value
-    df = df[
-        (df["pe"] < df["pe_industry"])
-        & (df["pb"] < df["pb_industry"])
-        & (df["roe"] > df["roe_industry"])
-    ]
-    if df.empty:
-        return None
-
-    # Tính điểm Value
+    # Tính điểm Value (cao hơn là tốt)
     df["value_score"] = (
-        (df["pe_industry"] / df["pe"] * 0.4)
-        + (df["pb_industry"] / df["pb"] * 0.2)
-        + (df["roe"] / df["roe_industry"] * 0.4)
+        (df["pe_industry"] / df["pe"]) * 0.4
+        + (df["pb_industry"] / df["pb"]) * 0.2
+        + (df["roe"] / df["roe_industry"]) * 0.4
     )
 
-    # Tính as_of = max(updated_at) nếu có
+    # Ngày dữ liệu
     as_of = None
     if "updated_at" in df.columns and not df["updated_at"].isna().all():
         latest_ts = df["updated_at"].max()
@@ -1068,7 +1032,7 @@ def compute_value_screener(
         except Exception:
             as_of = str(latest_ts)
 
-    # 🔹 Chia theo ngành, mỗi ngành lấy top_per_industry
+    # 🔹 Top 3 mỗi ngành
     industries_data = []
     for industry_name, g in df.groupby("industry"):
         g_sorted = g.sort_values("value_score", ascending=False)
@@ -1091,7 +1055,6 @@ def compute_value_screener(
             )
 
         if rows_list:
-            # Lấy value_score cao nhất ngành này để sắp xếp ngành
             best_score = rows_list[0]["value_score"]
             industries_data.append(
                 {
@@ -1104,125 +1067,15 @@ def compute_value_screener(
     if not industries_data:
         return None
 
-    # Sắp xếp ngành theo best_score giảm dần và giới hạn số ngành
     industries_data.sort(key=lambda x: x["best_score"], reverse=True)
     industries_data = industries_data[:max_industries]
 
-    # Bỏ best_score trước khi trả về cho sạch
     for item in industries_data:
         item.pop("best_score", None)
 
     return {
         "as_of": as_of,
         "industries": industries_data,
-    }
-    """
-    Đọc dữ liệu từ DB (stock_value_cache), tính trung bình ngành & value_score,
-    lọc theo:
-        - P/E < P/E ngành
-        - P/B < P/B ngành
-        - ROE > ROE ngành
-
-    Trả về: {"as_of": "...", "rows": [ ... ]} hoặc None nếu chưa có data.
-    """
-    rows = load_stock_value_cache()
-    if not rows:
-        return None
-
-    df = pd.DataFrame(rows)
-    required_cols = {"symbol", "industry", "pe", "pb", "roe"}
-    if not required_cols.issubset(df.columns):
-        log.error(f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột bắt buộc. Columns: {df.columns.tolist()}")
-        return None
-
-    # 🔹 Chỉ giữ các mã có trong file CSV (Topi)
-    industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
-    if industry_map:
-        df = df[df["symbol"].isin(industry_map.keys())]
-        if df.empty:
-            log.warning(
-                f"[{INSTANCE_ID}][VALUE] Sau khi lọc theo industry_map_from_topi.csv thì không còn mã nào."
-            )
-            return None
-    else:
-        log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không load được industry_map_from_topi.csv trong compute_value_screener, "
-            "sẽ dùng toàn bộ dữ liệu stock_value_cache hiện có."
-        )
-
-
-    # Xử lý dữ liệu hợp lệ
-    df = df.dropna(subset=["pe", "pb", "roe", "industry"])
-    df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
-    if df.empty:
-        return None
-
-    # Tính trung bình ngành
-    industry_group = df.groupby("industry").agg(
-        pe_industry=("pe", "mean"),
-        pb_industry=("pb", "mean"),
-        roe_industry=("roe", "mean"),
-    )
-    df = df.join(industry_group, on="industry")
-
-    # Bỏ các ngành có ROE ngành <= 0 để tránh chia 0
-    df = df[df["roe_industry"] > 0]
-    if df.empty:
-        return None
-
-    # Lọc theo tiêu chí Value
-    df = df[
-        (df["pe"] < df["pe_industry"])
-        & (df["pb"] < df["pb_industry"])
-        & (df["roe"] > df["roe_industry"])
-    ]
-    if df.empty:
-        return None
-
-    # Tính điểm Value
-    df["value_score"] = (
-        (df["pe_industry"] / df["pe"] * 0.4)
-        + (df["pb_industry"] / df["pb"] * 0.2)
-        + (df["roe"] / df["roe_industry"] * 0.4)
-    )
-
-    df = df.sort_values("value_score", ascending=False)
-
-    # Tính as_of = max(updated_at) nếu có
-    as_of = None
-    if "updated_at" in df.columns and not df["updated_at"].isna().all():
-        latest_ts = df["updated_at"].max()
-        try:
-            # chuyển về giờ VN cho đẹp
-            if isinstance(latest_ts, datetime.datetime):
-                vn_tz = pytz.timezone(TIMEZONE)
-                as_of = latest_ts.astimezone(vn_tz).strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                as_of = str(latest_ts)
-        except Exception:
-            as_of = str(latest_ts)
-
-    top_df = df.head(top_n).copy()
-
-    result_rows = []
-    for _, r in top_df.iterrows():
-        result_rows.append(
-            {
-                "symbol": r["symbol"],
-                "industry": r["industry"],
-                "pe": float(r["pe"]),
-                "pb": float(r["pb"]),
-                "roe": float(r["roe"]),
-                "pe_industry": float(r["pe_industry"]),
-                "pb_industry": float(r["pb_industry"]),
-                "roe_industry": float(r["roe_industry"]),
-                "value_score": float(r["value_score"]),
-            }
-        )
-
-    return {
-        "as_of": as_of,
-        "rows": result_rows,
     }
 
 def format_roe_pct(roe_decimal: float | None) -> str:
