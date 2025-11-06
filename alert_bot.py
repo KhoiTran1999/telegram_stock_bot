@@ -56,7 +56,7 @@ ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
 # Cấu hình batch cho screener Value
 VALUE_BATCH_SIZE = 30       # 50 mã / batch
-VALUE_BATCH_SLEEP = 3       # nghỉ 2 giây giữa các batch
+VALUE_BATCH_SLEEP = 2       # nghỉ 2 giây giữa các batch
 MIN_PENNY_PRICE = 15000      # Giá tối thiểu (VND) để KHÔNG bị coi là penny
 
 # 🧠 Application Telegram dùng chung cho webhook
@@ -779,6 +779,108 @@ async def precompute_value_data():
         batch_records = []
 
         for sym in batch_syms:
+            sym = str(sym).upper()
+
+            # Throttle nhẹ mỗi mã để tránh spam data source
+            await asyncio.sleep(per_symbol_sleep)
+
+            ratio_df = None
+
+            # ⚙️ Chỉ dùng TCBS – đủ xài & DataFrame phẳng, dễ xử lý
+            try:
+                fin = Finance(symbol=sym, source="TCBS")
+                try:
+                    # Dùng dropna=False để không bị mất dòng mới nhất vì NaN cột khác
+                    ratio_df = fin.ratio(period="year", lang="vi", dropna=False)
+                except SystemExit as e:
+                    msg = str(e)
+                    log.warning(
+                        f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio (TCBS) cho {sym}: {msg}"
+                    )
+                    if "Rate limit exceeded" in msg:
+                        log.warning(
+                            f"[{INSTANCE_ID}][VALUE] Bị rate limit từ TCBS, nghỉ {rate_limit_sleep}s rồi tiếp tục..."
+                        )
+                        await asyncio.sleep(rate_limit_sleep)
+                    processed_count += 1
+                    continue
+            except Exception as e:
+                log.warning(
+                    f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio (TCBS) cho {sym}: {e}"
+                )
+                processed_count += 1
+                continue
+
+            if ratio_df is None or ratio_df.empty:
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng từ TCBS, bỏ qua."
+                )
+                processed_count += 1
+                continue
+
+            df = ratio_df.copy()
+
+            # TCBS không có cột 'year', cứ lấy dòng đầu tiên coi như mới nhất
+            latest = df.iloc[0]
+
+            def safe_get(col_name: str):
+                if col_name not in latest.index:
+                    return None
+                val = latest[col_name]
+                try:
+                    if hasattr(val, "item"):
+                        val = val.item()
+                except Exception:
+                    pass
+                try:
+                    val = float(val)
+                except Exception:
+                    return None
+                if math.isnan(val):
+                    return None
+                return val
+
+            # 🧮 Lấy các chỉ số chính từ TCBS
+            pe  = safe_get("price_to_earning")
+            pb  = safe_get("price_to_book")
+            roe = safe_get("roe")
+            eps = safe_get("earning_per_share")  # EPS (VND) – dùng để suy giá
+
+            # 💵 Tính giá ~ P/E * EPS (nếu đủ dữ liệu)
+            price = None
+            if pe is not None and eps is not None:
+                price = pe * eps  # ≈ giá thị trường theo VND
+
+            # Lọc penny: nếu có giá và giá < MIN_PENNY_PRICE → bỏ qua
+            if price is not None and price < MIN_PENNY_PRICE:
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: giá xấp xỉ {price:.0f} < {MIN_PENNY_PRICE}, coi là penny, bỏ qua."
+                )
+                processed_count += 1
+                continue
+
+            # Nếu thiếu bất kỳ P/E, P/B, ROE nào → không dùng cho screener
+            if pe is None or pb is None or roe is None:
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE (TCBS), bỏ qua."
+                )
+                processed_count += 1
+                continue
+
+            industry = industry_map.get(sym, "Khác")
+            exchange = exchange_map.get(sym, None)
+
+            record = {
+                "symbol": sym,
+                "exchange": exchange,
+                "industry": industry,
+                "pe": pe,
+                "pb": pb,
+                "roe": roe,
+            }
+            batch_records.append(record)
+            processed_count += 1
+
             sym = str(sym).upper()
 
             # Throttle nhẹ mỗi mã để tránh spam data source
