@@ -46,7 +46,7 @@ import time
 import subprocess
 import re
 import csv
-
+from datetime import datetime, timedelta
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -1798,53 +1798,54 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+# Dùng dict lưu tạm xác nhận theo admin_id
+pending_clear_confirmations = {}
+
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /screener_value_clear – Xoá toàn bộ cache screener Value (admin only).
-
-    Sau khi clear:
-    - Nếu bot được restart → initial_value_precompute_loop() sẽ tự crawl lại.
-    - Nếu để nguyên → tới 00:00 (T2–T6) screener_value_update_loop() sẽ crawl lại.
+    /screener_value_clear – Yêu cầu xác nhận trước khi xoá cache Value.
     """
     if ADMIN_ID is None:
         await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
 
-    if update.effective_user.id != ADMIN_ID:
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
-    try:
-        before = get_stock_value_cache_count()
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE_CLEAR] Lỗi khi đếm trước khi clear: {e}")
-        before = None
+    now = datetime.utcnow()
+    # Kiểm tra nếu admin vừa xác nhận gần đây
+    if user_id in pending_clear_confirmations:
+        confirm_time = pending_clear_confirmations[user_id]
+        # Nếu admin gõ lại YES trong 30s thì thực hiện xoá
+        if now - confirm_time < timedelta(seconds=30):
+            del pending_clear_confirmations[user_id]
 
-    try:
-        clear_stock_value_cache()
-    except Exception as e:
-        log.exception(f"[{INSTANCE_ID}][VALUE_CLEAR] Lỗi khi TRUNCATE stock_value_cache: {e}")
-        await update.message.reply_text("❌ Gặp lỗi khi xoá cache screener Value. Xem log để kiểm tra chi tiết.")
-        return
+            before = get_stock_value_cache_count()
+            clear_stock_value_cache()
+            after = get_stock_value_cache_count()
 
-    try:
-        after = get_stock_value_cache_count()
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE_CLEAR] Lỗi khi đếm sau khi clear: {e}")
-        after = None
+            msg = (
+                f"🧹 Đã xoá dữ liệu cache *screener Value*.\n"
+                f"Trước khi xoá: **{before}** dòng.\n"
+                f"Sau khi xoá: **{after}** dòng.\n\n"
+                "📅 Dữ liệu sẽ được crawl lại tự động vào 00:00 (T2–T6) hoặc khi bot khởi động lại."
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            return
+        else:
+            # Quá hạn 30s thì reset xác nhận
+            del pending_clear_confirmations[user_id]
 
-    before_str = str(before) if before is not None else "?"
-    after_str = str(after) if after is not None else "?"
-
-    msg = (
-        f"🧹 Đã xoá dữ liệu cache *screener Value*.\n"
-        f"Trước khi xoá: **{before_str}** dòng.\n"
-        f"Sau khi xoá: **{after_str}** dòng.\n\n"
-        "📅 Dữ liệu sẽ được crawl lại *tự động* vào 00:00 các ngày Thứ 2–Thứ 6,\n"
-        "hoặc ngay khi bot được khởi động lại (precompute lần đầu)."
+    # Nếu chưa có xác nhận, yêu cầu xác nhận
+    pending_clear_confirmations[user_id] = now
+    await update.message.reply_text(
+        "⚠️ *Xác nhận xoá cache screener Value*\n\n"
+        "Thao tác này sẽ xoá toàn bộ dữ liệu định giá hiện tại.\n"
+        "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận.",
+        parse_mode="Markdown",
     )
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
