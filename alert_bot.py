@@ -1768,7 +1768,7 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
     log_command_usage(chat_id, "/screener_value", ADMIN_ID)
 
-    result = compute_value_screener(top_per_industry=3, max_industries=10)
+    result = compute_value_screener(top_per_industry=3, max_industries=19)
     if (
         not result
         or not result.get("industries")
