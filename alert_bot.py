@@ -43,6 +43,7 @@ from db_utils import (
 import psutil
 import time
 import subprocess
+import re
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -672,6 +673,26 @@ async def precompute_value_data():
         log.warning(f"[{INSTANCE_ID}][VALUE] listing.all_symbols() trả về rỗng, dừng.")
         return
 
+    # Xác định cột sàn giao dịch (nếu có)
+    exchange_col_candidates = ["exchange", "exchangeName", "floor"]
+    exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
+
+    if exchange_col:
+        # Có cột sàn → lọc HOSE + HNX
+        mask = listing_df[exchange_col].astype(str).str.upper().isin(["HOSE", "HNX"])
+        filtered_df = listing_df[mask].copy()
+        if filtered_df.empty:
+            log.warning(f"[{INSTANCE_ID}][VALUE] Không có mã nào thuộc HOSE/HNX sau khi lọc.")
+            return
+    else:
+        # Không có thông tin sàn → dùng toàn bộ danh sách
+        log.warning(
+            f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn giao dịch trong listing_df. "
+            f"Columns: {listing_df.columns.tolist()} – tạm thời lấy toàn bộ mã."
+        )
+        filtered_df = listing_df.copy()
+
+
     # Xác định cột sàn giao dịch
     exchange_col_candidates = ["exchange", "exchangeName", "floor"]
     exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
@@ -729,6 +750,20 @@ async def precompute_value_data():
         .astype(str)
         .to_dict()
     )
+
+    # Map symbol -> exchange (nếu có cột sàn)
+    if exchange_col:
+        exchange_map = (
+            filtered_df[[symbol_col, exchange_col]]
+            .dropna()
+            .drop_duplicates(subset=[symbol_col])
+            .set_index(symbol_col)[exchange_col]
+            .astype(str)
+            .to_dict()
+        )
+    else:
+        exchange_map = {}
+
 
     # 2️⃣ Đọc các mã đã có trong DB để auto-resume
     existing_records = load_stock_value_cache()
@@ -1083,10 +1118,22 @@ async def screener_value_update_loop():
             await asyncio.sleep(3600)
 
 
+def escape_markdown_v2(text: str) -> str:
+    """
+    Escape tất cả ký tự đặc biệt theo Markdown V2:
+    _ * [ ] ( ) ~ ` > # + - = | { } . !
+    """
+    return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', text)
+
 def send_msg_to(chat_id: int, text: str):
-    """Gửi tin nhắn Telegram trực tiếp và lưu log (để có thể xoá theo thời gian)."""
+    """Gửi tin nhắn Telegram với MarkdownV2 an toàn."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    params = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    safe_text = escape_markdown_v2(text)
+    params = {
+        "chat_id": chat_id,
+        "text": safe_text,
+        "parse_mode": "MarkdownV2"
+    }
     try:
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
