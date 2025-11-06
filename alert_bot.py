@@ -1651,7 +1651,7 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="Markdown",
         )
         return
-
+ 
     as_of = result.get("as_of")
     rows = result["rows"]
 
