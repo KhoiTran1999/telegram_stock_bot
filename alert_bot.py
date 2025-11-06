@@ -1300,15 +1300,17 @@ def escape_markdown_v2(text: str) -> str:
     """
     return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', text)
 
-def send_msg_to(chat_id: int, text: str):
-    """Gửi tin nhắn Telegram với MarkdownV2 an toàn."""
+def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown"):
+    """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1)."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    safe_text = escape_markdown_v2(text)
+
     params = {
         "chat_id": chat_id,
-        "text": safe_text,
-        "parse_mode": "MarkdownV2"
+        "text": text,
     }
+    if parse_mode:
+        params["parse_mode"] = parse_mode
+
     try:
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
