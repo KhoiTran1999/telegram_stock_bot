@@ -1413,6 +1413,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_watch_list_for_chat(chat_id, [])
 
     await reply_md(update,
+   start_msg = (
     "╔════════════════════════════════╗\n"
     "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n"
     "╚════════════════════════════════╝\n\n"
@@ -1421,14 +1422,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• Khi giá cổ phiếu trong danh sách của bạn *tăng hoặc giảm 2%, 4%, 6%* so với giá tham chiếu, hệ thống sẽ tự động gửi cảnh báo ngay lập tức.\n"
     "• Mỗi cảnh báo đều hiển thị phần trăm thay đổi, xu hướng và thông tin liên quan để bạn dễ dàng nắm bắt tình hình thị trường.\n\n"
     "📊 *Các lệnh bạn có thể sử dụng:*\n"
-    "• /add <MÃ> – Thêm mã cổ phiếu vào danh sách theo dõi\n"
-    "• /remove <MÃ> – Xóa mã cổ phiếu khỏi danh sách\n"
-    "• /list – Xem danh sách cổ phiếu đang theo dõi\n"
-    "• /report – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
-    "• /screener_value – Bộ lọc *Value theo từng ngành*, hiển thị Top 3 cổ phiếu có định giá hấp dẫn nhất.\n\n"
+    "• `/add <MÃ>` – Thêm mã cổ phiếu vào danh sách theo dõi\n"
+    "• `/remove <MÃ>` – Xóa mã cổ phiếu khỏi danh sách\n"
+    "• `/list` – Xem danh sách cổ phiếu đang theo dõi\n"
+    "• `/report` – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
+    "• `/screener_value` – Bộ lọc *Value theo từng ngành*, hiển thị Top 3 cổ phiếu có định giá hấp dẫn nhất.\n\n"
     "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
-    "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!"
+    "🚀 Bắt đầu theo dõi bằng lệnh `/add` ngay hôm nay!"
+)
+
     )
 
 
