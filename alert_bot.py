@@ -1413,7 +1413,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_watch_list_for_chat(chat_id, [])
 
     await reply_md(update,
-   start_msg = (
     "╔════════════════════════════════╗\n"
     "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n"
     "╚════════════════════════════════╝\n\n"
@@ -1430,8 +1429,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi bằng lệnh `/add` ngay hôm nay!"
-)
-
     )
 
 
