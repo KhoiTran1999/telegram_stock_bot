@@ -1664,7 +1664,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         summary += watchlist_section
 
-        await reply_md(update,summary, parse_mode="Markdown")
+        await reply_md(update,summary)
 
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi format summary cho {symbol}: {e}")
@@ -1672,7 +1672,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Đã thêm *{symbol}* vào danh sách theo dõi.\n"
             f"{watchlist_section}"
         )
-        await reply_md(update,fallback_msg, parse_mode="Markdown")
+        await reply_md(update,fallback_msg)
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1833,7 +1833,7 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if len(text) > 3900:
         text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
 
-    await reply_md(update,text, parse_mode="Markdown")
+    await reply_md(update,text)
 
 
 # Dùng dict lưu tạm xác nhận theo admin_id
@@ -1883,8 +1883,7 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
     await reply_md(update,
         "⚠️ *Xác nhận xoá cache screener Value*\n\n"
         "Thao tác này sẽ xoá toàn bộ dữ liệu định giá hiện tại.\n"
-        "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận.",
-        parse_mode="Markdown",
+        "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận."
     )
 
 
@@ -1927,8 +1926,7 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Thông báo lại cho admin (chuỗi này là cố định nên Markdown an toàn)
     await reply_md(update,
-        f"✅ Đã gửi thông báo tới *{sent}* người dùng.",
-        parse_mode="Markdown",
+        f"✅ Đã gửi thông báo tới *{sent}* người dùng."
     )
 
 
