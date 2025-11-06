@@ -653,9 +653,13 @@ async def precompute_value_data():
     Crawl dữ liệu P/E, P/B, ROE cho toàn bộ danh sách mã mà Listing().all_symbols() trả về
     và lưu vào bảng stock_value_cache (Postgres).
 
-    - Chạy theo batch (50 mã/batch)
-    - Nghỉ 2s giữa các batch tránh rate-limit
+    Thiết kế:
+    - Dùng toàn bộ danh sách symbol từ Listing().all_symbols()
+    - Chạy theo batch (50 mã/batch – nhưng throttle theo từng mã)
+    - Nghỉ 0.7s giữa mỗi mã để tránh spam VCI
+    - Nếu bị rate limit từ VCI -> nghỉ 60s rồi tiếp tục
     - Auto-resume: đọc các mã đã có trong DB và chỉ crawl phần còn thiếu
+    - Log tiến độ: sau mỗi batch in ra số mã đã xử lý / tổng số mã và % hoàn thành
     """
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
@@ -740,9 +744,13 @@ async def precompute_value_data():
     processed_symbols = {r["symbol"] for r in existing_records if r.get("symbol")}
     todo_symbols = [s for s in symbols if s not in processed_symbols]
 
+    total_symbols = len(symbols)
+    total_todo = len(todo_symbols)
+    already = len(processed_symbols)
+
     log.info(
-        f"[{INSTANCE_ID}][VALUE] Đã có trong DB: {len(processed_symbols)} | "
-        f"Cần crawl thêm: {len(todo_symbols)}"
+        f"[{INSTANCE_ID}][VALUE] Đã có trong DB: {already} | "
+        f"Cần crawl thêm: {total_todo} | Tổng: {total_symbols}"
     )
 
     if not todo_symbols:
@@ -751,9 +759,13 @@ async def precompute_value_data():
         )
         return
 
-    total_batches = math.ceil(len(todo_symbols) / VALUE_BATCH_SIZE)
+    total_batches = math.ceil(total_todo / VALUE_BATCH_SIZE)
+    processed_count = already  # số mã đã có sẵn + đang crawl thêm
 
     # 3️⃣ Crawl theo batch & upsert vào DB
+    rate_limit_sleep = 60  # số giây nghỉ khi bị rate limit VCI
+    per_symbol_sleep = 0.7  # throttle mỗi mã
+
     for batch_idx in range(total_batches):
         batch_syms = todo_symbols[
             batch_idx * VALUE_BATCH_SIZE : (batch_idx + 1) * VALUE_BATCH_SIZE
@@ -764,21 +776,46 @@ async def precompute_value_data():
         )
 
         batch_records = []
+
         for sym in batch_syms:
             sym = str(sym).upper()
+
+            # Throttle nhẹ mỗi mã để tránh spam VCI
+            await asyncio.sleep(per_symbol_sleep)
+
+            ratio_df = None
             try:
-                fin = Finance(symbol=sym, source="VCI")  # nếu source khác, chỉnh ở đây
-                ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
+                fin = Finance(symbol=sym, source="VCI")
+
+                try:
+                    ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
+                except SystemExit as e:
+                    # vnstock có thể raise SystemExit khi bị rate limit
+                    msg = str(e)
+                    log.warning(
+                        f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio cho {sym}: {msg}"
+                    )
+                    if "Rate limit exceeded" in msg:
+                        log.warning(
+                            f"[{INSTANCE_ID}][VALUE] Bị rate limit từ VCI, nghỉ {rate_limit_sleep}s rồi tiếp tục..."
+                        )
+                        await asyncio.sleep(rate_limit_sleep)
+                    # Bỏ mã này, tiếp tục sang mã tiếp theo
+                    processed_count += 1
+                    continue
+
             except Exception as e:
                 log.warning(
                     f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio cho {sym}: {e}"
                 )
+                processed_count += 1
                 continue
 
             if ratio_df is None or ratio_df.empty:
                 log.debug(
                     f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng, bỏ qua."
                 )
+                processed_count += 1
                 continue
 
             df = ratio_df.copy()
@@ -817,6 +854,7 @@ async def precompute_value_data():
                 log.debug(
                     f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua."
                 )
+                processed_count += 1
                 continue
 
             industry = industry_map.get(sym, "Khác")
@@ -831,22 +869,32 @@ async def precompute_value_data():
                 "roe": roe,
             }
             batch_records.append(record)
+            processed_count += 1
 
         # Ghi batch vào DB (upsert theo symbol)
         try:
             upsert_stock_value_batch(batch_records)
-            log.info(
-                f"[{INSTANCE_ID}][VALUE] Đã upsert {len(batch_records)} mã "
-                f"trong batch {batch_idx+1}/{total_batches}."
-            )
         except Exception as e:
             log.exception(
                 f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}"
             )
 
-        # Nghỉ giữa các batch
+        # 🔎 Log tiến độ sau mỗi batch
+        done = processed_count
+        if total_symbols > 0:
+            percent = done / total_symbols * 100
+        else:
+            percent = 0.0
+
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Tiến độ: {done}/{total_symbols} mã "
+            f"({percent:.1f}%). Batch {batch_idx+1}/{total_batches} xong, "
+            f"upsert {len(batch_records)} mã vào DB."
+        )
+
+        # Nghỉ giữa các batch (nhẹ) – có thể để 0 hoặc 1–2s
         if batch_idx < total_batches - 1:
-            await asyncio.sleep(VALUE_BATCH_SLEEP)
+            await asyncio.sleep(1)
 
     finished_at = datetime.datetime.now(vn_tz)
     duration = (finished_at - started_at).total_seconds()
