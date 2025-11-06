@@ -673,7 +673,7 @@ async def precompute_value_data():
         log.warning(f"[{INSTANCE_ID}][VALUE] listing.all_symbols() trả về rỗng, dừng.")
         return
 
-    # Xác định cột sàn giao dịch (nếu có)
+        # Xác định cột sàn giao dịch (nếu có)
     exchange_col_candidates = ["exchange", "exchangeName", "floor"]
     exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
 
@@ -682,7 +682,9 @@ async def precompute_value_data():
         mask = listing_df[exchange_col].astype(str).str.upper().isin(["HOSE", "HNX"])
         filtered_df = listing_df[mask].copy()
         if filtered_df.empty:
-            log.warning(f"[{INSTANCE_ID}][VALUE] Không có mã nào thuộc HOSE/HNX sau khi lọc.")
+            log.warning(
+                f"[{INSTANCE_ID}][VALUE] Không có mã nào thuộc HOSE/HNX sau khi lọc."
+            )
             return
     else:
         # Không có thông tin sàn → dùng toàn bộ danh sách
@@ -693,12 +695,10 @@ async def precompute_value_data():
         filtered_df = listing_df.copy()
 
 
+
     # Xác định cột sàn giao dịch
     exchange_col_candidates = ["exchange", "exchangeName", "floor"]
     exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
-    if not exchange_col:
-        log.error(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn giao dịch trong listing_df. Columns: {listing_df.columns.tolist()}")
-        return
 
     # Lọc HOSE + HNX
     mask = listing_df[exchange_col].astype(str).str.upper().isin(["HOSE", "HNX"])
@@ -763,6 +763,7 @@ async def precompute_value_data():
         )
     else:
         exchange_map = {}
+
 
 
     # 2️⃣ Đọc các mã đã có trong DB để auto-resume
