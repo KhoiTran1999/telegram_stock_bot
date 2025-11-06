@@ -650,7 +650,7 @@ def seconds_until_next_weekly_report():
 
 async def precompute_value_data():
     """
-    Crawl dữ liệu P/E, P/B, ROE cho toàn bộ HOSE + HNX
+    Crawl dữ liệu P/E, P/B, ROE cho toàn bộ danh sách mã mà Listing().all_symbols() trả về
     và lưu vào bảng stock_value_cache (Postgres).
 
     - Chạy theo batch (50 mã/batch)
@@ -659,7 +659,10 @@ async def precompute_value_data():
     """
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
-    log.info(f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data lúc {started_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data lúc "
+        f"{started_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
     # 1️⃣ Lấy danh sách tất cả mã
     try:
@@ -670,65 +673,47 @@ async def precompute_value_data():
         return
 
     if listing_df is None or listing_df.empty:
-        log.warning(f"[{INSTANCE_ID}][VALUE] listing.all_symbols() trả về rỗng, dừng.")
-        return
-
-        # Xác định cột sàn giao dịch (nếu có)
-    exchange_col_candidates = ["exchange", "exchangeName", "floor"]
-    exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
-
-    if exchange_col:
-        # Có cột sàn → lọc HOSE + HNX
-        mask = listing_df[exchange_col].astype(str).str.upper().isin(["HOSE", "HNX"])
-        filtered_df = listing_df[mask].copy()
-        if filtered_df.empty:
-            log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không có mã nào thuộc HOSE/HNX sau khi lọc."
-            )
-            return
-    else:
-        # Không có thông tin sàn → dùng toàn bộ danh sách
         log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn giao dịch trong listing_df. "
-            f"Columns: {listing_df.columns.tolist()} – tạm thời lấy toàn bộ mã."
+            f"[{INSTANCE_ID}][VALUE] listing.all_symbols() trả về rỗng, dừng."
         )
-        filtered_df = listing_df.copy()
-
-
-
-    # Xác định cột sàn giao dịch
-    exchange_col_candidates = ["exchange", "exchangeName", "floor"]
-    exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
-
-    # Lọc HOSE + HNX
-    mask = listing_df[exchange_col].astype(str).str.upper().isin(["HOSE", "HNX"])
-    filtered_df = listing_df[mask].copy()
-    if filtered_df.empty:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không có mã nào thuộc HOSE/HNX sau khi lọc.")
         return
 
-    # Cột loại chứng khoán (nếu có) -> chỉ lấy cổ phiếu
-    type_candidates = ["type", "stock_type", "securityType"]
-    type_col = next((c for c in type_candidates if c in filtered_df.columns), None)
-    if type_col:
-        filtered_df[type_col] = filtered_df[type_col].astype(str).str.upper()
-        filtered_df = filtered_df[
-            filtered_df[type_col].isin(["STOCK", "CỔ PHIẾU", "SHARE"])
-        ]
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] listing_df columns: {listing_df.columns.tolist()}"
+    )
+
+    # Dùng toàn bộ danh sách (vì không có cột sàn giao dịch)
+    filtered_df = listing_df.copy()
 
     # Cột mã
     symbol_col_candidates = ["symbol", "ticker", "code"]
-    symbol_col = next((c for c in symbol_col_candidates if c in filtered_df.columns), None)
+    symbol_col = next(
+        (c for c in symbol_col_candidates if c in filtered_df.columns),
+        None,
+    )
     if not symbol_col:
-        log.error(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột mã (symbol/ticker/code). Columns: {filtered_df.columns.tolist()}")
+        log.error(
+            f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột mã (symbol/ticker/code). "
+            f"Columns: {filtered_df.columns.tolist()}"
+        )
         return
 
     filtered_df[symbol_col] = filtered_df[symbol_col].astype(str).str.upper()
     symbols = filtered_df[symbol_col].dropna().unique().tolist()
+    log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã lấy được: {len(symbols)}")
 
-    # Map symbol -> industry
-    industry_candidates = ["industry_name_vi", "industry_name", "industry", "icb_name_vi", "icb_name"]
-    industry_col = next((c for c in industry_candidates if c in filtered_df.columns), None)
+    # Map symbol -> industry (nếu có cột ngành)
+    industry_candidates = [
+        "industry_name_vi",
+        "industry_name",
+        "industry",
+        "icb_name_vi",
+        "icb_name",
+    ]
+    industry_col = next(
+        (c for c in industry_candidates if c in filtered_df.columns),
+        None,
+    )
     if industry_col:
         industry_map = (
             filtered_df[[symbol_col, industry_col]]
@@ -738,33 +723,17 @@ async def precompute_value_data():
             .astype(str)
             .to_dict()
         )
-    else:
-        industry_map = {}
-
-    # Map symbol -> exchange
-    exchange_map = (
-        filtered_df[[symbol_col, exchange_col]]
-        .dropna()
-        .drop_duplicates(subset=[symbol_col])
-        .set_index(symbol_col)[exchange_col]
-        .astype(str)
-        .to_dict()
-    )
-
-    # Map symbol -> exchange (nếu có cột sàn)
-    if exchange_col:
-        exchange_map = (
-            filtered_df[[symbol_col, exchange_col]]
-            .dropna()
-            .drop_duplicates(subset=[symbol_col])
-            .set_index(symbol_col)[exchange_col]
-            .astype(str)
-            .to_dict()
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Dùng cột ngành '{industry_col}' cho mapping ngành."
         )
     else:
-        exchange_map = {}
+        industry_map = {}
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột ngành, tất cả mã sẽ gán industry='Khác'."
+        )
 
-
+    # Không có cột sàn → exchange_map rỗng, exchange = None
+    exchange_map = {}
 
     # 2️⃣ Đọc các mã đã có trong DB để auto-resume
     existing_records = load_stock_value_cache()
@@ -772,33 +741,44 @@ async def precompute_value_data():
     todo_symbols = [s for s in symbols if s not in processed_symbols]
 
     log.info(
-        f"[{INSTANCE_ID}][VALUE] Tổng mã HOSE+HNX: {len(symbols)} | "
-        f"Đã có trong DB: {len(processed_symbols)} | Cần crawl thêm: {len(todo_symbols)}"
+        f"[{INSTANCE_ID}][VALUE] Đã có trong DB: {len(processed_symbols)} | "
+        f"Cần crawl thêm: {len(todo_symbols)}"
     )
 
     if not todo_symbols:
-        log.info(f"[{INSTANCE_ID}][VALUE] Không còn mã cần crawl, chỉ update timestamp ở lần chạy sau.")
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Không còn mã cần crawl, kết thúc precompute."
+        )
         return
 
     total_batches = math.ceil(len(todo_symbols) / VALUE_BATCH_SIZE)
 
     # 3️⃣ Crawl theo batch & upsert vào DB
     for batch_idx in range(total_batches):
-        batch_syms = todo_symbols[batch_idx * VALUE_BATCH_SIZE : (batch_idx + 1) * VALUE_BATCH_SIZE]
-        log.info(f"[{INSTANCE_ID}][VALUE] Batch {batch_idx+1}/{total_batches} – {len(batch_syms)} mã.")
+        batch_syms = todo_symbols[
+            batch_idx * VALUE_BATCH_SIZE : (batch_idx + 1) * VALUE_BATCH_SIZE
+        ]
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Batch {batch_idx+1}/{total_batches} – "
+            f"{len(batch_syms)} mã."
+        )
 
         batch_records = []
         for sym in batch_syms:
             sym = str(sym).upper()
             try:
-                fin = Finance(symbol=sym, source="VCI")  # nếu source khác, bạn chỉnh lại ở đây
+                fin = Finance(symbol=sym, source="VCI")  # nếu source khác, chỉnh ở đây
                 ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
             except Exception as e:
-                log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio cho {sym}: {e}")
+                log.warning(
+                    f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio cho {sym}: {e}"
+                )
                 continue
 
             if ratio_df is None or ratio_df.empty:
-                log.debug(f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng, bỏ qua.")
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng, bỏ qua."
+                )
                 continue
 
             df = ratio_df.copy()
@@ -834,7 +814,9 @@ async def precompute_value_data():
             roe = _get_metric(["roe", "ROE", "roe_after_tax", "returnOnEquity"])
 
             if pe is None or pb is None or roe is None:
-                log.debug(f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua.")
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua."
+                )
                 continue
 
             industry = industry_map.get(sym, "Khác")
@@ -853,9 +835,14 @@ async def precompute_value_data():
         # Ghi batch vào DB (upsert theo symbol)
         try:
             upsert_stock_value_batch(batch_records)
-            log.info(f"[{INSTANCE_ID}][VALUE] Đã upsert {len(batch_records)} mã trong batch {batch_idx+1}/{total_batches}.")
+            log.info(
+                f"[{INSTANCE_ID}][VALUE] Đã upsert {len(batch_records)} mã "
+                f"trong batch {batch_idx+1}/{total_batches}."
+            )
         except Exception as e:
-            log.exception(f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}")
+            log.exception(
+                f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}"
+            )
 
         # Nghỉ giữa các batch
         if batch_idx < total_batches - 1:
