@@ -1817,11 +1817,13 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
-    now = datetime.utcnow()
+    # ✅ dùng module datetime -> datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
+
     # Kiểm tra nếu admin vừa xác nhận gần đây
     if user_id in pending_clear_confirmations:
         confirm_time = pending_clear_confirmations[user_id]
-        # Nếu admin gõ lại YES trong 30s thì thực hiện xoá
+        # Nếu admin gõ lại lệnh trong 30s thì thực hiện xoá
         if now - confirm_time < timedelta(seconds=30):
             del pending_clear_confirmations[user_id]
 
