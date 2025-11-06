@@ -39,11 +39,14 @@ from db_utils import (
     upsert_stock_value_batch,
     load_stock_value_cache,
     get_stock_value_cache_count,
+    clear_stock_value_cache,
 )
 import psutil
 import time
 import subprocess
 import re
+import csv
+
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -645,6 +648,54 @@ def seconds_until_next_weekly_report():
 
     return max((target - now).total_seconds(), 0)
 
+def load_industry_map_from_csv(path: str = "industry_map_from_topi.csv") -> dict[str, str]:
+    """
+    Đọc file CSV mapping ngành (crawl từ TOPI) và trả về dict:
+        {symbol: industry}
+    CSV mong đợi có cột: symbol, industry (hoặc industry_raw, industry).
+    """
+    mapping: dict[str, str] = {}
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return {}
+
+            # Chuẩn hoá tên cột về lower để linh hoạt hơn
+            cols = [c.lower() for c in reader.fieldnames]
+            try:
+                symbol_idx = cols.index("symbol")
+            except ValueError:
+                log.warning(f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'symbol'.")
+                return {}
+
+            # Ưu tiên cột 'industry', nếu không có thì dùng 'industry_raw'
+            industry_idx = None
+            if "industry" in cols:
+                industry_idx = cols.index("industry")
+            elif "industry_raw" in cols:
+                industry_idx = cols.index("industry_raw")
+            else:
+                log.warning(f"[{INSTANCE_ID}][VALUE] CSV {path} không có 'industry'/'industry_raw'.")
+                return {}
+
+            for row in reader:
+                values = list(row.values())
+                sym = (values[symbol_idx] or "").strip().upper()
+                ind = (values[industry_idx] or "").strip()
+                if not sym or not ind:
+                    continue
+
+                mapping[sym] = ind
+
+    except FileNotFoundError:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không tìm thấy file {path}, fallback industry='Khác'.")
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi đọc CSV {path}: {e}")
+
+    return mapping
+
+
 # ==============================
 # 🧮 SCREENER VALUE – PRECOMPUTE
 # ==============================
@@ -704,13 +755,26 @@ async def precompute_value_data():
 
     filtered_df[symbol_col] = filtered_df[symbol_col].astype(str).str.upper()
     symbols = filtered_df[symbol_col].dropna().unique().tolist()
-    log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã lấy được: {len(symbols)}")
+    log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã từ Listing(): {len(symbols)}")
 
-    # Không có cột ngành → industry mặc định = "Khác"
-    industry_map = {}
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột ngành, tất cả mã sẽ gán industry='Khác'."
-    )
+    # 🔹 Load industry_map từ CSV (Topi)
+    industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
+    if industry_map:
+        # Chỉ giữ lại những mã có trong CSV để crawl
+        symbols = [s for s in symbols if s in industry_map]
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ industry_map_from_topi.csv. "
+            f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl (chỉ lấy mã có trong CSV)."
+        )
+    else:
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Không load được industry_map_from_topi.csv, "
+            "tất cả mã sẽ gán industry='Khác' (dùng toàn bộ symbols)."
+        )
+
+    # Nếu không load được industry_map thì symbols giữ nguyên
+
+
 
     # Không có cột sàn → exchange_map rỗng, exchange = None
     exchange_map = {}
@@ -917,6 +981,22 @@ def compute_value_screener(top_n: int = 10):
     if not required_cols.issubset(df.columns):
         log.error(f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột bắt buộc. Columns: {df.columns.tolist()}")
         return None
+
+    # 🔹 Chỉ giữ các mã có trong file CSV (Topi)
+    industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
+    if industry_map:
+        df = df[df["symbol"].isin(industry_map.keys())]
+        if df.empty:
+            log.warning(
+                f"[{INSTANCE_ID}][VALUE] Sau khi lọc theo industry_map_from_topi.csv thì không còn mã nào."
+            )
+            return None
+    else:
+        log.warning(
+            f"[{INSTANCE_ID}][VALUE] Không load được industry_map_from_topi.csv trong compute_value_screener, "
+            "sẽ dùng toàn bộ dữ liệu stock_value_cache hiện có."
+        )
+
 
     # Xử lý dữ liệu hợp lệ
     df = df.dropna(subset=["pe", "pb", "roe", "industry"])
@@ -1645,12 +1725,15 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     result = compute_value_screener(top_n=10)
     if not result or not result.get("rows"):
         await update.message.reply_text(
-            "⚠️ Dữ liệu bộ lọc *Value* hiện chưa sẵn sàng.\n"
-            "Bot sẽ tự động cập nhật vào 00:00 từ Thứ 2 đến Thứ 6.\n"
-            "Nếu đây là lần đầu bạn bật bot, hãy thử lại sau vài phút nhé.",
+            "⚠️ Dữ liệu bộ lọc *Value* hiện chưa sẵn sàng.\n\n"
+            "Trường hợp này thường xảy ra khi bot mới được deploy "
+            "hoặc admin vừa dùng lệnh */screener_value_clear* để reset dữ liệu.\n\n"
+            "📅 Dữ liệu sẽ được crawl lại *tự động* vào 00:00 các ngày Thứ 2 đến Thứ 6.\n"
+            "👉 Bạn hãy đợi đến sáng ngày mai rồi thử lại nhé.",
             parse_mode="Markdown",
         )
         return
+
  
     as_of = result.get("as_of")
     rows = result["rows"]
@@ -1665,13 +1748,15 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         roe_stock_str = format_roe_pct(r["roe"])
         roe_ind_str = format_roe_pct(r["roe_industry"])
         industry_name = r["industry"] or "Khác"
+        display_industry = industry_name[:1].upper() + industry_name[1:] if industry_name else "Khác"
 
         lines.append(
-            f"{idx}️⃣ *{r['symbol']}* (Ngành: {industry_name}) – "
+            f"{idx}️⃣ *{r['symbol']}* (Ngành: {display_industry}) – "
             f"P/E {r['pe']:.1f} vs {r['pe_industry']:.1f} | "
             f"P/B {r['pb']:.1f} vs {r['pb_industry']:.1f} | "
             f"ROE {roe_stock_str} vs {roe_ind_str}"
         )
+
 
     lines.append("")
     lines.append("*Tiêu chí lọc:*")
@@ -1682,6 +1767,53 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /screener_value_clear – Xoá toàn bộ cache screener Value (admin only).
+
+    Sau khi clear:
+    - Nếu bot được restart → initial_value_precompute_loop() sẽ tự crawl lại.
+    - Nếu để nguyên → tới 00:00 (T2–T6) screener_value_update_loop() sẽ crawl lại.
+    """
+    if ADMIN_ID is None:
+        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        return
+
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
+        return
+
+    try:
+        before = get_stock_value_cache_count()
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE_CLEAR] Lỗi khi đếm trước khi clear: {e}")
+        before = None
+
+    try:
+        clear_stock_value_cache()
+    except Exception as e:
+        log.exception(f"[{INSTANCE_ID}][VALUE_CLEAR] Lỗi khi TRUNCATE stock_value_cache: {e}")
+        await update.message.reply_text("❌ Gặp lỗi khi xoá cache screener Value. Xem log để kiểm tra chi tiết.")
+        return
+
+    try:
+        after = get_stock_value_cache_count()
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE_CLEAR] Lỗi khi đếm sau khi clear: {e}")
+        after = None
+
+    before_str = str(before) if before is not None else "?"
+    after_str = str(after) if after is not None else "?"
+
+    msg = (
+        f"🧹 Đã xoá dữ liệu cache *screener Value*.\n"
+        f"Trước khi xoá: **{before_str}** dòng.\n"
+        f"Sau khi xoá: **{after_str}** dòng.\n\n"
+        "📅 Dữ liệu sẽ được crawl lại *tự động* vào 00:00 các ngày Thứ 2–Thứ 6,\n"
+        "hoặc ngay khi bot được khởi động lại (precompute lần đầu)."
+    )
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2212,6 +2344,7 @@ async def main():
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
     tg_app.add_handler(CommandHandler("report", cmd_report))
+    tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
 
     async def run_telegram():
         await tg_app.initialize()
