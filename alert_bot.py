@@ -23,7 +23,7 @@ from telegram.ext import (
 from flask import Flask, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
-from vnstock import Trading, Quote
+from vnstock import Trading, Quote, Listing, Finance
 from db_utils import (
     init_db,
     get_all_watch,
@@ -36,6 +36,9 @@ from db_utils import (
     save_bot_message,
     get_bot_messages_in_range,
     delete_bot_messages_in_range,
+    upsert_stock_value_batch,
+    load_stock_value_cache,
+    get_stock_value_cache_count,
 )
 import psutil
 import time
@@ -49,6 +52,10 @@ PORT = int(os.getenv("PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# Cấu hình batch cho screener Value
+VALUE_BATCH_SIZE = 50       # 50 mã / batch
+VALUE_BATCH_SLEEP = 2       # nghỉ 2 giây giữa các batch
 
 # 🧠 Application Telegram dùng chung cho webhook
 tg_app = None
@@ -636,7 +643,283 @@ def seconds_until_next_weekly_report():
 
     return max((target - now).total_seconds(), 0)
 
+# ==============================
+# 🧮 SCREENER VALUE – PRECOMPUTE
+# ==============================
 
+async def precompute_value_data():
+    """
+    Crawl dữ liệu P/E, P/B, ROE cho toàn bộ HOSE + HNX
+    và lưu vào bảng stock_value_cache (Postgres).
+
+    - Chạy theo batch (50 mã/batch)
+    - Nghỉ 2s giữa các batch tránh rate-limit
+    - Auto-resume: đọc các mã đã có trong DB và chỉ crawl phần còn thiếu
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    started_at = datetime.datetime.now(vn_tz)
+    log.info(f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data lúc {started_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # 1️⃣ Lấy danh sách tất cả mã
+    try:
+        listing = Listing()
+        listing_df = listing.all_symbols()
+    except Exception as e:
+        log.exception(f"[{INSTANCE_ID}][VALUE] Lỗi gọi Listing().all_symbols(): {e}")
+        return
+
+    if listing_df is None or listing_df.empty:
+        log.warning(f"[{INSTANCE_ID}][VALUE] listing.all_symbols() trả về rỗng, dừng.")
+        return
+
+    # Xác định cột sàn giao dịch
+    exchange_col_candidates = ["exchange", "exchangeName", "floor"]
+    exchange_col = next((c for c in exchange_col_candidates if c in listing_df.columns), None)
+    if not exchange_col:
+        log.error(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn giao dịch trong listing_df. Columns: {listing_df.columns.tolist()}")
+        return
+
+    # Lọc HOSE + HNX
+    mask = listing_df[exchange_col].astype(str).str.upper().isin(["HOSE", "HNX"])
+    filtered_df = listing_df[mask].copy()
+    if filtered_df.empty:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không có mã nào thuộc HOSE/HNX sau khi lọc.")
+        return
+
+    # Cột loại chứng khoán (nếu có) -> chỉ lấy cổ phiếu
+    type_candidates = ["type", "stock_type", "securityType"]
+    type_col = next((c for c in type_candidates if c in filtered_df.columns), None)
+    if type_col:
+        filtered_df[type_col] = filtered_df[type_col].astype(str).str.upper()
+        filtered_df = filtered_df[
+            filtered_df[type_col].isin(["STOCK", "CỔ PHIẾU", "SHARE"])
+        ]
+
+    # Cột mã
+    symbol_col_candidates = ["symbol", "ticker", "code"]
+    symbol_col = next((c for c in symbol_col_candidates if c in filtered_df.columns), None)
+    if not symbol_col:
+        log.error(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột mã (symbol/ticker/code). Columns: {filtered_df.columns.tolist()}")
+        return
+
+    filtered_df[symbol_col] = filtered_df[symbol_col].astype(str).str.upper()
+    symbols = filtered_df[symbol_col].dropna().unique().tolist()
+
+    # Map symbol -> industry
+    industry_candidates = ["industry_name_vi", "industry_name", "industry", "icb_name_vi", "icb_name"]
+    industry_col = next((c for c in industry_candidates if c in filtered_df.columns), None)
+    if industry_col:
+        industry_map = (
+            filtered_df[[symbol_col, industry_col]]
+            .dropna()
+            .drop_duplicates(subset=[symbol_col])
+            .set_index(symbol_col)[industry_col]
+            .astype(str)
+            .to_dict()
+        )
+    else:
+        industry_map = {}
+
+    # Map symbol -> exchange
+    exchange_map = (
+        filtered_df[[symbol_col, exchange_col]]
+        .dropna()
+        .drop_duplicates(subset=[symbol_col])
+        .set_index(symbol_col)[exchange_col]
+        .astype(str)
+        .to_dict()
+    )
+
+    # 2️⃣ Đọc các mã đã có trong DB để auto-resume
+    existing_records = load_stock_value_cache()
+    processed_symbols = {r["symbol"] for r in existing_records if r.get("symbol")}
+    todo_symbols = [s for s in symbols if s not in processed_symbols]
+
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Tổng mã HOSE+HNX: {len(symbols)} | "
+        f"Đã có trong DB: {len(processed_symbols)} | Cần crawl thêm: {len(todo_symbols)}"
+    )
+
+    if not todo_symbols:
+        log.info(f"[{INSTANCE_ID}][VALUE] Không còn mã cần crawl, chỉ update timestamp ở lần chạy sau.")
+        return
+
+    total_batches = math.ceil(len(todo_symbols) / VALUE_BATCH_SIZE)
+
+    # 3️⃣ Crawl theo batch & upsert vào DB
+    for batch_idx in range(total_batches):
+        batch_syms = todo_symbols[batch_idx * VALUE_BATCH_SIZE : (batch_idx + 1) * VALUE_BATCH_SIZE]
+        log.info(f"[{INSTANCE_ID}][VALUE] Batch {batch_idx+1}/{total_batches} – {len(batch_syms)} mã.")
+
+        batch_records = []
+        for sym in batch_syms:
+            sym = str(sym).upper()
+            try:
+                fin = Finance(symbol=sym, source="VCI")  # nếu source khác, bạn chỉnh lại ở đây
+                ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
+            except Exception as e:
+                log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio cho {sym}: {e}")
+                continue
+
+            if ratio_df is None or ratio_df.empty:
+                log.debug(f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng, bỏ qua.")
+                continue
+
+            df = ratio_df.copy()
+
+            # Sắp xếp để lấy kỳ mới nhất (tuỳ cột có trong DataFrame)
+            if "year" in df.columns:
+                df = df.sort_values("year", ascending=False)
+            elif "report_period" in df.columns:
+                df = df.sort_values("report_period", ascending=False)
+
+            latest = df.iloc[0]
+
+            def _get_metric(candidates):
+                for c in candidates:
+                    if c in latest.index and pd.notna(latest[c]):
+                        val = latest[c]
+                        try:
+                            if hasattr(val, "item"):
+                                val = val.item()
+                        except Exception:
+                            pass
+                        try:
+                            val = float(val)
+                        except Exception:
+                            continue
+                        if math.isnan(val) or val <= 0:
+                            continue
+                        return val
+                return None
+
+            pe = _get_metric(["pe", "P/E", "pe_ttm", "PE", "priceToEarning"])
+            pb = _get_metric(["pb", "P/B", "PB", "priceToBook"])
+            roe = _get_metric(["roe", "ROE", "roe_after_tax", "returnOnEquity"])
+
+            if pe is None or pb is None or roe is None:
+                log.debug(f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua.")
+                continue
+
+            industry = industry_map.get(sym, "Khác")
+            exchange = exchange_map.get(sym, None)
+
+            record = {
+                "symbol": sym,
+                "exchange": exchange,
+                "industry": industry,
+                "pe": pe,
+                "pb": pb,
+                "roe": roe,
+            }
+            batch_records.append(record)
+
+        # Ghi batch vào DB (upsert theo symbol)
+        try:
+            upsert_stock_value_batch(batch_records)
+            log.info(f"[{INSTANCE_ID}][VALUE] Đã upsert {len(batch_records)} mã trong batch {batch_idx+1}/{total_batches}.")
+        except Exception as e:
+            log.exception(f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}")
+
+        # Nghỉ giữa các batch
+        if batch_idx < total_batches - 1:
+            await asyncio.sleep(VALUE_BATCH_SLEEP)
+
+    finished_at = datetime.datetime.now(vn_tz)
+    duration = (finished_at - started_at).total_seconds()
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Hoàn thành precompute_value_data sau {duration:.1f}s. "
+        f"Tổng mã trong DB hiện tại: {get_stock_value_cache_count()}."
+    )
+
+def compute_value_screener(top_n: int = 10):
+    """
+    Đọc dữ liệu từ DB (stock_value_cache), tính trung bình ngành & value_score,
+    lọc theo:
+        - P/E < P/E ngành
+        - P/B < P/B ngành
+        - ROE > ROE ngành
+
+    Trả về: {"as_of": "...", "rows": [ ... ]} hoặc None nếu chưa có data.
+    """
+    rows = load_stock_value_cache()
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    required_cols = {"symbol", "industry", "pe", "pb", "roe"}
+    if not required_cols.issubset(df.columns):
+        log.error(f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột bắt buộc. Columns: {df.columns.tolist()}")
+        return None
+
+    # Xử lý dữ liệu hợp lệ
+    df = df.dropna(subset=["pe", "pb", "roe", "industry"])
+    df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
+    if df.empty:
+        return None
+
+    # Tính trung bình ngành
+    industry_group = df.groupby("industry").agg(
+        pe_industry=("pe", "mean"),
+        pb_industry=("pb", "mean"),
+        roe_industry=("roe", "mean"),
+    )
+    df = df.join(industry_group, on="industry")
+
+    # Lọc theo tiêu chí Value
+    df = df[
+        (df["pe"] < df["pe_industry"])
+        & (df["pb"] < df["pb_industry"])
+        & (df["roe"] > df["roe_industry"])
+    ]
+    if df.empty:
+        return None
+
+    # Tính điểm Value
+    df["value_score"] = (
+        (df["pe_industry"] / df["pe"] * 0.4)
+        + (df["pb_industry"] / df["pb"] * 0.2)
+        + (df["roe"] / df["roe_industry"] * 0.4)
+    )
+
+    df = df.sort_values("value_score", ascending=False)
+
+    # Tính as_of = max(updated_at) nếu có
+    as_of = None
+    if "updated_at" in df.columns and not df["updated_at"].isna().all():
+        latest_ts = df["updated_at"].max()
+        try:
+            # chuyển về giờ VN cho đẹp
+            if isinstance(latest_ts, datetime.datetime):
+                vn_tz = pytz.timezone(TIMEZONE)
+                as_of = latest_ts.astimezone(vn_tz).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                as_of = str(latest_ts)
+        except Exception:
+            as_of = str(latest_ts)
+
+    top_df = df.head(top_n).copy()
+
+    result_rows = []
+    for _, r in top_df.iterrows():
+        result_rows.append(
+            {
+                "symbol": r["symbol"],
+                "industry": r["industry"],
+                "pe": float(r["pe"]),
+                "pb": float(r["pb"]),
+                "roe": float(r["roe"]),
+                "pe_industry": float(r["pe_industry"]),
+                "pb_industry": float(r["pb_industry"]),
+                "roe_industry": float(r["roe_industry"]),
+                "value_score": float(r["value_score"]),
+            }
+        )
+
+    return {
+        "as_of": as_of,
+        "rows": result_rows,
+    }
 
 # ==============================================
 # BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
@@ -757,6 +1040,47 @@ async def daily_report_loop():
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi tổng quát: {e}")
             await asyncio.sleep(300)  # 5 phút retry nếu lỗi tổng
+
+async def screener_value_update_loop():
+    """
+    Chạy precompute_value_data() vào 00:00 (giờ VN) các ngày Thứ 2–Thứ 6.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+
+    while True:
+        loop_id += 1
+        now = datetime.datetime.now(vn_tz)
+
+        # Tính thời điểm 00:00 tiếp theo
+        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += datetime.timedelta(days=1)
+
+        # Nhảy qua cuối tuần (T7=5, CN=6)
+        while next_run.weekday() > 4:
+            next_run += datetime.timedelta(days=1)
+
+        wait_sec = (next_run - now).total_seconds()
+        log.info(
+            f"[{INSTANCE_ID}][VALUE {loop_id}] Ngủ {wait_sec:.0f}s tới 00:00 ngày {next_run.date()} "
+            f"(weekday={next_run.weekday()})."
+        )
+        await asyncio.sleep(max(wait_sec, 0))
+
+        # Đảm bảo đúng ngày T2–T6
+        now = datetime.datetime.now(vn_tz)
+        if now.weekday() > 4:
+            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Thức dậy nhưng không phải T2–T6, bỏ qua.")
+            continue
+
+        try:
+            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Bắt đầu chạy precompute_value_data() theo lịch.")
+            await precompute_value_data()
+        except Exception:
+            log.exception(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi chạy precompute_value_data() theo lịch.")
+            # tránh spam lỗi, nghỉ 1h rồi tính lịch mới
+            await asyncio.sleep(3600)
 
 
 def send_msg_to(chat_id: int, text: str):
@@ -1167,6 +1491,57 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /screener_value – Lọc cổ phiếu định giá hấp dẫn (Value) từ cache DB.
+    """
+    if not BOT_ACTIVE:
+        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        return
+
+    if not update or not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/screener_value", ADMIN_ID)
+
+    result = compute_value_screener(top_n=10)
+    if not result or not result.get("rows"):
+        await update.message.reply_text(
+            "⚠️ Dữ liệu bộ lọc *Value* hiện chưa sẵn sàng.\n"
+            "Bot sẽ tự động cập nhật vào 00:00 từ Thứ 2 đến Thứ 6.\n"
+            "Nếu đây là lần đầu bạn bật bot, hãy thử lại sau vài phút nhé.",
+            parse_mode="Markdown",
+        )
+        return
+
+    as_of = result.get("as_of")
+    rows = result["rows"]
+
+    lines = []
+    lines.append("💰 *Bộ lọc Value – Định giá hấp dẫn* (HOSE + HNX)")
+    if as_of:
+        lines.append(f"_Dữ liệu cập nhật đến: {as_of}_")
+    lines.append("")
+
+    for idx, r in enumerate(rows, start=1):
+        lines.append(
+            f"{idx}️⃣ *{r['symbol']}* – "
+            f"P/E {r['pe']:.1f} vs {r['pe_industry']:.1f} | "
+            f"P/B {r['pb']:.1f} vs {r['pb_industry']:.1f} | "
+            f"ROE {r['roe']:.1f}% vs {r['roe_industry']:.1f}%"
+        )
+
+    lines.append("")
+    lines.append("*Tiêu chí lọc:*")
+    lines.append("• P/E & P/B thấp hơn trung bình ngành")
+    lines.append("• ROE cao hơn trung bình ngành")
+    lines.append("")
+    lines.append("_Lưu ý: Đây chỉ là bộ lọc định lượng, không thay thế phân tích chi tiết._")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
 
 
 
@@ -1608,6 +1983,23 @@ async def main():
     BOT_ACTIVE = get_bot_active()
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
+    # 🔍 Nếu cache screener Value trong DB đang trống, chạy precompute 1 lần ngay khi khởi động
+    try:
+        current_count = get_stock_value_cache_count()
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi khi kiểm tra stock_value_cache: {e}")
+        current_count = 0
+
+    if current_count == 0:
+        log.info(f"[{INSTANCE_ID}][VALUE] DB chưa có dữ liệu screener Value, chạy precompute_value_data() lần đầu.")
+        try:
+            await precompute_value_data()
+        except Exception:
+            log.exception(f"[{INSTANCE_ID}][VALUE] Lỗi khi chạy precompute_value_data() lần đầu.")
+    else:
+        log.info(f"[{INSTANCE_ID}][VALUE] stock_value_cache đã có {current_count} dòng, chỉ cập nhật thêm theo lịch 00:00.")
+
+
     # 📨 Gửi thông báo cho admin khi bot khởi động lại
     if ADMIN_ID:
         try:
@@ -1682,13 +2074,17 @@ async def main():
         .build()
     )
 
+    #User command handlers
     tg_app.add_handler(CommandHandler("start", cmd_start))
-    tg_app.add_handler(CommandHandler("on", cmd_on))
-    tg_app.add_handler(CommandHandler("off", cmd_off))    
-    tg_app.add_handler(CommandHandler("status", cmd_status))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
+    tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
+
+    # Admin command handlers
+    tg_app.add_handler(CommandHandler("on", cmd_on))
+    tg_app.add_handler(CommandHandler("off", cmd_off))
+    tg_app.add_handler(CommandHandler("status", cmd_status))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
@@ -1731,6 +2127,7 @@ async def main():
         alert_loop(),           # cảnh báo realtime trong giờ giao dịch
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
+        screener_value_update_loop(), # 💰 precompute screener Value 00:00 T2–T6
         run_telegram(),
         auto_on_after_delay(initial_active),  # ✅ truyền trạng thái ban đầu
     )
