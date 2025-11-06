@@ -55,8 +55,8 @@ ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
 # Cấu hình batch cho screener Value
-VALUE_BATCH_SIZE = 50       # 50 mã / batch
-VALUE_BATCH_SLEEP = 2       # nghỉ 2 giây giữa các batch
+VALUE_BATCH_SIZE = 30       # 50 mã / batch
+VALUE_BATCH_SLEEP = 3       # nghỉ 2 giây giữa các batch
 MIN_PENNY_PRICE = 15000      # Giá tối thiểu (VND) để KHÔNG bị coi là penny
 
 # 🧠 Application Telegram dùng chung cho webhook
@@ -1272,6 +1272,45 @@ async def screener_value_update_loop():
             # tránh spam lỗi, nghỉ 1h rồi tính lịch mới
             await asyncio.sleep(3600)
 
+async def initial_value_precompute_loop():
+    """
+    Chạy 1 lần sau khi bot khởi động:
+    - Đợi vài giây cho service & webhook mở port xong
+    - Kiểm tra DB, nếu chưa có dữ liệu screener Value thì crawl lần đầu
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 1
+
+    # Đợi 20s cho Hypercorn/Flask & Telegram webhook ổn định
+    await asyncio.sleep(20)
+
+    try:
+        current_count = get_stock_value_cache_count()
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi kiểm tra stock_value_cache: {e}")
+        current_count = 0
+
+    if current_count == 0:
+        now = datetime.datetime.now(vn_tz)
+        log.info(
+            f"[{INSTANCE_ID}][VALUE {loop_id}] DB chưa có dữ liệu screener Value, "
+            f"bắt đầu precompute_value_data() lần đầu (background) lúc {now.strftime('%Y-%m-%d %H:%M:%S')}."
+        )
+        try:
+            await precompute_value_data()
+        except Exception:
+            log.exception(
+                f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi chạy precompute_value_data() lần đầu (background)."
+            )
+    else:
+        log.info(
+            f"[{INSTANCE_ID}][VALUE {loop_id}] stock_value_cache đã có {current_count} dòng, "
+            "không cần precompute lần đầu."
+        )
+
+    # Kết thúc loop một lần, không lặp lại
+    log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] initial_value_precompute_loop() kết thúc.")
+
 
 def escape_markdown_v2(text: str) -> str:
     """
@@ -2185,23 +2224,6 @@ async def main():
     BOT_ACTIVE = get_bot_active()
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
-    # 🔍 Nếu cache screener Value trong DB đang trống, chạy precompute 1 lần ngay khi khởi động
-    try:
-        current_count = get_stock_value_cache_count()
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi khi kiểm tra stock_value_cache: {e}")
-        current_count = 0
-
-    if current_count == 0:
-        log.info(f"[{INSTANCE_ID}][VALUE] DB chưa có dữ liệu screener Value, chạy precompute_value_data() lần đầu.")
-        try:
-            await precompute_value_data()
-        except Exception:
-            log.exception(f"[{INSTANCE_ID}][VALUE] Lỗi khi chạy precompute_value_data() lần đầu.")
-    else:
-        log.info(f"[{INSTANCE_ID}][VALUE] stock_value_cache đã có {current_count} dòng, chỉ cập nhật thêm theo lịch 00:00.")
-
-
     # 📨 Gửi thông báo cho admin khi bot khởi động lại
     if ADMIN_ID:
         try:
@@ -2325,11 +2347,12 @@ async def main():
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu để truyền vào hàm auto_on
 
     await asyncio.gather(
-        serve(flask_app, config),
+        serve(flask_app, config), # mở port HTTP cho Render kiểm tra
         alert_loop(),           # cảnh báo realtime trong giờ giao dịch
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
         screener_value_update_loop(), # 💰 precompute screener Value 00:00 T2–T6
+        initial_value_precompute_loop(), # chạy 1 lần sau khi khởi động (background)
         run_telegram(),
         auto_on_after_delay(initial_active),  # ✅ truyền trạng thái ban đầu
     )
