@@ -2215,8 +2215,8 @@ async def alert_loop():
 
                 # Gửi nếu có thông báo
                 if messages:
-                    header = f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*\n--------------------------------"
-                    send_msg_to(chat_id, header + "\n" + "\n".join(messages))
+                    header = f"--------------------------------\n⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*"
+                    send_msg_to(chat_id,messages + "\n".join(header))
 
                 all_state[chat_key] = personal_state
 
