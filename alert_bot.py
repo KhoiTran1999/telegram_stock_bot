@@ -47,6 +47,8 @@ import subprocess
 import re
 import csv
 from datetime import timedelta
+from telegram.error import BadRequest
+
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -1297,30 +1299,71 @@ def escape_markdown_v2(text: str) -> str:
     """
     Escape tất cả ký tự đặc biệt theo Markdown V2:
     _ * [ ] ( ) ~ ` > # + - = | { } . !
+    Dùng được cả với Markdown v1.
     """
-    return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', text)
+    if text is None:
+        text = ""
+    return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', str(text))
+
+
+async def reply_md(update: Update, text: str, **kwargs):
+    """
+    Gửi tin nhắn Markdown an toàn:
+    - Lần 1: gửi nguyên văn (giữ format bạn viết).
+    - Nếu lỗi 'Can't parse entities': log lại, escape toàn bộ và gửi lại.
+    """
+    try:
+        return await reply_md(
+            text,
+            parse_mode="Markdown",
+            **kwargs,
+        )
+    except BadRequest as e:
+        logging.warning(f"[Markdown error] {e} | text={text!r}")
+        safe_text = escape_markdown_v2(text)
+        return await reply_md(
+            safe_text,
+            parse_mode="Markdown",
+            **kwargs,
+        )
 
 def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown"):
-    """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1)."""
+    """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1) với fallback an toàn."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    params = {
-        "chat_id": chat_id,
-        "text": text,
-    }
-    if parse_mode:
-        params["parse_mode"] = parse_mode
-
-    try:
+    def _do_send(t: str, mode: str | None):
+        params = {
+            "chat_id": chat_id,
+            "text": t,
+        }
+        if mode:
+            params["parse_mode"] = mode
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
+        return data
+
+    try:
+        # Lần 1: gửi nguyên văn
+        data = _do_send(text, parse_mode)
+
+        # Nếu lỗi do Markdown -> escape và gửi lại
+        if (not data.get("ok")
+            and parse_mode == "Markdown"
+            and "description" in data
+            and "can't parse entities" in data["description"].lower()):
+            log.warning(f"[WARN] Markdown parse error, retry with escaped text: {data}")
+            safe_text = escape_markdown_v2(text)
+            data = _do_send(safe_text, parse_mode)
+
         if data.get("ok") and "result" in data:
             msg_id = data["result"]["message_id"]
             save_bot_message(chat_id, msg_id)
         else:
             log.warning(f"[WARN] Telegram send failed: {data}")
+
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
+
 
 
 async def auto_on_after_delay(initial_active: bool):
@@ -1358,7 +1401,7 @@ async def auto_on_after_delay(initial_active: bool):
 # ==============================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
-        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        await reply_md("⚙️ Bot đang bảo trì.")
         return
     
     chat_id = update.effective_chat.id
@@ -1369,7 +1412,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if lst is None:
         save_watch_list_for_chat(chat_id, [])
 
-    await update.message.reply_text(
+    await reply_md(
     "╔════════════════════════════════╗\n"
     "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n"
     "╚════════════════════════════════╝\n\n"
@@ -1385,7 +1428,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• /screener_value – Bộ lọc *Value theo từng ngành*, hiển thị Top 3 cổ phiếu có định giá hấp dẫn nhất.\n\n"
     "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
-    "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!", parse_mode="Markdown"
+    "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!"
     )
 
 
@@ -1394,10 +1437,10 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
 
     if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        await reply_md("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Không có quyền.")
+        await reply_md("⛔ Không có quyền.")
         return
 
     BOT_ACTIVE = True
@@ -1410,7 +1453,7 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     log.info("[ADMIN] Bot đã bật (BOT_ACTIVE=True, lưu vào DB).")
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await reply_md(update, msg)
 
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1418,10 +1461,10 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
 
     if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        await reply_md("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Không có quyền.")
+        await reply_md("⛔ Không có quyền.")
         return
 
     BOT_ACTIVE = False
@@ -1434,21 +1477,21 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     log.info("[ADMIN] Bot đã tắt (BOT_ACTIVE=False, lưu vào DB).")
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await reply_md(update, msg)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiển thị trạng thái bot hiện tại (admin only)."""
     if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        await reply_md("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Không có quyền.")
+        await reply_md("⛔ Không có quyền.")
         return
 
     current_state = get_bot_active()
     status = "🟢 Đang *hoạt động bình thường*" if current_state else "🔴 Đang *bảo trì*"
-    await update.message.reply_text(
-        f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)", parse_mode="Markdown"
+    await reply_md(
+        f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)"
     )
 
 
@@ -1463,7 +1506,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - Sau khi add: tóm tắt thông tin + hiển thị danh sách hiện tại
     """
     if not BOT_ACTIVE:
-        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        await reply_md("⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
@@ -1471,11 +1514,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1️⃣ Kiểm tra tham số
     if not context.args:
-        await update.message.reply_text(
+        await reply_md(
             "⚠️ Cách dùng: /add <MÃ>\n"
             "Ví dụ: /add HPG, /add SSI, /add VNM\n"
-            "(*Chỉ hỗ trợ mã cổ phiếu gồm 3 chữ cái.*)",
-            parse_mode="Markdown",
+            "(*Chỉ hỗ trợ mã cổ phiếu gồm 3 chữ cái.*)"
         )
         return
 
@@ -1483,11 +1525,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2️⃣ Kiểm tra định dạng mã: đúng 3 chữ cái A–Z
     if len(symbol) != 3 or not symbol.isalpha():
-        await update.message.reply_text(
+        await reply_md(
             "⚠️ Mã không hợp lệ.\n"
             "Hiện bot chỉ cho phép thêm *mã cổ phiếu* gồm đúng 3 chữ cái, "
-            "ví dụ: HPG, SSI, VNM.",
-            parse_mode="Markdown",
+            "ví dụ: HPG, SSI, VNM."
         )
         return
 
@@ -1497,19 +1538,17 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df = trading.price_board([symbol])
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi gọi price_board cho {symbol}: {e}")
-        await update.message.reply_text(
-            f"⚠️ Không lấy được dữ liệu cho mã *{symbol}*. Vui lòng thử lại sau.",
-            parse_mode="Markdown",
+        await reply_md(
+            f"⚠️ Không lấy được dữ liệu cho mã *{symbol}*. Vui lòng thử lại sau."
         )
         return
 
     # Không có dữ liệu -> xem như mã không hợp lệ / không giao dịch
     if df is None or len(df) == 0:
-        await update.message.reply_text(
+        await reply_md(
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
-            parse_mode="Markdown",
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)"
         )
         return
 
@@ -1562,21 +1601,19 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 4️⃣ Trường hợp giá = 0 (thường là trước giờ giao dịch)
     if price is None:
-        await update.message.reply_text(
+        await reply_md(
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)",
-            parse_mode="Markdown",
+            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)"
         )
         return
 
     if price == 0:
-        await update.message.reply_text(
+        await reply_md(
             f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
             "🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
             "tạm thời không thêm được mã mới do sàn chưa cập nhật dữ liệu.\n\n"
-            "👉 Vui lòng thử lại sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác.",
-            parse_mode="Markdown",
+            "👉 Vui lòng thử lại sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác."
         )
         return
 
@@ -1591,7 +1628,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
             f"{symbols_text}"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await reply_md(update, msg)
         return
 
     # 6️⃣ Thêm mã mới vào danh sách
@@ -1627,7 +1664,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         summary += watchlist_section
 
-        await update.message.reply_text(summary, parse_mode="Markdown")
+        await reply_md(summary, parse_mode="Markdown")
 
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi format summary cho {symbol}: {e}")
@@ -1635,7 +1672,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Đã thêm *{symbol}* vào danh sách theo dõi.\n"
             f"{watchlist_section}"
         )
-        await update.message.reply_text(fallback_msg, parse_mode="Markdown")
+        await reply_md(fallback_msg, parse_mode="Markdown")
 
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1646,7 +1683,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - Nếu mã không có: báo lỗi nhẹ + gợi ý dùng /list.
     """
     if not BOT_ACTIVE:
-        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        await reply_md("⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
@@ -1654,7 +1691,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Không truyền mã -> hướng dẫn
     if not context.args:
-        await update.message.reply_text("⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
+        await reply_md("⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
         return
 
     symbol = context.args[0].upper().strip()
@@ -1679,19 +1716,18 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Dùng /add <MÃ> để bắt đầu thêm lại danh mục."
             )
 
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await reply_md(update, msg)
     else:
-        await update.message.reply_text(
+        await reply_md(
             f"❌ *{symbol}* không có trong danh sách theo dõi.\n"
-            "Bạn có thể dùng /list để kiểm tra lại danh sách hiện tại.",
-            parse_mode="Markdown",
+            "Bạn có thể dùng /list để kiểm tra lại danh sách hiện tại."
         )
 
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
-        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        await reply_md("⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
@@ -1700,7 +1736,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lst = get_watch_list_for_chat(chat_id) or []
 
     if not lst:
-        await update.message.reply_text(
+        await reply_md(
             "📭 Danh sách theo dõi hiện đang trống.\n"
             "Bạn có thể dùng lệnh /add <MÃ> để thêm cổ phiếu vào danh sách.",
         )
@@ -1715,7 +1751,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Bạn có thể dùng /remove <MÃ> để xoá một mã khỏi danh sách."
     )
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await reply_md(update, msg)
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1723,7 +1759,7 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     (dựa trên P/E, P/B thấp và ROE cao so với trung bình ngành)
     """
     if not BOT_ACTIVE:
-        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        await reply_md("⚙️ Bot đang bảo trì.")
         return
 
     if not update or not update.effective_chat:
@@ -1738,13 +1774,12 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         or not result.get("industries")
         or all(not ind["rows"] for ind in result["industries"])
     ):
-        await update.message.reply_text(
+        await reply_md(
             "⚠️ Dữ liệu bộ lọc *Value* hiện chưa sẵn sàng.\n\n"
             "Trường hợp này thường xảy ra khi bot mới được deploy "
             "hoặc admin vừa dùng lệnh */screener_value_clear* để reset dữ liệu.\n\n"
             "📅 Dữ liệu sẽ được crawl lại *tự động* vào 00:00 các ngày Thứ 2 đến Thứ 6.\n"
-            "👉 Bạn hãy đợi đến sáng ngày mai rồi thử lại nhé.",
-            parse_mode="Markdown",
+            "👉 Bạn hãy đợi đến sáng ngày mai rồi thử lại nhé."
         )
         return
 
@@ -1798,7 +1833,7 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if len(text) > 3900:
         text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await reply_md(text, parse_mode="Markdown")
 
 
 # Dùng dict lưu tạm xác nhận theo admin_id
@@ -1809,12 +1844,12 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
     /screener_value_clear – Yêu cầu xác nhận trước khi xoá cache Value.
     """
     if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        await reply_md("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
 
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
+        await reply_md("⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
     # ✅ dùng module datetime -> datetime.datetime.utcnow()
@@ -1837,7 +1872,7 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
                 f"Sau khi xoá: **{after}** dòng.\n\n"
                 "📅 Dữ liệu sẽ được crawl lại tự động vào 00:00 (T2–T6) hoặc khi bot khởi động lại."
             )
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await reply_md(update, msg)
             return
         else:
             # Quá hạn 30s thì reset xác nhận
@@ -1845,7 +1880,7 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
 
     # Nếu chưa có xác nhận, yêu cầu xác nhận
     pending_clear_confirmations[user_id] = now
-    await update.message.reply_text(
+    await reply_md(
         "⚠️ *Xác nhận xoá cache screener Value*\n\n"
         "Thao tác này sẽ xoá toàn bộ dữ liệu định giá hiện tại.\n"
         "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận.",
@@ -1856,46 +1891,62 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Chỉ admin mới có quyền dùng lệnh này.")
+        await reply_md("⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
     if not context.args:
-        await update.message.reply_text("❗ Vui lòng nhập nội dung thông báo sau lệnh /announce.")
+        await reply_md("❗ Vui lòng nhập nội dung thông báo sau lệnh /announce.")
         return
 
+    # Lấy nội dung announce từ admin
     text = " ".join(context.args)
     text = text.replace("/n", "\n").replace("\\n", "\n")  # ✨ xử lý xuống dòng
 
     # Gửi cho tất cả user
     all_watch = get_all_watch()
     sent = 0
+
     for chat_key in all_watch.keys():
         try:
-            # Gửi text thuần, không dùng Markdown để tránh lỗi parse
-            send_msg_to(int(chat_key), text, parse_mode=None)
+            chat_id = int(chat_key)
+
+            try:
+                # Thử gửi với Markdown (admin có thể dùng format nếu muốn)
+                send_msg_to(chat_id, text, parse_mode="Markdown")
+            except BadRequest as e:
+                # Nếu Markdown lỗi (thường do ký tự _ * [ ] ...), thì escape và gửi lại
+                log.warning(f"Lỗi Markdown khi announce tới {chat_id}: {e}. Fallback sang escaped Markdown.")
+                safe_text = escape_markdown_v2(text)
+                send_msg_to(chat_id, safe_text, parse_mode="Markdown")
+
             sent += 1
             await asyncio.sleep(0.1)
+
         except Exception as e:
             log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
 
+    # Thông báo lại cho admin (chuỗi này là cố định nên Markdown an toàn)
+    await reply_md(
+        f"✅ Đã gửi thông báo tới *{sent}* người dùng.",
+        parse_mode="Markdown",
+    )
 
-    await update.message.reply_text(f"✅ Đã gửi thông báo tới {sent} người dùng.", parse_mode="Markdown")
 
 
 
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Chỉ cho admin dùng
     if ADMIN_ID is None:
-        await update.message.reply_text("⚠️ Bot chưa cấu hình ADMIN_ID.")
+        await reply_md("⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
 
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Không có quyền.")
+        await reply_md("⛔ Không có quyền.")
         return
 
     all_watch = get_all_watch()
     if not all_watch:
-        await update.message.reply_text("📭 Chưa có user nào lưu danh sách theo dõi.")
+        await reply_md("📭 Chưa có user nào lưu danh sách theo dõi.")
         return
 
     # Thống kê symbol -> số user đang theo dõi
@@ -1923,10 +1974,17 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cmd_stats:
         cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
         for row in cmd_stats:
-            cmd_summary += f"{row['command']}: {row['day']} hôm nay | {row['month']} tháng này | {row['total']} tổng cộng\n"
+            cmd_name = escape_markdown_v2(row["command"])  # /screener_value_clear, /start, ...
+            day = escape_markdown_v2(row["day"])
+            month = escape_markdown_v2(row["month"])
+            total = escape_markdown_v2(row["total"])
+            cmd_summary += (
+                f"{cmd_name}: {day} hôm nay | {month} tháng này | {total} tổng cộng\n"
+            )
         cmd_summary += "\n"
     else:
         cmd_summary = "📊 *Chưa có dữ liệu lệnh được sử dụng.*\n\n"
+
 
     header = (
         cmd_summary +
@@ -1951,19 +2009,19 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts.append(current)
 
     for part in parts:
-        await update.message.reply_text(part, parse_mode="Markdown")
+        await reply_md(update, part)
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xoá các tin nhắn do bot gửi trong khoảng thời gian chỉ định."""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Chỉ admin mới có quyền xoá tin nhắn.")
+        await reply_md("⛔ Chỉ admin mới có quyền xoá tin nhắn.")
         return
 
     args = context.args
     if len(args) < 4:
-        await update.message.reply_text(
+        await reply_md(
             "❗ Cú pháp: /delete_range <từ ngày> <giờ> <đến ngày> <giờ>\n"
             "Ví dụ: /delete_range 2025-03-01 09:00 2025-03-01 10:30"
         )
@@ -1979,7 +2037,7 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         records = get_bot_messages_in_range(start_time, end_time)
         if not records:
-            await update.message.reply_text("📭 Không có tin nhắn nào trong khoảng thời gian này.")
+            await reply_md("📭 Không có tin nhắn nào trong khoảng thời gian này.")
             return
 
         deleted = 0
@@ -1994,10 +2052,10 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
 
         delete_bot_messages_in_range(start_time, end_time)
-        await update.message.reply_text(f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
+        await reply_md(f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
 
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Lỗi xử lý: {e}")
+        await reply_md(f"⚠️ Lỗi xử lý: {e}")
 
 
 
@@ -2018,7 +2076,7 @@ REPORT_COOLDOWN = {}  # {chat_id: last_time}
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Gửi báo cáo danh mục ngay lập tức cho user (có cache & cooldown)."""
     if not BOT_ACTIVE:
-        await update.message.reply_text("⚙️ Bot đang bảo trì.")
+        await reply_md("⚙️ Bot đang bảo trì.")
         return
 
     if not update or not update.effective_chat:
@@ -2035,7 +2093,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remaining = int(COOLDOWN_SECONDS - (now - last_time).total_seconds())
         hours = remaining // 3600
         mins = (remaining % 3600) // 60
-        await update.message.reply_text(
+        await reply_md(
             f"⏳ /report chỉ được dùng 1 lần mỗi ngày. "
             f"Vui lòng thử lại sau {hours} giờ {mins} phút."
         )
@@ -2050,13 +2108,13 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
 
     if not symbols:
-        await update.message.reply_text("📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
+        await reply_md("📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
         return
 
     # Tạo key cache
     cache_key = "-".join(sorted(symbols))
 
-    await update.message.reply_text("⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi vài giây...")
+    await reply_md("⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi vài giây...")
 
     # Dùng cache nếu có
     if cache_key in REPORT_CACHE:
@@ -2064,7 +2122,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cached_text, cached_time = REPORT_CACHE[cache_key]
         # Nếu cache dưới 12 tiếng thì dùng lại
         if (now - cached_time).total_seconds() < 12 * 3600:
-            await update.message.reply_text(cached_text)
+            await reply_md(cached_text)
             return
 
     # Gọi OpenRouter (có retry)
@@ -2089,11 +2147,11 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Gửi báo cáo
     try:
-        await update.message.reply_text(text)
+        await reply_md(text)
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] Lỗi gửi báo cáo /report cho {chat_id}: {e}")
         # Gửi fallback rút gọn nếu lỗi parse Markdown
-        await update.message.reply_text("📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.")
+        await reply_md("📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.")
 
 
 # ==============================================
@@ -2220,7 +2278,9 @@ async def alert_loop():
                 # Gửi nếu có thông báo
                 if messages:
                     header = f"--------------------------------\n⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*"
-                    send_msg_to(chat_id,messages + "\n".join(header))
+                    body = messages + "\n\n" + "\n\n".join(header)
+                    send_msg_to(chat_id, body, parse_mode="Markdown")
+
 
                 all_state[chat_key] = personal_state
 
