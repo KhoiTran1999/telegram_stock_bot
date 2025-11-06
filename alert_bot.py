@@ -1716,8 +1716,8 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /screener_value – Lọc cổ phiếu định giá hấp dẫn (Value) theo từng ngành.
-    Mỗi ngành hiển thị tối đa top 3 mã có value_score cao nhất.
+    /screener_value – Hiển thị top 3 cổ phiếu tốt nhất trong từng ngành
+    (dựa trên P/E, P/B thấp và ROE cao so với trung bình ngành)
     """
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
@@ -1749,15 +1749,14 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     industries = result["industries"]
 
     lines: list[str] = []
-    lines.append("💰 *Bộ lọc Value theo từng ngành* (dữ liệu từ TCBS)")
+    lines.append("💰 *Top 3 cổ phiếu Value theo từng ngành* (dữ liệu TCBS)")
     if as_of:
-        lines.append(f"_Dữ liệu cập nhật đến: {as_of}_")
+        lines.append(f"_Cập nhật đến: {as_of}_")
     lines.append("")
-    lines.append(
-        "📌 Tiêu chí lọc:\n"
-        "• P/E & P/B *thấp hơn* trung bình ngành\n"
-        "• ROE *cao hơn* trung bình ngành\n"
-    )
+    lines.append("📊 *Tiêu chí chấm điểm:*")
+    lines.append("• P/E & P/B thấp hơn trung bình ngành → điểm cao hơn")
+    lines.append("• ROE cao hơn trung bình ngành → điểm cao hơn")
+    lines.append("")
 
     for industry_block in industries:
         industry_name = industry_block["industry"] or "Khác"
@@ -1767,31 +1766,33 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else "Khác"
         )
 
-        lines.append(f"🏷 *Ngành: {display_industry}*")
+        # Lấy trung bình ngành từ record đầu (các record cùng ngành đều giống nhau)
+        first = industry_block["rows"][0]
+        pe_avg = first["pe_industry"]
+        pb_avg = first["pb_industry"]
+        roe_avg = first["roe_industry"]
+
+        lines.append(
+            f"🏷 *Ngành: {display_industry}* "
+            f"(P/E TB: {pe_avg:.1f} | P/B TB: {pb_avg:.1f} | ROE TB: {roe_avg*100:.1f}%)"
+        )
 
         for idx, r in enumerate(industry_block["rows"], start=1):
-            roe_stock_str = format_roe_pct(r["roe"])
-            roe_ind_str = format_roe_pct(r["roe_industry"])
-
             lines.append(
                 f"{idx}️⃣ *{r['symbol']}* – "
-                f"P/E {r['pe']:.1f} vs {r['pe_industry']:.1f} | "
-                f"P/B {r['pb']:.1f} vs {r['pb_industry']:.1f} | "
-                f"ROE {roe_stock_str} vs {roe_ind_str}"
+                f"P/E {r['pe']:.1f} | "
+                f"P/B {r['pb']:.1f} | "
+                f"ROE {r['roe']*100:.1f}%"
             )
 
         lines.append("")  # dòng trống ngăn cách ngành
 
     lines.append(
-        "_Lưu ý: Đây là bộ lọc định lượng theo ngành; "
-        "nhà đầu tư vẫn nên kết hợp thêm phân tích cơ bản & kỹ thuật._"
+        "_Lưu ý: Đây là bảng xếp hạng định lượng, nhà đầu tư nên kết hợp phân tích cơ bản & kỹ thuật để ra quyết định._"
     )
 
     text = "\n".join(lines)
-
-    # Phòng trường hợp quá dài vượt limit Telegram (4096 ký tự)
     if len(text) > 3900:
-        # Cắt bớt ở cuối, giữ lại phần đầu + lưu ý
         text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
 
     await update.message.reply_text(text, parse_mode="Markdown")
