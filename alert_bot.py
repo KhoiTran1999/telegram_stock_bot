@@ -1935,7 +1935,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
         "📌 *Thống kê theo mã:*\n"
         + "\n".join(stats_lines)
-        + "\n\n📌 *Chi tiết theo từng user (chat_id):*"
+        + "\n\n📌 *Chi tiết theo từng user (chat-id):*"
     )
 
     # Ghép text và tự chia nhỏ nếu quá dài
