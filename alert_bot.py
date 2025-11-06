@@ -1382,7 +1382,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• /remove <MÃ> – Xóa mã cổ phiếu khỏi danh sách\n"
     "• /list – Xem danh sách cổ phiếu đang theo dõi\n"
     "• /report – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
-    "• `/screener_value` – Bộ lọc *Value theo từng ngành*, hiển thị Top 3 cổ phiếu có định giá hấp dẫn nhất.\n\n"
+    "• /screener_value – Bộ lọc *Value theo từng ngành*, hiển thị Top 3 cổ phiếu có định giá hấp dẫn nhất.\n\n"
     "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi bằng lệnh /add ngay hôm nay!", parse_mode="Markdown"
@@ -1869,11 +1869,13 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = 0
     for chat_key in all_watch.keys():
         try:
-            send_msg_to(int(chat_key), text)
+            # Gửi text thuần, không dùng Markdown để tránh lỗi parse
+            send_msg_to(int(chat_key), text, parse_mode=None)
             sent += 1
             await asyncio.sleep(0.1)
         except Exception as e:
             log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
+
 
     await update.message.reply_text(f"✅ Đã gửi thông báo tới {sent} người dùng.", parse_mode="Markdown")
 
