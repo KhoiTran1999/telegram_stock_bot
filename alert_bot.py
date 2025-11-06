@@ -57,6 +57,7 @@ ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 # Cấu hình batch cho screener Value
 VALUE_BATCH_SIZE = 50       # 50 mã / batch
 VALUE_BATCH_SLEEP = 2       # nghỉ 2 giây giữa các batch
+MIN_PENNY_PRICE = 15000      # Giá tối thiểu (VND) để KHÔNG bị coi là penny
 
 # 🧠 Application Telegram dùng chung cho webhook
 tg_app = None
@@ -778,6 +779,124 @@ async def precompute_value_data():
         batch_records = []
 
         for sym in batch_syms:
+            sym = str(sym).upper()
+
+            # Throttle nhẹ mỗi mã để tránh spam data source
+            await asyncio.sleep(per_symbol_sleep)
+
+            ratio_df = None
+            last_err = None
+
+            # 🔁 Thử nhiều nguồn: ưu tiên TCBS, fallback VCI
+            for src in ["TCBS", "VCI"]:
+                try:
+                    fin = Finance(symbol=sym, source=src)
+                    try:
+                        ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
+                    except SystemExit as e:
+                        msg = str(e)
+                        log.warning(
+                            f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio ({src}) cho {sym}: {msg}"
+                        )
+                        if "Rate limit exceeded" in msg:
+                            log.warning(
+                                f"[{INSTANCE_ID}][VALUE] Bị rate limit từ {src}, nghỉ {rate_limit_sleep}s rồi tiếp tục..."
+                            )
+                            await asyncio.sleep(rate_limit_sleep)
+                        last_err = e
+                        ratio_df = None
+                        continue  # thử nguồn tiếp theo
+                except Exception as e:
+                    log.warning(
+                        f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio ({src}) cho {sym}: {e}"
+                    )
+                    last_err = e
+                    ratio_df = None
+                    continue
+
+                # Nếu tới đây ratio_df đã có, break khỏi vòng nguồn
+                if ratio_df is not None and not ratio_df.empty:
+                    break
+
+            if ratio_df is None or ratio_df.empty:
+                if last_err is not None:
+                    log.debug(
+                        f"[{INSTANCE_ID}][VALUE] {sym}: không lấy được ratio_df từ bất kỳ source nào, lỗi cuối: {last_err}"
+                    )
+                else:
+                    log.debug(
+                        f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng từ mọi source, bỏ qua."
+                    )
+                processed_count += 1
+                continue
+
+            df = ratio_df.copy()
+
+            # Sắp xếp để lấy kỳ mới nhất (tuỳ cột có trong DataFrame)
+            if "year" in df.columns:
+                df = df.sort_values("year", ascending=False)
+            elif "report_period" in df.columns:
+                df = df.sort_values("report_period", ascending=False)
+
+            latest = df.iloc[0]
+
+            def _get_metric(candidates):
+                for c in candidates:
+                    if c in latest.index and pd.notna(latest[c]):
+                        val = latest[c]
+                        try:
+                            if hasattr(val, "item"):
+                                val = val.item()
+                        except Exception:
+                            pass
+                        try:
+                            val = float(val)
+                        except Exception:
+                            continue
+                        if math.isnan(val) or val <= 0:
+                            continue
+                        return val
+                return None
+
+            # 🧮 Lấy các chỉ số chính
+            pe = _get_metric(["pe", "P/E", "pe_ttm", "PE", "priceToEarning"])
+            pb = _get_metric(["pb", "P/B", "PB", "priceToBook"])
+            roe = _get_metric(["roe", "ROE", "roe_after_tax", "returnOnEquity"])
+
+            # 💵 Thử lấy giá để lọc penny (nếu có cột phù hợp)
+            price = _get_metric(
+                ["price", "close_price", "close", "last_price", "ref_price"]
+            )
+
+            # Lọc penny: nếu có giá và giá < MIN_PENNY_PRICE → bỏ qua
+            if price is not None and price < MIN_PENNY_PRICE:
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: giá ~{price:.0f} < {MIN_PENNY_PRICE}, coi là penny, bỏ qua."
+                )
+                processed_count += 1
+                continue
+
+            if pe is None or pb is None or roe is None:
+                log.debug(
+                    f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua."
+                )
+                processed_count += 1
+                continue
+
+            industry = industry_map.get(sym, "Khác")
+            exchange = exchange_map.get(sym, None)
+
+            record = {
+                "symbol": sym,
+                "exchange": exchange,
+                "industry": industry,
+                "pe": pe,
+                "pb": pb,
+                "roe": roe,
+            }
+            batch_records.append(record)
+            processed_count += 1
+
             sym = str(sym).upper()
 
             # Throttle nhẹ mỗi mã để tránh spam VCI
