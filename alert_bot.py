@@ -652,15 +652,15 @@ def seconds_until_next_weekly_report():
 async def precompute_value_data():
     """
     Crawl dữ liệu P/E, P/B, ROE cho toàn bộ danh sách mã mà Listing().all_symbols() trả về
-    và lưu vào bảng stock_value_cache (Postgres).
+    từ nguồn TCBS và lưu vào bảng stock_value_cache (Postgres).
 
     Thiết kế:
     - Dùng toàn bộ danh sách symbol từ Listing().all_symbols()
-    - Chạy theo batch (50 mã/batch – nhưng throttle theo từng mã)
-    - Nghỉ 0.7s giữa mỗi mã để tránh spam VCI
-    - Nếu bị rate limit từ VCI -> nghỉ 60s rồi tiếp tục
+    - Chạy theo batch (VALUE_BATCH_SIZE mã/batch)
+    - Nghỉ per_symbol_sleep giữa từng mã để tránh rate-limit
+    - Nếu bị rate limit từ TCBS -> nghỉ rate_limit_sleep rồi retry (tối đa 3 lần/symbol)
     - Auto-resume: đọc các mã đã có trong DB và chỉ crawl phần còn thiếu
-    - Log tiến độ: sau mỗi batch in ra số mã đã xử lý / tổng số mã và % hoàn thành
+    - Lọc penny bằng price_est ≈ P/E * EPS với MIN_PENNY_PRICE (VND)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
@@ -669,7 +669,7 @@ async def precompute_value_data():
         f"{started_at.strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
-    # 1️⃣ Lấy danh sách tất cả mã
+    # 1️⃣ Lấy danh sách tất cả mã từ Listing (chỉ có ['symbol', 'organ_name'])
     try:
         listing = Listing()
         listing_df = listing.all_symbols()
@@ -687,7 +687,6 @@ async def precompute_value_data():
         f"[{INSTANCE_ID}][VALUE] listing_df columns: {listing_df.columns.tolist()}"
     )
 
-    # Dùng toàn bộ danh sách (vì không có cột sàn giao dịch)
     filtered_df = listing_df.copy()
 
     # Cột mã
@@ -707,35 +706,11 @@ async def precompute_value_data():
     symbols = filtered_df[symbol_col].dropna().unique().tolist()
     log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã lấy được: {len(symbols)}")
 
-    # Map symbol -> industry (nếu có cột ngành)
-    industry_candidates = [
-        "industry_name_vi",
-        "industry_name",
-        "industry",
-        "icb_name_vi",
-        "icb_name",
-    ]
-    industry_col = next(
-        (c for c in industry_candidates if c in filtered_df.columns),
-        None,
+    # Không có cột ngành → industry mặc định = "Khác"
+    industry_map = {}
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột ngành, tất cả mã sẽ gán industry='Khác'."
     )
-    if industry_col:
-        industry_map = (
-            filtered_df[[symbol_col, industry_col]]
-            .dropna()
-            .drop_duplicates(subset=[symbol_col])
-            .set_index(symbol_col)[industry_col]
-            .astype(str)
-            .to_dict()
-        )
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Dùng cột ngành '{industry_col}' cho mapping ngành."
-        )
-    else:
-        industry_map = {}
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột ngành, tất cả mã sẽ gán industry='Khác'."
-        )
 
     # Không có cột sàn → exchange_map rỗng, exchange = None
     exchange_map = {}
@@ -763,9 +738,25 @@ async def precompute_value_data():
     total_batches = math.ceil(total_todo / VALUE_BATCH_SIZE)
     processed_count = already  # số mã đã có sẵn + đang crawl thêm
 
-    # 3️⃣ Crawl theo batch & upsert vào DB
-    rate_limit_sleep = 60  # số giây nghỉ khi bị rate limit VCI
-    per_symbol_sleep = 0.7  # throttle mỗi mã
+    rate_limit_sleep = 60      # số giây nghỉ khi bị rate limit TCBS
+    per_symbol_sleep = 0.7     # throttle mỗi mã
+
+    # Helper convert -> float
+    def _safe_float(val):
+        if val is None:
+            return None
+        try:
+            if hasattr(val, "item"):
+                val = val.item()
+        except Exception:
+            pass
+        try:
+            val = float(val)
+        except Exception:
+            return None
+        if math.isnan(val):
+            return None
+        return val
 
     for batch_idx in range(total_batches):
         batch_syms = todo_symbols[
@@ -780,58 +771,52 @@ async def precompute_value_data():
 
         for sym in batch_syms:
             sym = str(sym).upper()
-
-            # Throttle nhẹ mỗi mã để tránh spam data source
             await asyncio.sleep(per_symbol_sleep)
 
             ratio_df = None
+            last_err = None
 
-            # 🔁 Thử nhiều nguồn: ưu tiên TCBS, fallback VCI
-            for src in ["TCBS", "VCI"]:
+            # 🔁 Thử gọi TCBS, nếu bị rate limit thì nghỉ rồi thử lại (tối đa 3 lần)
+            for attempt in range(3):
                 try:
-                    fin = Finance(symbol=sym, source=src)
-                    try:
-                        ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
-                    except SystemExit as e:
-                        msg = str(e)
-                        log.warning(
-                            f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio ({src}) cho {sym}: {msg}"
-                        )
-                        if "Rate limit exceeded" in msg:
-                            log.warning(
-                                f"[{INSTANCE_ID}][VALUE] Bị rate limit từ {src}, nghỉ {rate_limit_sleep}s rồi tiếp tục..."
-                            )
-                            await asyncio.sleep(rate_limit_sleep)
-                        last_err = e
-                        ratio_df = None
-                        continue  # thử nguồn tiếp theo
-                except Exception as e:
-                    log.warning(
-                        f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio ({src}) cho {sym}: {e}"
-                    )
+                    fin = Finance(symbol=sym, source="TCBS")
+                    ratio_df = fin.ratio(period="year", lang="vi", dropna=False)
+                    break  # OK
+                except SystemExit as e:
+                    msg = str(e)
                     last_err = e
-                    ratio_df = None
-                    continue
-
-                # Nếu tới đây ratio_df đã có, break khỏi vòng nguồn
-                if ratio_df is not None and not ratio_df.empty:
+                    log.warning(
+                        f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio(TCBS) cho {sym}: {msg}"
+                    )
+                    if "Rate limit exceeded" in msg:
+                        log.warning(
+                            f"[{INSTANCE_ID}][VALUE] Bị rate limit từ TCBS, nghỉ {rate_limit_sleep}s rồi thử lại (lần {attempt+1}/3)..."
+                        )
+                        await asyncio.sleep(rate_limit_sleep)
+                        continue
+                    else:
+                        break
+                except Exception as e:
+                    last_err = e
+                    log.warning(
+                        f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio(TCBS) cho {sym}: {e}"
+                    )
                     break
 
             if ratio_df is None or ratio_df.empty:
                 if last_err is not None:
                     log.debug(
-                        f"[{INSTANCE_ID}][VALUE] {sym}: không lấy được ratio_df từ bất kỳ source nào, lỗi cuối: {last_err}"
+                        f"[{INSTANCE_ID}][VALUE] {sym}: không lấy được ratio_df TCBS, lỗi cuối: {last_err}"
                     )
                 else:
                     log.debug(
-                        f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng từ mọi source, bỏ qua."
+                        f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df TCBS rỗng, bỏ qua."
                     )
-                
                 continue
 
             df = ratio_df.copy()
 
-            # Sắp xếp để lấy kỳ mới nhất (tuỳ cột có trong DataFrame)
+            # Sắp xếp để lấy kỳ mới nhất (tuỳ cột có trong DataFrame TCBS)
             if "year" in df.columns:
                 df = df.sort_values("year", ascending=False)
             elif "report_period" in df.columns:
@@ -839,47 +824,35 @@ async def precompute_value_data():
 
             latest = df.iloc[0]
 
-            def _get_metric(candidates):
-                for c in candidates:
-                    if c in latest.index and pd.notna(latest[c]):
-                        val = latest[c]
-                        try:
-                            if hasattr(val, "item"):
-                                val = val.item()
-                        except Exception:
-                            pass
-                        try:
-                            val = float(val)
-                        except Exception:
-                            continue
-                        if math.isnan(val) or val <= 0:
-                            continue
-                        return val
-                return None
+            # 🧮 Lấy các chỉ số chính từ TCBS
+            pe = _safe_float(latest.get("price_to_earning"))
+            pb = _safe_float(latest.get("price_to_book"))
+            roe = _safe_float(latest.get("roe"))
+            eps = _safe_float(latest.get("earning_per_share"))
 
-            # 🧮 Lấy các chỉ số chính
-            pe = _get_metric(["pe", "P/E", "pe_ttm", "PE", "priceToEarning"])
-            pb = _get_metric(["pb", "P/B", "PB", "priceToBook"])
-            roe = _get_metric(["roe", "ROE", "roe_after_tax", "returnOnEquity"])
+            # Chỉ chấp nhận > 0 cho pe/pb/roe
+            if pe is not None and pe <= 0:
+                pe = None
+            if pb is not None and pb <= 0:
+                pb = None
+            if roe is not None and roe <= 0:
+                roe = None
 
-            # 💵 Thử lấy giá để lọc penny (nếu có cột phù hợp)
-            price = _get_metric(
-                ["price", "close_price", "close", "last_price", "ref_price"]
-            )
+            # Ước tính giá để lọc penny: price_est ≈ P/E * EPS
+            price_est = None
+            if pe is not None and eps is not None and eps > 0:
+                price_est = pe * eps
 
-            # Lọc penny: nếu có giá và giá < MIN_PENNY_PRICE → bỏ qua
-            if price is not None and price < MIN_PENNY_PRICE:
+            if price_est is not None and price_est < MIN_PENNY_PRICE:
                 log.debug(
-                    f"[{INSTANCE_ID}][VALUE] {sym}: giá ~{price:.0f} < {MIN_PENNY_PRICE}, coi là penny, bỏ qua."
+                    f"[{INSTANCE_ID}][VALUE] {sym}: price_est≈{price_est:.0f} < {MIN_PENNY_PRICE}, coi là penny, bỏ qua."
                 )
-                
                 continue
 
             if pe is None or pb is None or roe is None:
                 log.debug(
                     f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua."
                 )
-                
                 continue
 
             industry = industry_map.get(sym, "Khác")
@@ -894,100 +867,6 @@ async def precompute_value_data():
                 "roe": roe,
             }
             batch_records.append(record)
-            
-
-            sym = str(sym).upper()
-
-            # Throttle nhẹ mỗi mã để tránh spam VCI
-            await asyncio.sleep(per_symbol_sleep)
-
-            ratio_df = None
-            try:
-                fin = Finance(symbol=sym, source="VCI")
-
-                try:
-                    ratio_df = fin.ratio(period="year", lang="vi", dropna=True)
-                except SystemExit as e:
-                    # vnstock có thể raise SystemExit khi bị rate limit
-                    msg = str(e)
-                    log.warning(
-                        f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio cho {sym}: {msg}"
-                    )
-                    if "Rate limit exceeded" in msg:
-                        log.warning(
-                            f"[{INSTANCE_ID}][VALUE] Bị rate limit từ VCI, nghỉ {rate_limit_sleep}s rồi tiếp tục..."
-                        )
-                        await asyncio.sleep(rate_limit_sleep)
-                    # Bỏ mã này, tiếp tục sang mã tiếp theo
-                    
-                    continue
-
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio cho {sym}: {e}"
-                )
-                
-                continue
-
-            if ratio_df is None or ratio_df.empty:
-                log.debug(
-                    f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df rỗng, bỏ qua."
-                )
-                
-                continue
-
-            df = ratio_df.copy()
-
-            # Sắp xếp để lấy kỳ mới nhất (tuỳ cột có trong DataFrame)
-            if "year" in df.columns:
-                df = df.sort_values("year", ascending=False)
-            elif "report_period" in df.columns:
-                df = df.sort_values("report_period", ascending=False)
-
-            latest = df.iloc[0]
-
-            def _get_metric(candidates):
-                for c in candidates:
-                    if c in latest.index and pd.notna(latest[c]):
-                        val = latest[c]
-                        try:
-                            if hasattr(val, "item"):
-                                val = val.item()
-                        except Exception:
-                            pass
-                        try:
-                            val = float(val)
-                        except Exception:
-                            continue
-                        if math.isnan(val) or val <= 0:
-                            continue
-                        return val
-                return None
-
-            pe = _get_metric(["pe", "P/E", "pe_ttm", "PE", "priceToEarning"])
-            pb = _get_metric(["pb", "P/B", "PB", "priceToBook"])
-            roe = _get_metric(["roe", "ROE", "roe_after_tax", "returnOnEquity"])
-
-            if pe is None or pb is None or roe is None:
-                log.debug(
-                    f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua."
-                )
-                
-                continue
-
-            industry = industry_map.get(sym, "Khác")
-            exchange = exchange_map.get(sym, None)
-
-            record = {
-                "symbol": sym,
-                "exchange": exchange,
-                "industry": industry,
-                "pe": pe,
-                "pb": pb,
-                "roe": roe,
-            }
-            batch_records.append(record)
-            
 
         # Ghi batch vào DB (upsert theo symbol)
         try:
@@ -997,12 +876,10 @@ async def precompute_value_data():
                 f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}"
             )
 
-        # 🔎 Log tiến độ sau mỗi batch
+        # Cập nhật tiến độ (tính theo số mã đã xử lý, không quan tâm có lưu được hay không)
+        processed_count += len(batch_syms)
         done = processed_count
-        if total_symbols > 0:
-            percent = done / total_symbols * 100
-        else:
-            percent = 0.0
+        percent = (done / total_symbols * 100) if total_symbols > 0 else 0.0
 
         log.info(
             f"[{INSTANCE_ID}][VALUE] Tiến độ: {done}/{total_symbols} mã "
@@ -1010,9 +887,9 @@ async def precompute_value_data():
             f"upsert {len(batch_records)} mã vào DB."
         )
 
-        # Nghỉ giữa các batch (nhẹ) – có thể để 0 hoặc 1–2s
+        # Nghỉ nhẹ giữa các batch
         if batch_idx < total_batches - 1:
-            await asyncio.sleep(1)
+            await asyncio.sleep(VALUE_BATCH_SLEEP)
 
     finished_at = datetime.datetime.now(vn_tz)
     duration = (finished_at - started_at).total_seconds()
@@ -1054,6 +931,11 @@ def compute_value_screener(top_n: int = 10):
         roe_industry=("roe", "mean"),
     )
     df = df.join(industry_group, on="industry")
+
+    # Bỏ các ngành có ROE ngành <= 0 để tránh chia 0
+    df = df[df["roe_industry"] > 0]
+    if df.empty:
+        return None
 
     # Lọc theo tiêu chí Value
     df = df[
@@ -1109,6 +991,20 @@ def compute_value_screener(top_n: int = 10):
         "as_of": as_of,
         "rows": result_rows,
     }
+
+def format_roe_pct(roe_decimal: float | None) -> str:
+    """
+    ROE trong DB là dạng thập phân (0.111 = 11.1%).
+    - Nếu < 1%: in 2 chữ số thập phân
+    - Nếu >= 1%: in 1 chữ số thập phân
+    """
+    if roe_decimal is None or math.isnan(roe_decimal):
+        return "N/A"
+    pct = roe_decimal * 100.0
+    if abs(pct) < 1:
+        return f"{pct:.2f}%"
+    return f"{pct:.1f}%"
+
 
 # ==============================================
 # BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
@@ -1760,17 +1656,21 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     rows = result["rows"]
 
     lines = []
-    lines.append("💰 *Bộ lọc Value – Định giá hấp dẫn* (HOSE + HNX)")
+    lines.append("💰 *Bộ lọc Value – Định giá hấp dẫn* (dữ liệu từ TCBS)")
     if as_of:
         lines.append(f"_Dữ liệu cập nhật đến: {as_of}_")
     lines.append("")
 
     for idx, r in enumerate(rows, start=1):
+        roe_stock_str = format_roe_pct(r["roe"])
+        roe_ind_str = format_roe_pct(r["roe_industry"])
+        industry_name = r["industry"] or "Khác"
+
         lines.append(
-            f"{idx}️⃣ *{r['symbol']}* – "
+            f"{idx}️⃣ *{r['symbol']}* (Ngành: {industry_name}) – "
             f"P/E {r['pe']:.1f} vs {r['pe_industry']:.1f} | "
             f"P/B {r['pb']:.1f} vs {r['pb_industry']:.1f} | "
-            f"ROE {r['roe']:.1f}% vs {r['roe_industry']:.1f}%"
+            f"ROE {roe_stock_str} vs {roe_ind_str}"
         )
 
     lines.append("")
@@ -1781,7 +1681,6 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lines.append("_Lưu ý: Đây chỉ là bộ lọc định lượng, không thay thế phân tích chi tiết._")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
 
 
 
