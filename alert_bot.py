@@ -650,7 +650,7 @@ def seconds_until_next_weekly_report():
 
     return max((target - now).total_seconds(), 0)
 
-def load_industry_map_from_csv(path: str = "industry_map_from_topi.csv") -> dict[str, str]:
+def load_industry_map_from_csv(path: str = "ssi_symbol_industry.csv") -> dict[str, str]:
     """
     Đọc file CSV mapping ngành (crawl từ TOPI) và trả về dict:
         {symbol: industry}
@@ -760,17 +760,17 @@ async def precompute_value_data():
     log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã từ Listing(): {len(symbols)}")
 
     # 🔹 Load industry_map từ CSV (Topi)
-    industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
+    industry_map = load_industry_map_from_csv("ssi_symbol_industry.csv")
     if industry_map:
         # Chỉ giữ lại những mã có trong CSV để crawl
         symbols = [s for s in symbols if s in industry_map]
         log.info(
-            f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ industry_map_from_topi.csv. "
+            f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ ssi_symbol_industry.csv. "
             f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl (chỉ lấy mã có trong CSV)."
         )
     else:
         log.info(
-            f"[{INSTANCE_ID}][VALUE] Không load được industry_map_from_topi.csv, "
+            f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbol_industry.csv, "
             "tất cả mã sẽ gán industry='Khác' (dùng toàn bộ symbols)."
         )
 
@@ -984,9 +984,9 @@ def compute_value_screener(
 
     # 🔹 Lọc theo CSV Topi
     try:
-        industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
+        industry_map = load_industry_map_from_csv("ssi_symbol_industry.csv")
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi load industry_map_from_topi.csv: {e}")
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi load ssi_symbol_industry.csv: {e}")
         industry_map = {}
 
     if industry_map:
