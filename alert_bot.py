@@ -962,7 +962,160 @@ async def precompute_value_data():
         f"Tổng mã trong DB hiện tại: {get_stock_value_cache_count()}."
     )
 
-def compute_value_screener(top_n: int = 10):
+def compute_value_screener(
+    top_per_industry: int = 3,
+    max_industries: int = 10,
+):
+    """
+    Đọc dữ liệu từ DB (stock_value_cache), lọc theo:
+        - P/E < P/E ngành
+        - P/B < P/B ngành
+        - ROE > ROE ngành
+
+    Sau đó:
+        - Tính value_score cho từng mã
+        - Chia theo ngành
+        - Mỗi ngành lấy tối đa top_per_industry mã có value_score cao nhất
+        - Chỉ hiển thị tối đa max_industries ngành (tránh tin nhắn Telegram quá dài)
+
+    Trả về:
+    {
+        "as_of": "YYYY-MM-DD HH:MM:SS" hoặc None,
+        "industries": [
+            {
+                "industry": "Ngân hàng",
+                "rows": [ {...}, {...}, {...} ]
+            },
+            ...
+        ]
+    }
+    hoặc None nếu không có data hợp lệ.
+    """
+    rows = load_stock_value_cache()
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    required_cols = {"symbol", "industry", "pe", "pb", "roe"}
+    if not required_cols.issubset(df.columns):
+        log.error(
+            f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột bắt buộc. Columns: {df.columns.tolist()}"
+        )
+        return None
+
+    # 🔹 Chỉ giữ các mã có trong file CSV (Topi) nếu file load được
+    try:
+        industry_map = load_industry_map_from_csv("industry_map_from_topi.csv")
+    except Exception as e:
+        log.warning(
+            f"[{INSTANCE_ID}][VALUE] Lỗi load industry_map_from_topi.csv trong compute_value_screener: {e}"
+        )
+        industry_map = {}
+
+    if industry_map:
+        df = df[df["symbol"].isin(industry_map.keys())]
+        if df.empty:
+            log.warning(
+                f"[{INSTANCE_ID}][VALUE] Sau khi lọc theo industry_map_from_topi.csv thì không còn mã nào."
+            )
+            return None
+
+    # Xử lý dữ liệu hợp lệ
+    df = df.dropna(subset=["pe", "pb", "roe", "industry"])
+    df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
+    if df.empty:
+        return None
+
+    # Tính trung bình ngành
+    industry_group = df.groupby("industry").agg(
+        pe_industry=("pe", "mean"),
+        pb_industry=("pb", "mean"),
+        roe_industry=("roe", "mean"),
+    )
+    df = df.join(industry_group, on="industry")
+
+    # Bỏ ngành có ROE ngành <= 0 để tránh chia 0
+    df = df[df["roe_industry"] > 0]
+    if df.empty:
+        return None
+
+    # Lọc theo tiêu chí Value
+    df = df[
+        (df["pe"] < df["pe_industry"])
+        & (df["pb"] < df["pb_industry"])
+        & (df["roe"] > df["roe_industry"])
+    ]
+    if df.empty:
+        return None
+
+    # Tính điểm Value
+    df["value_score"] = (
+        (df["pe_industry"] / df["pe"] * 0.4)
+        + (df["pb_industry"] / df["pb"] * 0.2)
+        + (df["roe"] / df["roe_industry"] * 0.4)
+    )
+
+    # Tính as_of = max(updated_at) nếu có
+    as_of = None
+    if "updated_at" in df.columns and not df["updated_at"].isna().all():
+        latest_ts = df["updated_at"].max()
+        try:
+            if isinstance(latest_ts, datetime.datetime):
+                vn_tz = pytz.timezone(TIMEZONE)
+                as_of = latest_ts.astimezone(vn_tz).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                as_of = str(latest_ts)
+        except Exception:
+            as_of = str(latest_ts)
+
+    # 🔹 Chia theo ngành, mỗi ngành lấy top_per_industry
+    industries_data = []
+    for industry_name, g in df.groupby("industry"):
+        g_sorted = g.sort_values("value_score", ascending=False)
+        top_g = g_sorted.head(top_per_industry)
+
+        rows_list = []
+        for _, r in top_g.iterrows():
+            rows_list.append(
+                {
+                    "symbol": r["symbol"],
+                    "industry": industry_name,
+                    "pe": float(r["pe"]),
+                    "pb": float(r["pb"]),
+                    "roe": float(r["roe"]),
+                    "pe_industry": float(r["pe_industry"]),
+                    "pb_industry": float(r["pb_industry"]),
+                    "roe_industry": float(r["roe_industry"]),
+                    "value_score": float(r["value_score"]),
+                }
+            )
+
+        if rows_list:
+            # Lấy value_score cao nhất ngành này để sắp xếp ngành
+            best_score = rows_list[0]["value_score"]
+            industries_data.append(
+                {
+                    "industry": industry_name,
+                    "best_score": best_score,
+                    "rows": rows_list,
+                }
+            )
+
+    if not industries_data:
+        return None
+
+    # Sắp xếp ngành theo best_score giảm dần và giới hạn số ngành
+    industries_data.sort(key=lambda x: x["best_score"], reverse=True)
+    industries_data = industries_data[:max_industries]
+
+    # Bỏ best_score trước khi trả về cho sạch
+    for item in industries_data:
+        item.pop("best_score", None)
+
+    return {
+        "as_of": as_of,
+        "industries": industries_data,
+    }
     """
     Đọc dữ liệu từ DB (stock_value_cache), tính trung bình ngành & value_score,
     lọc theo:
@@ -1710,7 +1863,8 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /screener_value – Lọc cổ phiếu định giá hấp dẫn (Value) từ cache DB.
+    /screener_value – Lọc cổ phiếu định giá hấp dẫn (Value) theo từng ngành.
+    Mỗi ngành hiển thị tối đa top 3 mã có value_score cao nhất.
     """
     if not BOT_ACTIVE:
         await update.message.reply_text("⚙️ Bot đang bảo trì.")
@@ -1722,8 +1876,12 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     chat_id = update.effective_chat.id
     log_command_usage(chat_id, "/screener_value", ADMIN_ID)
 
-    result = compute_value_screener(top_n=10)
-    if not result or not result.get("rows"):
+    result = compute_value_screener(top_per_industry=3, max_industries=10)
+    if (
+        not result
+        or not result.get("industries")
+        or all(not ind["rows"] for ind in result["industries"])
+    ):
         await update.message.reply_text(
             "⚠️ Dữ liệu bộ lọc *Value* hiện chưa sẵn sàng.\n\n"
             "Trường hợp này thường xảy ra khi bot mới được deploy "
@@ -1734,38 +1892,57 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
- 
     as_of = result.get("as_of")
-    rows = result["rows"]
+    industries = result["industries"]
 
-    lines = []
-    lines.append("💰 *Bộ lọc Value – Định giá hấp dẫn* (dữ liệu từ TCBS)")
+    lines: list[str] = []
+    lines.append("💰 *Bộ lọc Value theo từng ngành* (dữ liệu từ TCBS)")
     if as_of:
         lines.append(f"_Dữ liệu cập nhật đến: {as_of}_")
     lines.append("")
+    lines.append(
+        "📌 Tiêu chí lọc:\n"
+        "• P/E & P/B *thấp hơn* trung bình ngành\n"
+        "• ROE *cao hơn* trung bình ngành\n"
+    )
 
-    for idx, r in enumerate(rows, start=1):
-        roe_stock_str = format_roe_pct(r["roe"])
-        roe_ind_str = format_roe_pct(r["roe_industry"])
-        industry_name = r["industry"] or "Khác"
-        display_industry = industry_name[:1].upper() + industry_name[1:] if industry_name else "Khác"
-
-        lines.append(
-            f"{idx}️⃣ *{r['symbol']}* (Ngành: {display_industry}) – "
-            f"P/E {r['pe']:.1f} vs {r['pe_industry']:.1f} | "
-            f"P/B {r['pb']:.1f} vs {r['pb_industry']:.1f} | "
-            f"ROE {roe_stock_str} vs {roe_ind_str}"
+    for industry_block in industries:
+        industry_name = industry_block["industry"] or "Khác"
+        display_industry = (
+            industry_name[:1].upper() + industry_name[1:]
+            if industry_name
+            else "Khác"
         )
 
+        lines.append(f"🏷 *Ngành: {display_industry}*")
 
-    lines.append("")
-    lines.append("*Tiêu chí lọc:*")
-    lines.append("• P/E & P/B thấp hơn trung bình ngành")
-    lines.append("• ROE cao hơn trung bình ngành")
-    lines.append("")
-    lines.append("_Lưu ý: Đây chỉ là bộ lọc định lượng, không thay thế phân tích chi tiết._")
+        for idx, r in enumerate(industry_block["rows"], start=1):
+            roe_stock_str = format_roe_pct(r["roe"])
+            roe_ind_str = format_roe_pct(r["roe_industry"])
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            lines.append(
+                f"{idx}️⃣ *{r['symbol']}* – "
+                f"P/E {r['pe']:.1f} vs {r['pe_industry']:.1f} | "
+                f"P/B {r['pb']:.1f} vs {r['pb_industry']:.1f} | "
+                f"ROE {roe_stock_str} vs {roe_ind_str}"
+            )
+
+        lines.append("")  # dòng trống ngăn cách ngành
+
+    lines.append(
+        "_Lưu ý: Đây là bộ lọc định lượng theo ngành; "
+        "nhà đầu tư vẫn nên kết hợp thêm phân tích cơ bản & kỹ thuật._"
+    )
+
+    text = "\n".join(lines)
+
+    # Phòng trường hợp quá dài vượt limit Telegram (4096 ký tự)
+    if len(text) > 3900:
+        # Cắt bớt ở cuối, giữ lại phần đầu + lưu ý
+        text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
