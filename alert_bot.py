@@ -49,8 +49,7 @@ import csv
 from datetime import timedelta
 from telegram.error import BadRequest
 from typing import Any
-
-
+import html
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -772,6 +771,44 @@ def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, st
         log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi đọc CSV {path}: {e}")
 
     return mapping
+
+# =============================================
+# HÀM XỬ LÝ TIN NHẮN KHÔNG RÕ NGHĨA
+# =============================================
+
+# Dùng HTML để bot gửi tin nhắn format đẹp và an toàn
+USER_HELP_TEXT_HTML = """📊 <b>Các lệnh bạn có thể sử dụng:</b>
+• <code>/add &lt;MÃ&gt;</code> – Thêm mã cổ phiếu vào danh sách theo dõi
+• <code>/remove &lt;MÃ&gt;</code> – Xóa mã cổ phiếu khỏi danh sách
+• <code>/list</code> – Xem danh sách cổ phiếu đang theo dõi
+• <code>/report</code> – Nhận báo cáo phân tích AI về danh mục của bạn"""
+
+async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Phản hồi khi người dùng gõ văn bản tự do hoặc lệnh không tồn tại.
+    """
+    if not update.message or not update.message.text:
+        return
+
+    chat_id = update.effective_chat.id
+    user_text = update.message.text
+    
+    try:
+        # Log lại hành vi này (tận dụng hàm bạn đã có)
+        log_command_usage(chat_id, f"unknown: {user_text[:50]}") # Cắt ngắn text để an toàn
+    except Exception as e:
+        log.warning(f"Không thể log 'unknown' command: {e}")
+
+    # Dùng html.escape để đảm bảo text người dùng nhập (ví dụ: <HAG>) 
+    # không làm hỏng format HTML của bot
+    safe_user_text = html.escape(user_text)
+    
+    reply_text = (
+        f"🤔 Hmm, có vẻ tôi chưa được lập trình để hiểu <code>{safe_user_text}</code>.\n\n"
+        f"{USER_HELP_TEXT_HTML}"
+    )
+    
+    await update.message.reply_text(reply_text, parse_mode="HTML")
 
 # ==============================
 # 🧮 SCREENER VALUE – PRECOMPUTE
@@ -2729,6 +2766,10 @@ async def main():
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
     tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
+
+    # 👇 THÊM HANDLER MỚI CỦA BẠN TẠI ĐÂY
+    # Bắt tất cả tin nhắn TEXT (văn bản) MÀ KHÔNG PHẢI là COMMAND
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
     async def run_telegram():
         await tg_app.initialize()
