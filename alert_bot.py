@@ -771,14 +771,6 @@ async def precompute_value_data():
     """
     Crawl dữ liệu P/E, P/B, ROE cho toàn bộ danh sách mã mà Listing().all_symbols() trả về
     từ nguồn TCBS và lưu vào bảng stock_value_cache (Postgres).
-
-    Thiết kế:
-    - Dùng toàn bộ danh sách symbol từ Listing().all_symbols()
-    - Chạy theo batch (VALUE_BATCH_SIZE mã/batch)
-    - Nghỉ per_symbol_sleep giữa từng mã để tránh rate-limit
-    - Nếu bị rate limit từ TCBS -> nghỉ rate_limit_sleep rồi retry (tối đa 3 lần/symbol)
-    - Auto-resume: đọc các mã đã có trong DB và chỉ crawl phần còn thiếu
-    - Lọc penny bằng price_est ≈ P/E * EPS với MIN_PENNY_PRICE (VND)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
@@ -839,12 +831,28 @@ async def precompute_value_data():
             "tất cả mã sẽ gán industry='Khác' (dùng toàn bộ symbols)."
         )
 
-    # Nếu không load được industry_map thì symbols giữ nguyên
-
-
-
-    # Không có cột sàn → exchange_map rỗng, exchange = None
+    # ❗️ SỬA LỖI LẤY SÀN (FIX 1)
+    exchange_col_candidates = ["exchange", "floor", "san"]
+    exchange_col = next(
+        (c for c in exchange_col_candidates if c in filtered_df.columns),
+        None,
+    )
+    
     exchange_map = {}
+    if exchange_col:
+        exchange_map = pd.Series(
+            filtered_df[exchange_col].values, 
+            index=filtered_df[symbol_col].str.upper()
+        ).to_dict()
+        log.info(f"[{INSTANCE_ID}][VALUE] Đã map được {len(exchange_map)} mã với sàn (exchange).")
+    else:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn (exchange/floor/san).")
+
+    # ❗️ TẢI FILE SÀN 1 LẦN (FIX 2)
+    floor_map = load_floor_map_from_csv("ssi_symbols_floor.csv")
+    if not floor_map:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbols_floor.csv, "
+                    "dữ liệu 'floor' sẽ bị NULL.")
 
     # 2️⃣ Đọc các mã đã có trong DB để auto-resume
     existing_records = load_stock_value_cache()
@@ -987,7 +995,8 @@ async def precompute_value_data():
                 continue
 
             industry = industry_map.get(sym, "Khác")
-            exchange = exchange_map.get(sym, None)
+            exchange = exchange_map.get(sym, None) # ⬅️ (FIX 1)
+            floor = floor_map.get(sym, None)       # ⬅️ (FIX 2)
 
             record = {
                 "symbol": sym,
@@ -996,6 +1005,7 @@ async def precompute_value_data():
                 "pe": pe,
                 "pb": pb,
                 "roe": roe,
+                "floor": floor, # ⬅️ (FIX 2)
             }
             batch_records.append(record)
 
@@ -1035,22 +1045,14 @@ def compute_value_screener(
 ):
     """
     So sánh toàn bộ cổ phiếu trong ngành và tính điểm value_score.
-
-    Bộ lọc:
-    1) Tổng tài sản proxy (market cap = price * shares) >= 5000 tỷ
-    2) Thanh khoản (price * matched volume phiên gần nhất) >= 50 tỷ
-    3) Chỉ lấy sàn HOSE / HNX theo file ssi_symbols_floor.csv
-
-    Nếu vì lý do dữ liệu (VCI không trả volume/shares) mà không tính được
-    thanh khoản / tổng tài sản, bot sẽ chỉ áp dụng filter theo sàn và vẫn
-    trả ra kết quả thay vì trả về None.
     """
     rows = load_stock_value_cache()
     if not rows:
         return None
 
     df = pd.DataFrame(rows)
-    required_cols = {"symbol", "industry", "pe", "pb", "roe"}
+    # ❗️ (FIX 2) - Cần 'floor' ở đây
+    required_cols = {"symbol", "industry", "pe", "pb", "roe", "floor"}
     if not required_cols.issubset(df.columns):
         log.error(
             f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột. Columns: {df.columns.tolist()}"
@@ -1078,29 +1080,22 @@ def compute_value_screener(
         df["industry"] = df["symbol"].map(industry_map).fillna(df["industry"])
 
     # Loại bỏ giá trị xấu
-    df = df.dropna(subset=["pe", "pb", "roe", "industry"])
+    df = df.dropna(subset=["pe", "pb", "roe", "industry", "floor"]) # ⬅️ (FIX 2)
     df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
     if df.empty:
         return None
 
-    # Lọc theo sàn HOSE / HNX từ file ssi_symbols_floor.csv
-    floor_map = load_floor_map_from_csv("ssi_symbols_floor.csv")
-    if floor_map:
-        before = len(df)
-        df["floor"] = df["symbol"].map(floor_map)
-        allowed_floors = {"HOSE", "HNX"}
-        df = df[df["floor"].isin(allowed_floors)]
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX theo ssi_symbols_floor.csv: {before} -> {len(df)} mã."
-        )
-        if df.empty:
-            log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không còn mã sau filter sàn HOSE/HNX. Kiểm tra lại ssi_symbols_floor.csv."
-            )
-            return None
-    else:
+    # ❗️ TỐI ƯU: LỌC SÀN TỪ DB (FIX 2)
+    # (Xóa bỏ đoạn code "Lọc theo sàn HOSE / HNX từ file ssi_symbols_floor.csv")
+    before = len(df)
+    allowed_floors = {"HOSE", "HNX"}
+    df = df[df["floor"].isin(allowed_floors)]
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX (từ DB): {before} -> {len(df)} mã."
+    )
+    if df.empty:
         log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbols_floor.csv, không thể lọc theo HOSE/HNX."
+            f"[{INSTANCE_ID}][VALUE] Không còn mã sau filter sàn HOSE/HNX (từ DB)."
         )
         return None
 

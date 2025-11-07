@@ -44,6 +44,7 @@ def init_db():
                     pe       DOUBLE PRECISION,
                     pb       DOUBLE PRECISION,
                     roe      DOUBLE PRECISION,
+                    floor    TEXT,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
@@ -112,7 +113,7 @@ def set_bot_active(is_active: bool):
 def upsert_stock_value_batch(records):
     """
     Ghi / cập nhật 1 batch dữ liệu screener Value vào bảng stock_value_cache.
-    Mỗi record: {symbol, exchange, industry, pe, pb, roe}
+    Mỗi record: {symbol, exchange, industry, pe, pb, roe, floor}
     """
     if not records:
         return
@@ -128,6 +129,7 @@ def upsert_stock_value_batch(records):
                     pe       DOUBLE PRECISION,
                     pb       DOUBLE PRECISION,
                     roe      DOUBLE PRECISION,
+                    floor    TEXT,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
@@ -135,8 +137,8 @@ def upsert_stock_value_batch(records):
             for r in records:
                 cur.execute(
                     """
-                    INSERT INTO stock_value_cache (symbol, exchange, industry, pe, pb, roe, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    INSERT INTO stock_value_cache (symbol, exchange, industry, pe, pb, roe, floor, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (symbol)
                     DO UPDATE SET
                         exchange   = EXCLUDED.exchange,
@@ -144,6 +146,7 @@ def upsert_stock_value_batch(records):
                         pe         = EXCLUDED.pe,
                         pb         = EXCLUDED.pb,
                         roe        = EXCLUDED.roe,
+                        floor      = EXCLUDED.floor,
                         updated_at = NOW()
                     """,
                     (
@@ -153,21 +156,21 @@ def upsert_stock_value_batch(records):
                         r.get("pe"),
                         r.get("pb"),
                         r.get("roe"),
+                        r.get("floor"),
                     ),
                 )
         conn.commit()
 
-
 def load_stock_value_cache():
     """
     Đọc toàn bộ dữ liệu từ bảng stock_value_cache.
-    Trả về list[dict] mỗi phần tử: {symbol, exchange, industry, pe, pb, roe, updated_at}
+    Trả về list[dict] mỗi phần tử: {symbol, exchange, industry, pe, pb, roe, floor, updated_at}
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
             try:
                 cur.execute("""
-                    SELECT symbol, exchange, industry, pe, pb, roe, updated_at
+                    SELECT symbol, exchange, industry, pe, pb, roe, floor, updated_at
                     FROM stock_value_cache
                 """)
             except psycopg.errors.UndefinedTable:
@@ -176,7 +179,8 @@ def load_stock_value_cache():
             rows = cur.fetchall()
 
     data = []
-    for sym, exchange, industry, pe, pb, roe, updated_at in rows:
+    # Thêm 'floor' vào vòng lặp for
+    for sym, exchange, industry, pe, pb, roe, floor, updated_at in rows:
         data.append(
             {
                 "symbol": sym,
@@ -185,11 +189,11 @@ def load_stock_value_cache():
                 "pe": float(pe) if pe is not None else None,
                 "pb": float(pb) if pb is not None else None,
                 "roe": float(roe) if roe is not None else None,
+                "floor": floor,                         # ⬅️ THÊM VÀO DATA
                 "updated_at": updated_at,
             }
         )
     return data
-
 
 def get_stock_value_cache_count() -> int:
     """Trả về số dòng hiện có trong stock_value_cache (0 nếu chưa có bảng)."""
