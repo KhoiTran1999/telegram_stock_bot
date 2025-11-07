@@ -1900,6 +1900,8 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Lấy nội dung announce từ admin
     text = " ".join(context.args)
     text = text.replace("\\n", "\n")  # chỉ giữ lại xuống dòng thôi
+    # Escape các ký tự đặc biệt MarkdownV2 ngoại trừ * và \n
+    text = re.sub(r'([_`\[\]()~>#+\-=|{}.!])', r'\\\1', text)
 
     # Gửi cho tất cả user
     all_watch = get_all_watch()
