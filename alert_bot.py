@@ -1908,7 +1908,7 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for chat_key in all_watch.keys():
         try:
             chat_id = int(chat_key)
-            send_msg_to(chat_id, text, parse_mode="Markdown")  # không escape nữa
+            send_msg_to(chat_id, text, parse_mode="MarkdownV2")  # không escape nữa
             sent += 1
             await asyncio.sleep(0.1)
         except Exception as e:
