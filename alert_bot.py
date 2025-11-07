@@ -126,7 +126,7 @@ FUN_DOWN = [
 # ==============================================
 # HÀM TIỆN ÍCH
 # ==============================================
-def load_industry_map_from_csv(path: str = "ssi_symbol_industry.csv") -> dict[str, str]:
+def load_industry_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, str]:
     """
     Đọc file CSV mapping ngành (crawl từ TOPI) và trả về dict:
         {symbol: industry}
@@ -711,7 +711,7 @@ def seconds_until_next_weekly_report():
 
     return max((target - now).total_seconds(), 0)
 
-def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, str]:
+def load_floor_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, str]:
     """
     Đọc file CSV mapping sàn niêm yết, trả về:
         {symbol: floor}
@@ -876,16 +876,16 @@ async def precompute_value_data():
     log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã từ Listing(): {len(symbols)}")
 
     # 🔹 Load industry_map từ CSV (Topi)
-    industry_map = load_industry_map_from_csv("ssi_symbol_industry.csv")
+    industry_map = load_industry_map_from_csv("ssi_master_list.csv")
     if industry_map:
         symbols = [s for s in symbols if s in industry_map]
         log.info(
-            f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ ssi_symbol_industry.csv. "
+            f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ ssi_master_list.csv. "
             f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl."
         )
     else:
         log.info(
-            f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbol_industry.csv, "
+            f"[{INSTANCE_ID}][VALUE] Không load được ssi_master_list.csv, "
             "tất cả mã sẽ gán industry='Khác'."
         )
 
@@ -907,9 +907,9 @@ async def precompute_value_data():
         log.warning(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn (exchange/floor/san).")
 
     # ❗️ TẢI FILE SÀN 1 LẦN (FIX 2)
-    floor_map = load_floor_map_from_csv("ssi_symbols_floor.csv")
+    floor_map = load_floor_map_from_csv("ssi_master_list.csv")
     if not floor_map:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbols_floor.csv, "
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không load được ssi_master_list.csv, "
                     "dữ liệu 'floor' sẽ bị NULL.")
     
     # ❗️ Copy 2 hàm helper này vào đây để dùng
@@ -1197,9 +1197,9 @@ def compute_value_screener(
 
     # Lọc theo industry map (TOPI) nếu có
     try:
-        industry_map = load_industry_map_from_csv("ssi_symbol_industry.csv")
+        industry_map = load_industry_map_from_csv("ssi_master_list.csv")
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi load ssi_symbol_industry.csv: {e}")
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi load ssi_master_list.csv: {e}")
         industry_map = {}
 
     if industry_map:

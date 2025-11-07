@@ -1,0 +1,694 @@
+symbol,name,industry,floor
+AAA,Nhựa An Phát Xanh,Hóa chất,hose
+AAM,Thủy Sản MeKong,Thực phẩm và đồ uống,hose
+AAT,Tập đoàn Tiên Sơn Thanh Hóa,Hàng cá nhân & Gia dụng,hose
+AAV,AAV Group,Bất động sản,hnx
+ABR,Đầu tư Nhãn Hiệu Việt,Hàng & Dịch vụ Công nghiệp,hose
+ABS,Dịch vụ Nông nghiệp Bình Thuận,Hóa chất,hose
+ABT,Xuất nhập khẩu Thủy sản Bến Tre,Thực phẩm và đồ uống,hose
+ACB,Ngân hàng Thương mại Cổ phần Á Châu,Ngân hàng,hose
+ACC,Đầu tư và Xây dựng Bình Dương ACC,Xây dựng và Vật liệu,hose
+ACG,Gỗ An Cường,Tài nguyên Cơ bản,hose
+ACL,Xuất nhập khẩu Thủy sản Cửu Long An Giang,Thực phẩm và đồ uống,hose
+ADC,Mĩ thuật và Truyền thông,Truyền thông,hnx
+ADG,Clever Group,Truyền thông,hose
+ADP,Sơn Á Đông,Xây dựng và Vật liệu,hose
+ADS,DAMSAN,Hàng cá nhân & Gia dụng,hose
+AGG,Đầu tư và Phát triển Bất động sản An Gia,Bất động sản,hose
+AGR,Chứng khoán AGRIBANK,Dịch vụ tài chính,hose
+ALT,Văn hóa Tân Bình,Truyền thông,hnx
+AMC,Khoáng sản Á Châu,Tài nguyên Cơ bản,hnx
+AME,Alphanam E&C,Hàng & Dịch vụ Công nghiệp,hnx
+AMV,Sản xuất Kinh doanh Dược và Trang thiết bị Y tế Việt Mỹ,Y tế,hnx
+ANV,Nam Việt,Thực phẩm và đồ uống,hose
+APG,Chứng khoán APG,Dịch vụ tài chính,hose
+APH,Tập đoàn An Phát Holdings,Hàng & Dịch vụ Công nghiệp,hose
+API,Đầu tư Châu Á - Thái Bình Dương,Bất động sản,hnx
+APS,Chứng khoán Châu Á - Thái Bình Dương,Dịch vụ tài chính,hnx
+ARM,Xuất nhập khẩu Hàng không,Hàng & Dịch vụ Công nghiệp,hnx
+ASG,Tập đoàn ASG,Hàng & Dịch vụ Công nghiệp,hose
+ASM,Tập đoàn Sao Mai,Thực phẩm và đồ uống,hose
+ASP,Tập đoàn Dầu khí An Pha,Điện nước & xăng dầu khí đốt,hose
+AST,Dịch vụ Hàng không Taseco,Bán lẻ,hose
+ATS,Tập đoàn Đầu tư ATS,Du lịch và Giải trí,hnx
+BAB,Ngân hàng Thương mại Cổ phần Bắc Á,Ngân hàng,hnx
+BAF,Nông nghiệp BAF Việt Nam,Thực phẩm và đồ uống,hose
+BAX,Thống Nhất,Xây dựng và Vật liệu,hnx
+BBC,Bibica,Thực phẩm và đồ uống,hose
+BBS,VICEM Bao bì Bút Sơn,Hàng & Dịch vụ Công nghiệp,hnx
+BCC,Xi măng Bỉm Sơn,Xây dựng và Vật liệu,hnx
+BCE,Xây dựng và Giao thông Bình Dương,Xây dựng và Vật liệu,hose
+BCF,Thực phẩm Bích Chi,Thực phẩm và đồ uống,hnx
+BCG,Tập đoàn Bamboo Capital,Dịch vụ tài chính,hose
+BCM,Tập đoàn Đầu tư và Phát triển Công nghiệp Becamex - CTCP,Bất động sản,hose
+BED,Sách và Thiết bị trường học Đà Nẵng,Truyền thông,hnx
+BFC,Phân bón Bình Điền,Hóa chất,hose
+BHN,Bia - Rượu - Nước giải khát Hà Nội,Thực phẩm và đồ uống,hose
+BIC,Bảo hiểm Ngân hàng Đầu tư và Phát triển Việt Nam,Bảo hiểm,hose
+BID,Ngân hàng Thương mại Cổ phần Đầu tư và Phát triển Việt Nam,Ngân hàng,hose
+BKC,Khoáng sản Bắc Kạn,Tài nguyên Cơ bản,hnx
+BKG,Đầu tư BKG Việt Nam,Hàng cá nhân & Gia dụng,hose
+BMC,Khoáng sản Bình Định,Tài nguyên Cơ bản,hose
+BMI,Bảo Minh,Bảo hiểm,hose
+BMP,Nhựa Bình Minh,Xây dựng và Vật liệu,hose
+BNA,Tập đoàn Đầu tư Bảo Ngọc,Thực phẩm và đồ uống,hnx
+BPC,Vicem Bao bì Bỉm Sơn,Hàng & Dịch vụ Công nghiệp,hnx
+BRC,Cao su Bến Thành,Hóa chất,hose
+BSC,Dịch vụ Bến Thành,Bất động sản,hnx
+BSI,Chứng khoán BIDV,Dịch vụ tài chính,hose
+BSR,Lọc Hóa dầu Bình Sơn,Khác,hose
+BTP,Nhiệt điện Bà Rịa,Điện nước & xăng dầu khí đốt,hose
+BTS,Xi măng VICEM Bút Sơn,Xây dựng và Vật liệu,hnx
+BTT,Thương mại - Dịch vụ Bến Thành,Bán lẻ,hose
+BTW,Cấp nước Bến Thành,Điện nước & xăng dầu khí đốt,hnx
+BVH,Tập đoàn Bảo Việt,Bảo hiểm,hose
+BVS,Chứng khoán Bảo Việt,Dịch vụ tài chính,hnx
+BWE,- Tổng công ty Nước - Môi trường Bình Dương,Điện nước & xăng dầu khí đốt,hose
+BXH,VICEM Bao bì Hải Phòng,Hàng & Dịch vụ Công nghiệp,hnx
+C32,Đầu tư và Xây dựng 3-2,Xây dựng và Vật liệu,hose
+C47,Xây dựng 47,Xây dựng và Vật liệu,hose
+C69,Xây dựng 1369,Xây dựng và Vật liệu,hnx
+CAG,Cảng An Giang,Hàng & Dịch vụ Công nghiệp,hnx
+CAN,Đồ hộp Hạ Long,Thực phẩm và đồ uống,hnx
+CAP,Lâm Nông sản Thực phẩm Yên Bái,Tài nguyên Cơ bản,hnx
+CAR,Tập đoàn Giáo dục Trí Việt,Hàng & Dịch vụ Công nghiệp,hnx
+CCC,Xây Dựng CDC,Xây dựng và Vật liệu,hose
+CCI,Đầu tư Phát triển Công nghiệp Thương mại Củ Chi,Điện nước & xăng dầu khí đốt,hose
+CCL,Đầu tư và Phát triển Đô thị Dầu khí Cửu Long,Bất động sản,hose
+CCR,Cảng Cam Ranh,Hàng & Dịch vụ Công nghiệp,hnx
+CDC,Chương Dương,Xây dựng và Vật liệu,hose
+CDN,Cảng Đà Nẵng,Hàng & Dịch vụ Công nghiệp,hnx
+CEO,Tập đoàn C.E.O,Bất động sản,hnx
+CET,HTC Holding,Hàng cá nhân & Gia dụng,hnx
+CHP,Thủy điện Miền Trung,Điện nước & xăng dầu khí đốt,hose
+CIA,Dịch Vụ Sân Bay Quốc Tế Cam Ranh,Hàng & Dịch vụ Công nghiệp,hnx
+CIG,COMA 18,Xây dựng và Vật liệu,hose
+CII,Đầu tư Hạ tầng Kỹ thuật Thành phố Hồ Chí Minh,Xây dựng và Vật liệu,hose
+CJC,Cơ điện Miền Trung,Hàng & Dịch vụ Công nghiệp,hnx
+CKG,Tập đoàn CIC,Bất động sản,hose
+CKV,CokyVina,Công nghệ Thông tin,hnx
+CLC,Cát Lợi,Hàng cá nhân & Gia dụng,hose
+CLH,Xi măng La Hiên VVMI,Xây dựng và Vật liệu,hnx
+CLL,Cảng Cát Lái,Hàng & Dịch vụ Công nghiệp,hose
+CLM,Xuất nhập khẩu Than - Vinacomin,Tài nguyên Cơ bản,hnx
+CLW,Cấp nước Chợ Lớn,Điện nước & xăng dầu khí đốt,hose
+CMC,Đầu tư CMC,Hàng & Dịch vụ Công nghiệp,hnx
+CMG,Tập đoàn Công nghệ CMC,Công nghệ Thông tin,hose
+CMS,Tập đoàn CMH Việt Nam,Xây dựng và Vật liệu,hnx
+CMV,Thương nghiệp Cà Mau,Bán lẻ,hose
+CMX,CAMIMEX Group,Thực phẩm và đồ uống,hose
+CNG,CNG Việt Nam,Điện nước & xăng dầu khí đốt,hose
+COM,Vật tư Xăng dầu,Bán lẻ,hose
+CPC,Thuốc sát trùng Cần Thơ,Hóa chất,hnx
+CRC,Create Capital Việt Nam,Xây dựng và Vật liệu,hose
+CRE,Bất động sản Thế Kỷ,Bất động sản,hose
+CRV,Tập đoàn Bất động sản CRV,Bất động sản,hose
+CSC,Tập đoàn COTANA,Xây dựng và Vật liệu,hnx
+CSM,Công nghiệp Cao su Miền Nam,Ô tô và phụ tùng,hose
+CST,Than Cao Sơn - TKV,Tài nguyên Cơ bản,hnx
+CSV,Hóa chất Cơ bản miền Nam,Hóa chất,hose
+CTB,Chế tạo Bơm Hải Dương,Hàng & Dịch vụ Công nghiệp,hnx
+CTD,Xây dựng Coteccons,Xây dựng và Vật liệu,hose
+CTF,City Auto,Ô tô và phụ tùng,hose
+CTG,Ngân hàng Thương mại Cổ phần Công thương Việt Nam,Ngân hàng,hose
+CTI,Đầu tư Phát triển Cường Thuận IDICO,Xây dựng và Vật liệu,hose
+CTP,Hoà Bình Takara,Thực phẩm và đồ uống,hnx
+CTR,Công trình Viettel,Xây dựng và Vật liệu,hose
+CTS,Chứng khoán Ngân hàng Công thương Việt Nam,Dịch vụ tài chính,hose
+CTT,Chế tạo máy - Vinacomin,Hàng & Dịch vụ Công nghiệp,hnx
+CVT,CMC,Xây dựng và Vật liệu,hose
+CX8,Đầu tư và Xây lắp Constrexim số 8,Xây dựng và Vật liệu,hnx
+D11,Địa ốc 11,Bất động sản,hnx
+D2D,Phát triển Đô thị Công nghiệp số 2,Bất động sản,hose
+DAD,Đầu tư và Phát triển Giáo dục Đà Nẵng,Truyền thông,hnx
+DAE,Sách Giáo dục tại Thành phố Đà Nẵng,Truyền thông,hnx
+DAH,Tập đoàn Khách sạn Đông Á,Du lịch và Giải trí,hose
+DAT,Đầu tư Du lịch và Phát triển Thủy sản,Thực phẩm và đồ uống,hose
+DBC,Tập đoàn Dabaco Việt Nam,Thực phẩm và đồ uống,hose
+DBD,Dược - Trang thiết bị y tế Bình Định (BIDIPHAR),Y tế,hose
+DBT,Dược phẩm Bến Tre,Y tế,hose
+DC2,Đầu tư Phát triển - Xây dựng (DIC) số 2,Xây dựng và Vật liệu,hnx
+DC4,Dicera Holdings,Xây dựng và Vật liệu,hose
+DCL,Dược phẩm Cửu Long,Y tế,hose
+DCM,Phân bón Dầu Khí Cà Mau,Hóa chất,hose
+DDG,Đầu tư Công nghiệp Xuất nhập khẩu Đông Dương,Điện nước & xăng dầu khí đốt,hnx
+DGC,Tập đoàn Hóa chất Đức Giang,Hóa chất,hose
+DGW,Thế Giới Số,Bán lẻ,hose
+DHA,Hóa An,Xây dựng và Vật liệu,hose
+DHC,Đông Hải Bến Tre,Tài nguyên Cơ bản,hose
+DHG,Dược Hậu Giang,Y tế,hose
+DHM,Thương mại & Khai thác Khoáng sản Dương Hiếu,Tài nguyên Cơ bản,hose
+DHP,Điện cơ Hải Phòng,Hàng & Dịch vụ Công nghiệp,hnx
+DHT,Dược phẩm Hà Tây,Y tế,hnx
+DIG,Đầu tư Phát triển Xây dựng,Bất động sản,hose
+DIH,Đầu tư Phát triển Xây dựng - Hội An,Xây dựng và Vật liệu,hnx
+DL1,Tập đoàn Alpha Seven,Hàng & Dịch vụ Công nghiệp,hnx
+DLG,Tập đoàn Đức Long Gia Lai,Xây dựng và Vật liệu,hose
+DMC,Xuất nhập khẩu Y tế DOMESCO,Y tế,hose
+DNC,Điện nước Lắp máy Hải Phòng,Điện nước & xăng dầu khí đốt,hnx
+DNP,DNP Holding,Xây dựng và Vật liệu,hnx
+DP3,Dược Phẩm Trung Ương 3,Y tế,hnx
+DPG,Tập đoàn Đạt Phương,Xây dựng và Vật liệu,hose
+DPM,Tổng Công ty Phân bón và Hóa chất Dầu khí - Công ty Cổ phần,Hóa chất,hose
+DPR,Cao su Đồng Phú,Hóa chất,hose
+DQC,Tập đoàn Điện Quang,Hàng cá nhân & Gia dụng,hose
+DRC,Cao su Đà Nẵng,Ô tô và phụ tùng,hose
+DRH,DRH Holdings,Bất động sản,hose
+DRL,Thủy điện - Điện lực 3,Điện nước & xăng dầu khí đốt,hose
+DS3,DS3,Hàng & Dịch vụ Công nghiệp,hnx
+DSC,Chứng khoán DSC,Dịch vụ tài chính,hose
+DSE,Chứng khoán DNSE,Dịch vụ tài chính,hose
+DSN,Công viên nước Đầm Sen,Du lịch và Giải trí,hose
+DST,Đầu tư Sao Thăng Long,Truyền thông,hnx
+DTA,Đệ Tam,Bất động sản,hose
+DTD,Đầu tư Phát triển Thành Đạt,Bất động sản,hnx
+DTG,Dược phẩm Tipharco,Y tế,hnx
+DTK,Tổng Công ty Điện lực TKV - Công ty Cổ phần,Điện nước & xăng dầu khí đốt,hnx
+DTL,Đại Thiên Lộc,Tài nguyên Cơ bản,hose
+DTT,Kỹ nghệ Đô Thành,Hóa chất,hose
+DVM,Dược liệu Việt Nam,Y tế,hnx
+DVP,Đầu tư và Phát triển Cảng Đình Vũ,Hàng & Dịch vụ Công nghiệp,hose
+DXG,Tập đoàn Đất Xanh,Bất động sản,hose
+DXP,Cảng Đoạn Xá,Hàng & Dịch vụ Công nghiệp,hnx
+DXS,Dịch vụ Bất động sản Đất Xanh,Bất động sản,hose
+DXV,VICEM Vật liệu Xây dựng Đà Nẵng,Xây dựng và Vật liệu,hose
+EBS,Sách Giáo dục tại Thành phố Hà Nội,Truyền thông,hnx
+ECI,Tập đoàn ECI,Truyền thông,hnx
+EIB,Ngân hàng Thương mại Cổ phần Xuất nhập khẩu Việt Nam,Ngân hàng,hose
+EID,Đầu tư và Phát triển Giáo dục Hà Nội,Truyền thông,hnx
+ELC,Công nghệ - Viễn thông ELCOM,Công nghệ Thông tin,hose
+EVE,Everpia,Hàng cá nhân & Gia dụng,hose
+EVF,Công ty Tài chính Tổng hợp Cổ phần Điện Lực,Dịch vụ tài chính,hose
+EVG,Tập đoàn Everland,Xây dựng và Vật liệu,hose
+EVS,Chứng khoán EVS,Dịch vụ tài chính,hnx
+FCM,Bê tông Phan Vũ Hà Nam,Xây dựng và Vật liệu,hose
+FCN,FECON,Xây dựng và Vật liệu,hose
+FDC,Ngoại thương và Phát triển Đầu tư Thành phố Hồ Chí Minh,Bất động sản,hose
+FID,Đầu tư và Phát triển Doanh nghiệp Việt Nam,Xây dựng và Vật liệu,hnx
+FIR,Địa ốc First Real,Bất động sản,hose
+FIT,Tập đoàn F.I.T,Y tế,hose
+FMC,Thực phẩm Sao Ta,Thực phẩm và đồ uống,hose
+FPT,FPT,Công nghệ Thông tin,hose
+FRT,Bán lẻ Kỹ thuật số FPT,Bán lẻ,hose
+FTS,Chứng khoán FPT,Dịch vụ tài chính,hose
+GAS,Tổng Công ty Khí Việt Nam - Công ty Cổ phần,Điện nước & xăng dầu khí đốt,hose
+GDT,Chế biến Gỗ Đức Thành,Hàng cá nhân & Gia dụng,hose
+GDW,Cấp nước Gia Định,Điện nước & xăng dầu khí đốt,hnx
+GEE,Điện lực Gelex,Hàng & Dịch vụ Công nghiệp,hose
+GEG,Điện Gia Lai,Điện nước & xăng dầu khí đốt,hose
+GEX,Tập đoàn Gelex,Hàng & Dịch vụ Công nghiệp,hose
+GIC,VSC Green Logistics,Hàng & Dịch vụ Công nghiệp,hnx
+GIL,Sản xuất Kinh doanh Xuất nhập khẩu Bình Thạnh,Hàng cá nhân & Gia dụng,hose
+GKM,GKM Holdings,Xây dựng và Vật liệu,hnx
+GLT,Kỹ thuật điện Toàn Cầu,Hàng cá nhân & Gia dụng,hnx
+GMA,G-Automobile,Ô tô và phụ tùng,hnx
+GMD,Gemadept,Hàng & Dịch vụ Công nghiệp,hose
+GMH,Minh Hưng Quảng Trị,Xây dựng và Vật liệu,hose
+GMX,Gạch ngói Gốm xây dựng Mỹ Xuân,Xây dựng và Vật liệu,hnx
+GSP,Vận tải Sản phẩm Khí Quốc tế,Hàng & Dịch vụ Công nghiệp,hose
+GTA,Chế biến Gỗ Thuận An,Tài nguyên Cơ bản,hose
+GVR,Tập đoàn Công nghiệp Cao su Việt Nam - Công ty Cổ phần,Hóa chất,hose
+HAD,Bia Hà Nội - Hải Dương,Thực phẩm và đồ uống,hnx
+HAG,Hoàng Anh Gia Lai,Thực phẩm và đồ uống,hose
+HAH,Vận tải và Xếp dỡ Hải An,Hàng & Dịch vụ Công nghiệp,hose
+HAP,Tập Đoàn Hapaco,Tài nguyên Cơ bản,hose
+HAR,Đầu tư Thương mại Bất động sản An Dương Thảo Điền,Bất động sản,hose
+HAS,Hacisco,Xây dựng và Vật liệu,hose
+HAT,Thương mại Bia Hà Nội,Thực phẩm và đồ uống,hnx
+HAX,Dịch vụ Ô tô Hàng Xanh,Ô tô và phụ tùng,hose
+HBS,Chứng khoán Hòa Bình,Dịch vụ tài chính,hnx
+HCC,Bê tông Hòa Cầm - Intimex,Xây dựng và Vật liệu,hnx
+HCD,Đầu tư Sản xuất và Thương mại HCD,Hóa chất,hose
+HCM,Chứng khoán Thành phố Hồ Chí Minh,Dịch vụ tài chính,hose
+HCT,Thương mại - Dịch vụ - Vận tải Xi măng Hải Phòng,Hàng & Dịch vụ Công nghiệp,hnx
+HDA,Hãng sơn Đông Á,Xây dựng và Vật liệu,hnx
+HDB,Ngân hàng Thương mại Cổ phần Phát Triển Thành phố Hồ Chí Minh,Ngân hàng,hose
+HDC,Phát triển Nhà Bà Rịa Vũng Tàu,Bất động sản,hose
+HDG,Tập đoàn Hà Đô,Bất động sản,hose
+HEV,Sách Đại học - Dạy nghề,Truyền thông,hnx
+HGM,Cơ khí và Khoáng sản Hà Giang,Tài nguyên Cơ bản,hnx
+HHC,Bánh kẹo Hải Hà,Thực phẩm và đồ uống,hnx
+HHP,HHP Global,Tài nguyên Cơ bản,hose
+HHS,Đầu tư Dịch vụ Hoàng Huy,Ô tô và phụ tùng,hose
+HHV,Đầu tư Hạ tầng Giao thông Đèo Cả,Xây dựng và Vật liệu,hose
+HID,Halcom Vietnam,Xây dựng và Vật liệu,hose
+HII,An Tiến Industries,Hóa chất,hose
+HJS,Thủy điện Nậm Mu,Điện nước & xăng dầu khí đốt,hnx
+HKT,Đầu tư QP Xanh,Thực phẩm và đồ uống,hnx
+HLC,Than Hà Lầm - Vinacomin,Tài nguyên Cơ bản,hnx
+HLD,Đầu tư và Phát triển Bất động sản HUDLAND,Bất động sản,hnx
+HMC,Kim khí Thành phố Hồ Chí Minh - VNSTEEL,Tài nguyên Cơ bản,hose
+HMH,Hải Minh,Hàng & Dịch vụ Công nghiệp,hnx
+HMR,Đá Hoàng Mai,Xây dựng và Vật liệu,hnx
+HNA,Thủy điện Hủa Na,Điện nước & xăng dầu khí đốt,hose
+HOM,Xi măng VICEM Hoàng Mai,Xây dựng và Vật liệu,hnx
+HPG,Tập đoàn Hòa Phát,Tài nguyên Cơ bản,hose
+HPX,Đầu tư Hải Phát,Bất động sản,hose
+HQC,Tư vấn - Thương mại - Dịch vụ Địa ốc Hoàng Quân,Bất động sản,hose
+HRC,Cao su Hòa Bình,Hóa chất,hose
+HSG,Tập đoàn Hoa Sen,Tài nguyên Cơ bản,hose
+HSL,Đầu tư Phát triển Thực phẩm Hồng Hà,Thực phẩm và đồ uống,hose
+HT1,Xi măng VICEM Hà Tiên,Xây dựng và Vật liệu,hose
+HTC,Thương mại Hóc Môn,Điện nước & xăng dầu khí đốt,hnx
+HTG,Dệt may Hòa Thọ,Hàng cá nhân & Gia dụng,hose
+HTI,Đầu tư Phát triển Hạ tầng IDICO,Xây dựng và Vật liệu,hose
+HTL,Kỹ thuật và Ô tô Trường Long,Ô tô và phụ tùng,hose
+HTN,Hưng Thịnh Incons,Bất động sản,hose
+HTV,Logistics Vicem,Hàng & Dịch vụ Công nghiệp,hose
+HU1,Đầu tư và Xây dựng HUD1,Xây dựng và Vật liệu,hose
+HUB,Xây lắp Thừa Thiên Huế,Xây dựng và Vật liệu,hose
+HUT,Tasco,Ô tô và phụ tùng,hnx
+HVH,Đầu tư và Công nghệ HVC,Xây dựng và Vật liệu,hose
+HVN,Tổng Công ty Hàng không Việt Nam - CTCP,Du lịch và Giải trí,hose
+HVT,Hóa chất Việt Trì,Hóa chất,hnx
+HVX,Xi măng Vicem Hải Vân,Xây dựng và Vật liệu,hose
+ICG,Xây dựng Sông Hồng,Xây dựng và Vật liệu,hnx
+ICT,Viễn thông - Tin học Bưu điện,Công nghệ Thông tin,hose
+IDC,Tổng Công ty IDICO - CTCP,Bất động sản,hnx
+IDI,Đầu tư và Phát triển Đa Quốc Gia I.D.I,Thực phẩm và đồ uống,hose
+IDJ,Đầu tư IDJ Việt Nam,Bất động sản,hnx
+IDV,Phát triển Hạ tầng Vĩnh Phúc,Bất động sản,hnx
+IJC,Phát triển Hạ tầng Kỹ thuật,Bất động sản,hose
+ILB,ICD Tân Cảng - Long Bình,Hàng & Dịch vụ Công nghiệp,hose
+IMP,Dược phẩm IMEXPHARM,Y tế,hose
+INC,Tư vấn Đầu tư IDICO,Xây dựng và Vật liệu,hnx
+INN,Bao bì và In Nông nghiệp,Hàng & Dịch vụ Công nghiệp,hnx
+IPA,Tập đoàn Đầu tư I.P.A,Hàng & Dịch vụ Công nghiệp,hnx
+ITC,Đầu tư - Kinh doanh nhà,Bất động sản,hose
+ITD,Công nghệ ITD,Công nghệ Thông tin,hose
+ITQ,Tập đoàn Thiên Quang,Tài nguyên Cơ bản,hnx
+IVS,Chứng khoán Guotai Junan (Việt Nam),Dịch vụ tài chính,hnx
+JVC,Đầu tư và Phát triển Y tế Việt Nhật,Y tế,hose
+KBC,Tổng Công ty Phát triển Đô thị Kinh Bắc,Bất động sản,hose
+KDC,Tập đoàn KIDO,Thực phẩm và đồ uống,hose
+KDH,Đầu tư và Kinh doanh nhà Khang Điền,Bất động sản,hose
+KDM,Tập đoàn GCL,Xây dựng và Vật liệu,hnx
+KHG,Tập đoàn Khải Hoàn Land,Bất động sản,hose
+KHP,Điện lực Khánh Hòa,Điện nước & xăng dầu khí đốt,hose
+KHS,Kiên Hùng,Thực phẩm và đồ uống,hnx
+KKC,Tập đoàn Thành Thái,Tài nguyên Cơ bản,hnx
+KMR,Mirae,Hàng cá nhân & Gia dụng,hose
+KMT,Kim khí Miền Trung,Tài nguyên Cơ bản,hnx
+KOS,KOSY,Bất động sản,hose
+KSB,Khoáng sản và Xây dựng Bình Dương,Tài nguyên Cơ bản,hose
+KSD,Đầu tư DNA,Hàng cá nhân & Gia dụng,hnx
+KSF,Tập đoàn Sunshine,Bất động sản,hnx
+KST,KASATI,Công nghệ Thông tin,hnx
+KSV,Tổng Công ty Khoáng sản TKV - Công ty Cổ phần,Tài nguyên Cơ bản,hnx
+KTS,Đường Kon Tum,Thực phẩm và đồ uống,hnx
+L10,Lilama 10,Hàng & Dịch vụ Công nghiệp,hose
+L14,Licogi 14,Xây dựng và Vật liệu,hnx
+L18,Đầu tư và Xây dựng số 18,Xây dựng và Vật liệu,hnx
+L40,Đầu tư và Xây dựng 40,Xây dựng và Vật liệu,hnx
+LAF,Chế biến Hàng Xuất khẩu Long An,Thực phẩm và đồ uống,hose
+LAS,Supe Phốt phát và Hóa chất Lâm Thao,Hóa chất,hnx
+LBE,Thương mại và Dịch vụ LVA,Hàng cá nhân & Gia dụng,hnx
+LBM,Khoáng sản và Vật liệu xây dựng Lâm Đồng,Xây dựng và Vật liệu,hose
+LCD,Lắp máy - Thí nghiệm cơ điện,Xây dựng và Vật liệu,hnx
+LCG,Lizen,Xây dựng và Vật liệu,hose
+LDG,Đầu tư LDG,Bất động sản,hose
+LDP,Dược Lâm Đồng - Ladophar,Y tế,hnx
+LGC,Đầu tư Cầu đường CII,Xây dựng và Vật liệu,hose
+LGL,Đầu tư và Phát triển Đô thị Long Giang,Bất động sản,hose
+LHC,Đầu tư và Xây dựng Thủy lợi Lâm Đồng,Xây dựng và Vật liệu,hnx
+LHG,Long Hậu,Bất động sản,hose
+LIG,Licogi 13,Xây dựng và Vật liệu,hnx
+LIX,Bột Giặt LIX,Hàng cá nhân & Gia dụng,hose
+LM8,Lilama 18,Xây dựng và Vật liệu,hose
+LPB,Ngân hàng Thương mại Cổ phần Lộc Phát Việt Nam,Ngân hàng,hose
+LSS,Mía đường Lam Sơn,Thực phẩm và đồ uống,hose
+MAC,Tập đoàn Macstar,Hàng & Dịch vụ Công nghiệp,hnx
+MAS,Dịch vụ Hàng Không Sân Bay Đà Nẵng,Du lịch và Giải trí,hnx
+MBB,Ngân hàng Thương mại Cổ phần Quân đội,Ngân hàng,hose
+MBG,Tập đoàn MBG,Xây dựng và Vật liệu,hnx
+MBS,Chứng khoán MB,Dịch vụ tài chính,hnx
+MCC,Gạch ngói cao cấp,Xây dựng và Vật liệu,hnx
+MCF,Xây lắp Cơ khí và Lương thực Thực phẩm,Thực phẩm và đồ uống,hnx
+MCM,Giống bò sữa Mộc Châu,Thực phẩm và đồ uống,hose
+MCO,Đầu tư và Xây dựng BDC Việt Nam,Xây dựng và Vật liệu,hnx
+MCP,In và Bao bì Mỹ Châu,Hàng & Dịch vụ Công nghiệp,hose
+MDC,Than Mông Dương - Vinacomin,Tài nguyên Cơ bản,hnx
+MDG,Miền Đông,Xây dựng và Vật liệu,hose
+MED,Dược Trung ương Mediplantex,Y tế,hnx
+MEL,Thép Mê Lin,Tài nguyên Cơ bản,hnx
+MHC,MHC,Hàng & Dịch vụ Công nghiệp,hose
+MIC,Kỹ nghệ Khoáng sản Quảng Nam,Tài nguyên Cơ bản,hnx
+MIG,Bảo hiểm Quân đội,Bảo hiểm,hose
+MKV,Dược Thú Y Cai Lậy,Y tế,hnx
+MSB,Ngân hàng Thương mại Cổ phần Hàng Hải Việt Nam,Ngân hàng,hose
+MSH,May Sông Hồng,Hàng cá nhân & Gia dụng,hose
+MSN,Tập đoàn Masan,Thực phẩm và đồ uống,hose
+MST,Đầu tư MST,Xây dựng và Vật liệu,hnx
+MVB,Tổng Công ty Công nghiệp mỏ Việt Bắc TKV - Công ty Cổ phần,Tài nguyên Cơ bản,hnx
+MWG,Đầu tư Thế Giới Di Động,Bán lẻ,hose
+NAB,Ngân hàng Thương mại Cổ phần Nam Á,Ngân hàng,hose
+NAF,Nafoods Group,Thực phẩm và đồ uống,hose
+NAG,Tập đoàn Nagakawa,Hàng & Dịch vụ Công nghiệp,hnx
+NAP,Cảng Nghệ Tĩnh,Hàng & Dịch vụ Công nghiệp,hnx
+NAV,Nam Việt,Xây dựng và Vật liệu,hose
+NBB,Đầu tư Năm Bảy Bảy,Bất động sản,hose
+NBC,Than Núi Béo - Vinacomin,Tài nguyên Cơ bản,hnx
+NBP,Nhiệt Điện Ninh Bình,Điện nước & xăng dầu khí đốt,hnx
+NBW,Cấp nước Nhà Bè,Điện nước & xăng dầu khí đốt,hnx
+NCT,Dịch vụ Hàng hóa Nội Bài,Hàng & Dịch vụ Công nghiệp,hose
+NDN,Đầu tư Phát triển Nhà Đà Nẵng,Bất động sản,hnx
+NDX,Xây lắp Phát triển Nhà Đà Nẵng,Xây dựng và Vật liệu,hnx
+NET,Bột giặt Net,Hàng cá nhân & Gia dụng,hnx
+NFC,Phân lân Ninh Bình,Hóa chất,hnx
+NHA,Tổng Công ty Đầu tư Phát triển Nhà và Đô thị Nam Hà Nội,Xây dựng và Vật liệu,hose
+NHC,Gạch ngói Nhị Hiệp,Xây dựng và Vật liệu,hnx
+NHH,Nhựa Hà Nội,Hóa chất,hose
+NHT,Sản xuất và Thương mại Nam Hoa,Hàng cá nhân & Gia dụng,hose
+NKG,Thép Nam Kim,Tài nguyên Cơ bản,hose
+NLG,Đầu tư Nam Long,Bất động sản,hose
+NNC,Đá Núi Nhỏ,Xây dựng và Vật liệu,hose
+NO1,Tâp đoàn 911,Hàng & Dịch vụ Công nghiệp,hose
+NRC,Tập đoàn NRC,Bất động sản,hnx
+NSC,Tập đoàn Giống cây trồng Việt Nam,Thực phẩm và đồ uống,hose
+NSH,Tập đoàn Nhôm Sông Hồng Shalumi,Tài nguyên Cơ bản,hnx
+NST,Ngân Sơn,Hàng cá nhân & Gia dụng,hnx
+NT2,Điện lực Dầu khí Nhơn Trạch 2,Điện nước & xăng dầu khí đốt,hose
+NTC,Khu Công nghiệp Nam Tân Uyên,Bất động sản,hose
+NTH,Thủy điện Nước Trong,Điện nước & xăng dầu khí đốt,hnx
+NTL,Phát triển Đô thị Từ Liêm,Bất động sản,hose
+NTP,Nhựa Thiếu niên Tiền Phong,Xây dựng và Vật liệu,hnx
+NVB,Ngân hàng Thương mại Cổ phần Quốc Dân,Ngân hàng,hnx
+NVL,Tập đoàn Đầu tư Địa ốc No Va,Bất động sản,hose
+NVT,Bất động sản Du lịch Ninh Vân Bay,Bất động sản,hose
+OCB,Ngân hàng Thương mại Cổ phần Phương Đông,Ngân hàng,hose
+OCH,One Capital Hospitality,Thực phẩm và đồ uống,hnx
+OGC,Tập đoàn Đại Dương,Dịch vụ tài chính,hose
+ONE,Công nghệ ONE,Công nghệ Thông tin,hnx
+OPC,Dược Phẩm OPC,Y tế,hose
+ORS,Chứng khoán Tiên Phong,Dịch vụ tài chính,hose
+PAC,Pin Ắc quy Miền Nam,Hàng & Dịch vụ Công nghiệp,hose
+PAN,Tập đoàn PAN,Thực phẩm và đồ uống,hose
+PBP,Bao bì Dầu khí Việt Nam,Hàng & Dịch vụ Công nghiệp,hnx
+PC1,Tập đoàn PC1,Xây dựng và Vật liệu,hose
+PCE,Phân bón và hóa chất dầu khí Miền Trung,Hóa chất,hnx
+PCH,Nhựa Picomat,Hóa chất,hnx
+PCT,Vận tải Biển Global Pacific,Hàng & Dịch vụ Công nghiệp,hnx
+PDB,Tập đoàn Đầu tư DIN Capital,Xây dựng và Vật liệu,hnx
+PDN,Cảng Đồng Nai,Hàng & Dịch vụ Công nghiệp,hose
+PDR,Phát triển Bất động sản Phát Đạt,Bất động sản,hose
+PEN,Xây lắp III Petrolimex,Xây dựng và Vật liệu,hnx
+PET,Dịch vụ Tổng hợp Dầu khí,Bán lẻ,hose
+PGC,Tổng Công ty Gas Petrolimex - Công ty Cổ phần,Điện nước & xăng dầu khí đốt,hose
+PGD,Phân phối khí thấp áp dầu khí Việt Nam,Điện nước & xăng dầu khí đốt,hose
+PGI,Bảo hiểm Petrolimex,Bảo hiểm,hose
+PGN,Phụ Gia Nhựa,Hóa chất,hnx
+PGS,Kinh doanh Khí Miền Nam,Điện nước & xăng dầu khí đốt,hnx
+PGT,PGT Holdings,Du lịch và Giải trí,hnx
+PGV,Tổng Công ty Phát điện 3 - Công ty Cổ phần,Điện nước & xăng dầu khí đốt,hose
+PHC,Xây dựng Phục Hưng Holdings,Xây dựng và Vật liệu,hose
+PHN,Pin Hà Nội,Hàng & Dịch vụ Công nghiệp,hnx
+PHR,Cao su Phước Hòa,Hóa chất,hose
+PIA,Tin học Viễn thông Petrolimex,Viễn thông,hnx
+PIC,Đầu tư Điện lực 3,Điện nước & xăng dầu khí đốt,hnx
+PIT,Xuất nhập khẩu Petrolimex,Bán lẻ,hose
+PJC,Thương mại và Vận tải Petrolimex Hà Nội,Điện nước & xăng dầu khí đốt,hnx
+PJT,Vận tải Xăng dầu đường thủy Petrolimex,Hàng & Dịch vụ Công nghiệp,hose
+PLC,Tổng Công ty Hóa dầu Petrolimex - Công ty Cổ phần,Hóa chất,hnx
+PLP,Sản xuất và Công nghệ Nhựa Pha Lê,Hóa chất,hose
+PMB,Phân bón và Hóa chất Dầu khí Miền Bắc,Hóa chất,hnx
+PMC,Dược phẩm Dược liệu Pharmedic,Y tế,hnx
+PMG,Đầu tư và Sản xuất Petro Miền Trung,Điện nước & xăng dầu khí đốt,hose
+PMP,Bao bì Đạm Phú Mỹ,Hàng & Dịch vụ Công nghiệp,hnx
+PMS,Cơ khí Xăng dầu,Hàng & Dịch vụ Công nghiệp,hnx
+PNC,Văn hóa Phương Nam,Truyền thông,hose
+PNJ,Vàng bạc Đá quý Phú Nhuận,Hàng cá nhân & Gia dụng,hose
+POT,Thiết bị Bưu điện,Công nghệ Thông tin,hnx
+POW,Tổng Công ty Điện lực Dầu khí Việt Nam - CTCP,Điện nước & xăng dầu khí đốt,hose
+PPC,Nhiệt điện Phả Lại,Điện nước & xăng dầu khí đốt,hose
+PPE,Tư vấn Đầu tư PP Enterprise,Hàng & Dịch vụ Công nghiệp,hnx
+PPP,Dược phẩm Phong Phú,Y tế,hnx
+PPS,Dịch vụ Kỹ thuật Điện lực Dầu khí Việt Nam,Hàng & Dịch vụ Công nghiệp,hnx
+PPT,Petro Times,Điện nước & xăng dầu khí đốt,hnx
+PPY,Xăng dầu dầu khí Phú Yên,Điện nước & xăng dầu khí đốt,hnx
+PRC,Logistics Portserco,Hàng & Dịch vụ Công nghiệp,hnx
+PRE,Tái bảo hiểm Hà Nội,Bảo hiểm,hnx
+PSC,Vận tải và Dịch vụ Petrolimex Sài Gòn,Hàng & Dịch vụ Công nghiệp,hnx
+PSD,Dịch vụ Phân phối Tổng hợp Dầu khí,Bán lẻ,hnx
+PSE,Phân bón và hóa chất dầu khí Đông Nam Bộ,Hóa chất,hnx
+PSI,Chứng khoán Dầu khí,Dịch vụ tài chính,hnx
+PSW,Phân bón và hóa chất dầu khí Tây Nam Bộ,Hóa chất,hnx
+PTB,Phú Tài,Tài nguyên Cơ bản,hose
+PTC,Đầu tư ICAPITAL,Xây dựng và Vật liệu,hose
+PTD,Thiết kế - Xây dựng - Thương mại Phúc Thịnh,Xây dựng và Vật liệu,hnx
+PTI,Bảo hiểm Bưu điện,Bảo hiểm,hnx
+PTL,Victory Group,Bất động sản,hose
+PTS,Vận tải và Dịch vụ Petrolimex Hải Phòng,Hàng & Dịch vụ Công nghiệp,hnx
+PTX,Vận tải và Dịch vụ Petrolimex Nghệ Tĩnh,Điện nước & xăng dầu khí đốt,hnx
+PV2,Đầu tư PV2,Bất động sản,hnx
+PVG,Kinh doanh LPG Việt Nam,Điện nước & xăng dầu khí đốt,hnx
+PVI,PVI,Bảo hiểm,hnx
+PVP,Vận tải Dầu khí Thái Bình Dương,Hàng & Dịch vụ Công nghiệp,hose
+PVT,Vận tải Dầu khí,Hàng & Dịch vụ Công nghiệp,hose
+QCG,Quốc Cường Gia Lai,Bất động sản,hose
+QHD,Que hàn điện Việt Đức,Hàng & Dịch vụ Công nghiệp,hnx
+QNP,Cảng Quy Nhơn,Hàng & Dịch vụ Công nghiệp,hose
+QST,Sách và Thiết bị trường học Quảng Ninh,Truyền thông,hnx
+QTC,Công trình Giao thông Vận tải Quảng Nam,Xây dựng và Vật liệu,hnx
+RAL,Bóng đèn Phích nước Rạng Đông,Hàng cá nhân & Gia dụng,hose
+RCL,Địa ốc Chợ Lớn,Bất động sản,hnx
+REE,Cơ điện Lạnh,Điện nước & xăng dầu khí đốt,hose
+RYG,Sản xuất và Đầu tư Hoàng Gia,Xây dựng và Vật liệu,hose
+S4A,Thủy điện Sê San 4A,Điện nước & xăng dầu khí đốt,hose
+S55,Sông Đà 505,Xây dựng và Vật liệu,hnx
+S99,SCI,Xây dựng và Vật liệu,hnx
+SAB,Bia - Rượu - Nước Giải khát Sài Gòn,Thực phẩm và đồ uống,hose
+SAF,Lương thực Thực phẩm SAFOCO,Thực phẩm và đồ uống,hnx
+SAM,SAM Holdings,Công nghệ Thông tin,hose
+SAV,Hợp tác Kinh tế và Xuất nhập khẩu Savimex,Tài nguyên Cơ bản,hose
+SBA,Sông Ba,Điện nước & xăng dầu khí đốt,hose
+SBG,Tập Đoàn Cơ Khí Công Nghệ Cao Siba,Hàng & Dịch vụ Công nghiệp,hose
+SBT,Thành Thành Công - Biên Hòa,Thực phẩm và đồ uống,hose
+SBV,Siam Brothers Việt Nam,Bán lẻ,hose
+SC5,Xây dựng số 5,Xây dựng và Vật liệu,hose
+SCG,Tập đoàn Xây dựng SCG,Xây dựng và Vật liệu,hnx
+SCI,SCI E&C,Xây dựng và Vật liệu,hnx
+SCR,Địa Ốc Sài Gòn Thương Tín,Bất động sản,hose
+SCS,Dịch vụ Hàng hóa Sài Gòn,Du lịch và Giải trí,hose
+SD5,Sông Đà 5,Xây dựng và Vật liệu,hnx
+SD9,Sông Đà 9,Xây dựng và Vật liệu,hnx
+SDA,SIMCO Sông Đà,Hàng & Dịch vụ Công nghiệp,hnx
+SDC,Tư vấn Sông Đà,Hàng & Dịch vụ Công nghiệp,hnx
+SDG,Sadico Cần Thơ,Hàng & Dịch vụ Công nghiệp,hnx
+SDN,Sơn Đồng Nai,Xây dựng và Vật liệu,hnx
+SDU,Đầu tư Xây dựng và Phát triển Đô thị Sông Đà,Xây dựng và Vật liệu,hnx
+SEB,Đầu tư và Phát triển Điện Miền Trung,Điện nước & xăng dầu khí đốt,hnx
+SED,Đầu tư và Phát triển Giáo dục Phương Nam,Truyền thông,hnx
+SFC,Nhiên liệu Sài Gòn,Điện nước & xăng dầu khí đốt,hose
+SFG,Phân bón Miền Nam,Hóa chất,hose
+SFI,Đại lý Vận tải SAFI,Hàng & Dịch vụ Công nghiệp,hose
+SFN,Dệt lưới Sài Gòn,Hàng & Dịch vụ Công nghiệp,hnx
+SGC,Xuất nhập khẩu Sa Giang,Thực phẩm và đồ uống,hnx
+SGD,Sách Giáo dục tại Thành phố Hồ Chí Minh,Truyền thông,hnx
+SGH,Khách sạn Sài Gòn,Du lịch và Giải trí,hnx
+SGN,Phục vụ mặt đất Sài Gòn,Hàng & Dịch vụ Công nghiệp,hose
+SGR,Địa ốc Sài Gòn,Bất động sản,hose
+SGT,Công nghệ Viễn thông Sài Gòn,Công nghệ Thông tin,hose
+SHA,Sơn Hà Sài Gòn,Tài nguyên Cơ bản,hose
+SHB,Ngân hàng Thương mại Cổ phần Sài Gòn – Hà Nội,Ngân hàng,hose
+SHE,Phát triển Năng Lượng Sơn Hà,Hàng cá nhân & Gia dụng,hnx
+SHI,Quốc tế Sơn Hà,Tài nguyên Cơ bản,hose
+SHN,Đầu tư Tổng hợp Hà Nội,Tài nguyên Cơ bản,hnx
+SHP,Thủy điện Miền Nam,Điện nước & xăng dầu khí đốt,hose
+SHS,Chứng khoán Sài Gòn - Hà Nội,Dịch vụ tài chính,hnx
+SIP,Đầu tư Sài Gòn VRG,Bất động sản,hose
+SJ1,Nông nghiệp Hùng Hậu,Thực phẩm và đồ uống,hnx
+SJD,Thủy điện Cần Đơn,Điện nước & xăng dầu khí đốt,hose
+SJE,Sông Đà 11,Xây dựng và Vật liệu,hnx
+SJS,SJ Group,Bất động sản,hose
+SKG,Tàu Cao tốc Superdong - Kiên Giang,Du lịch và Giải trí,hose
+SLS,Mía đường Sơn La,Thực phẩm và đồ uống,hnx
+SMA,Thiết bị Phụ tùng Sài Gòn,Điện nước & xăng dầu khí đốt,hose
+SMB,Bia Sài Gòn - Miền Trung,Thực phẩm và đồ uống,hose
+SMC,Đầu tư Thương mại SMC,Tài nguyên Cơ bản,hose
+SMN,Sách và thiết bị giáo dục Miền Nam,Truyền thông,hnx
+SMT,SAMETEL,Công nghệ Thông tin,hnx
+SPC,Bảo vệ Thực vật Sài Gòn,Hóa chất,hnx
+SPM,S.P.M,Y tế,hose
+SRA,SARA Việt Nam,Công nghệ Thông tin,hnx
+SRC,Cao su Sao Vàng,Ô tô và phụ tùng,hose
+SRF,Searefico,Hàng & Dịch vụ Công nghiệp,hose
+SSB,Ngân hàng Thương mại Cổ phần Đông Nam Á,Ngân hàng,hose
+SSC,Giống cây trồng Miền Nam,Thực phẩm và đồ uống,hose
+SSI,Chứng khoán SSI,Dịch vụ tài chính,hose
+SSM,Chế tạo kết cấu thép VNECO.SSM,Tài nguyên Cơ bản,hnx
+ST8,Tập đoàn ST8,Công nghệ Thông tin,hose
+STB,Ngân hàng Thương mại Cổ phần Sài Gòn Thương Tín,Ngân hàng,hose
+STC,Sách và Thiết bị trường học Thành phố Hồ Chí Minh,Truyền thông,hnx
+STG,Kho Vận Miền Nam,Hàng & Dịch vụ Công nghiệp,hose
+STK,Sợi Thế Kỷ,Hàng cá nhân & Gia dụng,hose
+STP,Công nghiệp Thương mại Sông Đà,Hàng & Dịch vụ Công nghiệp,hnx
+SVC,Dịch vụ tổng hợp Sài Gòn,Ô tô và phụ tùng,hose
+SVD,Đầu tư & Thương mại Vũ Đăng,Hàng cá nhân & Gia dụng,hose
+SVI,Bao bì Biên Hòa,Hàng & Dịch vụ Công nghiệp,hose
+SVN,Tập đoàn Vexilla Việt Nam,Xây dựng và Vật liệu,hnx
+SVT,Công nghệ Sài Gòn Viễn Đông,Bán lẻ,hose
+SZB,Sonadezi Long Bình,Bất động sản,hnx
+SZC,Sonadezi Châu Đức,Bất động sản,hose
+SZL,Sonadezi Long Thành,Bất động sản,hose
+TA9,Xây lắp Thành An 96,Xây dựng và Vật liệu,hnx
+TAL,Đầu Tư Bất Động Sản Taseco,Bất động sản,hose
+TBC,Thủy điện Thác Bà,Điện nước & xăng dầu khí đốt,hose
+TBX,Xi măng Thái Bình,Xây dựng và Vật liệu,hnx
+TCB,Ngân hàng Thương mại Cổ phần Kỹ thương Việt Nam,Ngân hàng,hose
+TCD,Tập đoàn Xây dựng Tracodi,Xây dựng và Vật liệu,hose
+TCH,Đầu tư Dịch vụ Tài chính Hoàng Huy,Bất động sản,hose
+TCI,Chứng khoán Thành Công,Dịch vụ tài chính,hose
+TCL,Đại lý Giao nhận Vận tải Xếp dỡ Tân Cảng,Hàng & Dịch vụ Công nghiệp,hose
+TCM,Dệt may - Đầu tư - Thương mại Thành Công,Hàng cá nhân & Gia dụng,hose
+TCO,TCO Holdings,Thực phẩm và đồ uống,hose
+TCR,Công nghiệp Gốm sứ TAICERA,Xây dựng và Vật liệu,hose
+TCT,Cáp treo Núi Bà Tây Ninh,Du lịch và Giải trí,hose
+TCX,Chứng khoán Kỹ Thương,Dịch vụ tài chính,hose
+TD6,Than Đèo Nai - Cọc Sáu - TKV,Tài nguyên Cơ bản,hnx
+TDC,Kinh doanh và Phát triển Bình Dương,Bất động sản,hose
+TDG,Đầu tư TDG Global,Điện nước & xăng dầu khí đốt,hose
+TDH,Phát triển Nhà Thủ Đức,Bất động sản,hose
+TDM,Nước Thủ Dầu Một,Điện nước & xăng dầu khí đốt,hose
+TDP,Thuận Đức,Hàng & Dịch vụ Công nghiệp,hose
+TDT,Đầu tư và Phát triển TDT,Hàng cá nhân & Gia dụng,hnx
+TDW,Cấp nước Thủ Đức,Điện nước & xăng dầu khí đốt,hose
+TEG,Năng Lượng và Bất động sản Trường Thành,Bất động sản,hose
+TET,Vải sợi May mặc Miền Bắc,Hàng cá nhân & Gia dụng,hnx
+TFC,Trang,Thực phẩm và đồ uống,hnx
+THB,Bia Hà Nội - Thanh Hóa,Thực phẩm và đồ uống,hnx
+THD,Thaiholdings,Bất động sản,hnx
+THG,Đầu tư và Xây dựng Tiền Giang,Xây dựng và Vật liệu,hose
+THS,Thanh Hoa Sông Đà,Bán lẻ,hnx
+THT,Than Hà Tu - Vinacomin,Tài nguyên Cơ bản,hnx
+TIG,Tập đoàn Đầu tư Thăng Long,Bất động sản,hnx
+TIP,Phát triển Khu công nghiệp Tín Nghĩa,Bất động sản,hose
+TIX,Sản xuất Kinh doanh Xuất nhập khẩu Dịch vụ và Đầu tư Tân Bình,Bất động sản,hose
+TJC,Dịch vụ Vận tải và Thương mại,Hàng & Dịch vụ Công nghiệp,hnx
+TKU,Công nghiệp Tung Kuang,Tài nguyên Cơ bản,hnx
+TLD,Đầu tư Xây dựng và Phát triển Đô thị Thăng Long,Xây dựng và Vật liệu,hose
+TLG,Tập đoàn Thiên Long,Hàng cá nhân & Gia dụng,hose
+TLH,Tập đoàn Thép Tiến Lên,Tài nguyên Cơ bản,hose
+TMB,Kinh doanh Than Miền Bắc - Vinacomin,Tài nguyên Cơ bản,hnx
+TMC,Thương mại Xuất nhập khẩu Thủ Đức,Điện nước & xăng dầu khí đốt,hnx
+TMP,Thủy điện Thác Mơ,Điện nước & xăng dầu khí đốt,hose
+TMS,Transimex,Hàng & Dịch vụ Công nghiệp,hose
+TMT,Ô tô TMT,Ô tô và phụ tùng,hose
+TMX,VICEM Thương mại Xi măng,Xây dựng và Vật liệu,hnx
+TN1,Rox Key Holdings,Bất động sản,hose
+TNC,Cao su Thống Nhất,Hóa chất,hose
+TNG,Đầu tư và Thương mại TNG,Hàng cá nhân & Gia dụng,hnx
+TNH,Tập đoàn Bệnh viện TNH,Y tế,hose
+TNI,Tập đoàn Thành Nam,Tài nguyên Cơ bản,hose
+TNT,Tập đoàn TNT,Xây dựng và Vật liệu,hose
+TOT,Transimex Logistics,Hàng & Dịch vụ Công nghiệp,hnx
+TPB,Ngân hàng Thương mại Cổ phần Tiên Phong,Ngân hàng,hose
+TPC,Nhựa Tân Đại Hưng,Hóa chất,hose
+TPP,Tân Phú Việt Nam,Hàng & Dịch vụ Công nghiệp,hnx
+TRA,Traphaco,Y tế,hose
+TRC,Cao su Tây Ninh,Hóa chất,hose
+TSB,Ắc quy Tia Sáng,Hàng & Dịch vụ Công nghiệp,hnx
+TSC,Vật tư Kỹ thuật Nông nghiệp Cần Thơ,Hóa chất,hose
+TTA,Đầu tư Xây dựng và Phát triển Trường Thành,Điện nước & xăng dầu khí đốt,hose
+TTC,Gạch men Thanh Thanh,Xây dựng và Vật liệu,hnx
+TTE,Đầu tư Năng lượng Trường Thịnh,Điện nước & xăng dầu khí đốt,hose
+TTF,Tập đoàn Kỹ nghệ Gỗ Trường Thành,Tài nguyên Cơ bản,hose
+TTH,Thương mại và Dịch vụ Tiến Thành,Tài nguyên Cơ bản,hnx
+TTL,Tổng Công ty Thăng Long - Công ty Cổ phần,Xây dựng và Vật liệu,hnx
+TTT,Du Lịch - Thương Mại Tây Ninh,Du lịch và Giải trí,hnx
+TV2,Tư vấn Xây dựng Điện 2,Hàng & Dịch vụ Công nghiệp,hose
+TV3,Tư vấn Xây dựng Điện 3,Xây dựng và Vật liệu,hnx
+TV4,Tư vấn Xây dựng Điện 4,Hàng & Dịch vụ Công nghiệp,hnx
+TVB,Chứng khoán T-Cap,Dịch vụ tài chính,hose
+TVC,Tập đoàn Quản lý tài sản T-Corp,Dịch vụ tài chính,hnx
+TVD,Than Vàng Danh - Vinacomin,Tài nguyên Cơ bản,hnx
+TVS,Chứng khoán Thiên Việt,Dịch vụ tài chính,hose
+TVT,Tổng Công ty Việt Thắng - CTCP,Hàng cá nhân & Gia dụng,hose
+TXM,VICEM Thạch cao Xi Măng,Xây dựng và Vật liệu,hnx
+TYA,Dây và Cáp điện Taya Việt Nam,Hàng & Dịch vụ Công nghiệp,hose
+UIC,Đầu tư Phát triển Nhà và Đô thị IDICO,Điện nước & xăng dầu khí đốt,hose
+UNI,Đầu tư và Phát triển Sao Mai Việt,Công nghệ Thông tin,hnx
+V12,Xây dựng số 12,Xây dựng và Vật liệu,hnx
+V21,Vinaconex 21,Bất động sản,hnx
+VAB,Ngân hàng Thương mại Cổ phần Việt Á,Ngân hàng,hose
+VAF,Phân lân nung chảy Văn Điển,Hóa chất,hose
+VBC,"Nhựa, Bao bì Vinh",Hàng & Dịch vụ Công nghiệp,hnx
+VC1,Xây dựng số 1,Xây dựng và Vật liệu,hnx
+VC2,Đầu tư và Xây dựng VINA2,Xây dựng và Vật liệu,hnx
+VC3,Tập đoàn Nam Mê Kông,Bất động sản,hnx
+VC6,Xây dựng và Đầu tư Visicons,Xây dựng và Vật liệu,hnx
+VC7,Tập đoàn BGI,Xây dựng và Vật liệu,hnx
+VC9,Xây dựng số 9 - VC9,Xây dựng và Vật liệu,hnx
+VCA,Thép VICASA - VNSTEEL,Tài nguyên Cơ bản,hose
+VCB,Ngân hàng Thương mại Cổ phần Ngoại thương Việt Nam,Ngân hàng,hose
+VCC,Vinaconex 25,Xây dựng và Vật liệu,hnx
+VCF,VinaCafé Biên Hòa,Thực phẩm và đồ uống,hose
+VCG,Xuất nhập khẩu và Xây dựng Việt Nam,Xây dựng và Vật liệu,hose
+VCI,Chứng khoán Vietcap,Dịch vụ tài chính,hose
+VCM,BV Life,Hàng & Dịch vụ Công nghiệp,hnx
+VCS,VICOSTONE,Xây dựng và Vật liệu,hnx
+VDL,Thực phẩm Lâm Đồng,Thực phẩm và đồ uống,hnx
+VDP,Dược phẩm Trung ương VIDIPHA,Y tế,hose
+VDS,Chứng khoán Rồng Việt,Dịch vụ tài chính,hose
+VE1,Xây dựng điện VNECO 1,Xây dựng và Vật liệu,hnx
+VE3,Xây dựng điện VNECO 3,Xây dựng và Vật liệu,hnx
+VE4,Xây dựng điện VNECO4,Xây dựng và Vật liệu,hnx
+VFG,Khử trùng Việt Nam,Hóa chất,hose
+VFS,Chứng khoán Nhất Việt,Dịch vụ tài chính,hnx
+VGC,Tổng Công ty Viglacera - Công ty Cổ phần,Xây dựng và Vật liệu,hose
+VGP,Cảng Rau Quả,Hàng & Dịch vụ Công nghiệp,hnx
+VGS,Ống thép Việt - Đức VG PIPE,Tài nguyên Cơ bản,hnx
+VHC,Vĩnh Hoàn,Thực phẩm và đồ uống,hose
+VHE,Dược liệu và Thực phẩm Việt Nam,Y tế,hnx
+VHL,Viglacera Hạ Long,Xây dựng và Vật liệu,hnx
+VHM,Vinhomes,Bất động sản,hose
+VIB,Ngân hàng Thương mại Cổ phần Quốc tế Việt Nam,Ngân hàng,hose
+VIC,Tập đoàn Vingroup - Công ty CP,Bất động sản,hose
+VID,Đầu tư Phát triển Thương mại Viễn Đông,Tài nguyên Cơ bản,hose
+VIF,Tổng Công ty Lâm nghiệp Việt Nam - Công ty Cổ phần,Tài nguyên Cơ bản,hnx
+VIG,Chứng khoán Đầu tư Tài chính Việt Nam,Dịch vụ tài chính,hnx
+VIP,Vận tải Xăng dầu VIPCO,Hàng & Dịch vụ Công nghiệp,hose
+VIT,Viglacera Tiên Sơn,Xây dựng và Vật liệu,hnx
+VIX,Chứng khoán VIX,Dịch vụ tài chính,hose
+VJC,Hàng không Vietjet,Du lịch và Giải trí,hose
+VLA,Đầu tư và Phát triển Công nghệ Văn Lang,Công nghệ Thông tin,hnx
+VMC,VIMECO,Xây dựng và Vật liệu,hnx
+VMD,Y Dược phẩm Vimedimex,Y tế,hose
+VMS,Phát triển Hàng Hải,Hàng & Dịch vụ Công nghiệp,hnx
+VNC,Tập đoàn Vinacontrol,Hàng & Dịch vụ Công nghiệp,hnx
+VND,Chứng khoán VNDIRECT,Dịch vụ tài chính,hose
+VNE,Xây dựng điện Việt Nam,Xây dựng và Vật liệu,hose
+VNF,Vinafreight,Hàng & Dịch vụ Công nghiệp,hnx
+VNG,Du Lịch Thành Thành Công,Du lịch và Giải trí,hose
+VNL,Logistics Vinalink,Hàng & Dịch vụ Công nghiệp,hose
+VNM,Sữa Việt Nam,Thực phẩm và đồ uống,hose
+VNR,Tái bảo hiểm Quốc gia Việt Nam,Bảo hiểm,hnx
+VNS,Ánh Dương Việt Nam,Du lịch và Giải trí,hose
+VNT,Giao nhận Vận tải Ngoại Thương,Hàng & Dịch vụ Công nghiệp,hnx
+VOS,Vận tải Biển Việt Nam,Hàng & Dịch vụ Công nghiệp,hose
+VPB,Ngân hàng Thương mại Cổ phần Việt Nam Thịnh Vượng,Ngân hàng,hose
+VPD,Phát triển Điện lực Việt Nam,Điện nước & xăng dầu khí đốt,hose
+VPG,Đầu tư Thương mại Xuất nhập khẩu Việt Phát,Tài nguyên Cơ bản,hose
+VPH,Vạn Phát Hưng,Bất động sản,hose
+VPI,Phát triển Bất động sản Văn Phú,Bất động sản,hose
+VPL,Vinpearl,Du lịch và Giải trí,hose
+VPS,Thuốc sát trùng Việt Nam,Hóa chất,hose
+VRC,Bất động sản và Đầu tư VRC,Bất động sản,hose
+VRE,Vincom Retail,Bất động sản,hose
+VSA,Đại lý Hàng hải Việt Nam,Hàng & Dịch vụ Công nghiệp,hnx
+VSC,Container Việt Nam,Hàng & Dịch vụ Công nghiệp,hose
+VSH,Thủy điện Vĩnh Sơn - Sông Hinh,Điện nước & xăng dầu khí đốt,hose
+VSI,Đầu tư và Xây dựng Cấp thoát nước,Xây dựng và Vật liệu,hose
+VSM,Container Miền Trung,Hàng & Dịch vụ Công nghiệp,hnx
+VTB,Viettronics Tân Bình,Hàng & Dịch vụ Công nghiệp,hose
+VTC,Viễn Thông VTC,Công nghệ Thông tin,hnx
+VTH,Dây cáp điện Việt Thái,Hàng & Dịch vụ Công nghiệp,hnx
+VTJ,Thương mại và Đầu tư VI NA TA BA,Hàng cá nhân & Gia dụng,hnx
+VTO,Vận tải Xăng dầu VITACO,Hàng & Dịch vụ Công nghiệp,hose
+VTP,Bưu chính Viettel,Hàng & Dịch vụ Công nghiệp,hose
+VTV,Năng lượng và Môi trường VICEM,Xây dựng và Vật liệu,hnx
+VTZ,Sản xuất và Thương mại Nhựa Việt Thành,Hóa chất,hnx
+WCS,Bến xe Miền Tây,Hàng & Dịch vụ Công nghiệp,hnx
+WSS,Chứng khoán Phố Wall,Dịch vụ tài chính,hnx
+X20,X20,Hàng cá nhân & Gia dụng,hnx
+YBM,Khoáng sản Công nghiệp Yên Bái,Tài nguyên Cơ bản,hose
+YEG,Tập đoàn Yeah1,Truyền thông,hose
