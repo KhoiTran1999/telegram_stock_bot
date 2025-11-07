@@ -1281,6 +1281,98 @@ def compute_value_screener(
         "industries": industries_data,
     }
 
+def seconds_until_next_weekday_screener():
+    """
+    Tính số giây tới 09:00 sáng ngày làm việc (T2-T6) tiếp theo.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    
+    target_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+
+    # Nếu hôm nay là T2-T6 và chưa tới 9h sáng
+    if 0 <= now.weekday() <= 4 and now < target_time:
+        target = target_time
+    else:
+        # Ngược lại, tìm ngày T2-T6 tiếp theo
+        days_ahead = 1
+        next_date = now.date() + datetime.timedelta(days=days_ahead)
+        while next_date.weekday() > 4: # Bỏ qua T7 (5), CN (6)
+            next_date += datetime.timedelta(days=1)
+        
+        target = datetime.datetime(
+            next_date.year, next_date.month, next_date.day, 9, 0, 0, tzinfo=vn_tz
+        )
+
+    return max((target - now).total_seconds(), 0)
+
+def format_screener_report_text(result: dict) -> str | None:
+    """
+    Từ kết quả của compute_value_screener, format ra tin nhắn Markdown.
+    Trả về None nếu không có dữ liệu.
+    """
+    if (
+        not result
+        or not result.get("industries")
+        or all(not ind["rows"] for ind in result["industries"])
+    ):
+        log.warning(f"[{INSTANCE_ID}][SCREENER] Không có dữ liệu để format báo cáo.")
+        return None
+
+    as_of = result.get("as_of")
+    industries = result["industries"]
+
+    lines: list[str] = []
+    lines.append("💰 *Top 3 cổ phiếu Value theo từng ngành* (dữ liệu TCBS)")
+    if as_of:
+        lines.append(f"_Cập nhật đến: {as_of}_")
+    lines.append("")
+    lines.append("📊 *Tiêu chí chấm điểm:*")
+    lines.append("• P/E & P/B thấp hơn trung bình ngành → điểm cao hơn")
+    lines.append("• ROE cao hơn trung bình ngành → điểm cao hơn")
+    lines.append("• Chỉ lấy các cổ phiếu sàn HOSE/HNX")
+    lines.append("• Thanh khoảng trên 50 tỷ/ngày")
+    lines.append("• Tổng tài sản trên 5000 tỷ")
+    lines.append("")
+
+    for industry_block in industries:
+        industry_name = industry_block["industry"] or "Khác"
+        display_industry = (
+            industry_name[:1].upper() + industry_name[1:]
+            if industry_name
+            else "Khác"
+        )
+
+        first = industry_block["rows"][0]
+        pe_avg = first["pe_industry"]
+        pb_avg = first["pb_industry"]
+        roe_avg = first["roe_industry"]
+
+        lines.append(
+            f"🏷 *Ngành: {display_industry}* "
+            f"(P/E TB: {pe_avg:.1f} | P/B TB: {pb_avg:.1f} | ROE TB: {format_roe_pct(roe_avg)})"
+        )
+
+        for idx, r in enumerate(industry_block["rows"], start=1):
+            lines.append(
+                f"{idx}️⃣ *{r['symbol']}* – "
+                f"P/E {r['pe']:.1f} | "
+                f"P/B {r['pb']:.1f} | "
+                f"ROE {format_roe_pct(r['roe'])}"
+            )
+
+        lines.append("")  # dòng trống ngăn cách ngành
+
+    lines.append(
+        "_Lưu ý: Đây là bảng xếp hạng định lượng, nhà đầu tư nên kết hợp phân tích cơ bản & kỹ thuật để ra quyết định._"
+    )
+
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
+    
+    return text
+
 def format_roe_pct(roe_decimal: float | None) -> str:
     """
     ROE trong DB là dạng thập phân (0.111 = 11.1%).
@@ -1522,6 +1614,59 @@ async def initial_value_precompute_loop():
     # Kết thúc loop một lần, không lặp lại
     log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] initial_value_precompute_loop() kết thúc.")
 
+async def daily_screener_loop():
+    """
+    Gửi báo cáo screener value cho TẤT CẢ user vào 09:00 sáng T2-T6.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+
+    while True:
+        loop_id += 1
+
+        # ❗️ KIỂM TRA TRẠNG THÁI BOT
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+
+        wait_sec = seconds_until_next_weekday_screener()
+        log.info(
+            f"[{INSTANCE_ID}][SCREENER {loop_id}] Ngủ tới 09:00 ngày làm việc tiếp theo, còn {wait_sec:.0f}s"
+        )
+        await asyncio.sleep(wait_sec)
+
+        # ❗️ KIỂM TRA LẦN NỮA SAU KHI THỨC DẬY
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Thức dậy nhưng bot đang TẮT, bỏ qua.")
+            continue
+
+        now = datetime.datetime.now(vn_tz)
+        if now.weekday() > 4: # 5=T7, 6=CN
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Thức dậy nhưng không phải T2-T6, bỏ qua.")
+            continue
+        
+        try:
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu chạy compute_value_screener() lúc 09:00.")
+            
+            # 1. Tính toán (chạy trong thread để không block bot)
+            result = await asyncio.to_thread(compute_value_screener)
+            
+            # 2. Format
+            text = format_screener_report_text(result)
+            
+            if not text:
+                log.warning(f"[{INSTANCE_ID}][SCREENER {loop_id}] Không có dữ liệu screener để gửi.")
+                continue
+
+            # 3. Gửi cho tất cả user
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu broadcast báo cáo screener...")
+            broadcast_to_all_watchers(text)
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Hoàn tất broadcast.")
+
+        except Exception as e:
+            log.exception(f"[{INSTANCE_ID}][SCREENER {loop_id}] Lỗi tổng quát: {e}")
+            await asyncio.sleep(300) # 5 phút retry nếu lỗi
 
 def escape_markdown_v2(text: str) -> str:
     """
@@ -1980,92 +2125,6 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await reply_md(update, msg)
-
-async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /screener_value – Hiển thị top 3 cổ phiếu tốt nhất trong từng ngành
-    (dựa trên P/E, P/B thấp và ROE cao so với trung bình ngành)
-    """
-    if not BOT_ACTIVE:
-        await reply_md(update,"⚙️ Bot đang bảo trì.")
-        return
-
-    if not update or not update.effective_chat:
-        return
-
-    chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/screener_value", ADMIN_ID)
-
-    result = compute_value_screener(top_per_industry=3, max_industries=19)
-    if (
-        not result
-        or not result.get("industries")
-        or all(not ind["rows"] for ind in result["industries"])
-    ):
-        await reply_md(update,
-            "⚠️ Dữ liệu bộ lọc *Value* hiện chưa sẵn sàng.\n\n"
-            "Trường hợp này thường xảy ra khi bot mới được deploy "
-            "hoặc admin vừa dùng lệnh */screener_value_clear* để reset dữ liệu.\n\n"
-            "📅 Dữ liệu sẽ được crawl lại *tự động* vào 00:00 các ngày Thứ 2 đến Thứ 6.\n"
-            "👉 Bạn hãy đợi đến sáng ngày mai rồi thử lại nhé."
-        )
-        return
-
-    as_of = result.get("as_of")
-    industries = result["industries"]
-
-    lines: list[str] = []
-    lines.append("💰 *Top 3 cổ phiếu Value theo từng ngành* (dữ liệu TCBS)")
-    if as_of:
-        lines.append(f"_Cập nhật đến: {as_of}_")
-    lines.append("")
-    lines.append("📊 *Tiêu chí chấm điểm:*")
-    lines.append("• P/E & P/B thấp hơn trung bình ngành → điểm cao hơn")
-    lines.append("• ROE cao hơn trung bình ngành → điểm cao hơn")
-    lines.append("• Chỉ lấy các cổ phiếu sàn HOSE/HNX")
-    lines.append("• Thanh khoảng trên 50 tỷ/ngày")
-    lines.append("• Tổng tài sản trên 5000 tỷ")
-    lines.append("")
-
-    for industry_block in industries:
-        industry_name = industry_block["industry"] or "Khác"
-        display_industry = (
-            industry_name[:1].upper() + industry_name[1:]
-            if industry_name
-            else "Khác"
-        )
-
-        # Lấy trung bình ngành từ record đầu (các record cùng ngành đều giống nhau)
-        first = industry_block["rows"][0]
-        pe_avg = first["pe_industry"]
-        pb_avg = first["pb_industry"]
-        roe_avg = first["roe_industry"]
-
-        lines.append(
-            f"🏷 *Ngành: {display_industry}* "
-            f"(P/E TB: {pe_avg:.1f} | P/B TB: {pb_avg:.1f} | ROE TB: {roe_avg*100:.1f}%)"
-        )
-
-        for idx, r in enumerate(industry_block["rows"], start=1):
-            lines.append(
-                f"{idx}️⃣ *{r['symbol']}* – "
-                f"P/E {r['pe']:.1f} | "
-                f"P/B {r['pb']:.1f} | "
-                f"ROE {r['roe']*100:.1f}%"
-            )
-
-        lines.append("")  # dòng trống ngăn cách ngành
-
-    lines.append(
-        "_Lưu ý: Đây là bảng xếp hạng định lượng, nhà đầu tư nên kết hợp phân tích cơ bản & kỹ thuật để ra quyết định._"
-    )
-
-    text = "\n".join(lines)
-    if len(text) > 3900:
-        text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
-
-    await reply_md(update,text)
-
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -2659,7 +2718,6 @@ async def main():
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
-    tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
 
     # Admin command handlers
     tg_app.add_handler(CommandHandler("on", cmd_on))
@@ -2709,6 +2767,7 @@ async def main():
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
         screener_value_update_loop(), # 💰 precompute screener Value 00:00 T2–T6
+        daily_screener_loop(),  # 💰 gửi báo cáo screener 09:00 T2-T6
         initial_value_precompute_loop(), # chạy 1 lần sau khi khởi động (background)
         run_telegram(),
         auto_on_after_delay(initial_active),  # ✅ truyền trạng thái ban đầu
