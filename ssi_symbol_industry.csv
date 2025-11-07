@@ -23,7 +23,7 @@ DRI,Hóa chất
 DTT,Hóa chất
 ECO,Hóa chất
 GER,Hóa chất
-GVR º,Hóa chất
+GVR,Hóa chất
 HAI,Hóa chất
 HCD,Hóa chất
 HII,Hóa chất
@@ -73,7 +73,7 @@ VTQ,Hóa chất
 VTZ,Hóa chất
 VXP,Hóa chất
 AAH,Tài nguyên Cơ bản
-ACG º,Tài nguyên Cơ bản
+ACG,Tài nguyên Cơ bản
 ACM,Tài nguyên Cơ bản
 AMC,Tài nguyên Cơ bản
 ATG,Tài nguyên Cơ bản
@@ -194,7 +194,7 @@ BMK,Xây dựng và Vật liệu
 BMP,Xây dựng và Vật liệu
 BOT,Xây dựng và Vật liệu
 BT6,Xây dựng và Vật liệu
-BTD º,Xây dựng và Vật liệu
+BTD,Xây dựng và Vật liệu
 BTN,Xây dựng và Vật liệu
 BTS,Xây dựng và Vật liệu
 C12,Xây dựng và Vật liệu
@@ -272,7 +272,7 @@ FCM,Xây dựng và Vật liệu
 FCN,Xây dựng và Vật liệu
 FIC,Xây dựng và Vật liệu
 FID,Xây dựng và Vật liệu
-G36 º,Xây dựng và Vật liệu
+G36,Xây dựng và Vật liệu
 GAB,Xây dựng và Vật liệu
 GH3,Xây dựng và Vật liệu
 GKM,Xây dựng và Vật liệu
@@ -359,8 +359,8 @@ NHC,Xây dựng và Vật liệu
 NNC,Xây dựng và Vật liệu
 NTP,Xây dựng và Vật liệu
 NXT,Xây dựng và Vật liệu
-PC1 º,Xây dựng và Vật liệu
-PCC º,Xây dựng và Vật liệu
+PC1,Xây dựng và Vật liệu
+PCC,Xây dựng và Vật liệu
 PCM,Xây dựng và Vật liệu
 PDB,Xây dựng và Vật liệu
 PEN,Xây dựng và Vật liệu
@@ -406,7 +406,7 @@ SCC,Xây dựng và Vật liệu
 SCG,Xây dựng và Vật liệu
 SCI,Xây dựng và Vật liệu
 SCJ,Xây dựng và Vật liệu
-SCL *,Xây dựng và Vật liệu
+SCL,Xây dựng và Vật liệu
 SD1,Xây dựng và Vật liệu
 SD2,Xây dựng và Vật liệu
 SD3,Xây dựng và Vật liệu
@@ -485,7 +485,7 @@ VE3,Xây dựng và Vật liệu
 VE4,Xây dựng và Vật liệu
 VE8,Xây dựng và Vật liệu
 VE9,Xây dựng và Vật liệu
-VGC º,Xây dựng và Vật liệu
+VGC,Xây dựng và Vật liệu
 VHH,Xây dựng và Vật liệu
 VHL,Xây dựng và Vật liệu
 VIH,Xây dựng và Vật liệu
@@ -523,7 +523,7 @@ BMD,Hàng & Dịch vụ Công nghiệp
 BPC,Hàng & Dịch vụ Công nghiệp
 BRS,Hàng & Dịch vụ Công nghiệp
 BTG,Hàng & Dịch vụ Công nghiệp
-BTH *,Hàng & Dịch vụ Công nghiệp
+BTH,Hàng & Dịch vụ Công nghiệp
 BTU,Hàng & Dịch vụ Công nghiệp
 BXH,Hàng & Dịch vụ Công nghiệp
 CAG,Hàng & Dịch vụ Công nghiệp
@@ -675,7 +675,7 @@ SDK,Hàng & Dịch vụ Công nghiệp
 SDV,Hàng & Dịch vụ Công nghiệp
 SFI,Hàng & Dịch vụ Công nghiệp
 SFN,Hàng & Dịch vụ Công nghiệp
-SGN º,Hàng & Dịch vụ Công nghiệp
+SGN,Hàng & Dịch vụ Công nghiệp
 SGP,Hàng & Dịch vụ Công nghiệp
 SGS,Hàng & Dịch vụ Công nghiệp
 SHC,Hàng & Dịch vụ Công nghiệp
@@ -791,7 +791,7 @@ ASM,Thực phẩm và đồ uống
 ATA,Thực phẩm và đồ uống
 AVF,Thực phẩm và đồ uống
 BAF,Thực phẩm và đồ uống
-BBC º,Thực phẩm và đồ uống
+BBC,Thực phẩm và đồ uống
 BBM,Thực phẩm và đồ uống
 BCF,Thực phẩm và đồ uống
 BHG,Thực phẩm và đồ uống
@@ -815,7 +815,7 @@ C22,Thực phẩm và đồ uống
 CAD,Thực phẩm và đồ uống
 CAN,Thực phẩm và đồ uống
 CAT,Thực phẩm và đồ uống
-CBS º,Thực phẩm và đồ uống
+CBS,Thực phẩm và đồ uống
 CCA,Thực phẩm và đồ uống
 CFV,Thực phẩm và đồ uống
 CLX,Thực phẩm và đồ uống
@@ -865,7 +865,7 @@ LSS,Thực phẩm và đồ uống
 LTG,Thực phẩm và đồ uống
 MCF,Thực phẩm và đồ uống
 MCH,Thực phẩm và đồ uống
-MCM º,Thực phẩm và đồ uống
+MCM,Thực phẩm và đồ uống
 MLS,Thực phẩm và đồ uống
 MML,Thực phẩm và đồ uống
 MPC,Thực phẩm và đồ uống
@@ -898,7 +898,7 @@ SKH,Thực phẩm và đồ uống
 SKN,Thực phẩm và đồ uống
 SKV,Thực phẩm và đồ uống
 SLS,Thực phẩm và đồ uống
-SMB º,Thực phẩm và đồ uống
+SMB,Thực phẩm và đồ uống
 SNC,Thực phẩm và đồ uống
 SPD,Thực phẩm và đồ uống
 SPH,Thực phẩm và đồ uống
@@ -926,7 +926,7 @@ VNM,Thực phẩm và đồ uống
 VOC,Thực phẩm và đồ uống
 VSF,Thực phẩm và đồ uống
 VSN,Thực phẩm và đồ uống
-WSB º,Thực phẩm và đồ uống
+WSB,Thực phẩm và đồ uống
 A32,Hàng cá nhân & Gia dụng
 AAT,Hàng cá nhân & Gia dụng
 ADS,Hàng cá nhân & Gia dụng
@@ -1012,7 +1012,7 @@ APC,Y tế
 BCP,Y tế
 BIO,Y tế
 CDP,Y tế
-CNC º,Y tế
+CNC,Y tế
 CVN,Y tế
 DAN,Y tế
 DBD,Y tế
@@ -1290,7 +1290,7 @@ SFC,Điện nước & xăng dầu khí đốt
 SHP,Điện nước & xăng dầu khí đốt
 SII,Điện nước & xăng dầu khí đốt
 SJD,Điện nước & xăng dầu khí đốt
-SMA º,Điện nước & xăng dầu khí đốt
+SMA,Điện nước & xăng dầu khí đốt
 SP2,Điện nước & xăng dầu khí đốt
 STW,Điện nước & xăng dầu khí đốt
 SVH,Điện nước & xăng dầu khí đốt
@@ -1346,7 +1346,7 @@ STB,Ngân hàng
 TCB,Ngân hàng
 TPB,Ngân hàng
 VAB,Ngân hàng
-VBB º,Ngân hàng
+VBB,Ngân hàng
 VCB,Ngân hàng
 VIB,Ngân hàng
 VPB,Ngân hàng
@@ -1398,7 +1398,7 @@ HAR,Bất động sản
 HD2,Bất động sản
 HD6,Bất động sản
 HD8,Bất động sản
-HDC º,Bất động sản
+HDC,Bất động sản
 HDG,Bất động sản
 HLD,Bất động sản
 HPI,Bất động sản
