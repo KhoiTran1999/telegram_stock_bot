@@ -111,7 +111,6 @@ def set_bot_active(is_active: bool):
 # ==============================
 # 📊 CACHE SCREENER VALUE
 # ==============================
-
 def upsert_stock_value_batch(records):
     """
     Ghi / cập nhật 1 batch dữ liệu screener Value vào bảng stock_value_cache.
@@ -132,8 +131,8 @@ def upsert_stock_value_batch(records):
                     pb       DOUBLE PRECISION,
                     roe      DOUBLE PRECISION,
                     floor    TEXT,
-                    asset_proxy     DOUBLE PRECISION, -- ⬅️ TÀI SẢN
-                    liquidity_proxy DOUBLE PRECISION, -- ⬅️ THANH KHOẢN
+                    asset_proxy     DOUBLE PRECISION,
+                    liquidity_proxy DOUBLE PRECISION,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
@@ -156,15 +155,15 @@ def upsert_stock_value_batch(records):
                     pb         = EXCLUDED.pb,
                     roe        = EXCLUDED.roe,
                     floor      = EXCLUDED.floor,
-                    asset_proxy     = EXCLUDED.asset_proxy,     -- ⬅️ CẬP NHẬT
-                    liquidity_proxy = EXCLUDED.liquidity_proxy, -- ⬅️ CẬP NHẬT
+                    asset_proxy     = EXCLUDED.asset_proxy,
+                    liquidity_proxy = EXCLUDED.liquidity_proxy,
                     updated_at = NOW()
             """
             
-            # 🚀 Tối ưu: Gửi tất cả records 1 lần
+            # 🚀 Tối ưu: Gửi tất cả records (list of dicts) 1 lần
             cur.executemany(sql, records)
         
-        conn.commit() # Commit 1 lần sau khi xong
+        conn.commit() # Commit 1 lần duy nhất sau khi xong
 
 def load_stock_value_cache():
     """
