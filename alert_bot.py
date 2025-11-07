@@ -1016,8 +1016,8 @@ def compute_value_screener(
 
     # Tính điểm Value (cao hơn là tốt)
     df["value_score"] = (
-        (df["pe_industry"] / df["pe"]) * 0.4
-        + (df["pb_industry"] / df["pb"]) * 0.2
+        (df["pe_industry"] / df["pe"]) * 0.3
+        + (df["pb_industry"] / df["pb"]) * 0.3
         + (df["roe"] / df["roe_industry"]) * 0.4
     )
 
