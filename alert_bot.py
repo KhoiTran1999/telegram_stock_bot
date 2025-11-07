@@ -41,7 +41,7 @@ from db_utils import (
     get_stock_value_cache_count,
     clear_stock_value_cache,
 )
-import psutil 
+import psutil
 import time
 import subprocess
 import re
@@ -49,6 +49,7 @@ import csv
 from datetime import timedelta
 from telegram.error import BadRequest
 from typing import Any
+
 
 
 # ==============================================
@@ -126,6 +127,56 @@ FUN_DOWN = [
 # ==============================================
 # HÀM TIỆN ÍCH
 # ==============================================
+def load_industry_map_from_csv(path: str = "ssi_symbol_industry.csv") -> dict[str, str]:
+    """
+    Đọc file CSV mapping ngành (crawl từ TOPI) và trả về dict:
+        {symbol: industry}
+    CSV mong đợi có cột: symbol, industry (hoặc industry_raw, industry).
+    """
+    mapping: dict[str, str] = {}
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return {}
+
+            # Chuẩn hoá tên cột về lower để linh hoạt hơn
+            cols = [c.lower() for c in reader.fieldnames]
+            try:
+                symbol_idx = cols.index("symbol")
+            except ValueError:
+                log.warning(f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'symbol'.")
+                return {}
+
+            # Ưu tiên cột 'industry', nếu không có thì dùng 'industry_raw'
+            industry_idx = None
+            if "industry" in cols:
+                industry_idx = cols.index("industry")
+            elif "industry_raw" in cols:
+                industry_idx = cols.index("industry_raw")
+            else:
+                log.warning(
+                    f"[{INSTANCE_ID}][VALUE] CSV {path} không có 'industry'/'industry_raw'."
+                )
+                return {}
+
+            for row in reader:
+                values = list(row.values())
+                sym = (values[symbol_idx] or "").strip().upper()
+                ind = (values[industry_idx] or "").strip()
+                if not sym or not ind:
+                    continue
+                mapping[sym] = ind
+
+    except FileNotFoundError:
+        log.warning(
+            f"[{INSTANCE_ID}][VALUE] Không tìm thấy file {path}, fallback industry='Khác'."
+        )
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi đọc CSV {path}: {e}")
+
+    return mapping
+
 def get_state_for_all():
     return ALERT_STATE
 
