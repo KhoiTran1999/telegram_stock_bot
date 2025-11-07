@@ -2065,6 +2065,9 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lines.append("📊 *Tiêu chí chấm điểm:*")
     lines.append("• P/E & P/B thấp hơn trung bình ngành → điểm cao hơn")
     lines.append("• ROE cao hơn trung bình ngành → điểm cao hơn")
+    lines.append("• Chỉ lấy các cổ phiếu sàn HOSE/HNX")
+    lines.append("• Thanh khoảng trên 50 tỷ/ngày")
+    lines.append("• Tổng tài sản trên 5000 tỷ")
     lines.append("")
 
     for industry_block in industries:
