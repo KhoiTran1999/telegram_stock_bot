@@ -769,17 +769,18 @@ def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, st
 
 async def precompute_value_data():
     """
-    Crawl dữ liệu P/E, P/B, ROE cho toàn bộ danh sách mã mà Listing().all_symbols() trả về
-    từ nguồn TCBS và lưu vào bảng stock_value_cache (Postgres).
+    Crawl P/E, P/B, ROE (TCBS) VÀ Thanh khoản, Tài sản (VCI Price Board)
+    lưu vào stock_value_cache.
+    (Phiên bản hoàn chỉnh, đã fix _safe_float)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
     log.info(
-        f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data lúc "
+        f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data (có TK/TS) lúc "
         f"{started_at.strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
-    # 1️⃣ Lấy danh sách tất cả mã từ Listing (chỉ có ['symbol', 'organ_name'])
+    # 1️⃣ Lấy danh sách tất cả mã từ Listing
     try:
         listing = Listing()
         listing_df = listing.all_symbols()
@@ -819,16 +820,15 @@ async def precompute_value_data():
     # 🔹 Load industry_map từ CSV (Topi)
     industry_map = load_industry_map_from_csv("ssi_symbol_industry.csv")
     if industry_map:
-        # Chỉ giữ lại những mã có trong CSV để crawl
         symbols = [s for s in symbols if s in industry_map]
         log.info(
             f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ ssi_symbol_industry.csv. "
-            f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl (chỉ lấy mã có trong CSV)."
+            f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl."
         )
     else:
         log.info(
             f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbol_industry.csv, "
-            "tất cả mã sẽ gán industry='Khác' (dùng toàn bộ symbols)."
+            "tất cả mã sẽ gán industry='Khác'."
         )
 
     # ❗️ SỬA LỖI LẤY SÀN (FIX 1)
@@ -853,6 +853,44 @@ async def precompute_value_data():
     if not floor_map:
         log.warning(f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbols_floor.csv, "
                     "dữ liệu 'floor' sẽ bị NULL.")
+    
+    # ❗️ Copy 2 hàm helper này vào đây để dùng
+    def _norm(x):
+        if x is None: return None
+        try:
+            if hasattr(x, "item"): x = x.item()
+        except Exception: pass
+        try: x = float(x)
+        except Exception: return None
+        if isinstance(x, float) and math.isnan(x): return None
+        return x
+
+    def _pick_from_candidates(row, candidates, substrings):
+        for key in candidates:
+            try:
+                if key in row:
+                    v = _norm(row.get(key, None))
+                    if v is not None: return v
+            except Exception: continue
+        for k in row.index:
+            name = ""
+            if isinstance(k, tuple):
+                name = str(k[1]).lower()
+            else:
+                name = str(k).lower()
+            if any(sub in name for sub in substrings):
+                try: v = _norm(row.get(k, None))
+                except Exception: v = None
+                if v is not None: return v
+        return None
+
+    # Khởi tạo trading 1 lần
+    try:
+        trading = Trading(source="VCI")
+    except Exception as e:
+        trading = None
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
+        return # Bắt buộc phải có trading để tính TK/TS
 
     # 2️⃣ Đọc các mã đã có trong DB để auto-resume
     existing_records = load_stock_value_cache()
@@ -875,12 +913,11 @@ async def precompute_value_data():
         return
 
     total_batches = math.ceil(total_todo / VALUE_BATCH_SIZE)
-    processed_count = already  # số mã đã có sẵn + đang crawl thêm
+    processed_count = already
+    rate_limit_sleep = 60
+    per_symbol_sleep = 0.7
 
-    rate_limit_sleep = 60      # số giây nghỉ khi bị rate limit TCBS
-    per_symbol_sleep = 0.7     # throttle mỗi mã
-
-    # Helper convert -> float
+    # ❗️ HÀM _safe_float ĐÃ SỬA LỖI TypeError
     def _safe_float(val):
         if val is None:
             return None
@@ -889,13 +926,18 @@ async def precompute_value_data():
                 val = val.item()
         except Exception:
             pass
+        
+        # FIX: Ép kiểu sang float TRƯỚC khi gọi isnan
         try:
             val = float(val)
         except Exception:
-            return None
+            return None # Nếu không thể convert sang float, trả về None
+        
         if math.isnan(val):
             return None
+            
         return val
+
 
     for batch_idx in range(total_batches):
         batch_syms = todo_symbols[
@@ -906,11 +948,36 @@ async def precompute_value_data():
             f"{len(batch_syms)} mã."
         )
 
+        # ❗️ TỐI ƯU: LẤY TK/TS THEO BATCH
+        liquidity_map: dict[str, float] = {}
+        asset_map: dict[str, float] = {}
+        try:
+            pb_df = trading.price_board(batch_syms)
+            if pb_df is not None and not pb_df.empty:
+                for idx, row in pb_df.iterrows():
+                    sym = None
+                    for ksym in [("listing", "symbol"), ("stock", "symbol"), ("listing", "ticker")]:
+                        try: val = row.get(ksym, None)
+                        except Exception: val = None
+                        if val: sym = str(val).upper(); break
+                    if not sym: sym = str(idx).upper()
+                    
+                    price = _pick_from_candidates(row, [("match", "match_price"), ("match", "reference_price"), ("listing", "ref_price")], ["price"])
+                    volume = _pick_from_candidates(row, [("match", "accumulated_vol"), ("match", "match_volume")], ["vol"])
+                    shares = _pick_from_candidates(row, [("listing", "listed_share"), ("listing", "outstanding_share"), ("listing", "listed_shares"), ("listing", "outstanding_shares")],["share"])
+
+                    if price is not None and volume is not None:
+                        liquidity_map[sym] = float(price) * float(volume)
+                    if price is not None and shares is not None:
+                        asset_map[sym] = float(price) * float(shares)
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi price_board batch: {e}")
+        
         batch_records = []
 
         for sym in batch_syms:
             sym = str(sym).upper()
-            await asyncio.sleep(per_symbol_sleep)
+            await asyncio.sleep(per_symbol_sleep) # Vẫn sleep để throttle fin.ratio
 
             ratio_df = None
             last_err = None
@@ -955,7 +1022,7 @@ async def precompute_value_data():
 
             df = ratio_df.copy()
 
-            # Sắp xếp để lấy kỳ mới nhất (tuỳ cột có trong DataFrame TCBS)
+            # Sắp xếp để lấy kỳ mới nhất
             if "year" in df.columns:
                 df = df.sort_values("year", ascending=False)
             elif "report_period" in df.columns:
@@ -970,12 +1037,9 @@ async def precompute_value_data():
             eps = _safe_float(latest.get("earning_per_share"))
 
             # Chỉ chấp nhận > 0 cho pe/pb/roe
-            if pe is not None and pe <= 0:
-                pe = None
-            if pb is not None and pb <= 0:
-                pb = None
-            if roe is not None and roe <= 0:
-                roe = None
+            if pe is not None and pe <= 0: pe = None
+            if pb is not None and pb <= 0: pb = None
+            if roe is not None and roe <= 0: roe = None
 
             # Ước tính giá để lọc penny: price_est ≈ P/E * EPS
             price_est = None
@@ -995,8 +1059,12 @@ async def precompute_value_data():
                 continue
 
             industry = industry_map.get(sym, "Khác")
-            exchange = exchange_map.get(sym, None) # ⬅️ (FIX 1)
-            floor = floor_map.get(sym, None)       # ⬅️ (FIX 2)
+            exchange = exchange_map.get(sym, None)
+            floor = floor_map.get(sym, None)
+            
+            # ❗️ Lấy TK/TS từ map đã tính toán
+            asset_proxy = asset_map.get(sym)
+            liquidity_proxy = liquidity_map.get(sym)
 
             record = {
                 "symbol": sym,
@@ -1005,19 +1073,22 @@ async def precompute_value_data():
                 "pe": pe,
                 "pb": pb,
                 "roe": roe,
-                "floor": floor, # ⬅️ (FIX 2)
+                "floor": floor,
+                "asset_proxy": asset_proxy,         # ⬅️ THÊM VÀO RECORD
+                "liquidity_proxy": liquidity_proxy, # ⬅️ THÊM VÀO RECORD
             }
             batch_records.append(record)
 
         # Ghi batch vào DB (upsert theo symbol)
         try:
+            # ❗️ Dùng hàm upsert mới, nó sẽ tự động chạy executemany
             upsert_stock_value_batch(batch_records)
         except Exception as e:
             log.exception(
                 f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}"
             )
-
-        # Cập nhật tiến độ (tính theo số mã đã xử lý, không quan tâm có lưu được hay không)
+        
+        # Cập nhật tiến độ
         processed_count += len(batch_syms)
         done = processed_count
         percent = (done / total_symbols * 100) if total_symbols > 0 else 0.0
@@ -1044,15 +1115,20 @@ def compute_value_screener(
     max_industries: int = 19,
 ):
     """
-    So sánh toàn bộ cổ phiếu trong ngành và tính điểm value_score.
+    So sánh cổ phiếu (đã tính toán trước) và tính điểm value_score.
+    (Đã fix lỗi UnboundLocalError)
     """
     rows = load_stock_value_cache()
     if not rows:
         return None
 
     df = pd.DataFrame(rows)
-    # ❗️ (FIX 2) - Cần 'floor' ở đây
-    required_cols = {"symbol", "industry", "pe", "pb", "roe", "floor"}
+    
+    # ❗️ Cần 4 cột mới: floor, asset_proxy, liquidity_proxy
+    required_cols = {
+        "symbol", "industry", "pe", "pb", "roe", "floor",
+        "asset_proxy", "liquidity_proxy"
+    }
     if not required_cols.issubset(df.columns):
         log.error(
             f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột. Columns: {df.columns.tolist()}"
@@ -1080,194 +1156,42 @@ def compute_value_screener(
         df["industry"] = df["symbol"].map(industry_map).fillna(df["industry"])
 
     # Loại bỏ giá trị xấu
-    df = df.dropna(subset=["pe", "pb", "roe", "industry", "floor"]) # ⬅️ (FIX 2)
+    df = df.dropna(
+        subset=[
+            "pe", "pb", "roe", "industry", "floor", 
+            "asset_proxy", "liquidity_proxy" # ⬅️ Thêm vào dropna
+        ]
+    )
     df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
     if df.empty:
         return None
 
-    # ❗️ TỐI ƯU: LỌC SÀN TỪ DB (FIX 2)
-    # (Xóa bỏ đoạn code "Lọc theo sàn HOSE / HNX từ file ssi_symbols_floor.csv")
-    before = len(df)
+    # ❗️ LỌC SÀN TỪ DB (SIÊU NHANH)
+    before_count = len(df)
     allowed_floors = {"HOSE", "HNX"}
     df = df[df["floor"].isin(allowed_floors)]
     log.info(
-        f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX (từ DB): {before} -> {len(df)} mã."
+        f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX (từ DB): {before_count} -> {len(df)} mã."
     )
+    
+    # ❗️ LỌC THANH KHOẢN TỪ DB (SIÊU NHANH)
+    before_count = len(df)
+    df = df[df["liquidity_proxy"] >= 50_000_000_000]  # 50 tỷ
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Lọc thanh khoản >=50 tỷ (từ DB): {before_count} -> {len(df)} mã."
+    )
+   
+    # ❗️ LỌC TÀI SẢN TỪ DB (SIÊU NHANH)
+    before_count = len(df)
+    df = df[df["asset_proxy"] >= 5_000_000_000_000]  # 5000 tỷ
+    log.info(
+        f"[{INSTANCE_ID}][VALUE] Lọc tổng tài sản proxy >=5000 tỷ (từ DB): {before_count} -> {len(df)} mã."
+    )
+    
     if df.empty:
         log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không còn mã sau filter sàn HOSE/HNX (từ DB)."
+            f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau khi filter 3 tiêu chí."
         )
-        return None
-
-    # ====== DÙNG price_board ĐỂ THU THẬP GIÁ / VOLUME / SHARES ======
-    try:
-        from vnstock import Trading  # type: ignore
-        trading = Trading(source="VCI")
-    except Exception as e:
-        trading = None
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
-
-    liquidity_map: dict[str, float] = {}
-    asset_map: dict[str, float] = {}
-
-    def _norm(x):
-        """Chuyển về float, trả None nếu không hợp lệ."""
-        if x is None:
-            return None
-        try:
-            if hasattr(x, "item"):
-                x = x.item()
-        except Exception:
-            pass
-        try:
-            x = float(x)
-        except Exception:
-            return None
-        if isinstance(x, float) and math.isnan(x):
-            return None
-        return x
-
-    def _pick_from_candidates(row, candidates, substrings):
-        # Ưu tiên candidate key cụ thể
-        for key in candidates:
-            try:
-                if key in row:
-                    v = _norm(row.get(key, None))
-                    if v is not None:
-                        return v
-            except Exception:
-                continue
-        # Sau đó fallback: quét theo substring trong tên trường
-        for k in row.index:
-            name = ""
-            if isinstance(k, tuple):
-                name = str(k[1]).lower()
-            else:
-                name = str(k).lower()
-            if any(sub in name for sub in substrings):
-                try:
-                    v = _norm(row.get(k, None))
-                except Exception:
-                    v = None
-                if v is not None:
-                    return v
-        return None
-
-    if trading is not None and not df.empty:
-        symbols = sorted(set(df["symbol"].tolist()))
-        CHUNK = 50
-
-        for i in range(0, len(symbols), CHUNK):
-            batch = symbols[i : i + CHUNK]
-            try:
-                pb_df = trading.price_board(batch)
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] Lỗi price_board cho batch {batch[:3]}... "
-                    f"({len(batch)} mã): {e}"
-                )
-                continue
-
-            if pb_df is None or len(pb_df) == 0:
-                continue
-
-            for idx, row in pb_df.iterrows():
-                # symbol có thể nằm ở index hoặc cột
-                sym = None
-                for ksym in [
-                    ("listing", "symbol"),
-                    ("stock", "symbol"),
-                    ("listing", "ticker"),
-                ]:
-                    try:
-                        val = row.get(ksym, None)
-                    except Exception:
-                        val = None
-                    if val:
-                        sym = str(val).upper()
-                        break
-                if not sym:
-                    sym = str(idx).upper()
-
-                # Giá
-                price = _pick_from_candidates(
-                    row,
-                    candidates=[
-                        ("match", "match_price"),
-                        ("match", "reference_price"),
-                        ("listing", "ref_price"),
-                    ],
-                    substrings=["price"],
-                )
-
-                # Volume khớp
-                volume = _pick_from_candidates(
-                    row,
-                    candidates=[
-                        ("match", "accumulated_vol"),
-                        ("match", "match_volume"),
-                    ],
-                    substrings=["vol"],
-                )
-
-                # Số cổ phiếu niêm yết / lưu hành
-                shares = _pick_from_candidates(
-                    row,
-                    candidates=[
-                        ("listing", "listed_share"),
-                        ("listing", "outstanding_share"),
-                        ("listing", "listed_shares"),
-                        ("listing", "outstanding_shares"),
-                    ],
-                    substrings=["share"],
-                )
-
-                if price is not None and volume is not None:
-                    liquidity_map[sym] = float(price) * float(volume)
-                if price is not None and shares is not None:
-                    asset_map[sym] = float(price) * float(shares)
-
-        # Gắn cột vào df nếu có dữ liệu
-        if liquidity_map:
-            df["liquidity"] = df["symbol"].map(liquidity_map)
-        if asset_map:
-            df["total_asset_proxy"] = df["symbol"].map(asset_map)
-
-        # Filter thanh khoản nếu có cột
-        if "liquidity" in df.columns:
-            before = len(df)
-            df = df[df["liquidity"] >= 50_000_000_000]  # 50 tỷ
-            log.info(
-                f"[{INSTANCE_ID}][VALUE] Lọc thanh khoản >=50 tỷ: {before} -> {len(df)} mã."
-            )
-            if df.empty:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau filter thanh khoản >=50 tỷ."
-                )
-                return None
-        else:
-            log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không tính được thanh khoản (liquidity_map trống), bỏ qua filter thanh khoản."
-            )
-
-        # Filter tổng tài sản nếu có cột
-        if "total_asset_proxy" in df.columns:
-            before = len(df)
-            df = df[df["total_asset_proxy"] >= 5_000_000_000_000]  # 5000 tỷ
-            log.info(
-                f"[{INSTANCE_ID}][VALUE] Lọc tổng tài sản proxy >=5000 tỷ: {before} -> {len(df)} mã."
-            )
-            if df.empty:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau filter tổng tài sản >=5000 tỷ."
-                )
-                return None
-        else:
-            log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không tính được tổng tài sản proxy, bỏ qua filter tổng tài sản."
-            )
-
-    if df.empty:
         return None
 
     # Tính trung bình ngành
@@ -1300,6 +1224,7 @@ def compute_value_screener(
                 as_of = str(latest_ts)
         except Exception:
             as_of = str(latest_ts)
+    # ❗️ ĐÃ XOÁ KHỐI ELSE GÂY LỖI TẠI ĐÂY
 
     industries_data = []
     for industry_name, g in df.groupby("industry"):
