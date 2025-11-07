@@ -41,7 +41,7 @@ from db_utils import (
     get_stock_value_cache_count,
     clear_stock_value_cache,
 )
-import psutil
+import psutil 
 import time
 import subprocess
 import re
