@@ -1899,7 +1899,7 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Lấy nội dung announce từ admin
     text = " ".join(context.args)
-    text = text.replace("/n", "\n").replace("\\n", "\n")  # ✨ xử lý xuống dòng
+    text = text.replace("\\n", "\n")  # chỉ giữ lại xuống dòng thôi
 
     # Gửi cho tất cả user
     all_watch = get_all_watch()
@@ -1908,26 +1908,13 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for chat_key in all_watch.keys():
         try:
             chat_id = int(chat_key)
-
-            try:
-                # Thử gửi với Markdown (admin có thể dùng format nếu muốn)
-                send_msg_to(chat_id, text, parse_mode="Markdown")
-            except BadRequest as e:
-                # Nếu Markdown lỗi (thường do ký tự _ * [ ] ...), thì escape và gửi lại
-                log.warning(f"Lỗi Markdown khi announce tới {chat_id}: {e}. Fallback sang escaped Markdown.")
-                safe_text = escape_markdown_v2(text)
-                send_msg_to(chat_id, safe_text, parse_mode="Markdown")
-
+            send_msg_to(chat_id, text, parse_mode="Markdown")  # không escape nữa
             sent += 1
             await asyncio.sleep(0.1)
-
         except Exception as e:
             log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
 
-    # Thông báo lại cho admin (chuỗi này là cố định nên Markdown an toàn)
-    await reply_md(update,
-        f"✅ Đã gửi thông báo tới *{sent}* người dùng."
-    )
+    await reply_md(update, f"✅ Đã gửi thông báo tới *{sent}* người dùng.")
 
 
 
