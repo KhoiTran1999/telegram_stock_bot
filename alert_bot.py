@@ -2526,8 +2526,12 @@ async def alert_loop():
                 # Gửi nếu có thông báo
                 if messages:
                     header = f"--------------------------------\n⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*"
-                    body = messages + "\n\n" + "\n\n".join(header)
+                    # Ghép các thông điệp trong messages (list[str]) lại thành 1 chuỗi
+                    messages_text = "\n\n".join(messages)
+                    # Đặt messages trước, header sau
+                    body = messages_text + "\n\n" + header  
                     send_msg_to(chat_id, body, parse_mode="Markdown")
+
 
 
                 all_state[chat_key] = personal_state
