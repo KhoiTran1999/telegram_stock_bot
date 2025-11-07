@@ -310,7 +310,6 @@ def get_next_notice_after(now: datetime.datetime):
     dt, spec = min(candidates, key=lambda x: x[0])
     return dt, spec
 
-
 async def session_notice_loop():
     """
     Loop riêng để gửi thông báo:
@@ -325,6 +324,12 @@ async def session_notice_loop():
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
+        # ❗️ KIỂM TRA TRẠNG THÁI BOT
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][SESSION {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
+
         next_dt, spec = get_next_notice_after(now)
         if not next_dt or not spec:
             # Trường hợp hiếm: không tìm được mốc, ngủ 1 giờ rồi tính lại
@@ -337,6 +342,11 @@ async def session_notice_loop():
             f"[{INSTANCE_ID}][SESSION {loop_id}] Chờ {delay:.0f}s để gửi thông báo {spec['label']} lúc {next_dt}"
         )
         await asyncio.sleep(delay)
+
+        # ❗️ KIỂM TRA LẦN NỮA SAU KHI NGỦ DẬY
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][SESSION {loop_id}] Thức dậy nhưng bot TẮT, bỏ qua thông báo.")
+            continue
 
         # Đến giờ thông báo
         try:
@@ -1299,6 +1309,12 @@ async def daily_report_loop():
     while True:
         loop_id += 1
 
+        # ❗️ KIỂM TRA TRẠNG THÁI BOT (kiểm tra trước khi ngủ dài)
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
+
         if not OPENROUTER_API_KEY:
             log.warning(
                 f"[{INSTANCE_ID}][WEEKLY {loop_id}] Chưa có OPENROUTER_API_KEY, "
@@ -1312,6 +1328,11 @@ async def daily_report_loop():
             f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
         )
         await asyncio.sleep(wait_sec)
+
+        # ❗️ KIỂM TRA LẦN NỮA SAU KHI THỨC DẬY
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Thức dậy nhưng bot đang TẮT, bỏ qua.")
+            continue
 
         now = datetime.datetime.now(vn_tz)
         if now.weekday() != 6:  # không phải Chủ Nhật thì bỏ qua (phòng trường hợp lệch giờ)
@@ -1332,6 +1353,11 @@ async def daily_report_loop():
             skipped_count = 0
 
             for chat_key, user_block in all_watch.items():
+                # ❗️ KIỂM TRA BOT TRƯỚC KHI GỬI CHO TỪNG USER
+                if not BOT_ACTIVE:
+                    log.info(f"[{INSTANCE_ID}][WEEKLY] Bot TẮT giữa chừng, dừng gửi.")
+                    break
+
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", []) or []
                 if not watch_list:
@@ -1416,6 +1442,12 @@ async def screener_value_update_loop():
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
+        # ❗️ KIỂM TRA TRẠNG THÁI BOT (kiểm tra trước khi ngủ dài)
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
+
         # Tính thời điểm 00:00 tiếp theo
         next_run = now.replace(hour=0, minute=0, second=0, microsecond=0)
         if next_run <= now:
@@ -1431,6 +1463,11 @@ async def screener_value_update_loop():
             f"(weekday={next_run.weekday()})."
         )
         await asyncio.sleep(max(wait_sec, 0))
+
+        # ❗️ KIỂM TRA LẦN NỮA SAU KHI THỨC DẬY
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Thức dậy nhưng bot đang TẮT, bỏ qua.")
+            continue
 
         # Đảm bảo đúng ngày T2–T6
         now = datetime.datetime.now(vn_tz)
@@ -2347,6 +2384,12 @@ async def alert_loop():
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
+        # ❗️ KIỂM TRA TRẠNG THÁI BOT
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
+
         # Nếu ngoài giờ giao dịch -> ngủ tới phiên tiếp theo
         if not in_session_vietnam():
             next_start = next_session_start(now)
@@ -2480,7 +2523,6 @@ async def alert_loop():
         delay = max(TARGET_INTERVAL - elapsed, 1)
         log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s\n")
         await asyncio.sleep(delay)
-
 
 # ==============================================
 # FLASK KEEPALIVE
