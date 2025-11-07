@@ -325,7 +325,7 @@ async def session_notice_loop():
 
         # ❗️ KIỂM TRA TRẠNG THÁI BOT
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][SESSION {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][SESSION {loop_id}] [thông báo sắp mở / sắp đóng phiên] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
 
@@ -786,11 +786,23 @@ USER_HELP_TEXT_HTML = """📊 <b>Các lệnh bạn có thể sử dụng:</b>
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Phản hồi khi người dùng gõ văn bản tự do hoặc lệnh không tồn tại.
+    (Đã gộp logic của _collector vào đây)
     """
     if not update.message or not update.message.text:
         return
 
     chat_id = update.effective_chat.id
+    
+    # === LOGIC TỪ _collector ĐÃ GỘP VÀO ĐÂY ===
+    # Tự động lưu chat_id vào DB nếu chưa có
+    try:
+        lst = get_watch_list_for_chat(chat_id)
+        if lst is None:
+            save_watch_list_for_chat(chat_id, [])
+    except Exception as e:
+        log.warning(f"Lỗi khi auto-save chat_id {chat_id} trong unknown_message: {e}")
+    # === KẾT THÚC LOGIC GỘP ===
+    
     user_text = update.message.text
     
     try:
@@ -813,7 +825,6 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 # 🧮 SCREENER VALUE – PRECOMPUTE
 # ==============================
-
 async def precompute_value_data():
     """
     Crawl P/E, P/B, ROE (TCBS) VÀ Thanh khoản, Tài sản (VCI Price Board)
@@ -1440,7 +1451,7 @@ async def daily_report_loop():
 
         # ❗️ KIỂM TRA TRẠNG THÁI BOT (kiểm tra trước khi ngủ dài)
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] [gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
 
@@ -1573,7 +1584,7 @@ async def screener_value_update_loop():
 
         # ❗️ KIỂM TRA TRẠNG THÁI BOT (kiểm tra trước khi ngủ dài)
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] [precompute screener Value 00:00 T2–T6] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
 
@@ -1663,7 +1674,7 @@ async def daily_screener_loop():
 
         # ❗️ KIỂM TRA TRẠNG THÁI BOT
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] [gửi báo cáo screener 09:00 T2-T6] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue
 
@@ -2482,7 +2493,7 @@ async def alert_loop():
 
         # ❗️ KIỂM TRA TRẠNG THÁI BOT
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] [cảnh báo realtime trong giờ giao dịch] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
 
@@ -2763,7 +2774,6 @@ async def main():
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _collector))
     tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
 
