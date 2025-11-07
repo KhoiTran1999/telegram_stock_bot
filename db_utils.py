@@ -208,18 +208,16 @@ def get_stock_value_cache_count() -> int:
 
 def clear_stock_value_cache():
     """
-    Xoá toàn bộ dữ liệu trong bảng stock_value_cache.
-    Nếu bảng chưa tồn tại thì bỏ qua.
+    Xoá HOÀN TOÀN bảng stock_value_cache để làm mới cấu trúc.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
             try:
-                cur.execute("TRUNCATE TABLE stock_value_cache;")
+                # Dùng DROP TABLE IF EXISTS để xóa hoàn toàn bảng cũ
+                cur.execute("DROP TABLE IF EXISTS stock_value_cache;")
             except psycopg.errors.UndefinedTable:
-                # Bảng chưa tồn tại thì coi như đã clear xong
                 return
         conn.commit()
-
 
 # ==============================
 # 🧠 GHI NHẬT KÝ LỆNH

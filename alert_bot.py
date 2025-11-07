@@ -2110,7 +2110,7 @@ pending_clear_confirmations = {}
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /screener_value_clear – Yêu cầu xác nhận trước khi xoá cache Value.
+    /screener_value_clear – Yêu cầu xác nhận trước khi XOÁ BẢNG cache Value.
     """
     if ADMIN_ID is None:
         await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
@@ -2121,41 +2121,41 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
         await reply_md(update,"⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
-    # ✅ dùng module datetime -> datetime.datetime.utcnow()
     now = datetime.datetime.now(datetime.timezone.utc)
 
-    # Kiểm tra nếu admin vừa xác nhận gần đây
     if user_id in pending_clear_confirmations:
         confirm_time = pending_clear_confirmations[user_id]
-        # Nếu admin gõ lại lệnh trong 30s thì thực hiện xoá
         if now - confirm_time < timedelta(seconds=30):
             del pending_clear_confirmations[user_id]
 
-            before = get_stock_value_cache_count()
-            clear_stock_value_cache()
+            before_count = 0
+            try:
+                before_count = get_stock_value_cache_count()
+            except Exception:
+                pass # Bảng có thể đã bị lỗi, cứ cho qua
+
+            clear_stock_value_cache() # ⬅️ Sẽ gọi hàm DROP TABLE mới
+            
+            # Sau khi DROP, count chắc chắn là 0
             after = get_stock_value_cache_count()
 
             msg = (
-                f"🧹 Đã xoá dữ liệu cache *screener Value*.\n"
-                f"Trước khi xoá: **{before}** dòng.\n"
+                f"🧹 Đã **XOÁ HOÀN TOÀN BẢNG** (DROP TABLE) `stock_value_cache`.\n"
+                f"Trước khi xoá: **{before_count}** dòng.\n"
                 f"Sau khi xoá: **{after}** dòng.\n\n"
-                "📅 Dữ liệu sẽ được crawl lại tự động vào 00:00 (T2–T6) hoặc khi bot khởi động lại."
+                "✅ Bot sẽ tự động *tạo lại bảng với cấu trúc mới nhất* trong lần crawl tiếp theo (khi khởi động lại hoặc vào 00:00)."
             )
             await reply_md(update, msg)
             return
         else:
-            # Quá hạn 30s thì reset xác nhận
             del pending_clear_confirmations[user_id]
 
-    # Nếu chưa có xác nhận, yêu cầu xác nhận
     pending_clear_confirmations[user_id] = now
     await reply_md(update,
-        "⚠️ *Xác nhận xoá cache screener Value*\n\n"
-        "Thao tác này sẽ xoá toàn bộ dữ liệu định giá hiện tại.\n"
+        "⚠️ *XÁC NHẬN XOÁ BẢNG (DROP TABLE)*\n\n"
+        "Thao tác này sẽ **XOÁ HOÀN TOÀN** bảng `stock_value_cache` để cập nhật cấu trúc mới.\n"
         "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận."
     )
-
-
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
