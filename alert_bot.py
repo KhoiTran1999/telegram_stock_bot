@@ -714,20 +714,18 @@ def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, st
     """
     mapping: dict[str, str] = {}
     try:
-        # dùng utf-8-sig để tự strip BOM nếu có
+        # dùng utf-8-sig để auto bỏ BOM nếu có
         with open(path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
                 return {}
 
             raw_cols = reader.fieldnames
-            # chuẩn hoá: bỏ BOM, strip khoảng trắng, lower
             cols = [
                 (c or "").strip().lstrip("\ufeff").lower()
                 for c in raw_cols
             ]
 
-            # Tìm cột symbol
             try:
                 symbol_idx = cols.index("symbol")
             except ValueError:
@@ -737,7 +735,6 @@ def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, st
                 )
                 return {}
 
-            # Tìm cột floor
             try:
                 floor_idx = cols.index("floor")
             except ValueError:
@@ -750,7 +747,7 @@ def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, st
             for row in reader:
                 values = list(row.values())
                 sym = (values[symbol_idx] or "").strip().upper()
-                flr = (values[floor_idx] or "").strip().upper()  # hose -> HOSE, hnx -> HNX
+                flr = (values[floor_idx] or "").strip().upper()
                 if not sym or not flr:
                     continue
                 mapping[sym] = flr
@@ -1039,10 +1036,14 @@ def compute_value_screener(
     """
     So sánh toàn bộ cổ phiếu trong ngành và tính điểm value_score.
 
-    Bộ lọc bắt buộc:
-    1) Tổng tài sản (proxy bằng vốn hóa = giá * số CP) >= 5000 tỷ
-    2) Thanh khoản (giá * KL khớp phiên gần nhất) >= 50 tỷ
-    3) Chỉ lấy mã trên sàn HOSE / HNX (theo file ssi_symbols_floor.csv)
+    Bộ lọc:
+    1) Tổng tài sản proxy (market cap = price * shares) >= 5000 tỷ
+    2) Thanh khoản (price * matched volume phiên gần nhất) >= 50 tỷ
+    3) Chỉ lấy sàn HOSE / HNX theo file ssi_symbols_floor.csv
+
+    Nếu vì lý do dữ liệu (VCI không trả volume/shares) mà không tính được
+    thanh khoản / tổng tài sản, bot sẽ chỉ áp dụng filter theo sàn và vẫn
+    trả ra kết quả thay vì trả về None.
     """
     rows = load_stock_value_cache()
     if not rows:
@@ -1056,10 +1057,9 @@ def compute_value_screener(
         )
         return None
 
-    # Chuẩn hoá symbol
     df["symbol"] = df["symbol"].astype(str).str.upper()
 
-    # 🔹 Lọc theo CSV Topi (ngành)
+    # Lọc theo industry map (TOPI) nếu có
     try:
         industry_map = load_industry_map_from_csv("ssi_symbol_industry.csv")
     except Exception as e:
@@ -1075,45 +1075,42 @@ def compute_value_screener(
         if df.empty:
             log.warning(f"[{INSTANCE_ID}][VALUE] Không còn mã sau khi lọc industry_map.")
             return None
-        # Ghi đè industry theo CSV cho đồng nhất
         df["industry"] = df["symbol"].map(industry_map).fillna(df["industry"])
 
-    # Bỏ giá trị không hợp lệ
+    # Loại bỏ giá trị xấu
     df = df.dropna(subset=["pe", "pb", "roe", "industry"])
     df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
     if df.empty:
         return None
 
-    # 🔹 Filter 3: chỉ HOSE & HNX theo file ssi_symbols_floor.csv
+    # Lọc theo sàn HOSE / HNX từ file ssi_symbols_floor.csv
     floor_map = load_floor_map_from_csv("ssi_symbols_floor.csv")
     if floor_map:
-        df["floor"] = df["symbol"].map(floor_map)
         before = len(df)
+        df["floor"] = df["symbol"].map(floor_map)
         allowed_floors = {"HOSE", "HNX"}
         df = df[df["floor"].isin(allowed_floors)]
         log.info(
-            f"[{INSTANCE_ID}][VALUE] Lọc sàn theo ssi_symbols_floor.csv (HOSE/HNX): "
-            f"{before} -> {len(df)} mã."
+            f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX theo ssi_symbols_floor.csv: {before} -> {len(df)} mã."
         )
         if df.empty:
             log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau filter sàn HOSE/HNX. "
-                "Vui lòng kiểm tra lại ssi_symbols_floor.csv."
+                f"[{INSTANCE_ID}][VALUE] Không còn mã sau filter sàn HOSE/HNX. Kiểm tra lại ssi_symbols_floor.csv."
             )
             return None
     else:
         log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbols_floor.csv, "
-            "không thể lọc theo HOSE/HNX."
+            f"[{INSTANCE_ID}][VALUE] Không load được ssi_symbols_floor.csv, không thể lọc theo HOSE/HNX."
         )
         return None
 
-    # 🔹 Filter 1 & 2: thanh khoản / tổng tài sản proxy từ price_board (VCI)
+    # ====== DÙNG price_board ĐỂ THU THẬP GIÁ / VOLUME / SHARES ======
     try:
+        from vnstock import Trading  # type: ignore
         trading = Trading(source="VCI")
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
         trading = None
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
 
     liquidity_map: dict[str, float] = {}
     asset_map: dict[str, float] = {}
@@ -1135,6 +1132,32 @@ def compute_value_screener(
             return None
         return x
 
+    def _pick_from_candidates(row, candidates, substrings):
+        # Ưu tiên candidate key cụ thể
+        for key in candidates:
+            try:
+                if key in row:
+                    v = _norm(row.get(key, None))
+                    if v is not None:
+                        return v
+            except Exception:
+                continue
+        # Sau đó fallback: quét theo substring trong tên trường
+        for k in row.index:
+            name = ""
+            if isinstance(k, tuple):
+                name = str(k[1]).lower()
+            else:
+                name = str(k).lower()
+            if any(sub in name for sub in substrings):
+                try:
+                    v = _norm(row.get(k, None))
+                except Exception:
+                    v = None
+                if v is not None:
+                    return v
+        return None
+
     if trading is not None and not df.empty:
         symbols = sorted(set(df["symbol"].tolist()))
         CHUNK = 50
@@ -1154,15 +1177,15 @@ def compute_value_screener(
                 continue
 
             for idx, row in pb_df.iterrows():
-                # ưu tiên lấy symbol từ cột nếu có, fallback index
+                # symbol có thể nằm ở index hoặc cột
                 sym = None
-                for key in [
+                for ksym in [
                     ("listing", "symbol"),
-                    ("listing", "ticker"),
                     ("stock", "symbol"),
+                    ("listing", "ticker"),
                 ]:
                     try:
-                        val = row.get(key, None)
+                        val = row.get(ksym, None)
                     except Exception:
                         val = None
                     if val:
@@ -1171,72 +1194,56 @@ def compute_value_screener(
                 if not sym:
                     sym = str(idx).upper()
 
-                # Giá khớp / tham chiếu
-                price = None
-                for key in [
-                    ("match", "match_price"),
-                    ("match", "reference_price"),
-                    ("listing", "ref_price"),
-                ]:
-                    try:
-                        v = _norm(row.get(key, None))
-                    except Exception:
-                        v = None
-                    if v is not None:
-                        price = v
-                        break
+                # Giá
+                price = _pick_from_candidates(
+                    row,
+                    candidates=[
+                        ("match", "match_price"),
+                        ("match", "reference_price"),
+                        ("listing", "ref_price"),
+                    ],
+                    substrings=["price"],
+                )
 
-                # Khối lượng khớp lũy kế
-                volume = None
-                for key in [
-                    ("match", "accumulated_vol"),
-                    ("match", "match_volume"),
-                ]:
-                    try:
-                        v = _norm(row.get(key, None))
-                    except Exception:
-                        v = None
-                    if v is not None:
-                        volume = v
-                        break
+                # Volume khớp
+                volume = _pick_from_candidates(
+                    row,
+                    candidates=[
+                        ("match", "accumulated_vol"),
+                        ("match", "match_volume"),
+                    ],
+                    substrings=["vol"],
+                )
 
                 # Số cổ phiếu niêm yết / lưu hành
-                shares = None
-                for key in [
-                    ("listing", "listed_share"),
-                    ("listing", "outstanding_share"),
-                    ("listing", "listed_shares"),
-                    ("listing", "outstanding_shares"),
-                ]:
-                    try:
-                        val = row.get(key, None)
-                    except Exception:
-                        val = None
-                    v = _norm(val)
-                    if v is not None:
-                        shares = v
-                        break
+                shares = _pick_from_candidates(
+                    row,
+                    candidates=[
+                        ("listing", "listed_share"),
+                        ("listing", "outstanding_share"),
+                        ("listing", "listed_shares"),
+                        ("listing", "outstanding_shares"),
+                    ],
+                    substrings=["share"],
+                )
 
-                # Thanh khoản ~ giá * khối lượng khớp trong phiên
                 if price is not None and volume is not None:
                     liquidity_map[sym] = float(price) * float(volume)
-
-                # Tổng tài sản proxy ~ vốn hóa = giá * số cổ phiếu
                 if price is not None and shares is not None:
                     asset_map[sym] = float(price) * float(shares)
 
-        # Gắn vào df
+        # Gắn cột vào df nếu có dữ liệu
         if liquidity_map:
             df["liquidity"] = df["symbol"].map(liquidity_map)
         if asset_map:
             df["total_asset_proxy"] = df["symbol"].map(asset_map)
 
-        # Filter 2: Thanh khoản >= 50 tỷ
+        # Filter thanh khoản nếu có cột
         if "liquidity" in df.columns:
             before = len(df)
             df = df[df["liquidity"] >= 50_000_000_000]  # 50 tỷ
             log.info(
-                f"[{INSTANCE_ID}][VALUE] Lọc thanh khoản >= 50 tỷ: {before} -> {len(df)} mã."
+                f"[{INSTANCE_ID}][VALUE] Lọc thanh khoản >=50 tỷ: {before} -> {len(df)} mã."
             )
             if df.empty:
                 log.warning(
@@ -1245,17 +1252,15 @@ def compute_value_screener(
                 return None
         else:
             log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không có cột 'liquidity' sau khi gọi price_board, "
-                "không áp được filter thanh khoản."
+                f"[{INSTANCE_ID}][VALUE] Không tính được thanh khoản (liquidity_map trống), bỏ qua filter thanh khoản."
             )
-            return None
 
-        # Filter 1: Tổng tài sản proxy >= 5000 tỷ
+        # Filter tổng tài sản nếu có cột
         if "total_asset_proxy" in df.columns:
             before = len(df)
             df = df[df["total_asset_proxy"] >= 5_000_000_000_000]  # 5000 tỷ
             log.info(
-                f"[{INSTANCE_ID}][VALUE] Lọc tổng tài sản proxy >= 5000 tỷ: {before} -> {len(df)} mã."
+                f"[{INSTANCE_ID}][VALUE] Lọc tổng tài sản proxy >=5000 tỷ: {before} -> {len(df)} mã."
             )
             if df.empty:
                 log.warning(
@@ -1264,15 +1269,13 @@ def compute_value_screener(
                 return None
         else:
             log.warning(
-                f"[{INSTANCE_ID}][VALUE] Không có cột 'total_asset_proxy', "
-                "không áp được filter tổng tài sản."
+                f"[{INSTANCE_ID}][VALUE] Không tính được tổng tài sản proxy, bỏ qua filter tổng tài sản."
             )
-            return None
 
     if df.empty:
         return None
 
-    # Trung bình ngành
+    # Tính trung bình ngành
     industry_group = df.groupby("industry").agg(
         pe_industry=("pe", "mean"),
         pb_industry=("pb", "mean"),
@@ -1280,12 +1283,10 @@ def compute_value_screener(
     )
     df = df.join(industry_group, on="industry")
 
-    # Bỏ ngành có ROE ngành <= 0
     df = df[df["roe_industry"] > 0]
     if df.empty:
         return None
 
-    # Tính điểm Value (cao hơn là tốt)
     df["value_score"] = (
         (df["pe_industry"] / df["pe"]) * 0.3
         + (df["pb_industry"] / df["pb"]) * 0.3
@@ -1305,8 +1306,7 @@ def compute_value_screener(
         except Exception:
             as_of = str(latest_ts)
 
-    # 🔹 Top N mỗi ngành
-    industries_data: list[dict[str, Any]] = []
+    industries_data = []
     for industry_name, g in df.groupby("industry"):
         g_sorted = g.sort_values("value_score", ascending=False)
         top_g = g_sorted.head(top_per_industry)
@@ -1340,7 +1340,6 @@ def compute_value_screener(
     if not industries_data:
         return None
 
-    # Sắp xếp ngành theo mã có điểm cao nhất
     industries_data.sort(key=lambda x: x["best_score"], reverse=True)
     industries_data = industries_data[:max_industries]
 
@@ -1351,7 +1350,6 @@ def compute_value_screener(
         "as_of": as_of,
         "industries": industries_data,
     }
-
 
 def format_roe_pct(roe_decimal: float | None) -> str:
     """
