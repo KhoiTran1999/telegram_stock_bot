@@ -714,25 +714,37 @@ def load_floor_map_from_csv(path: str = "ssi_symbols_floor.csv") -> dict[str, st
     """
     mapping: dict[str, str] = {}
     try:
-        with open(path, newline="", encoding="utf-8") as f:
+        # dùng utf-8-sig để tự strip BOM nếu có
+        with open(path, newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
                 return {}
 
-            cols = [c.lower() for c in reader.fieldnames]
+            raw_cols = reader.fieldnames
+            # chuẩn hoá: bỏ BOM, strip khoảng trắng, lower
+            cols = [
+                (c or "").strip().lstrip("\ufeff").lower()
+                for c in raw_cols
+            ]
 
             # Tìm cột symbol
             try:
                 symbol_idx = cols.index("symbol")
             except ValueError:
-                log.warning(f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'symbol'.")
+                log.warning(
+                    f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'symbol'. "
+                    f"fieldnames raw = {raw_cols}"
+                )
                 return {}
 
             # Tìm cột floor
             try:
                 floor_idx = cols.index("floor")
             except ValueError:
-                log.warning(f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'floor'.")
+                log.warning(
+                    f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'floor'. "
+                    f"fieldnames raw = {raw_cols}"
+                )
                 return {}
 
             for row in reader:
