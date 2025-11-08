@@ -42,6 +42,12 @@ from db_utils import (
     load_stock_value_cache,
     get_stock_value_cache_count,
     clear_stock_value_cache,
+    has_news_seen,
+    mark_news_seen,          
+    get_news_seen_count,
+    get_news_pref,
+    set_news_pref,   
+    is_news_enabled_for_chat
 )
 import psutil
 import time
@@ -54,6 +60,7 @@ from typing import Any
 import html
 from telegram import BotCommand
 import telegram
+import feedparser
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -126,6 +133,172 @@ FUN_DOWN = [
     "Thị trường kiểm tra độ kiên nhẫn của anh em... và anh em lại rớt test 😭",
 ]
 
+# ==============================================
+# TIN TỨC (RSS)
+# ==============================================
+NEWS_FEED_TYPE_SPECIALIZED = "SPECIALIZED"
+NEWS_FEED_TYPE_MACRO = "MACRO"
+
+# 1. Tin chuyên ngành (Quét từ khóa)
+RSS_FEEDS_SPECIALIZED = {
+    "CHUNG_KHOAN": [
+        "https://vneconomy.vn/chung-khoan.rss",
+        "https://cafebiz.vn/rss/chung-khoan.rss",
+        "https://vneconomy.vn/tai-chinh.rss",
+        "https://vneconomy.vn/kinh-te-so.rss",
+        "https://vneconomy.vn/dau-tu.rss",
+    ],
+    "DOANH_NGHIEP": [
+        "https://cafebiz.vn/rss/cau-chuyen-kinh-doanh.rss",
+        "https://cafebiz.vn/rss/ngan-hang-tai-chinh.rss",
+        "https://cafebiz.vn/rss/san-xuat.rss",
+        "https://cafebiz.vn/rss/ban-le.rss",
+        "https://cafebiz.vn/rss/dich-vu.rss",
+        "https://cafebiz.vn/rss/cong-nghe.rss",
+        "https://cafebiz.vn/rss/startup.rss",
+        "https://cafebiz.vn/rss/quoc-te.rss",
+        "https://cafebiz.vn/rss/quan-tri.rss",
+        "https://cafebiz.vn/rss/nghe-nghiep.rss",
+        "https://vneconomy.vn/nhip-cau-doanh-nghiep.rss",
+        "https://vneconomy.vn/thi-truong.rss",
+        "https://vneconomy.vn/tieu-dung.rss",
+        "https://vneconomy.vn/dan-sinh.rss",
+        "https://vneconomy.vn/kinh-te-xanh.rss",
+        "https://vneconomy.vn/cong-nghe-startup.rss",
+    ],
+    "BAT_DONG_SAN": [
+        "https://cafebiz.vn/rss/bat-dong-san.rss",
+        "https://vneconomy.vn/dau-tu-ha-tang.rss",
+        "https://vneconomy.vn/dia-oc.rss",
+    ],
+}
+
+# 2. Tin vĩ mô (Broadcast cho tất cả)
+RSS_FEEDS_MACRO = [
+    "https://cafebiz.vn/rss/vi-mo.rss",
+    "https://vneconomy.vn/tin-moi.rss",
+    "https://vneconomy.vn/tieu-diem.rss",
+]
+
+# Chu kỳ quét RSS (giây)
+NEWS_SPECIALIZED_INTERVAL_SECONDS = 30 * 60   # 30 phút
+NEWS_MACRO_INTERVAL_SECONDS = 60 * 60        # 60 phút
+
+# Map symbol -> list keyword (mã + tên doanh nghiệp)
+COMPANY_KEYWORDS: dict[str, list[str]] = {}
+
+
+def load_company_keywords_from_csv(path: str = "ssi_master_list.csv") -> dict[str, list[str]]:
+    """
+    Đọc danh sách công ty từ file CSV (cột: symbol, name, industry, floor),
+    trả về dict[symbol] = [symbol, tên đầy đủ, tên rút gọn].
+    """
+    mapping: dict[str, list[str]] = {}
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return {}
+
+            for row in reader:
+                sym = (row.get("symbol") or "").strip().upper()
+                name = (row.get("name") or "").strip()
+                if not sym or not name:
+                    continue
+
+                # Tạo tên rút gọn bằng cách bỏ bớt mấy từ phổ biến
+                short = re.sub(
+                    r"\b(Công ty|Cổ phần|Tập đoàn|TNHH|Ngân hàng|Thương mại|Đầu tư|Phát triển|Kỹ thuật|Tài chính)\b",
+                    "",
+                    name,
+                    flags=re.IGNORECASE,
+                )
+                short = re.sub(r"\s+", " ", short).strip()
+
+                keywords = {sym}
+                keywords.add(name)
+                if len(short) > 2:
+                    keywords.add(short)
+
+                mapping[sym] = [k for k in keywords if len(k) > 2]
+
+        log.info(f"[{INSTANCE_ID}][COMPANY] Đã load {len(mapping)} công ty từ {path}.")
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][COMPANY] Lỗi đọc CSV {path}: {e}")
+    return mapping
+
+def fetch_rss_entries_for_urls(urls: list[str]) -> list[dict[str, Any]]:
+    """
+    Đọc danh sách RSS, trả về list các dict:
+    {
+        'title': str,
+        'link': str,
+        'summary': str,
+        'published': datetime | None (Asia/Ho_Chi_Minh),
+        'source': str,
+    }
+
+    ⚠️ Quan trọng: GỘP THEO LINK
+    - Nếu 1 bài xuất hiện trong nhiều feed khác nhau → chỉ giữ 1 bản ghi theo link.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    by_link: dict[str, dict[str, Any]] = {}
+
+    for url in urls:
+        try:
+            feed = feedparser.parse(url)
+            source_title = getattr(feed.feed, "title", None) or url
+
+            for entry in getattr(feed, "entries", []):
+                title = (getattr(entry, "title", "") or "").strip()
+                link = (getattr(entry, "link", "") or "").strip()
+                if not title or not link:
+                    continue
+
+                summary = (getattr(entry, "summary", "") or "").strip()
+
+                published_dt = None
+                published_parsed = getattr(entry, "published_parsed", None)
+                if published_parsed:
+                    try:
+                        ts = time.mktime(published_parsed)
+                        published_dt = datetime.datetime.fromtimestamp(ts, vn_tz)
+                    except Exception:
+                        published_dt = None
+
+                # Nếu đã có link này rồi → chỉ cập nhật thêm nguồn (source) nếu muốn
+                if link in by_link:
+                    # Gộp tên nguồn lại cho vui, không bắt buộc
+                    old_source = by_link[link].get("source") or ""
+                    if source_title and source_title not in old_source:
+                        by_link[link]["source"] = (
+                            old_source + " | " + source_title if old_source else source_title
+                        )
+                    # Không cần làm gì thêm
+                    continue
+
+                by_link[link] = {
+                    "title": title,
+                    "link": link,
+                    "summary": summary,
+                    "published": published_dt,
+                    "source": source_title,
+                }
+
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][RSS] Lỗi đọc RSS {url}: {e}")
+
+    items = list(by_link.values())
+
+    # Sắp xếp bài mới nhất lên trên
+    def _sort_key(it: dict[str, Any]):
+        dt = it.get("published")
+        if isinstance(dt, datetime.datetime):
+            return dt
+        return datetime.datetime(1970, 1, 1, tzinfo=vn_tz)
+
+    items.sort(key=_sort_key, reverse=True)
+    return items
 
 # ==============================================
 # HÀM TIỆN ÍCH
@@ -1720,6 +1893,407 @@ async def daily_screener_loop():
             log.exception(f"[{INSTANCE_ID}][SCREENER {loop_id}] Lỗi tổng quát: {e}")
             await asyncio.sleep(300) # 5 phút retry nếu lỗi
 
+async def news_specialized_loop():
+    """
+    Quét RSS chuyên ngành, tìm bài có chứa mã cổ phiếu HOẶC tên doanh nghiệp
+    trong danh mục của user. Gửi tin nhắn riêng cho từng user có bài liên quan.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    warmed_up = False
+
+    # Gộp toàn bộ URL chuyên ngành
+    all_specialized_urls: list[str] = []
+    for urls in RSS_FEEDS_SPECIALIZED.values():
+        all_specialized_urls.extend(urls)
+
+    while True:
+        loop_id += 1
+
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+
+        try:
+            entries = await asyncio.to_thread(
+                fetch_rss_entries_for_urls, all_specialized_urls
+            )
+
+            # 🌱 Warm-up lần đầu: DB chưa có gì thì chỉ lưu dấu, không gửi
+            if not warmed_up:
+                count_in_db = get_news_seen_count(NEWS_FEED_TYPE_SPECIALIZED)
+                if count_in_db == 0 and entries:
+                    for it in entries:
+                        mark_news_seen(
+                            NEWS_FEED_TYPE_SPECIALIZED,
+                            link=it["link"],
+                            guid=None,
+                            title=it["title"],
+                            published=it["published"],
+                        )
+                    warmed_up = True
+                    log.info(
+                        f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Warm-up lần đầu, lưu {len(entries)} bài, KHÔNG gửi tin."
+                    )
+                    await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
+                    continue
+                else:
+                    warmed_up = True
+
+            if not entries:
+                log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài RSS.")
+                await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
+                continue
+
+            # Lọc bài mới chưa xử lý
+            new_entries = [
+                it
+                for it in entries
+                if not has_news_seen(NEWS_FEED_TYPE_SPECIALIZED, it["link"])
+            ]
+
+            if not new_entries:
+                log.info(
+                    f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài chuyên ngành mới."
+                )
+                await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
+                continue
+
+                        # Lọc trùng theo link trong chính mẻ new_entries (phòng xa)
+            unique_by_link: dict[str, dict[str, Any]] = {}
+            for it in new_entries:
+                link = (it.get("link") or "").strip()
+                if not link:
+                    continue
+                if link in unique_by_link:
+                    continue
+                unique_by_link[link] = it
+
+            new_entries = list(unique_by_link.values())
+
+            # Map symbol -> list chat_id (chỉ những user bật tin chuyên ngành)
+            all_watch = get_all_watch()
+            symbol_to_chats: dict[str, list[int]] = {}
+            for chat_key, block in all_watch.items():
+                try:
+                    cid = int(chat_key)
+                except Exception:
+                    continue
+
+                # User đã tắt nhận tin chuyên ngành -> bỏ qua
+                if not is_news_enabled_for_chat(cid, NEWS_FEED_TYPE_SPECIALIZED):
+                    continue
+
+                lst = block.get("list", []) or []
+                if not lst:
+                    continue
+
+                for sym in lst:
+                    s = sym.upper()
+                    symbol_to_chats.setdefault(s, []).append(cid)
+
+            if not symbol_to_chats:
+                # Không có ai quan tâm, chỉ đánh dấu đã xem
+                for it in new_entries:
+                    mark_news_seen(
+                        NEWS_FEED_TYPE_SPECIALIZED,
+                        link=it["link"],
+                        guid=None,
+                        title=it["title"],
+                        published=it["published"],
+                    )
+                await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
+                continue
+
+            # 🔎 Compile pattern cho từng mã với keyword từ CSV (symbol + name)
+            patterns: dict[str, re.Pattern] = {}
+            for sym in symbol_to_chats.keys():
+                keywords = COMPANY_KEYWORDS.get(sym, [sym])
+                combined = "|".join(re.escape(k) for k in keywords if k)
+                if not combined:
+                    continue
+                patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
+
+            # Xử lý từng bài mới
+            for it in new_entries:
+                title = it["title"] or ""
+                raw_summary = it.get("summary") or ""
+                link = it["link"] or ""
+                source = it.get("source") or ""
+                pub_dt = it.get("published")
+
+                # Dùng hàm clean_html_text đã dùng cho macro
+                decoded_summary = clean_html_text(raw_summary)
+
+                text_for_match = (title + " " + decoded_summary)
+
+                # Nếu rỗng thì coi như bài lỗi, chỉ đánh dấu đã xem
+                if not text_for_match.strip():
+                    mark_news_seen(
+                        NEWS_FEED_TYPE_SPECIALIZED,
+                        link=link,
+                        guid=None,
+                        title=title,
+                        published=pub_dt,
+                    )
+                    continue
+
+                # Tìm xem bài này liên quan tới mã nào, và gửi cho user nào
+                affected: dict[int, list[str]] = {}
+
+                for sym, pat in patterns.items():
+                    if pat.search(text_for_match):
+                        for cid in symbol_to_chats.get(sym, []):
+                            affected.setdefault(cid, []).append(sym)
+
+                if not affected:
+                    # Không trùng mã nào trong danh mục user -> vẫn đánh dấu đã xem
+                    mark_news_seen(
+                        NEWS_FEED_TYPE_SPECIALIZED,
+                        link=link,
+                        guid=None,
+                        title=title,
+                        published=pub_dt,
+                    )
+                    continue
+
+                if isinstance(pub_dt, datetime.datetime):
+                    pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
+                else:
+                    pub_str = ""
+
+                # (Tuỳ chọn) rút gọn summary nếu muốn gửi kèm
+                short_sum = decoded_summary
+                if len(short_sum) > 300:
+                    short_sum = short_sum[:280].rstrip() + "..."
+
+                for chat_id, syms in affected.items():
+                    uniq_syms = sorted(set(syms))
+
+                    lines = [
+                        "📰 Tin tức mới liên quan tới danh mục của bạn:",
+                        title,
+                        "",
+                        "Liên quan tới: " + ", ".join(uniq_syms),
+                    ]
+
+                    if short_sum:
+                        lines.extend(["", short_sum])
+
+                    if source or pub_str:
+                        lines.append("")
+                        meta = []
+                        if source:
+                            meta.append(f"Nguồn: {source}")
+                        if pub_str:
+                            meta.append(f"Thời gian: {pub_str}")
+                        lines.append(" | ".join(meta))
+
+                    if link:
+                        lines.append("")
+                        lines.append(f"🔗 {link}")
+
+                    text = "\n".join(lines)
+                    # Gửi plain text để tránh lỗi Markdown
+                    send_msg_to(chat_id, text, parse_mode=None)
+                    await asyncio.sleep(0.2)
+
+                # Đánh dấu bài đã xử lý
+                mark_news_seen(
+                    NEWS_FEED_TYPE_SPECIALIZED,
+                    link=link,
+                    guid=None,
+                    title=title,
+                    published=pub_dt,
+                )
+
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Lỗi tổng quát: {e}")
+
+        await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
+
+
+def clean_html_text(raw: str) -> str:
+    """
+    Làm sạch text lấy từ RSS:
+    - Giải mã entity HTML (&#xxx; → ký tự, &amp; → & ...)
+    - Sửa luôn trường hợp thiếu '&' (Ng#224;nh → Ngành)
+    - Bỏ tag HTML
+    - Gom khoảng trắng
+    """
+    if not raw:
+        return ""
+
+    text = str(raw)
+
+    # 1) Giải mã entity chuẩn: &#224; → à, &amp; → &
+    text = html.unescape(text)
+
+    # 2) Sửa dạng thiếu '&': Ng#224;nh → Ngành
+    def fix_num_entity(m: re.Match) -> str:
+        try:
+            code = int(m.group(1))
+            return chr(code)
+        except Exception:
+            return m.group(0)
+
+    text = re.sub(r"#(\d+);", fix_num_entity, text)
+
+    # 3) Bỏ thẻ HTML (<p>, <br>, <strong>...)
+    text = re.sub(r"<[^>]+>", " ", text)
+
+    # 4) Gom khoảng trắng và trim
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+async def news_macro_loop():
+    """
+    Quét RSS vĩ mô, nếu có bài mới thì broadcast cho tất cả user
+    (nhưng CHỈ những user chưa tắt tin vĩ mô).
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    warmed_up = False
+
+    while True:
+        loop_id += 1
+
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+
+        try:
+            entries = await asyncio.to_thread(
+                fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
+            )
+
+            # Warm-up lần đầu
+            if not warmed_up:
+                count_in_db = get_news_seen_count(NEWS_FEED_TYPE_MACRO)
+                if count_in_db == 0 and entries:
+                    for it in entries:
+                        mark_news_seen(
+                            NEWS_FEED_TYPE_MACRO,
+                            link=it["link"],
+                            guid=None,
+                            title=it["title"],
+                            published=it["published"],
+                        )
+                    warmed_up = True
+                    log.info(
+                        f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Warm-up lần đầu, lưu {len(entries)} bài, KHÔNG gửi tin."
+                    )
+                    await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                    continue
+                else:
+                    warmed_up = True
+
+            if not entries:
+                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài RSS.")
+                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                continue
+
+            new_entries = [
+                it
+                for it in entries
+                if not has_news_seen(NEWS_FEED_TYPE_MACRO, it["link"])
+            ]
+
+            if not new_entries:
+                log.info(
+                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài vĩ mô mới."
+                )
+                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                continue
+
+            all_watch = get_all_watch()
+
+            for it in new_entries:
+                title = it["title"] or ""
+                link = it["link"] or ""
+                source = it.get("source") or ""
+                pub_dt = it.get("published")
+
+                # ==== Xử lý ngày giờ ====
+                if isinstance(pub_dt, datetime.datetime):
+                    pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
+                else:
+                    pub_str = ""
+
+                # ==== Làm sạch phần summary ====
+                raw_summary = it.get("summary") or ""
+                clean_summary = clean_html_text(raw_summary)
+
+                # Rút gọn nếu quá dài
+                short_sum = clean_summary
+                if len(short_sum) > 400:
+                    short_sum = short_sum[:380].rstrip() + "..."
+
+                # ==== Ghép nội dung gửi ====
+                lines = [
+                    "🌏 Tin vĩ mô mới:",
+                    title,
+                ]
+                if short_sum:
+                    lines.extend(["", short_sum])
+
+                meta = []
+                if source:
+                    meta.append(f"Nguồn: {source}")
+                if pub_str:
+                    meta.append(f"Thời gian: {pub_str}")
+                if meta:
+                    lines.append("")
+                    lines.append(" | ".join(meta))
+                if link:
+                    lines.append("")
+                    lines.append(f"🔗 {link}")
+
+                text = "\n".join(lines)
+
+                # ==== Gửi tới user ====
+                sent = 0
+                for chat_key in all_watch.keys():
+                    try:
+                        chat_id = int(chat_key)
+                    except Exception:
+                        continue
+
+                    if not is_news_enabled_for_chat(chat_id, NEWS_FEED_TYPE_MACRO):
+                        continue
+
+                    try:
+                        send_msg_to(chat_id, text, parse_mode=None)
+                        sent += 1
+                        await asyncio.sleep(0.2)
+                    except Exception as e:
+                        log.warning(
+                            f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi gửi cho {chat_id}: {e}"
+                        )
+
+                log.info(
+                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đã gửi tin vĩ mô tới {sent} user."
+                )
+
+                # Đánh dấu bài đã xử lý
+                mark_news_seen(
+                    NEWS_FEED_TYPE_MACRO,
+                    link=link,
+                    guid=None,
+                    title=title,
+                    published=pub_dt,
+                )
+                await asyncio.sleep(1.0)
+
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
+
+        await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+
+
 def escape_markdown_v2(text: str) -> str:
     """
     Escape tất cả ký tự đặc biệt theo Markdown V2:
@@ -1850,7 +2424,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• `/remove <MÃ>` – Xóa mã cổ phiếu khỏi danh sách\n"
     "• `/list` – Xem danh sách cổ phiếu đang theo dõi\n"
     "• `/report` – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
-    "• `/screener_value` – Bộ lọc *Value theo từng ngành*, hiển thị Top 3 cổ phiếu có định giá hấp dẫn nhất.\n\n"
+    "• `/news_on` – Bật nhận tin tức (vĩ mô + chuyên ngành)\n"
+    "• `/news_off` – Tắt nhận tin tức\n"
+    "• `/news_status` – Xem trạng thái nhận tin tức\n\n"
     "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi bằng lệnh `/add` ngay hôm nay!"
@@ -1919,6 +2495,294 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)"
     )
 
+async def cmd_news_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /news_on – bật nhận tất cả tin tức (vĩ mô + chuyên ngành) cho user hiện tại.
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/news_on", ADMIN_ID)
+
+    set_news_pref(chat_id, enable_specialized=True, enable_macro=True)
+    await reply_md(
+        update,
+        "🔔 Bạn đã BẬT nhận tin tức:\n"
+        "👉 Tin vĩ mô: Bật\n"
+        "👉 Tin chuyên ngành theo danh mục: Bật\n\n"
+        "💡 Có thể dùng `/news_off` nếu sau này muốn tạm tắt.",
+    )
+
+
+async def cmd_news_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /news_off – tắt toàn bộ tin tức (vĩ mô + chuyên ngành) cho user hiện tại.
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+    log_command_usage(chat_id, "/news_off", ADMIN_ID)
+
+    set_news_pref(chat_id, enable_specialized=False, enable_macro=False)
+    await reply_md(
+        update,
+        "🔕 Bạn đã TẮT nhận mọi loại tin tức (vĩ mô & chuyên ngành).\n\n"
+        "Có thể bật lại bất cứ lúc nào bằng lệnh `/news_on.`",
+    )
+
+
+async def cmd_news_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /news_status – xem trạng thái nhận tin tức hiện tại.
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+    pref = get_news_pref(chat_id)
+
+    macro = "Bật" if pref["enable_macro"] else "Tắt"
+    spec = "Bật" if pref["enable_specialized"] else "Tắt"
+
+    await reply_md(
+        update,
+        "⚙️ *Trạng thái nhận tin tức của bạn:*\n"
+        f"- Tin vĩ mô: *{macro}*\n"
+        f"- Tin chuyên ngành: *{spec}*\n\n"
+        "Dùng `/news_on` hoặc `/news_off` để thay đổi.",
+    )
+
+async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /news_test_macro – test nhanh việc đọc RSS macro & hiển thị.
+    Nên dùng cho admin để debug.
+    """
+    chat_id = update.effective_chat.id
+
+    # Giới hạn chỉ admin (nếu muốn)
+    if chat_id != ADMIN_ID:
+        await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
+        return
+
+    await reply_md(update, "⏱ Đang đọc RSS macro, đợi xíu nhé...")
+
+    try:
+        entries = await asyncio.to_thread(
+            fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
+        )
+    except Exception as e:
+        await reply_md(update, f"❌ Lỗi đọc RSS macro: `{e}`")
+        return
+
+    if not entries:
+        await reply_md(update, "❌ Không đọc được bài nào từ RSS macro.")
+        return
+
+    # Lấy 2 bài mới nhất để test
+    for it in entries[:2]:
+        title = it["title"] or ""
+        raw_summary = it.get("summary") or ""
+        link = it["link"] or ""
+        source = it.get("source") or ""
+        pub_dt = it.get("published")
+
+        cleaned = clean_html_text(raw_summary)
+
+        if isinstance(pub_dt, datetime.datetime):
+            pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
+        else:
+            pub_str = ""
+
+        lines = [
+            "🧪 *Test tin vĩ mô:*",
+            title,
+            "",
+            cleaned[:500] + ("..." if len(cleaned) > 500 else ""),
+        ]
+
+        meta = []
+        if source:
+            meta.append(f"Nguồn: {source}")
+        if pub_str:
+            meta.append(f"Thời gian: {pub_str}")
+        if meta:
+            lines.append("")
+            lines.append(" | ".join(meta))
+
+        if link:
+            lines.append("")
+            lines.append(f"🔗 {link}")
+
+        await reply_md(update, "\n".join(lines))
+        await asyncio.sleep(0.3)
+
+async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /news_test_specialized – test nhanh việc quét tin chuyên ngành theo symbol.
+    - Nếu truyền argument: /news_test_specialized HPG SSI
+        → test với các mã đó.
+    - Nếu không truyền argument:
+        → lấy danh mục (watchlist) của chính user (thường là admin) để test.
+    Chỉ nên dùng cho admin để debug.
+    """
+    chat_id = update.effective_chat.id
+
+    # Giới hạn cho admin (nếu bạn muốn mở cho ai cũng xài thì bỏ if này)
+    if chat_id != ADMIN_ID:
+        await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
+        return
+
+    log_command_usage(chat_id, "/news_test_specialized", ADMIN_ID)
+
+    # 1) Lấy danh sách symbol để test
+    args = context.args or []
+    symbols_raw: list[str] = []
+
+    if args:
+        # Dùng symbol user truyền vào
+        symbols_raw = args
+    else:
+        # Không truyền arg: dùng danh mục của chính user
+        watch = get_watch_list_for_chat(chat_id) or []
+        symbols_raw = watch
+
+    symbols = sorted({s.strip().upper() for s in symbols_raw if s.strip()})
+    if not symbols:
+        await reply_md(
+            update,
+            "❌ Không có mã nào để test.\n\n"
+            "Hãy dùng:\n"
+            "- `/news_test_specialized HPG SSI`\n"
+            "hoặc\n"
+            "- Thêm mã vào danh mục rồi chạy `/news_test_specialized` không tham số.",
+        )
+        return
+
+    await reply_md(
+        update,
+        "⏱ Đang đọc RSS *chuyên ngành* và quét theo các mã:\n"
+        f"`{', '.join(symbols)}`\n"
+        "_(chỉ lấy khoảng vài bài match đầu tiên để hiển thị)_",
+    )
+
+    # 2) Gộp URL RSS chuyên ngành
+    all_specialized_urls: list[str] = []
+    for urls in RSS_FEEDS_SPECIALIZED.values():
+        all_specialized_urls.extend(urls)
+
+    try:
+        entries = await asyncio.to_thread(
+            fetch_rss_entries_for_urls, all_specialized_urls
+        )
+    except Exception as e:
+        await reply_md(update, f"❌ Lỗi đọc RSS chuyên ngành: `{e}`")
+        return
+
+    if not entries:
+        await reply_md(update, "❌ Không đọc được bài nào từ RSS chuyên ngành.")
+        return
+
+    # 3) Chuẩn bị pattern cho từng symbol dùng COMPANY_KEYWORDS
+    patterns: dict[str, re.Pattern] = {}
+    for sym in symbols:
+        keywords = COMPANY_KEYWORDS.get(sym, [sym])
+        combined = "|".join(re.escape(k) for k in keywords if k)
+        if not combined:
+            continue
+        patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
+
+    if not patterns:
+        await reply_md(
+            update,
+            "❌ Không tạo được pattern cho bất kỳ mã nào.\n"
+            "Kiểm tra lại COMPAN​Y_KEYWORDS hoặc file `ssi_master_list.csv`.",
+        )
+        return
+
+    # 4) Quét từng bài, tìm xem match symbol nào
+    matched_items: list[tuple[dict, list[str]]] = []  # (entry, [symbols])
+    for it in entries:
+        title = it["title"] or ""
+        raw_summary = it.get("summary") or ""
+        link = it["link"] or ""
+        source = it.get("source") or ""
+        pub_dt = it.get("published")
+
+        decoded_summary = clean_html_text(raw_summary)
+        text_for_match = (title + " " + decoded_summary)
+
+        if not text_for_match.strip():
+            continue
+
+        hit_syms: list[str] = []
+        for sym, pat in patterns.items():
+            if pat.search(text_for_match):
+                hit_syms.append(sym)
+
+        if hit_syms:
+            matched_items.append((it, sorted(set(hit_syms))))
+
+        # Giới hạn, tránh spam – lấy tối đa 5 bài match
+        if len(matched_items) >= 5:
+            break
+
+    if not matched_items:
+        await reply_md(
+            update,
+            "ℹ️ Không tìm thấy bài chuyên ngành nào match với các mã:\n"
+            f"`{', '.join(symbols)}`\n"
+            "Thử lại sau hoặc thử với mã khác.",
+        )
+        return
+
+    # 5) Gửi kết quả test cho admin
+    for it, hit_syms in matched_items:
+        title = it["title"] or ""
+        raw_summary = it.get("summary") or ""
+        link = it["link"] or ""
+        source = it.get("source") or ""
+        pub_dt = it.get("published")
+
+        decoded_summary = clean_html_text(raw_summary)
+
+        if isinstance(pub_dt, datetime.datetime):
+            pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
+        else:
+            pub_str = ""
+
+        short_sum = decoded_summary
+        if len(short_sum) > 400:
+            short_sum = short_sum[:380].rstrip() + "..."
+
+        lines = [
+            "🧪 *Test tin chuyên ngành:*",
+            title,
+            "",
+            f"Match với mã: `{', '.join(hit_syms)}`",
+        ]
+        if short_sum:
+            lines.extend(["", short_sum])
+
+        meta = []
+        if source:
+            meta.append(f"Nguồn: {source}")
+        if pub_str:
+            meta.append(f"Thời gian: {pub_str}")
+        if meta:
+            lines.append("")
+            lines.append(" | ".join(meta))
+
+        if link:
+            lines.append("")
+            lines.append(f"🔗 {link}")
+
+        await reply_md(update, "\n".join(lines))
+        await asyncio.sleep(0.3)
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -2099,7 +2963,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await reply_md(update,fallback_msg)
 
-
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /remove <MÃ>
@@ -2147,8 +3010,6 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ *{symbol}* không có trong danh sách theo dõi.\n"
             "Bạn có thể dùng /list để kiểm tra lại danh sách hiện tại."
         )
-
-
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
@@ -2229,6 +3090,7 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
         "Thao tác này sẽ **XOÁ HOÀN TOÀN** bảng `stock_value_cache` để cập nhật cấu trúc mới.\n"
         "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận."
     )
+
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -2259,9 +3121,6 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
 
     await reply_md(update, f"✅ Đã gửi thông báo tới *{sent}* người dùng.")
-
-
-
 
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Chỉ cho admin dùng
@@ -2701,6 +3560,11 @@ async def main():
     # 🗄️ Khởi tạo DB nếu chưa có
     init_db()
 
+    # 🏢 Load danh sách tên doanh nghiệp từ ssi_master_list.csv
+    global COMPANY_KEYWORDS
+    COMPANY_KEYWORDS = load_company_keywords_from_csv("ssi_master_list.csv")
+
+
     # 🧭 Đăng ký danh sách lệnh hiển thị trong Telegram
     async def set_bot_commands(application):
         """Thiết lập danh sách lệnh hiển thị trong Telegram."""
@@ -2711,6 +3575,9 @@ async def main():
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
             ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
             ("report", "Phân tích danh mục bằng AI"),
+            ("news_on", "Bật nhận tin tức (vĩ mô + chuyên ngành)"),
+            ("news_off", "Tắt nhận tin tức"),
+            ("news_status", "Xem trạng thái nhận tin tức"),
 
             # 🧠 Lệnh cho admin
             ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
@@ -2720,6 +3587,8 @@ async def main():
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
             ("screener_value_clear", "(admin) Xóa dữ liệu screener cache (làm mới)"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
+            ("news_test_macro", "Gửi thử tin tức vĩ mô mới nhất"),
+            ("news_test_specialized", "Gửi thử tin tức vĩ mô mới nhất"),
         ]
 
         # Áp dụng danh sách lệnh này cho bot
@@ -2821,6 +3690,11 @@ async def main():
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
+    tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
+    tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
+    tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
+    tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))
+    tg_app.add_handler(CommandHandler("news_test_specialized", cmd_news_test_specialized))
 
     # Admin command handlers
     tg_app.add_handler(CommandHandler("on", cmd_on))
@@ -2897,11 +3771,11 @@ async def main():
         screener_value_update_loop(), # 💰 precompute screener Value 00:00 T2–T6
         daily_screener_loop(),  # 💰 gửi báo cáo screener 09:00 T2-T6
         initial_value_precompute_loop(), # chạy 1 lần sau khi khởi động (background)
+        news_specialized_loop(),   # 📰 Tin chuyên ngành theo danh mục
+        news_macro_loop(),         # 🌏 Tin vĩ mô broadcast
         run_telegram(),
         auto_on_after_delay(initial_active),  # ✅ truyền trạng thái ban đầu
     )
-
-
 
 
 if __name__ == "__main__":
