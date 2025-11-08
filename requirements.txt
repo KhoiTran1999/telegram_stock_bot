@@ -9,3 +9,4 @@ psycopg[binary]
 psutil
 python-dotenv
 feedparser
+asgiref

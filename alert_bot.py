@@ -25,6 +25,7 @@ from telegram.ext import (
 from flask import Flask, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
+from asgiref.wsgi import WsgiToAsgi
 from vnstock import Trading, Quote, Listing, Finance
 from db_utils import (
     init_db,
@@ -2093,10 +2094,10 @@ async def news_specialized_loop():
                     uniq_syms = sorted(set(syms))
 
                     lines = [
-                        "📰 Tin tức mới liên quan tới danh mục của bạn:",
+                        "📰 *Tin tức mới liên quan tới danh mục của bạn:*",
                         title,
                         "",
-                        "Liên quan tới: " + ", ".join(uniq_syms),
+                        "*Liên quan tới:* " + ", ".join(uniq_syms),
                     ]
 
                     if short_sum:
@@ -2106,9 +2107,9 @@ async def news_specialized_loop():
                         lines.append("")
                         meta = []
                         if source:
-                            meta.append(f"Nguồn: {source}")
+                            meta.append(f"_Nguồn: {source}_")
                         if pub_str:
-                            meta.append(f"Thời gian: {pub_str}")
+                            meta.append(f"_Thời gian: {pub_str}_")
                         lines.append(" | ".join(meta))
 
                     if link:
@@ -2255,7 +2256,7 @@ async def news_macro_loop():
 
                 # ==== Ghép nội dung gửi ====
                 lines = [
-                    "🌏 Tin vĩ mô mới:",
+                    "🌏 *Tin vĩ mô mới:*",
                     title,
                 ]
                 if short_sum:
@@ -2263,9 +2264,9 @@ async def news_macro_loop():
 
                 meta = []
                 if source:
-                    meta.append(f"Nguồn: {source}")
+                    meta.append(f"_Nguồn:_ {source}")
                 if pub_str:
-                    meta.append(f"Thời gian: {pub_str}")
+                    meta.append(f"_Thời gian: {pub_str}_")
                 if meta:
                     lines.append("")
                     lines.append(" | ".join(meta))
@@ -3778,9 +3779,10 @@ async def main():
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu để truyền vào hàm auto_on
+    asgi_app = WsgiToAsgi(flask_app)
 
     await asyncio.gather(
-        serve(flask_app, config), # mở port HTTP cho Render kiểm tra
+        await asyncio.gather(serve(asgi_app, config)), # mở port HTTP cho Render kiểm tra
         alert_loop(),           # cảnh báo realtime trong giờ giao dịch
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
