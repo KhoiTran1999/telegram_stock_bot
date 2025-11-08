@@ -2296,6 +2296,10 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_lines.append(f"{sym}: {cnt} user")
 
     cmd_stats = get_command_stats()
+
+    # 👇 DÒNG NÀY ĐỂ LỌC BỎ "unknown:"
+    cmd_stats = [s for s in cmd_stats if not s["command"].startswith("unknown:")]
+
     if cmd_stats:
         cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
         for row in cmd_stats:
