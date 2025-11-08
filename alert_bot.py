@@ -12,6 +12,8 @@ import pandas as pd
 import math
 import uuid
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -50,6 +52,8 @@ from datetime import timedelta
 from telegram.error import BadRequest
 from typing import Any
 import html
+from telegram import BotCommand
+import telegram
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -2679,7 +2683,52 @@ def telegram_webhook():
 # ==============================================
 async def main():
     log.info(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
+
+    # -----------------------------------------------------------------
+    # 🚀 KIỂM TRA MÔI TRƯỜNG (LOCAL vs PRODUCTION)
+    # -----------------------------------------------------------------
+    # Render tự set RENDER="true".
+    # Ở local, ta sẽ set ENV_MODE="local" trong file .env
+    ENV_MODE = os.getenv("ENV_MODE", "production").lower()
+    IS_PRODUCTION = os.getenv("RENDER") == "true" or ENV_MODE == "production"
+    
+    if IS_PRODUCTION:
+        log.info(f"[{INSTANCE_ID}] 🚀 Chạy ở chế độ PRODUCTION (Webhook).")
+    else:
+        log.info(f"[{INSTANCE_ID}] 🛠️  Chạy ở chế độ LOCAL (Polling).")
+    # -----------------------------------------------------------------
+
+    # 🗄️ Khởi tạo DB nếu chưa có
     init_db()
+
+    # 🧭 Đăng ký danh sách lệnh hiển thị trong Telegram
+    async def set_bot_commands(application):
+        """Thiết lập danh sách lệnh hiển thị trong Telegram."""
+        commands = [
+            # 👤 Lệnh cho user
+            ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
+            ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
+            ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
+            ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
+            ("report", "Phân tích danh mục bằng AI"),
+
+            # 🧠 Lệnh cho admin
+            ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
+            ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
+            ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
+            ("announce", "(admin) Gửi thông báo đến tất cả người dùng"),
+            ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
+            ("screener_value_clear", "(admin) Xóa dữ liệu screener cache (làm mới)"),
+            ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
+        ]
+
+        # Áp dụng danh sách lệnh này cho bot
+        await application.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in commands],
+            scope=telegram.BotCommandScopeDefault()  # mặc định cho toàn bộ bot
+        )
+        print("✅ Đã đăng ký danh sách lệnh Telegram thành công.")
+
 
     # 🔄 Load trạng thái bảo trì từ DB
     global BOT_ACTIVE, MAIN_LOOP, tg_app
@@ -2765,6 +2814,8 @@ async def main():
         .build()
     )
 
+    await set_bot_commands(tg_app)  # 🧭 Đăng ký lệnh ngay khi bot khởi động
+
     #User command handlers
     tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("add", cmd_add))
@@ -2788,29 +2839,51 @@ async def main():
     async def run_telegram():
         await tg_app.initialize()
         await tg_app.start()
-        
-        # 🔗 Thiết lập webhook URL
-        webhook_url = os.getenv("WEBHOOK_URL")
 
-        # Nếu không set tay, auto lấy từ Render
-        if not webhook_url:
-            host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-            if host:
-                webhook_url = f"https://{host}/webhook"
+        # -----------------------------------------------------------------
+        # 🚀 CHỌN CHẾ ĐỘ CHẠY (WEBHOOK / POLLING)
+        # -----------------------------------------------------------------
+        if IS_PRODUCTION:
+            # 🔗 PRODUCTION: Thiết lập webhook URL
+            webhook_url = os.getenv("WEBHOOK_URL")
 
-        if not webhook_url:
-            log.warning(
-                f"[{INSTANCE_ID}] ⚠️ Chưa cấu hình WEBHOOK_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
-                "bot sẽ KHÔNG nhận được update từ Telegram!"
-            )
+            # Nếu không set tay, auto lấy từ Render
+            if not webhook_url:
+                host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+                if host:
+                    webhook_url = f"https://{host}/webhook"
+
+            if not webhook_url:
+                log.warning(
+                    f"[{INSTANCE_ID}] ⚠️ [PROD] Chưa cấu hình WEBHOOK_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
+                    "bot sẽ KHÔNG nhận được update từ Telegram!"
+                )
+            else:
+                await tg_app.bot.set_webhook(
+                    url=webhook_url,
+                    drop_pending_updates=True,  # bỏ update cũ lúc bot offline
+                )
+                log.info(f"[{INSTANCE_ID}] ✅ [PROD] Webhook đã set: {webhook_url}")
+            
+            # Chờ vô hạn (vì webhook được xử lý qua Flask)
+            await asyncio.Event().wait()
+
         else:
-            await tg_app.bot.set_webhook(
-                url=webhook_url,
-                drop_pending_updates=True,  # bỏ update cũ lúc bot offline
-            )
-            log.info(f"[{INSTANCE_ID}] ✅ Webhook đã set: {webhook_url}")
+            # 🛠️ LOCAL: Dùng polling thủ công để chia sẻ event loop với các loop khác
+            log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling (updater.start_polling)...")
 
-        await asyncio.Event().wait()
+            # Đảm bảo không còn webhook nào đang set
+            await tg_app.bot.delete_webhook(drop_pending_updates=True)
+
+            # 🔄 Bật polling (không block event loop, chỉ start fetcher)
+            await tg_app.updater.start_polling(drop_pending_updates=True)
+
+            log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start, chờ update từ Telegram...")
+
+            # Giữ coroutine này sống, để polling + các loop khác (alert, report, screener, Flask) chạy song song
+            await asyncio.Event().wait()
+
+            # -----------------------------------------------------------------
 
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]

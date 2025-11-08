@@ -1,4 +1,4 @@
-vnstock
+vnstock==3.2.6
 pandas
 python-telegram-bot==20.7
 pytz
@@ -7,3 +7,4 @@ flask
 hypercorn
 psycopg[binary]
 psutil
+python-dotenv
