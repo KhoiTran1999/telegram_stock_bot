@@ -1,4 +1,4 @@
-vnstock==3.2.6
+git+https://github.com/thinh-vu/vnstock.git
 pandas
 python-telegram-bot==20.7
 pytz
