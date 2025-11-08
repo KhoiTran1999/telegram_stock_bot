@@ -3735,7 +3735,7 @@ async def main():
         # -----------------------------------------------------------------
         if IS_PRODUCTION:
             # 🔗 PRODUCTION: Thiết lập webhook URL
-            webhook_url = os.getenv("WEBHOOK_URL")
+            webhook_url = os.getenv("RENDER_EXTERNAL_URL")
 
             # Nếu không set tay, auto lấy từ Render
             if not webhook_url:
@@ -3745,7 +3745,7 @@ async def main():
 
             if not webhook_url:
                 log.warning(
-                    f"[{INSTANCE_ID}] ⚠️ [PROD] Chưa cấu hình WEBHOOK_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
+                    f"[{INSTANCE_ID}] ⚠️ [PROD] Chưa cấu hình RENDER_EXTERNAL_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
                     "bot sẽ KHÔNG nhận được update từ Telegram!"
                 )
             else:
