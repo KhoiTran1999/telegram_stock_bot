@@ -143,41 +143,62 @@ NEWS_FEED_TYPE_MACRO = "MACRO"
 RSS_FEEDS_SPECIALIZED = {
     "CHUNG_KHOAN": [
         "https://vneconomy.vn/chung-khoan.rss",
-        "https://cafebiz.vn/rss/chung-khoan.rss",
         "https://vneconomy.vn/tai-chinh.rss",
         "https://vneconomy.vn/kinh-te-so.rss",
         "https://vneconomy.vn/dau-tu.rss",
+        "https://vietstock.vn/830/chung-khoan/co-phieu.rss",
+        "https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo.rss",
+        "https://vietstock.vn/3358/chung-khoan/etf-va-cac-quy.rss",
+        "https://vietstock.vn/145/chung-khoan/y-kien-chuyen-gia.rss",
+        "https://vietstock.vn/582/nhan-dinh-phan-tich/phan-tich-co-ban.rss",
+
+        
     ],
     "DOANH_NGHIEP": [
-        "https://cafebiz.vn/rss/cau-chuyen-kinh-doanh.rss",
-        "https://cafebiz.vn/rss/ngan-hang-tai-chinh.rss",
-        "https://cafebiz.vn/rss/san-xuat.rss",
-        "https://cafebiz.vn/rss/ban-le.rss",
-        "https://cafebiz.vn/rss/dich-vu.rss",
-        "https://cafebiz.vn/rss/cong-nghe.rss",
-        "https://cafebiz.vn/rss/startup.rss",
-        "https://cafebiz.vn/rss/quoc-te.rss",
-        "https://cafebiz.vn/rss/quan-tri.rss",
-        "https://cafebiz.vn/rss/nghe-nghiep.rss",
+
         "https://vneconomy.vn/nhip-cau-doanh-nghiep.rss",
         "https://vneconomy.vn/thi-truong.rss",
         "https://vneconomy.vn/tieu-dung.rss",
         "https://vneconomy.vn/dan-sinh.rss",
         "https://vneconomy.vn/kinh-te-xanh.rss",
         "https://vneconomy.vn/cong-nghe-startup.rss",
+        "https://vietstock.vn/737/doanh-nghiep/hoat-dong-kinh-doanh.rss",
+        "https://vietstock.vn/738/doanh-nghiep/co-tuc.rss",
+        "https://vietstock.vn/764/doanh-nghiep/tang-von-m-a.rss",
+        "https://vietstock.vn/746/doanh-nghiep/ipo-co-phan-hoa.rss",
+
     ],
     "BAT_DONG_SAN": [
-        "https://cafebiz.vn/rss/bat-dong-san.rss",
         "https://vneconomy.vn/dau-tu-ha-tang.rss",
         "https://vneconomy.vn/dia-oc.rss",
+        "https://vietstock.vn/4220//bat-dong-san/thi-truong-nha-dat.rss",
+        "https://vietstock.vn/4222/bat-dong-san/du-an.rss",
+        "https://vietstock.vn/4266/bat-dong-san/bao-hiem-va-thue-nha-dat.rss",
+
     ],
 }
 
 # 2. Tin vĩ mô (Broadcast cho tất cả)
 RSS_FEEDS_MACRO = [
-    "https://cafebiz.vn/rss/vi-mo.rss",
+
     "https://vneconomy.vn/tin-moi.rss",
     "https://vneconomy.vn/tieu-diem.rss",
+    "https://vietstock.vn/3355/chung-khoan/cau-chuyen-dau-tu.rss",
+    "https://vietstock.vn/143/chung-khoan/chinh-sach.rss",
+    "https://vietstock.vn/759/hang-hoa/vang-va-kim-loai-quy.rss",
+    "https://vietstock.vn/34/hang-hoa/nhien-lieu.rss",
+    "https://vietstock.vn/118/hang-hoa/nong-san-thuc-pham.rss",
+    "https://vietstock.vn/757/tai-chinh/ngan-hang.rss",
+    "https://vietstock.vn/3113/tai-chinh/bao-hiem.rss",
+    "https://vietstock.vn/16312/tai-chinh/tai-san-so.rss",
+    "https://vietstock.vn/761/kinh-te/vi-mo.rss",
+    "https://vietstock.vn/768/kinh-te/kinh-te-dau-tu.rss",
+    "https://vietstock.vn/773/the-gioi/chung-khoan-the-gioi.rss",
+    "https://vietstock.vn/4309/the-gioi/tien-ky-thuat-so.rss",
+    "https://vietstock.vn/772/the-gioi/tai-chinh-quoc-te.rss",
+    "https://vietstock.vn/775/the-gioi/kinh-te-nganh.rss",
+
+
 ]
 
 # Chu kỳ quét RSS (giây)
@@ -3510,11 +3531,9 @@ def home():
 
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    """
-    Endpoint để Telegram gửi update (webhook).
-    Flask chạy trong thread riêng, nên phải đẩy coroutine sang event loop chính.
-    """
     global tg_app, MAIN_LOOP
+
+    log.info(f"[{INSTANCE_ID}] 🔔 Received webhook call")
 
     if tg_app is None or MAIN_LOOP is None:
         return "Bot not ready", 503
@@ -3524,17 +3543,14 @@ def telegram_webhook():
     except Exception:
         return "Bad Request", 400
 
-    # Chuyển JSON thành đối tượng Update của PTB
     update = Update.de_json(data, tg_app.bot)
 
-    # Đẩy xử lý update sang event loop chính (thread-safe)
     asyncio.run_coroutine_threadsafe(
         tg_app.process_update(update),
         MAIN_LOOP,
     )
 
     return "OK", 200
-
 
 
 # ==============================================
