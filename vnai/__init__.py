@@ -1,12 +1,15 @@
-# Stub module vnai để bypass các lỗi từ vnstock
+# vnai stub module – bypass all vnstock dependencies
 
 def setup(*args, **kwargs):
-    # vnstock gọi hàm này trong core.__init__
     return None
 
 def optimize_execution(*args, **kwargs):
-    # vnstock dùng hàm này như decorator (@optimize_execution)
-    # nên ta trả về một decorator "trống" để không làm gì cả
+    # giả lập decorator không làm gì
     def decorator(func):
         return func
     return decorator
+
+def accept_license_terms(*args, **kwargs):
+    # vnstock gọi để xác nhận điều khoản, ta chỉ giả lập
+    print("✅ VNStock license terms accepted (stubbed).")
+    return True
