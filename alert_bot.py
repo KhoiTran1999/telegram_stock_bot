@@ -3776,10 +3776,11 @@ async def main():
 
             # -----------------------------------------------------------------
 
+    asgi_app = WsgiToAsgi(flask_app)
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu để truyền vào hàm auto_on
-    asgi_app = WsgiToAsgi(flask_app)
+    config.lifespan = "off"
 
     await asyncio.gather(
         await asyncio.gather(serve(asgi_app, config)), # mở port HTTP cho Render kiểm tra
