@@ -3554,39 +3554,15 @@ def telegram_webhook():
     return "OK", 200
 
 
-# ==============================================
-# MAIN
-# ==============================================
-async def main():
-    log.info(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
-
-    # -----------------------------------------------------------------
-    # 🚀 KIỂM TRA MÔI TRƯỜNG (LOCAL vs PRODUCTION)
-    # -----------------------------------------------------------------
-    # Render tự set RENDER="true".
-    # Ở local, ta sẽ set ENV_MODE="local" trong file .env
-    ENV_MODE = os.getenv("ENV_MODE", "production").lower()
-    IS_PRODUCTION = os.getenv("RENDER") == "true" or ENV_MODE == "production"
-    
-    if IS_PRODUCTION:
-        log.info(f"[{INSTANCE_ID}] 🚀 Chạy ở chế độ PRODUCTION (Webhook).")
-    else:
-        log.info(f"[{INSTANCE_ID}] 🛠️  Chạy ở chế độ LOCAL (Polling).")
-    # -----------------------------------------------------------------
-
-    # 🗄️ Khởi tạo DB nếu chưa có
-    init_db()
-
-    # 🏢 Load danh sách tên doanh nghiệp từ ssi_master_list.csv
-    global COMPANY_KEYWORDS
-    COMPANY_KEYWORDS = load_company_keywords_from_csv("ssi_master_list.csv")
-
-
-    # 🧭 Đăng ký danh sách lệnh hiển thị trong Telegram
-    async def set_bot_commands(application):
-        """Thiết lập danh sách lệnh hiển thị trong Telegram."""
+# Đặt hàm này bên trên hàm main()
+async def run_background_startup_tasks(admin_id: int | None, initial_active: bool, instance_id: str, app: telegram.ext.Application):
+    """
+    Chạy các tác vụ khởi động chậm (I/O, network) trong nền
+    sau khi máy chủ web đã khởi động.
+    """
+    try:
+        # Tác vụ 1: Đăng ký lệnh bot (network call)
         commands = [
-            # 👤 Lệnh cho user
             ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
             ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
@@ -3595,8 +3571,6 @@ async def main():
             ("news_on", "Bật nhận tin tức (vĩ mô + chuyên ngành)"),
             ("news_off", "Tắt nhận tin tức"),
             ("news_status", "Xem trạng thái nhận tin tức"),
-
-            # 🧠 Lệnh cho admin
             ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
             ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
             ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
@@ -3607,90 +3581,116 @@ async def main():
             ("news_test_macro", "Gửi thử tin tức vĩ mô mới nhất"),
             ("news_test_specialized", "Gửi thử tin tức vĩ mô mới nhất"),
         ]
-
-        # Áp dụng danh sách lệnh này cho bot
-        await application.bot.set_my_commands(
+        await app.bot.set_my_commands(
             [BotCommand(cmd, desc) for cmd, desc in commands],
-            scope=telegram.BotCommandScopeDefault()  # mặc định cho toàn bộ bot
+            scope=telegram.BotCommandScopeDefault()
         )
-        print("✅ Đã đăng ký danh sách lệnh Telegram thành công.")
+        log.info(f"[{instance_id}] ✅ Đã đăng ký danh sách lệnh Telegram thành công.")
 
+    except Exception as e:
+        log.warning(f"[{instance_id}] Lỗi khi set_my_commands: {e}")
+
+    try:
+        # Tác vụ 2: Gửi thông báo cho admin (blocking I/O + network)
+        if admin_id:
+            # Chạy các hàm blocking trong thread riêng
+            def _build_admin_message():
+                # Lấy thông tin hệ thống (dùng interval=None để không block)
+                cpu_percent = psutil.cpu_percent(interval=0.1) 
+                ram = psutil.virtual_memory()
+                ram_used = ram.used / (1024 * 1024)
+                ram_total = ram.total / (1024 * 1024)
+                uptime_seconds = time.time() - psutil.boot_time()
+                uptime_days = int(uptime_seconds // 86400)
+                uptime_hours = int((uptime_seconds % 86400) // 3600)
+                uptime_mins = int((uptime_seconds % 3600) // 60)
+
+                def progress_bar(percent: float, length: int = 10):
+                    filled = int((percent / 100) * length)
+                    empty = length - filled
+                    return "█" * filled + "░" * empty
+
+                cpu_bar = progress_bar(cpu_percent)
+                ram_percent = (ram_used / ram_total) * 100
+                ram_bar = progress_bar(ram_percent)
+
+                state_text = (
+                    "🟢 Bot đã khởi động và đang *hoạt động bình thường.*"
+                    if initial_active
+                    else "🔴 Bot đã khởi động nhưng đang ở *chế độ bảo trì.*"
+                )
+
+                boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+
+                auto_on_notice = ""
+                if not initial_active:
+                    auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại sau 2 phút (auto /on).*"
+
+                git_info = get_git_deploy_info() # <- Đây là blocking call (subprocess)
+
+                parts = [
+                    f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
+                    f"🕓 Thời gian: {boot_time}\n"
+                    f"{state_text}\n\n"
+                    f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
+                    f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
+                    f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
+                    f"🧩 Instance ID: `{instance_id}`"
+                ]
+
+                if git_info:
+                    parts.append(git_info)
+                if auto_on_notice:
+                    parts.append(auto_on_notice)
+
+                return "\n\n".join(parts)
+
+            # Chạy hàm build message (có I/O) trong thread
+            msg = await asyncio.to_thread(_build_admin_message)
+            
+            # Chạy hàm gửi tin (network) trong thread
+            await asyncio.to_thread(send_msg_to, admin_id, msg)
+            log.info(f"[{instance_id}] Đã gửi thông báo khởi động lại tới admin ({admin_id}).")
+
+    except Exception as e:
+        log.warning(f"[{instance_id}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
+
+# ==============================================
+# MAIN
+# ==============================================
+async def main():
+    log.info(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
+
+    # -----------------------------------------------------------------
+    # 🚀 KIỂM TRA MÔI TRƯỜNG (LOCAL vs PRODUCTION)
+    # -----------------------------------------------------------------
+    ENV_MODE = os.getenv("ENV_MODE", "production").lower()
+    IS_PRODUCTION = os.getenv("RENDER") == "true" or ENV_MODE == "production"
+    
+    if IS_PRODUCTION:
+        log.info(f"[{INSTANCE_ID}] 🚀 Chạy ở chế độ PRODUCTION (Webhook).")
+    else:
+        log.info(f"[{INSTANCE_ID}] 🛠️  Chạy ở chế độ LOCAL (Polling).")
+    # -----------------------------------------------------------------
+
+    # 🗄️ Khởi tạo DB
+    init_db()
+
+    # 🏢 Load danh sách tên doanh nghiệp từ ssi_master_list.csv
+    global COMPANY_KEYWORDS
+    COMPANY_KEYWORDS = load_company_keywords_from_csv("ssi_master_list.csv")
+
+    # 🧭 BỎ HÀM ĐỊNH NGHĨA set_bot_commands Ở ĐÂY (đã chuyển vào hàm helper)
 
     # 🔄 Load trạng thái bảo trì từ DB
     global BOT_ACTIVE, MAIN_LOOP, tg_app
 
-    # 🔁 Lưu event loop chính để dùng trong Flask thread
     MAIN_LOOP = asyncio.get_running_loop()
-
-    # 🔄 Load trạng thái bảo trì từ DB
     BOT_ACTIVE = get_bot_active()
+    initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
-    # 📨 Gửi thông báo cho admin khi bot khởi động lại
-    if ADMIN_ID:
-        try:
-            # Lấy thông tin hệ thống
-            cpu_percent = psutil.cpu_percent(interval=1)
-            ram = psutil.virtual_memory()
-            ram_used = ram.used / (1024 * 1024)
-            ram_total = ram.total / (1024 * 1024)
-            uptime_seconds = time.time() - psutil.boot_time()
-            uptime_days = int(uptime_seconds // 86400)
-            uptime_hours = int((uptime_seconds % 86400) // 3600)
-            uptime_mins = int((uptime_seconds % 3600) // 60)
-
-            # Tạo thanh tiến trình emoji cho CPU & RAM
-            def progress_bar(percent: float, length: int = 10):
-                filled = int((percent / 100) * length)
-                empty = length - filled
-                return "█" * filled + "░" * empty
-
-            cpu_bar = progress_bar(cpu_percent)
-            ram_percent = (ram_used / ram_total) * 100
-            ram_bar = progress_bar(ram_percent)
-
-            state_text = (
-                "🟢 Bot đã khởi động và đang *hoạt động bình thường.*"
-                if BOT_ACTIVE
-                else "🔴 Bot đã khởi động nhưng đang ở *chế độ bảo trì.*"
-            )
-
-            boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
-
-            # Thêm dòng cảnh báo nếu bot đang tắt
-            auto_on_notice = ""
-            if not BOT_ACTIVE:
-                auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại sau 2 phút (auto /on).*"
-
-            # 🧩 Thông tin phiên bản (branch, commit, commit message)
-            git_info = get_git_deploy_info()
-
-            # Ghép message theo từng block cho dễ chỉnh sửa / thêm bớt
-            parts = [
-                f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
-                f"🕓 Thời gian: {boot_time}\n"
-                f"{state_text}\n\n"
-                f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
-                f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
-                f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
-                f"🧩 Instance ID: `{INSTANCE_ID}`"
-            ]
-
-            if git_info:
-                parts.append(git_info)
-            if auto_on_notice:
-                parts.append(auto_on_notice)
-
-            msg = "\n\n".join(parts)
-
-
-
-            send_msg_to(ADMIN_ID, msg)
-            log.info(f"[{INSTANCE_ID}] Đã gửi thông báo khởi động lại (có CPU/RAM bar) tới admin ({ADMIN_ID}).")
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
-
+    # ❗️ BỎ KHỐI GỬI THÔNG BÁO ADMIN Ở ĐÂY (đã chuyển vào hàm helper)
 
     global tg_app
     tg_app = (
@@ -3700,7 +3700,7 @@ async def main():
         .build()
     )
 
-    await set_bot_commands(tg_app)  # 🧭 Đăng ký lệnh ngay khi bot khởi động
+    # ❗️ BỎ LỆNH GỌI set_bot_commands(tg_app) Ở ĐÂY (đã chuyển vào hàm helper)
 
     #User command handlers
     tg_app.add_handler(CommandHandler("start", cmd_start))
@@ -3712,8 +3712,6 @@ async def main():
     tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
     tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))
     tg_app.add_handler(CommandHandler("news_test_specialized", cmd_news_test_specialized))
-
-    # Admin command handlers
     tg_app.add_handler(CommandHandler("on", cmd_on))
     tg_app.add_handler(CommandHandler("off", cmd_off))
     tg_app.add_handler(CommandHandler("status", cmd_status))
@@ -3722,87 +3720,65 @@ async def main():
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
-
-    # 👇 THÊM HANDLER MỚI CỦA BẠN TẠI ĐÂY
-    # Bắt tất cả tin nhắn TEXT (văn bản) MÀ KHÔNG PHẢI là COMMAND
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
     async def run_telegram():
         await tg_app.initialize()
         await tg_app.start()
 
-        # -----------------------------------------------------------------
-        # 🚀 CHỌN CHẾ ĐỘ CHẠY (WEBHOOK / POLLING)
-        # -----------------------------------------------------------------
         if IS_PRODUCTION:
-            # 🔗 PRODUCTION: Thiết lập webhook URL
             webhook_url = os.getenv("RENDER_EXTERNAL_URL")
-            log.warning(
-                    f"[{INSTANCE_ID}] ⚠️ [PROD] Đã chạy qua đây 1! {webhook_url}"
-                )
-            # Nếu không set tay, auto lấy từ Render
             if not webhook_url:
                 host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-
-                log.warning(
-                    f"[{INSTANCE_ID}] ⚠️ [PROD] Đã chạy qua đây 2! {host}"
-                )
-
                 if host:
                     webhook_url = f"https://{host}/webhook"
 
             if not webhook_url:
-                log.warning(
-                    f"[{INSTANCE_ID}] ⚠️ [PROD] Chưa cấu hình RENDER_EXTERNAL_URL hoặc RENDER_EXTERNAL_HOSTNAME, "
-                    "bot sẽ KHÔNG nhận được update từ Telegram!"
+                log.error( # Dùng log.error để nhấn mạnh
+                    f"[{INSTANCE_ID}] ⚠️ [PROD] KHÔNG THỂ SET WEBHOOK. "
+                    "Chưa cấu hình RENDER_EXTERNAL_URL. Bot sẽ không hoạt động!"
                 )
             else:
                 await tg_app.bot.set_webhook(
                     url=webhook_url,
-                    drop_pending_updates=True,  # bỏ update cũ lúc bot offline
+                    drop_pending_updates=True,
                 )
                 log.info(f"[{INSTANCE_ID}] ✅ [PROD] Webhook đã set: {webhook_url}")
             
-            # Chờ vô hạn (vì webhook được xử lý qua Flask)
             await asyncio.Event().wait()
-
         else:
-            # 🛠️ LOCAL: Dùng polling thủ công để chia sẻ event loop với các loop khác
-            log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling (updater.start_polling)...")
-
-            # Đảm bảo không còn webhook nào đang set
+            log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling...")
             await tg_app.bot.delete_webhook(drop_pending_updates=True)
-
-            # 🔄 Bật polling (không block event loop, chỉ start fetcher)
             await tg_app.updater.start_polling(drop_pending_updates=True)
-
-            log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start, chờ update từ Telegram...")
-
-            # Giữ coroutine này sống, để polling + các loop khác (alert, report, screener, Flask) chạy song song
+            log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start.")
             await asyncio.Event().wait()
-
-            # -----------------------------------------------------------------
 
     asgi_app = WsgiToAsgi(flask_app)
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
-    initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu để truyền vào hàm auto_on
     config.lifespan = "off"
 
-    await asyncio.gather(
-        serve(asgi_app, config), # mở port HTTP cho Render kiểm tra
-        alert_loop(),           # cảnh báo realtime trong giờ giao dịch
-        session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
-        daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
-        screener_value_update_loop(), # 💰 precompute screener Value 00:00 T2–T6
-        daily_screener_loop(),  # 💰 gửi báo cáo screener 09:00 T2-T6
-        initial_value_precompute_loop(), # chạy 1 lần sau khi khởi động (background)
-        news_specialized_loop(),   # 📰 Tin chuyên ngành theo danh mục
-        news_macro_loop(),         # 🌏 Tin vĩ mô broadcast
-        run_telegram(),
-        auto_on_after_delay(initial_active),  # ✅ truyền trạng thái ban đầu
-    )
+    log.info(f"[{INSTANCE_ID}] Cấu hình hoàn tất. Khởi động máy chủ và các tác vụ nền...")
 
+    # Đây là khối gather cuối cùng đã được cập nhật
+    await asyncio.gather(
+        serve(asgi_app, config),           # 1. ⚡ MỞ PORT (Ưu tiên 1)
+        run_telegram(),                  # 2. Chạy logic Telegram (set webhook)
+        
+        # 3. Chạy các tác vụ khởi động chậm TRONG NỀN
+        run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app), 
+        
+        # 4. Các loop nền của bạn
+        alert_loop(),
+        session_notice_loop(),
+        daily_report_loop(),
+        screener_value_update_loop(),
+        daily_screener_loop(),
+        initial_value_precompute_loop(),
+        news_specialized_loop(),
+        news_macro_loop(),
+        auto_on_after_delay(initial_active),
+    )
 
 if __name__ == "__main__":
     log.info("🚀 Khởi động bot đa người dùng + Flask keepalive (Render Web Service)...")
