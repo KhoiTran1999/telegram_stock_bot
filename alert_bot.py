@@ -68,7 +68,7 @@ from telegram.error import TelegramError
 # CẤU HÌNH CƠ BẢN
 # ==============================================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-PORT = int(os.getenv("PORT", "10000"))
+PORT = int(os.getenv("PASSENGER_PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
@@ -3771,12 +3771,57 @@ async def main():
                     )
                     
             # Dòng này giữ cho chương trình (hoặc hàm async) tiếp tục chạy
-            await asyncio.Event().wait()
+            # await asyncio.Event().wait()
         else:
-            log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling...")
-            await tg_app.bot.delete_webhook(drop_pending_updates=True)
-            await tg_app.updater.start_polling(drop_pending_updates=True)
-            log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start.")
+            # log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling...")
+            # await tg_app.bot.delete_webhook(drop_pending_updates=True)
+            # await tg_app.updater.start_polling(drop_pending_updates=True)
+            # log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start.")
+            # await asyncio.Event().wait()
+
+            webhook_url = os.getenv("https://elaine-sappiest-ciara.ngrok-free.dev")
+            if not webhook_url:
+                host = os.getenv("https://elaine-sappiest-ciara.ngrok-free.dev")
+                if host:
+                    webhook_url = f"https://{host}/webhook"
+
+            if not webhook_url:
+                log.error(
+                    f"[{INSTANCE_ID}] ⚠️ [PROD] KHÔNG THỂ SET WEBHOOK. "
+                    "Chưa cấu hình RENDER_EXTERNAL_URL. Bot sẽ không hoạt động!"
+                )
+            else:
+                try:
+                    # 1. Thử gọi API để set webhook
+                    # Hàm này trả về True nếu API Telegram xác nhận "OK"
+                    success = await tg_app.bot.set_webhook(
+                        url=webhook_url,
+                        drop_pending_updates=True,
+                    )
+                    
+                    if success:
+                        # Chỉ log thành công nếu API trả về True
+                        log.info(f"[{INSTANCE_ID}] ✅ [PROD] Webhook đã set thành công: {webhook_url}")
+                    else:
+                        # Trường hợp hiếm gặp: API trả về False mà không văng lỗi
+                        log.error(f"[{INSTANCE_ID}] ❌ [PROD] API set_webhook trả về 'False' mà không có lỗi.")
+
+                except TelegramError as e:
+                    # 2. Bắt lỗi cụ thể từ Telegram (token sai, bot bị chặn, v.v.)
+                    log.error(
+                        f"[{INSTANCE_ID}] ❌ [PROD] SET WEBHOOK THẤT BẠI (TelegramError)!"
+                        f" URL: {webhook_url}"
+                        f" Lỗi: {e}"
+                    )
+                except Exception as e:
+                    # 3. Bắt tất cả các lỗi chung khác (lỗi mạng, DNS, timeout, v.v.)
+                    log.error(
+                        f"[{INSTANCE_ID}] ❌ [PROD] SET WEBHOOK THẤT BẠI (Lỗi chung)!"
+                        f" URL: {webhook_url}"
+                        f" Lỗi: {e}"
+                    )
+                    
+            # Dòng này giữ cho chương trình (hoặc hàm async) tiếp tục chạy
             await asyncio.Event().wait()
 
     asgi_app = WsgiToAsgi(flask_app)
