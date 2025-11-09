@@ -3696,6 +3696,14 @@ async def asgi_wrapper_app(scope, receive, send):
                 # 2. 🚦 MÁY CHỦ ĐÃ SỐNG! BÂY GIỜ MỚI CHẠY TÁC VỤ NỀN
                 log.info("[Lifespan] Startup complete. Server is live. Starting background tasks...")
                 
+                # ==========================================================
+                # 🚀 YÊU CẦU MỚI: Dừng 1 phút
+                # Tạo một khoảng đệm an toàn để Render/UptimeRobot 
+                # health check thành công TRƯỚC KHI các loop nặng chạy.
+                log.info("[Lifespan] Đang chờ 60s để Render ổn định health check...")
+                await asyncio.sleep(60) 
+                # ==========================================================
+
                 # (Lấy toàn bộ các loop từ hàm main() chuyển lên đây)
                 BACKGROUND_TASKS = [
                     MAIN_LOOP.create_task(alert_loop()),
@@ -3851,7 +3859,7 @@ async def main():
     global BOT_ACTIVE, MAIN_LOOP, tg_app
 
     global initial_active
-    
+
     MAIN_LOOP = asyncio.get_running_loop()
     BOT_ACTIVE = get_bot_active()
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu
