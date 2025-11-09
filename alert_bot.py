@@ -102,6 +102,8 @@ if not OPENROUTER_API_KEY:
 
 BOT_ACTIVE = None  # Sẽ được load từ DB trong main()
 
+initial_active = None  # Trạng thái bot lúc khởi động (dùng trong lifespan)
+
 ALERT_STATE = {}
 
 # Thời gian giãn cách giữa 2 lần báo cùng một mốc cho cùng 1 mã (giây)
@@ -3847,6 +3849,9 @@ async def main():
 
     # 🔄 Load trạng thái bảo trì từ DB
     global BOT_ACTIVE, MAIN_LOOP, tg_app
+
+    global initial_active
+    
     MAIN_LOOP = asyncio.get_running_loop()
     BOT_ACTIVE = get_bot_active()
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu
