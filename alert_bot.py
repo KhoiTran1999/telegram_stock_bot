@@ -3554,6 +3554,136 @@ def telegram_webhook():
 
     return "OK", 200
 
+# ==============================================
+# 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
+# Đây là phần code đã sửa lỗi hoàn toàn
+# ==============================================
+
+# 1. Đặt các biến này ở global (ngoài main)
+# để các hàm helper (lifespan, wrapper) có thể truy cập
+wsgi_app = WsgiToAsgi(flask_app)
+
+ENV_MODE = os.getenv("ENV_MODE", "production").lower()
+IS_PRODUCTION = os.getenv("RENDER") == "true" or ENV_MODE == "production"
+
+async def set_telegram_webhook():
+    """
+    Hàm này CHỈ thực hiện VIỆC set/update webhook.
+    Nó sẽ được gọi bởi 'lifespan.startup' SAU KHI server đã mở port.
+    """
+    global tg_app, log, INSTANCE_ID
+
+    webhook_url = None
+    
+    if IS_PRODUCTION:
+        # Chế độ Production: Lấy URL từ Render
+        log.info(f"[{INSTANCE_ID}] [Lifespan] Chế độ PRODUCTION, đang lấy URL từ Render...")
+        webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
+        log.info(f"[{INSTANCE_ID}] [Khôi Trần] check xem đúng được link có /webhook chưa: {webhook_url}")
+        if not webhook_url:
+            host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+            if host:
+                webhook_url = f"https://{host}/webhook"
+    else:
+        # Chế độ Local: Lấy URL từ .env (biến NGROK_URL)
+        log.info(f"[{INSTANCE_ID}] [Lifespan] Chế độ LOCAL, đang lấy URL từ .env (NGROK_URL)...")
+        # Thay vì hardcode URL ngrok, hãy đọc từ file .env
+        webhook_url = os.getenv("NGROK_URL") 
+        if webhook_url and not webhook_url.endswith("/webhook"):
+            webhook_url += "/webhook"
+
+    if not webhook_url:
+        log.error(
+            f"[{INSTANCE_ID}] ⚠️ [Lifespan] KHÔNG THỂ SET WEBHOOK. "
+            "Không tìm thấy RENDER_EXTERNAL_URL (production) hoặc NGROK_URL (local)."
+        )
+        return
+
+    # Thực hiện gọi API set webhook (lấy từ code cũ của bạn)
+    try:
+        success = await tg_app.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True,
+        )
+        if success:
+            log.info(f"[{INSTANCE_ID}] ✅ [Lifespan] Webhook đã set thành công: {webhook_url}")
+        else:
+            log.error(f"[{INSTANCE_ID}] ❌ [Lifespan] API set_webhook trả về 'False'.")
+    except TelegramError as e:
+        log.error(
+            f"[{INSTANCE_ID}] ❌ [Lifespan] SET WEBHOOK THẤT BẠI (TelegramError)!"
+            f" URL: {webhook_url} | Lỗi: {e}"
+        )
+    except Exception as e:
+        log.error(
+            f"[{INSTANCE_ID}] ❌ [Lifespan] SET WEBHOOK THẤT BẠI (Lỗi chung)!"
+            f" URL: {webhook_url} | Lỗi: {e}"
+        )
+
+async def run_telegram_processing():
+    """
+    Khởi chạy và duy trì các tiến trình nội bộ của thư viện python-telegram-bot.
+    (Đây là phần tg_app.start() và logic Polling)
+    """
+    global tg_app, log, INSTANCE_ID, IS_PRODUCTION
+    
+    await tg_app.initialize()
+    await tg_app.start()
+    
+    # Nếu chạy local mà KHÔNG CÓ NGROK_URL -> Chuyển sang POLLING
+    # (Code Polling của bạn đã bị comment, tôi kích hoạt lại nó ở đây)
+    if not IS_PRODUCTION and not os.getenv("NGROK_URL"):
+        log.info(f"[{INSTANCE_ID}] [LOCAL] Không tìm thấy NGROK_URL, "
+                 "chuyển sang chạy Polling (xóa webhook)...")
+        await tg_app.bot.delete_webhook(drop_pending_updates=True)
+        await tg_app.updater.start_polling(drop_pending_updates=True)
+        log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start.")
+    else:
+        log.info(f"[{INSTANCE_ID}] Bot đang chạy ở chế độ Webhook. "
+                 "`run_telegram_processing` đang duy trì tiến trình...")
+        
+    # Giữ cho các task của tg_app (như job_queue) được chạy
+    # Đây là nơi đúng để dùng Event().wait()
+    await asyncio.Event().wait() 
+
+async def asgi_wrapper_app(scope, receive, send):
+    """
+    Ứng dụng ASGI "vỏ bọc" chính.
+    - Xử lý 'lifespan' (startup/shutdown).
+    - Chuyển tiếp 'http' cho Flask.
+    """
+    global wsgi_app, log, tg_app, IS_PRODUCTION
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                # 1. Server đã "mở port", giờ là lúc set webhook
+                log.info("[Lifespan] Server startup. Đang chuẩn bị set webhook...")
+                
+                # Chỉ set webhook nếu chạy Production hoặc Local có NGROK_URL
+                if IS_PRODUCTION or os.getenv("NGROK_URL"):
+                    await set_telegram_webhook() 
+                
+                # 2. Báo cho Hypercorn biết là đã startup xong
+                await send({"type": "lifespan.startup.complete"})
+            
+            elif message["type"] == "lifespan.shutdown":
+                log.info("[Lifespan] Server shutdown. Đang xóa webhook...")
+                try:
+                    # Chỉ tự động xóa webhook khi deploy
+                    if IS_PRODUCTION: 
+                        await tg_app.bot.delete_webhook(drop_pending_updates=True)
+                        log.info("[Lifespan] Đã xóa webhook.")
+                except Exception as e:
+                    log.warning(f"[Lifespan] Lỗi khi xóa webhook: {e}")
+                await send({"type": "lifespan.shutdown.complete"})
+                break
+    
+    elif scope["type"] == "http":
+        # Chuyển tiếp tất cả request web (/, /webhook) cho Flask (WsgiToAsgi)
+        await wsgi_app(scope, receive, send)
+
 
 # Đặt hàm này bên trên hàm main()
 async def run_background_startup_tasks(admin_id: int | None, initial_active: bool, instance_id: str, app: telegram.ext.Application):
@@ -3657,43 +3787,27 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
         log.warning(f"[{instance_id}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
 
 # ==============================================
-# MAIN
+# MAIN (HÀM MAIN MỚI, ĐÃ SỬA LỖI)
 # ==============================================
 async def main():
     log.info(f"[{INSTANCE_ID}] ✅ Starting bot main()...")
-
-    # -----------------------------------------------------------------
-    # 🚀 KIỂM TRA MÔI TRƯỜNG (LOCAL vs PRODUCTION)
-    # -----------------------------------------------------------------
-    ENV_MODE = os.getenv("ENV_MODE", "production").lower()
-    IS_PRODUCTION = os.getenv("RENDER") == "true" or ENV_MODE == "production"
-    
-    if IS_PRODUCTION:
-        log.info(f"[{INSTANCE_ID}] 🚀 Chạy ở chế độ PRODUCTION (Webhook).")
-    else:
-        log.info(f"[{INSTANCE_ID}] 🛠️  Chạy ở chế độ LOCAL (Polling).")
-    # -----------------------------------------------------------------
+    log.info(f"[{INSTANCE_ID}] 🚀 Chế độ IS_PRODUCTION: {IS_PRODUCTION}")
 
     # 🗄️ Khởi tạo DB
     init_db()
 
-    # 🏢 Load danh sách tên doanh nghiệp từ ssi_master_list.csv
+    # 🏢 Load danh sách tên doanh nghiệp
     global COMPANY_KEYWORDS
     COMPANY_KEYWORDS = load_company_keywords_from_csv("ssi_master_list.csv")
 
-    # 🧭 BỎ HÀM ĐỊNH NGHĨA set_bot_commands Ở ĐÂY (đã chuyển vào hàm helper)
-
     # 🔄 Load trạng thái bảo trì từ DB
     global BOT_ACTIVE, MAIN_LOOP, tg_app
-
     MAIN_LOOP = asyncio.get_running_loop()
     BOT_ACTIVE = get_bot_active()
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
-    # ❗️ BỎ KHỐI GỬI THÔNG BÁO ADMIN Ở ĐÂY (đã chuyển vào hàm helper)
-
-    global tg_app
+    # Khởi tạo Application
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -3701,9 +3815,7 @@ async def main():
         .build()
     )
 
-    # ❗️ BỎ LỆNH GỌI set_bot_commands(tg_app) Ở ĐÂY (đã chuyển vào hàm helper)
-
-    #User command handlers
+    # Đăng ký các command handlers (giữ nguyên code của bạn)
     tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
@@ -3723,123 +3835,26 @@ async def main():
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
-    async def run_telegram():
-        await tg_app.initialize()
-        await tg_app.start()
-
-        if IS_PRODUCTION:
-            webhook_url = os.getenv("RENDER_EXTERNAL_URL")
-            if not webhook_url:
-                host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-                if host:
-                    webhook_url = f"https://{host}/webhook"
-
-            if not webhook_url:
-                log.error(
-                    f"[{INSTANCE_ID}] ⚠️ [PROD] KHÔNG THỂ SET WEBHOOK. "
-                    "Chưa cấu hình RENDER_EXTERNAL_URL. Bot sẽ không hoạt động!"
-                )
-            else:
-                try:
-                    # 1. Thử gọi API để set webhook
-                    # Hàm này trả về True nếu API Telegram xác nhận "OK"
-                    success = await tg_app.bot.set_webhook(
-                        url=webhook_url,
-                        drop_pending_updates=True,
-                    )
-                    
-                    if success:
-                        # Chỉ log thành công nếu API trả về True
-                        log.info(f"[{INSTANCE_ID}] ✅ [PROD] Webhook đã set thành công: {webhook_url}")
-                    else:
-                        # Trường hợp hiếm gặp: API trả về False mà không văng lỗi
-                        log.error(f"[{INSTANCE_ID}] ❌ [PROD] API set_webhook trả về 'False' mà không có lỗi.")
-
-                except TelegramError as e:
-                    # 2. Bắt lỗi cụ thể từ Telegram (token sai, bot bị chặn, v.v.)
-                    log.error(
-                        f"[{INSTANCE_ID}] ❌ [PROD] SET WEBHOOK THẤT BẠI (TelegramError)!"
-                        f" URL: {webhook_url}"
-                        f" Lỗi: {e}"
-                    )
-                except Exception as e:
-                    # 3. Bắt tất cả các lỗi chung khác (lỗi mạng, DNS, timeout, v.v.)
-                    log.error(
-                        f"[{INSTANCE_ID}] ❌ [PROD] SET WEBHOOK THẤT BẠI (Lỗi chung)!"
-                        f" URL: {webhook_url}"
-                        f" Lỗi: {e}"
-                    )
-                    
-            # Dòng này giữ cho chương trình (hoặc hàm async) tiếp tục chạy
-            # await asyncio.Event().wait()
-        else:
-            # log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling...")
-            # await tg_app.bot.delete_webhook(drop_pending_updates=True)
-            # await tg_app.updater.start_polling(drop_pending_updates=True)
-            # log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start.")
-            # await asyncio.Event().wait()
-
-            webhook_url = os.getenv("https://elaine-sappiest-ciara.ngrok-free.dev")
-            if not webhook_url:
-                host = os.getenv("https://elaine-sappiest-ciara.ngrok-free.dev")
-                if host:
-                    webhook_url = f"https://{host}/webhook"
-
-            if not webhook_url:
-                log.error(
-                    f"[{INSTANCE_ID}] ⚠️ [PROD] KHÔNG THỂ SET WEBHOOK. "
-                    "Chưa cấu hình RENDER_EXTERNAL_URL. Bot sẽ không hoạt động!"
-                )
-            else:
-                try:
-                    # 1. Thử gọi API để set webhook
-                    # Hàm này trả về True nếu API Telegram xác nhận "OK"
-                    success = await tg_app.bot.set_webhook(
-                        url=webhook_url,
-                        drop_pending_updates=True,
-                    )
-                    
-                    if success:
-                        # Chỉ log thành công nếu API trả về True
-                        log.info(f"[{INSTANCE_ID}] ✅ [PROD] Webhook đã set thành công: {webhook_url}")
-                    else:
-                        # Trường hợp hiếm gặp: API trả về False mà không văng lỗi
-                        log.error(f"[{INSTANCE_ID}] ❌ [PROD] API set_webhook trả về 'False' mà không có lỗi.")
-
-                except TelegramError as e:
-                    # 2. Bắt lỗi cụ thể từ Telegram (token sai, bot bị chặn, v.v.)
-                    log.error(
-                        f"[{INSTANCE_ID}] ❌ [PROD] SET WEBHOOK THẤT BẠI (TelegramError)!"
-                        f" URL: {webhook_url}"
-                        f" Lỗi: {e}"
-                    )
-                except Exception as e:
-                    # 3. Bắt tất cả các lỗi chung khác (lỗi mạng, DNS, timeout, v.v.)
-                    log.error(
-                        f"[{INSTANCE_ID}] ❌ [PROD] SET WEBHOOK THẤT BẠI (Lỗi chung)!"
-                        f" URL: {webhook_url}"
-                        f" Lỗi: {e}"
-                    )
-                    
-            # Dòng này giữ cho chương trình (hoặc hàm async) tiếp tục chạy
-            await asyncio.Event().wait()
-
-    asgi_app = WsgiToAsgi(flask_app)
+    # Cấu hình máy chủ web
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
-    config.lifespan = "off"
+    # config.lifespan = "off" # <-- ĐÃ XÓA DÒNG NÀY để BẬT lifespan
 
     log.info(f"[{INSTANCE_ID}] Cấu hình hoàn tất. Khởi động máy chủ và các tác vụ nền...")
 
-    # Đây là khối gather cuối cùng đã được cập nhật
+    # Chạy tất cả các tác vụ song song
     await asyncio.gather(
-        serve(asgi_app, config),           # 1. ⚡ MỞ PORT (Ưu tiên 1)
-        run_telegram(),                  # 2. Chạy logic Telegram (set webhook)
+        # 1. ⚡ MỞ PORT (chạy app "vỏ bọc" hỗ trợ lifespan)
+        #    Hàm này sẽ gọi set_telegram_webhook() KHI NÀO SẴN SÀNG.
+        serve(asgi_wrapper_app, config),           
         
-        # 3. Chạy các tác vụ khởi động chậm TRONG NỀN
+        # 2. Chạy logic xử lý của Telegram (sẽ tự động chuyển sang Polling nếu cần)
+        run_telegram_processing(),
+        
+        # 3. Chạy các tác vụ khởi động chậm (gửi tin admin, set commands)
         run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app), 
         
-        # 4. Các loop nền của bạn
+        # 4. Các loop nền của bạn (giữ nguyên)
         alert_loop(),
         session_notice_loop(),
         daily_report_loop(),
@@ -3851,6 +3866,9 @@ async def main():
         auto_on_after_delay(initial_active),
     )
 
+if __name__ == "__main__":
+    log.info("🚀 Khởi động bot đa người dùng + Flask keepalive (Render Web Service)...")
+    asyncio.run(main())
 if __name__ == "__main__":
     log.info("🚀 Khởi động bot đa người dùng + Flask keepalive (Render Web Service)...")
     asyncio.run(main())
