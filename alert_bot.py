@@ -3703,7 +3703,7 @@ async def asgi_wrapper_app(scope, receive, send):
                 log.info("[Lifespan] Đang chờ 60s để Render ổn định health check...")
                 await asyncio.sleep(60) 
                 # ==========================================================
-
+ 
                 # (Lấy toàn bộ các loop từ hàm main() chuyển lên đây)
                 BACKGROUND_TASKS = [
                     MAIN_LOOP.create_task(alert_loop()),
