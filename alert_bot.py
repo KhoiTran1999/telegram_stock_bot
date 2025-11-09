@@ -3530,7 +3530,10 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return f"✅ Bot is alive. Instance {INSTANCE_ID}"
-
+@flask_app.route("/health")
+def health_check():
+    # Phản hồi nhanh nhất có thể, chỉ để xác nhận máy chủ đang chạy
+    return "", 200 # Trả về chuỗi rỗng và mã 200 OK
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     global tg_app, MAIN_LOOP
@@ -3585,12 +3588,27 @@ async def set_telegram_webhook():
             if host:
                 webhook_url = f"https://{host}/webhook"
     else:
-        # Chế độ Local: Lấy URL từ .env (biến NGROK_URL)
-        log.info(f"[{INSTANCE_ID}] [Lifespan] Chế độ LOCAL, đang lấy URL từ .env (NGROK_URL)...")
-        # Thay vì hardcode URL ngrok, hãy đọc từ file .env
-        webhook_url = os.getenv("NGROK_URL") 
-        if webhook_url and not webhook_url.endswith("/webhook"):
-            webhook_url += "/webhook"
+        # # Chế độ Local: Lấy URL từ .env (biến NGROK_URL)
+        # log.info(f"[{INSTANCE_ID}] [Lifespan] Chế độ LOCAL, đang lấy URL từ .env (NGROK_URL)...")
+        # # Thay vì hardcode URL ngrok, hãy đọc từ file .env
+        # webhook_url = os.getenv("NGROK_URL") 
+        # if webhook_url and not webhook_url.endswith("/webhook"):
+        #     webhook_url += "/webhook"
+
+        # 🛠️ LOCAL: Dùng polling thủ công để chia sẻ event loop với các loop khác
+        log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling (updater.start_polling)...")
+
+        # Đảm bảo không còn webhook nào đang set
+        await tg_app.bot.delete_webhook(drop_pending_updates=True)
+
+        # 🔄 Bật polling (không block event loop, chỉ start fetcher)
+        await tg_app.updater.start_polling(drop_pending_updates=True)
+
+        log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start, chờ update từ Telegram...")
+
+        return  # Không cần set webhook trong local polling
+
+            # -----------------------------------------------------------------
 
     if not webhook_url:
         log.error(
