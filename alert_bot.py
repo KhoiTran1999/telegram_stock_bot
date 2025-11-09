@@ -3783,7 +3783,7 @@ async def main():
     config.lifespan = "off"
 
     await asyncio.gather(
-        await asyncio.gather(serve(asgi_app, config)), # mở port HTTP cho Render kiểm tra
+        serve(asgi_app, config), # mở port HTTP cho Render kiểm tra
         alert_loop(),           # cảnh báo realtime trong giờ giao dịch
         session_notice_loop(),  # thông báo sắp mở / sắp đóng phiên
         daily_report_loop(),    # 🧠 gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần
