@@ -2118,7 +2118,7 @@ async def news_specialized_loop():
 
                     text = "\n".join(lines)
                     # Gửi plain text để tránh lỗi Markdown
-                    send_msg_to(chat_id, text, parse_mode=None)
+                    send_msg_to(chat_id, text)
                     await asyncio.sleep(0.2)
 
                 # Đánh dấu bài đã xử lý
@@ -2256,7 +2256,7 @@ async def news_macro_loop():
 
                 # ==== Ghép nội dung gửi ====
                 lines = [
-                    "🌏 *Tin vĩ mô mới:*",
+                    f"🌏 *Tin vĩ mô mới:*",
                     title,
                 ]
                 if short_sum:
@@ -2288,7 +2288,7 @@ async def news_macro_loop():
                         continue
 
                     try:
-                        send_msg_to(chat_id, text, parse_mode=None)
+                        send_msg_to(chat_id, text)
                         sent += 1
                         await asyncio.sleep(0.2)
                     except Exception as e:
@@ -3136,7 +3136,7 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for chat_key in all_watch.keys():
         try:
             chat_id = int(chat_key)
-            send_msg_to(chat_id, text, parse_mode="MarkdownV2")  # không escape nữa
+            send_msg_to(chat_id, text)  # không escape nữa
             sent += 1
             await asyncio.sleep(0.1)
         except Exception as e:
@@ -3502,7 +3502,7 @@ async def alert_loop():
                     messages_text = "\n\n".join(messages)
                     # Đặt messages trước, header sau
                     body = messages_text + "\n\n" + header  
-                    send_msg_to(chat_id, body, parse_mode="Markdown")
+                    send_msg_to(chat_id, body)
 
 
 
@@ -3737,10 +3737,17 @@ async def main():
         if IS_PRODUCTION:
             # 🔗 PRODUCTION: Thiết lập webhook URL
             webhook_url = os.getenv("RENDER_EXTERNAL_URL")
-
+            log.warning(
+                    f"[{INSTANCE_ID}] ⚠️ [PROD] Đã chạy qua đây 1! {webhook_url}"
+                )
             # Nếu không set tay, auto lấy từ Render
             if not webhook_url:
                 host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+
+                log.warning(
+                    f"[{INSTANCE_ID}] ⚠️ [PROD] Đã chạy qua đây 2! {host}"
+                )
+
                 if host:
                     webhook_url = f"https://{host}/webhook"
 
