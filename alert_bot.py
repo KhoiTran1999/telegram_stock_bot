@@ -85,6 +85,9 @@ MAIN_LOOP = None
 # ID phiên bản khởi động (dùng để phân biệt log khi chạy nhiều instance)
 INSTANCE_ID = str(uuid.uuid4())[:8]
 
+# 🚀 BIẾN MỚI: Dùng để giữ các tác vụ nền (loops)
+BACKGROUND_TASKS = []
+
 # Log gọn, không bị Render flush trùng
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("bot")
@@ -3672,36 +3675,60 @@ async def asgi_wrapper_app(scope, receive, send):
     """
     global wsgi_app, log, tg_app, IS_PRODUCTION
 
+    # 🚀 BIẾN MỚI: Khai báo để sử dụng
+    global BACKGROUND_TASKS, MAIN_LOOP
+    global ADMIN_ID, initial_active, INSTANCE_ID
+
     if scope["type"] == "lifespan":
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
-                # 1. Server đã "mở port", giờ là lúc set webhook
                 log.info("[Lifespan] Server startup. Đang chuẩn bị set webhook...")
                 
-                # Chỉ set webhook nếu chạy Production hoặc Local có NGROK_URL
                 if IS_PRODUCTION or os.getenv("NGROK_URL"):
                     await set_telegram_webhook() 
                 
-                # 2. Báo cho Hypercorn biết là đã startup xong
+                # 1. Báo cho Hypercorn biết là đã startup xong
                 await send({"type": "lifespan.startup.complete"})
+                
+                # 2. 🚦 MÁY CHỦ ĐÃ SỐNG! BÂY GIỜ MỚI CHẠY TÁC VỤ NỀN
+                log.info("[Lifespan] Startup complete. Server is live. Starting background tasks...")
+                
+                # (Lấy toàn bộ các loop từ hàm main() chuyển lên đây)
+                BACKGROUND_TASKS = [
+                    MAIN_LOOP.create_task(alert_loop()),
+                    MAIN_LOOP.create_task(session_notice_loop()),
+                    MAIN_LOOP.create_task(daily_report_loop()),
+                    MAIN_LOOP.create_task(screener_value_update_loop()),
+                    MAIN_LOOP.create_task(daily_screener_loop()),
+                    MAIN_LOOP.create_task(initial_value_precompute_loop()),
+                    MAIN_LOOP.create_task(news_specialized_loop()),
+                    MAIN_LOOP.create_task(news_macro_loop()),
+                    MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
+                    MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
+                ]
+                log.info(f"[Lifespan] Đã khởi động {len(BACKGROUND_TASKS)} tác vụ nền.")
             
             elif message["type"] == "lifespan.shutdown":
-                log.info("[Lifespan] Server shutdown. Đang xóa webhook...")
+                log.info("[Lifespan] Server shutdown. Cancelling background tasks...")
+                
+                # 3. Dọn dẹp các tác vụ nền khi tắt
+                for task in BACKGROUND_TASKS:
+                    task.cancel()
+                    
+                log.info("[Lifespan] Đang xóa webhook...")
                 try:
-                    # Chỉ tự động xóa webhook khi deploy
                     if IS_PRODUCTION: 
                         await tg_app.bot.delete_webhook(drop_pending_updates=True)
                         log.info("[Lifespan] Đã xóa webhook.")
                 except Exception as e:
                     log.warning(f"[Lifespan] Lỗi khi xóa webhook: {e}")
+                
                 await send({"type": "lifespan.shutdown.complete"})
                 break
     
     elif scope["type"] == "http":
-        # Chuyển tiếp tất cả request web (/, /webhook) cho Flask (WsgiToAsgi)
         await wsgi_app(scope, receive, send)
-
 
 # Đặt hàm này bên trên hàm main()
 async def run_background_startup_tasks(admin_id: int | None, initial_active: bool, instance_id: str, app: telegram.ext.Application):
@@ -3856,32 +3883,16 @@ async def main():
     # Cấu hình máy chủ web
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
-    # config.lifespan = "off" # <-- ĐÃ XÓA DÒNG NÀY để BẬT lifespan
 
     log.info(f"[{INSTANCE_ID}] Cấu hình hoàn tất. Khởi động máy chủ và các tác vụ nền...")
 
     # Chạy tất cả các tác vụ song song
     await asyncio.gather(
-        # 1. ⚡ MỞ PORT (chạy app "vỏ bọc" hỗ trợ lifespan)
-        #    Hàm này sẽ gọi set_telegram_webhook() KHI NÀO SẴN SÀNG.
+        # 1. ⚡ MỞ PORT (Hàm này sẽ tự động gọi logic lifespan ở trên)
         serve(asgi_wrapper_app, config),           
         
         # 2. Chạy logic xử lý của Telegram (sẽ tự động chuyển sang Polling nếu cần)
         run_telegram_processing(),
-        
-        # 3. Chạy các tác vụ khởi động chậm (gửi tin admin, set commands)
-        run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app), 
-        
-        # 4. Các loop nền của bạn (giữ nguyên)
-        alert_loop(),
-        session_notice_loop(),
-        daily_report_loop(),
-        screener_value_update_loop(),
-        daily_screener_loop(),
-        initial_value_precompute_loop(),
-        news_specialized_loop(),
-        news_macro_loop(),
-        auto_on_after_delay(initial_active),
     )
 
 if __name__ == "__main__":
