@@ -3815,13 +3815,13 @@ async def asgi_wrapper_app(scope, receive, send):
                 for task in BACKGROUND_TASKS:
                     task.cancel()
                     
-                log.info("[Lifespan] Đang xóa webhook...")
-                try:
-                    if IS_PRODUCTION: 
-                        await tg_app.bot.delete_webhook(drop_pending_updates=True)
-                        log.info("[Lifespan] Đã xóa webhook.")
-                except Exception as e:
-                    log.warning(f"[Lifespan] Lỗi khi xóa webhook: {e}")
+                # log.info("[Lifespan] Đang xóa webhook...")
+                # try:
+                #     if IS_PRODUCTION: 
+                #         await tg_app.bot.delete_webhook(drop_pending_updates=True)
+                #         log.info("[Lifespan] Đã xóa webhook.")
+                # except Exception as e:
+                #     log.warning(f"[Lifespan] Lỗi khi xóa webhook: {e}")
                 
                 await send({"type": "lifespan.shutdown.complete"})
                 break
