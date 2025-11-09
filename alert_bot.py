@@ -331,6 +331,33 @@ def fetch_rss_entries_for_urls(urls: list[str]) -> list[dict[str, Any]]:
 # ==============================================
 # HÀM TIỆN ÍCH
 # ==============================================
+
+async def send_md(bot: telegram.Bot, chat_id: int, text: str, **kwargs):
+    """
+    Gửi tin nhắn Markdown an toàn (async) bằng bot instance.
+    """
+    try:
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="Markdown",
+            **kwargs,
+        )
+    except BadRequest as e:
+        if "can't parse entities" in str(e).lower():
+            log.warning(f"[Markdown error] {e} | text={text!r}")
+            safe_text = escape_markdown_v2(text) # Bạn đã có hàm này
+            return await bot.send_message(
+                chat_id=chat_id,
+                text=safe_text,
+                parse_mode="Markdown",
+                **kwargs,
+            )
+        else:
+            log.error(f"[Telegram Send Error] chat={chat_id}: {e}")
+    except Exception as e:
+        log.error(f"[Telegram Send Error] chat={chat_id}: {e}")
+
 def load_industry_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, str]:
     """
     Đọc file CSV mapping ngành (crawl từ TOPI) và trả về dict:
@@ -474,17 +501,28 @@ def get_git_deploy_info() -> str | None:
 
     return "\n".join(lines)
 
-def broadcast_to_all_watchers(text: str):
-    """Gửi 1 thông báo tới tất cả user đã từng lưu danh sách theo dõi."""
-    all_watch = get_all_watch()
+async def broadcast_to_all_watchers(text: str):
+    """Gửi 1 thông báo tới tất cả user (phiên bản async)."""
+
+    # ⭐️ Sửa: Chạy DB trong thread
+    all_watch = await asyncio.to_thread(get_all_watch) 
+
     count = 0
+    tasks = []
     for chat_key in all_watch.keys():
         try:
             chat_id = int(chat_key)
-            send_msg_to(chat_id, text)
-            count += 1
+            # ⭐️ Sửa: Dùng hàm send_md mới
+            tasks.append(send_md(tg_app.bot, chat_id, text))
         except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NOTICE] Lỗi gửi cho {chat_key}: {e}")
+            log.warning(f"[{INSTANCE_ID}][NOTICE] Lỗi chuẩn bị gửi cho {chat_key}: {e}")
+
+    # Gửi song song (nhanh hơn)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Đếm số lần gửi thành công
+    count = sum(1 for res in results if not isinstance(res, Exception))
+
     log.info(f"[{INSTANCE_ID}][NOTICE] Đã gửi thông báo tới {count} user.")
 
 
@@ -557,7 +595,7 @@ async def session_notice_loop():
         # Đến giờ thông báo
         try:
             # ⭐️ SỬA LỖI DB/NETWORK: Chạy hàm broadcast (blocking) trong thread
-            await asyncio.to_thread(broadcast_to_all_watchers, spec["text"])
+            await broadcast_to_all_watchers(spec["text"])
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][SESSION {loop_id}] Lỗi khi broadcast: {e}")
 
@@ -2898,6 +2936,8 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     symbol = context.args[0].strip().upper()
 
+    await reply_md(update, f"🔎 Đang kiểm tra mã *{symbol}*, vui lòng đợi...")
+
     if len(symbol) != 3 or not symbol.isalpha():
         await reply_md(update,
             "⚠️ Mã không hợp lệ.\n"
@@ -3058,6 +3098,8 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await reply_md(update,"⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
         return
+    
+    await reply_md(update, f"🔎 vui lòng đợi...")
 
     symbol = context.args[0].upper().strip()
     # ⭐️ SỬA: Chạy CSDL trong thread
@@ -3095,6 +3137,8 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
+    
+    await reply_md(update, f"🔎 vui lòng đợi...")
 
     chat_id = update.effective_chat.id
     # ⭐️ SỬA: Chạy CSDL trong thread
@@ -3132,7 +3176,10 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
         await reply_md(update,"⛔ Chỉ admin mới có quyền dùng lệnh này.")
         return
 
+    await reply_md(update, f"🔎 vui lòng đợi...")
+
     now = datetime.datetime.now(datetime.timezone.utc)
+
 
     if user_id in pending_clear_confirmations:
         confirm_time = pending_clear_confirmations[user_id]
@@ -3185,6 +3232,8 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = text.replace("\\n", "\n")
     text = re.sub(r'([_`\[\]()~>#+\-=|{}.!])', r'\\\1', text)
 
+    await reply_md(update, f"🔎 vui lòng đợi...")
+
     # ⭐️ SỬA: Chạy CSDL trong thread
     all_watch = await asyncio.to_thread(get_all_watch)
     sent = 0
@@ -3216,6 +3265,8 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not all_watch:
         await reply_md(update,"📭 Chưa có user nào lưu danh sách theo dõi.")
         return
+
+    await reply_md(update, f"🔎 vui lòng đợi...")
 
     # (Phần xử lý dict/list bên dưới là an toàn, không I/O)
     symbol_counts = {}
@@ -3292,6 +3343,8 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Ví dụ: /delete_range 2025-03-01 09:00 2025-03-01 10:30"
         )
         return
+    
+    await reply_md(update, f"🔎 vui lòng đợi...")
 
     try:
         # (Phần xử lý thời gian an toàn, không I/O)
@@ -3348,6 +3401,8 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+
+    await reply_md(update, f"🔎 vui lòng đợi...")
     
     # (Phần xử lý cooldown an toàn, không I/O)
     now = datetime.datetime.now(pytz.timezone(TIMEZONE))
@@ -3550,8 +3605,7 @@ async def alert_loop():
                     # Đặt messages trước, header sau
                     body = messages_text + "\n\n" + header  
                     
-                    # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
-                    await asyncio.to_thread(send_msg_to, chat_id, body)
+                    await send_md(tg_app.bot, chat_id, body)
 
 
 
