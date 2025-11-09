@@ -520,6 +520,8 @@ async def session_notice_loop():
     - Sắp mở phiên sáng / chiều
     - Sắp đóng phiên sáng / chiều
     Chạy song song với alert_loop, không ảnh hưởng gì tới lệnh Telegram.
+    
+    (ĐÃ SỬA LỖI BLOCKING I/O)
     """
     
     vn_tz = pytz.timezone(TIMEZONE)
@@ -554,7 +556,8 @@ async def session_notice_loop():
 
         # Đến giờ thông báo
         try:
-            broadcast_to_all_watchers(spec["text"])
+            # ⭐️ SỬA LỖI DB/NETWORK: Chạy hàm broadcast (blocking) trong thread
+            await asyncio.to_thread(broadcast_to_all_watchers, spec["text"])
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][SESSION {loop_id}] Lỗi khi broadcast: {e}")
 
@@ -992,6 +995,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Phản hồi khi người dùng gõ văn bản tự do hoặc lệnh không tồn tại.
     (Đã gộp logic của _collector vào đây)
+    (ĐÃ SỬA LỖI BLOCKING I/O)
     """
     if not update.message or not update.message.text:
         return
@@ -1001,9 +1005,11 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # === LOGIC TỪ _collector ĐÃ GỘP VÀO ĐÂY ===
     # Tự động lưu chat_id vào DB nếu chưa có
     try:
-        lst = get_watch_list_for_chat(chat_id)
+        # ⭐️ SỬA: Chạy CSDL trong thread
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
         if lst is None:
-            save_watch_list_for_chat(chat_id, [])
+            # ⭐️ SỬA: Chạy CSDL trong thread
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
     except Exception as e:
         log.warning(f"Lỗi khi auto-save chat_id {chat_id} trong unknown_message: {e}")
     # === KẾT THÚC LOGIC GỘP ===
@@ -1011,8 +1017,11 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     
     try:
+        # ⭐️ SỬA: Chạy CSDL trong thread
         # Log lại hành vi này (tận dụng hàm bạn đã có)
-        log_command_usage(chat_id, f"unknown: {user_text[:50]}") # Cắt ngắn text để an toàn
+        await asyncio.to_thread(
+            log_command_usage, chat_id, f"unknown: {user_text[:50]}", ADMIN_ID
+        )
     except Exception as e:
         log.warning(f"Không thể log 'unknown' command: {e}")
 
@@ -1655,6 +1664,8 @@ async def daily_report_loop():
     """
     Gửi báo cáo danh mục cho từng user vào 09:00 sáng Chủ Nhật hằng tuần
     (dùng chung cache với /report, có retry nếu lỗi LLM).
+    
+    (ĐÃ SỬA LỖI BLOCKING I/O)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -1694,7 +1705,9 @@ async def daily_report_loop():
 
         try:
             log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bắt đầu gửi báo cáo tuần")
-            all_watch = get_all_watch()
+            
+            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+            all_watch = await asyncio.to_thread(get_all_watch)
 
             if not all_watch:
                 log.info(
@@ -1733,7 +1746,10 @@ async def daily_report_loop():
                 if cache_key in REPORT_CACHE:
                     cached_text, cached_time = REPORT_CACHE[cache_key]
                     if (now - cached_time).total_seconds() < 12 * 3600:
-                        send_msg_to(chat_id, cached_text)
+                        
+                        # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
+                        await asyncio.to_thread(send_msg_to, chat_id, cached_text)
+                        
                         log.info(
                             f"[{INSTANCE_ID}][WEEKLY] Cache hit cho {chat_id} ({cache_key})"
                         )
@@ -1741,7 +1757,7 @@ async def daily_report_loop():
                         sent_count += 1
                         continue
 
-                # 🧩 Gọi AI (có retry)
+                # 🧩 Gọi AI (có retry - OK, non-blocking)
                 async def fetch_report_with_retry():
                     retry = 0
                     while retry < 3:
@@ -1763,7 +1779,10 @@ async def daily_report_loop():
                 try:
                     text = await fetch_report_with_retry()
                     REPORT_CACHE[cache_key] = (text, now)
-                    send_msg_to(chat_id, text)
+                    
+                    # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
+                    await asyncio.to_thread(send_msg_to, chat_id, text)
+                    
                     log.info(
                         f"[{INSTANCE_ID}][WEEKLY] Đã gửi báo cáo tuần cho {chat_id}"
                     )
@@ -1787,6 +1806,8 @@ async def daily_report_loop():
 async def screener_value_update_loop():
     """
     Chạy precompute_value_data() vào 00:00 (giờ VN) các ngày Thứ 2–Thứ 6.
+    
+    (ĐÃ SỬA LỖI BLOCKING I/O)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -1830,7 +1851,10 @@ async def screener_value_update_loop():
 
         try:
             log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Bắt đầu chạy precompute_value_data() theo lịch.")
+            
+            # ⭐️ SỬA LỖI BLOCKING: Chạy hàm precompute (blocking) trong thread
             await asyncio.to_thread(precompute_value_data)
+            
         except Exception:
             log.exception(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi chạy precompute_value_data() theo lịch.")
             # tránh spam lỗi, nghỉ 1h rồi tính lịch mới
@@ -1841,12 +1865,18 @@ async def initial_value_precompute_loop():
     Chạy 1 lần sau khi bot khởi động:
     - Đợi vài giây cho service & webhook mở port xong
     - Kiểm tra DB, nếu chưa có dữ liệu screener Value thì crawl lần đầu
+    
+    (ĐÃ SỬA LỖI BLOCKING I/O)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 1
 
+    # Đợi 20s cho Hypercorn/Flask & Telegram webhook ổn định
+    await asyncio.sleep(20)
+
     try:
-        current_count = get_stock_value_cache_count()
+        # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+        current_count = await asyncio.to_thread(get_stock_value_cache_count)
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi kiểm tra stock_value_cache: {e}")
         current_count = 0
@@ -1858,6 +1888,7 @@ async def initial_value_precompute_loop():
             f"bắt đầu precompute_value_data() lần đầu (background) lúc {now.strftime('%Y-%m-%d %H:%M:%S')}."
         )
         try:
+            # ⭐️ SỬA LỖI BLOCKING: Chạy hàm precompute (blocking) trong thread
             await asyncio.to_thread(precompute_value_data)
         except Exception:
             log.exception(
@@ -1875,6 +1906,8 @@ async def initial_value_precompute_loop():
 async def daily_screener_loop():
     """
     Gửi báo cáo screener value cho TẤT CẢ user vào 09:00 sáng T2-T6.
+    
+    (ĐÃ SỬA LỖI BLOCKING I/O)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -1907,10 +1940,10 @@ async def daily_screener_loop():
         try:
             log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu chạy compute_value_screener() lúc 09:00.")
             
-            # 1. Tính toán (chạy trong thread để không block bot)
+            # 1. Tính toán (OK, đã chạy non-blocking)
             result = await asyncio.to_thread(compute_value_screener)
             
-            # 2. Format
+            # 2. Format (OK, non-blocking)
             text = format_screener_report_text(result)
             
             if not text:
@@ -1919,7 +1952,10 @@ async def daily_screener_loop():
 
             # 3. Gửi cho tất cả user
             log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu broadcast báo cáo screener...")
-            broadcast_to_all_watchers(text)
+            
+            # ⭐️ SỬA LỖI DB/NETWORK: Chạy hàm broadcast (blocking) trong thread
+            await asyncio.to_thread(broadcast_to_all_watchers, text)
+            
             log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Hoàn tất broadcast.")
 
         except Exception as e:
@@ -2463,17 +2499,21 @@ async def auto_on_after_delay(initial_active: bool):
 # COMMAND HANDLERS
 # ==============================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
     
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/start", ADMIN_ID)   # 🆕 ghi log
+    
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/start", ADMIN_ID)
 
-    # ✅ Chỉ tạo mới nếu user chưa có record
-    lst = get_watch_list_for_chat(chat_id)
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
     if lst is None:
-        save_watch_list_for_chat(chat_id, [])
+        # ⭐️ SỬA: Chạy CSDL trong thread
+        await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
 
     await reply_md(update,
     "╔════════════════════════════════╗\n"
@@ -2496,9 +2536,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "🚀 Bắt đầu theo dõi bằng lệnh `/add` ngay hôm nay!"
     )
 
-
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bật bot (chỉ admin)."""
+    """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
     global BOT_ACTIVE
 
     if ADMIN_ID is None:
@@ -2509,7 +2548,8 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     BOT_ACTIVE = True
-    set_bot_active(True)   # 🔄 Lưu trạng thái vào DB
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(set_bot_active, True)
 
     msg = (
     "✅ *Hệ thống đã được kích hoạt trở lại.*\n\n"
@@ -2522,7 +2562,7 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tắt bot (chỉ admin)."""
+    """Tắt bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
     global BOT_ACTIVE
 
     if ADMIN_ID is None:
@@ -2533,7 +2573,8 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     BOT_ACTIVE = False
-    set_bot_active(False)  # 🔄 Lưu trạng thái vào DB
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(set_bot_active, False)
 
     msg = (
         "🛠️ *Hệ thống đã chuyển sang chế độ bảo trì.*\n\n"
@@ -2545,7 +2586,7 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_md(update, msg)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hiển thị trạng thái bot hiện tại (admin only)."""
+    """Hiển thị trạng thái bot hiện tại (admin only). (ĐÃ SỬA LỖI BLOCKING I/O)"""
     if ADMIN_ID is None:
         await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
@@ -2553,24 +2594,26 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update,"⛔ Không có quyền.")
         return
 
-    current_state = get_bot_active()
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    current_state = await asyncio.to_thread(get_bot_active)
+    
     status = "🟢 Đang *hoạt động bình thường*" if current_state else "🔴 Đang *bảo trì*"
     await reply_md(update,
         f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)"
     )
 
 async def cmd_news_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /news_on – bật nhận tất cả tin tức (vĩ mô + chuyên ngành) cho user hiện tại.
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/news_on", ADMIN_ID)
-
-    set_news_pref(chat_id, enable_specialized=True, enable_macro=True)
+    
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/news_on", ADMIN_ID)
+    await asyncio.to_thread(set_news_pref, chat_id, enable_specialized=True, enable_macro=True)
+    
     await reply_md(
         update,
         "🔔 Bạn đã BẬT nhận tin tức:\n"
@@ -2581,17 +2624,17 @@ async def cmd_news_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_news_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /news_off – tắt toàn bộ tin tức (vĩ mô + chuyên ngành) cho user hiện tại.
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/news_off", ADMIN_ID)
+    
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/news_off", ADMIN_ID)
+    await asyncio.to_thread(set_news_pref, chat_id, enable_specialized=False, enable_macro=False)
 
-    set_news_pref(chat_id, enable_specialized=False, enable_macro=False)
     await reply_md(
         update,
         "🔕 Bạn đã TẮT nhận mọi loại tin tức (vĩ mô & chuyên ngành).\n\n"
@@ -2600,15 +2643,14 @@ async def cmd_news_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_news_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /news_status – xem trạng thái nhận tin tức hiện tại.
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    pref = get_news_pref(chat_id)
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    pref = await asyncio.to_thread(get_news_pref, chat_id)
 
     macro = "Bật" if pref["enable_macro"] else "Tắt"
     spec = "Bật" if pref["enable_specialized"] else "Tắt"
@@ -2622,13 +2664,9 @@ async def cmd_news_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /news_test_macro – test nhanh việc đọc RSS macro & hiển thị.
-    Nên dùng cho admin để debug.
-    """
+    """ (HÀM NÀY ĐÃ AN TOÀN) """
     chat_id = update.effective_chat.id
 
-    # Giới hạn chỉ admin (nếu muốn)
     if chat_id != ADMIN_ID:
         await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
         return
@@ -2636,6 +2674,7 @@ async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE
     await reply_md(update, "⏱ Đang đọc RSS macro, đợi xíu nhé...")
 
     try:
+        # (OK: Hàm này đã được bọc `to_thread` trong code gốc)
         entries = await asyncio.to_thread(
             fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
         )
@@ -2686,33 +2725,25 @@ async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE
         await asyncio.sleep(0.3)
 
 async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /news_test_specialized – test nhanh việc quét tin chuyên ngành theo symbol.
-    - Nếu truyền argument: /news_test_specialized HPG SSI
-        → test với các mã đó.
-    - Nếu không truyền argument:
-        → lấy danh mục (watchlist) của chính user (thường là admin) để test.
-    Chỉ nên dùng cho admin để debug.
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     chat_id = update.effective_chat.id
 
-    # Giới hạn cho admin (nếu bạn muốn mở cho ai cũng xài thì bỏ if này)
     if chat_id != ADMIN_ID:
         await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
         return
 
-    log_command_usage(chat_id, "/news_test_specialized", ADMIN_ID)
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/news_test_specialized", ADMIN_ID)
 
     # 1) Lấy danh sách symbol để test
     args = context.args or []
     symbols_raw: list[str] = []
 
     if args:
-        # Dùng symbol user truyền vào
         symbols_raw = args
     else:
-        # Không truyền arg: dùng danh mục của chính user
-        watch = get_watch_list_for_chat(chat_id) or []
+        # ⭐️ SỬA: Chạy CSDL trong thread
+        watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
         symbols_raw = watch
 
     symbols = sorted({s.strip().upper() for s in symbols_raw if s.strip()})
@@ -2740,6 +2771,7 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
         all_specialized_urls.extend(urls)
 
     try:
+        # (OK: Hàm này đã được bọc `to_thread` trong code gốc)
         entries = await asyncio.to_thread(
             fetch_rss_entries_for_urls, all_specialized_urls
         )
@@ -2751,6 +2783,8 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
         await reply_md(update, "❌ Không đọc được bài nào từ RSS chuyên ngành.")
         return
 
+    # (Phần còn lại của hàm này không có I/O nên an toàn)
+    
     # 3) Chuẩn bị pattern cho từng symbol dùng COMPANY_KEYWORDS
     patterns: dict[str, re.Pattern] = {}
     for sym in symbols:
@@ -2773,10 +2807,7 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
     for it in entries:
         title = it["title"] or ""
         raw_summary = it.get("summary") or ""
-        link = it["link"] or ""
-        source = it.get("source") or ""
-        pub_dt = it.get("published")
-
+        
         decoded_summary = clean_html_text(raw_summary)
         text_for_match = (title + " " + decoded_summary)
 
@@ -2791,7 +2822,6 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
         if hit_syms:
             matched_items.append((it, sorted(set(hit_syms))))
 
-        # Giới hạn, tránh spam – lấy tối đa 5 bài match
         if len(matched_items) >= 5:
             break
 
@@ -2849,23 +2879,15 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
         await asyncio.sleep(0.3)
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /add <MÃ>
-
-    ✅ Yêu cầu:
-    - Mã phải là 3 chữ cái (A–Z)
-    - Không cho add chỉ số như VNINDEX, VN30,...
-    - Chỉ add nếu có dữ liệu thực
-    - Sau khi add: tóm tắt thông tin + hiển thị danh sách hiện tại
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/add", ADMIN_ID)  # ghi log (bỏ qua admin trong hàm log)
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID)
 
-    # 1️⃣ Kiểm tra tham số
     if not context.args:
         await reply_md(update,
             "⚠️ Cách dùng: /add <MÃ>\n"
@@ -2876,7 +2898,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     symbol = context.args[0].strip().upper()
 
-    # 2️⃣ Kiểm tra định dạng mã: đúng 3 chữ cái A–Z
     if len(symbol) != 3 or not symbol.isalpha():
         await reply_md(update,
             "⚠️ Mã không hợp lệ.\n"
@@ -2885,10 +2906,15 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 3️⃣ Gọi dữ liệu realtime duy nhất 1 lần
-    try:
+    # ⭐️ SỬA: Bọc các lệnh network blocking vào hàm riêng
+    def _fetch_price_board(sym):
+        # Hàm này là blocking
         trading = Trading(source="VCI")
-        df = trading.price_board([symbol])
+        return trading.price_board([sym])
+
+    try:
+        # ⭐️ SỬA: Chạy Network I/O trong thread
+        df = await asyncio.to_thread(_fetch_price_board, symbol)
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi gọi price_board cho {symbol}: {e}")
         await reply_md(update,
@@ -2896,7 +2922,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Không có dữ liệu -> xem như mã không hợp lệ / không giao dịch
     if df is None or len(df) == 0:
         await reply_md(update,
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
@@ -2907,7 +2932,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     row = df.iloc[0]
 
-    # Hàm chuẩn hoá giá trị về float / int nếu được
+    # (Hàm norm và logic lấy giá an toàn, không I/O)
     def norm(x):
         if x is None:
             return None
@@ -2922,15 +2947,12 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return float(x)
         except Exception:
             return None
-
-    # Lấy các field chính từ price_board
+            
     price = None
     pct = None
     change_abs = None
     volume = None
     exchange = None
-
-    # Tùy cấu trúc MultiIndex của vnstock, ta cố lấy các cột cần thiết
     try:
         price = norm(row.get(("match", "match_price"), None))
     except Exception:
@@ -2952,7 +2974,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         exchange = None
 
-    # 4️⃣ Trường hợp giá = 0 (thường là trước giờ giao dịch)
     if price is None:
         await reply_md(update,
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
@@ -2970,10 +2991,9 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 5️⃣ Lấy danh sách hiện tại
-    lst = get_watch_list_for_chat(chat_id) or []
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
 
-    # Nếu đã tồn tại: báo + show luôn list
     if symbol in lst:
         symbols_text = ", ".join(lst) if lst else "—"
         msg = (
@@ -2984,18 +3004,16 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, msg)
         return
 
-    # 6️⃣ Thêm mã mới vào danh sách
     lst.append(symbol)
-    save_watch_list_for_chat(chat_id, lst)
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
 
-    # Chuẩn bị đoạn danh sách hiện tại để ghép thêm vào message
     symbols_text = ", ".join(lst)
     watchlist_section = (
         "\n\n📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
         f"{symbols_text}"
     )
 
-    # 7️⃣ Tóm tắt thông tin cổ phiếu + danh sách cuối cùng
     try:
         change_sign = "+" if (pct is not None and pct >= 0) else ""
         pct_text = f"{change_sign}{pct:.2f}%" if pct is not None else "—"
@@ -3028,30 +3046,27 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update,fallback_msg)
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /remove <MÃ>
-
-    - Nếu mã có trong danh sách: xoá và hiển thị lại danh sách còn lại.
-    - Nếu mã không có: báo lỗi nhẹ + gợi ý dùng /list.
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/remove", ADMIN_ID)   # bỏ qua admin trong thống kê
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/remove", ADMIN_ID)
 
-    # Không truyền mã -> hướng dẫn
     if not context.args:
         await reply_md(update,"⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
         return
 
     symbol = context.args[0].upper().strip()
-    lst = get_watch_list_for_chat(chat_id) or []
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
 
     if symbol in lst:
         lst.remove(symbol)
-        save_watch_list_for_chat(chat_id, lst)
+        # ⭐️ SỬA: Chạy CSDL trong thread
+        await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
 
         if lst:
             symbols_text = ", ".join(lst)
@@ -3076,14 +3091,17 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    log_command_usage(chat_id, "/list", ADMIN_ID)   # ghi log nhưng bỏ qua admin
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/list", ADMIN_ID)
 
-    lst = get_watch_list_for_chat(chat_id) or []
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
 
     if not lst:
         await reply_md(update,
@@ -3092,24 +3110,19 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Format danh sách cho đẹp
     symbols_text = ", ".join(lst)
-
     msg = (
         "📋 *Danh sách mã bạn đang theo dõi:*\n"
         f"{symbols_text}\n\n"
         "Bạn có thể dùng /remove <MÃ> để xoá một mã khỏi danh sách."
     )
-
     await reply_md(update, msg)
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /screener_value_clear – Yêu cầu xác nhận trước khi XOÁ BẢNG cache Value.
-    """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if ADMIN_ID is None:
         await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
@@ -3128,14 +3141,16 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
 
             before_count = 0
             try:
-                before_count = get_stock_value_cache_count()
+                # ⭐️ SỬA: Chạy CSDL trong thread
+                before_count = await asyncio.to_thread(get_stock_value_cache_count)
             except Exception:
-                pass # Bảng có thể đã bị lỗi, cứ cho qua
+                pass 
 
-            clear_stock_value_cache() # ⬅️ Sẽ gọi hàm DROP TABLE mới
+            # ⭐️ SỬA: Chạy CSDL trong thread
+            await asyncio.to_thread(clear_stock_value_cache)
             
-            # Sau khi DROP, count chắc chắn là 0
-            after = get_stock_value_cache_count()
+            # ⭐️ SỬA: Chạy CSDL trong thread
+            after = await asyncio.to_thread(get_stock_value_cache_count)
 
             msg = (
                 f"🧹 Đã **XOÁ HOÀN TOÀN BẢNG** (DROP TABLE) `stock_value_cache`.\n"
@@ -3156,6 +3171,7 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
     )
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await reply_md(update,"⛔ Chỉ admin mới có quyền dùng lệnh này.")
@@ -3165,29 +3181,28 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update,"❗ Vui lòng nhập nội dung thông báo sau lệnh /announce.")
         return
 
-    # Lấy nội dung announce từ admin
     text = " ".join(context.args)
-    text = text.replace("\\n", "\n")  # chỉ giữ lại xuống dòng thôi
-    # Escape các ký tự đặc biệt MarkdownV2 ngoại trừ * và \n
+    text = text.replace("\\n", "\n")
     text = re.sub(r'([_`\[\]()~>#+\-=|{}.!])', r'\\\1', text)
 
-    # Gửi cho tất cả user
-    all_watch = get_all_watch()
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    all_watch = await asyncio.to_thread(get_all_watch)
     sent = 0
 
     for chat_key in all_watch.keys():
         try:
             chat_id = int(chat_key)
-            send_msg_to(chat_id, text)  # không escape nữa
+            # ⭐️ SỬA: Chạy Network I/O trong thread
+            await asyncio.to_thread(send_msg_to, chat_id, text)
             sent += 1
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1) # (OK, non-blocking)
         except Exception as e:
             log.warning(f"Lỗi gửi announce tới {chat_key}: {e}")
 
     await reply_md(update, f"✅ Đã gửi thông báo tới *{sent}* người dùng.")
 
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Chỉ cho admin dùng
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if ADMIN_ID is None:
         await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
@@ -3196,41 +3211,37 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update,"⛔ Không có quyền.")
         return
 
-    all_watch = get_all_watch()
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    all_watch = await asyncio.to_thread(get_all_watch)
     if not all_watch:
         await reply_md(update,"📭 Chưa có user nào lưu danh sách theo dõi.")
         return
 
-    # Thống kê symbol -> số user đang theo dõi
+    # (Phần xử lý dict/list bên dưới là an toàn, không I/O)
     symbol_counts = {}
     detail_lines = []
-
     for chat_key, block in all_watch.items():
         lst = block.get("list", []) or []
-        # thống kê theo mã
         for sym in lst:
             symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
-
-        # chi tiết theo từng user
         if lst:
             detail_lines.append(f"- {chat_key}: {', '.join(lst)}")
         else:
             detail_lines.append(f"- {chat_key}: (trống)")
 
-    # Phần thống kê theo mã
     stats_lines = []
     for sym, cnt in sorted(symbol_counts.items()):
         stats_lines.append(f"{sym}: {cnt} user")
 
-    cmd_stats = get_command_stats()
-
-    # 👇 DÒNG NÀY ĐỂ LỌC BỎ "unknown:"
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    cmd_stats = await asyncio.to_thread(get_command_stats)
+    
     cmd_stats = [s for s in cmd_stats if not s["command"].startswith("unknown:")]
 
     if cmd_stats:
         cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
         for row in cmd_stats:
-            cmd_name = escape_markdown_v2(row["command"])  # /screener_value_clear, /start, ...
+            cmd_name = escape_markdown_v2(row["command"])
             day = escape_markdown_v2(row["day"])
             month = escape_markdown_v2(row["month"])
             total = escape_markdown_v2(row["total"])
@@ -3240,7 +3251,6 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cmd_summary += "\n"
     else:
         cmd_summary = "📊 *Chưa có dữ liệu lệnh được sử dụng.*\n\n"
-
 
     header = (
         cmd_summary +
@@ -3252,7 +3262,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + "\n\n📌 *Chi tiết theo từng user (chat-id):*"
     )
 
-    # Ghép text và tự chia nhỏ nếu quá dài
+    # (Phần xử lý text an toàn, không I/O)
     max_len = 3500
     parts = []
     current = header
@@ -3269,7 +3279,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xoá các tin nhắn do bot gửi trong khoảng thời gian chỉ định."""
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await reply_md(update,"⛔ Chỉ admin mới có quyền xoá tin nhắn.")
@@ -3281,47 +3291,46 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❗ Cú pháp: /delete_range <từ ngày> <giờ> <đến ngày> <giờ>\n"
             "Ví dụ: /delete_range 2025-03-01 09:00 2025-03-01 10:30"
         )
-
         return
 
     try:
+        # (Phần xử lý thời gian an toàn, không I/O)
         vn_tz = pytz.timezone(TIMEZONE)
         start_str = f"{args[0]} {args[1]}"
         end_str = f"{args[2]} {args[3]}"
         start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
         end_time = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
 
-        records = get_bot_messages_in_range(start_time, end_time)
+        # ⭐️ SỬA: Chạy CSDL trong thread
+        records = await asyncio.to_thread(get_bot_messages_in_range, start_time, end_time)
         if not records:
             await reply_md(update,"📭 Không có tin nhắn nào trong khoảng thời gian này.")
             return
 
         deleted = 0
+        
+        # ⭐️ SỬA: Bọc network I/O trong hàm riêng
+        def _delete_message(chat_id, msg_id):
+            # Hàm này là blocking
+            url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
+            params = {"chat_id": chat_id, "message_id": msg_id}
+            requests.get(url, params=params, timeout=10)
+
         for chat_id, msg_id in records:
             try:
-                url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
-                params = {"chat_id": chat_id, "message_id": msg_id}
-                requests.get(url, params=params, timeout=10)
+                # ⭐️ SỬA: Chạy Network I/O trong thread
+                await asyncio.to_thread(_delete_message, chat_id, msg_id)
                 deleted += 1
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1) # (OK, non-blocking)
             except Exception as e:
                 log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
 
-        delete_bot_messages_in_range(start_time, end_time)
+        # ⭐️ SỬA: Chạy CSDL trong thread
+        await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
         await reply_md(update,f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
 
     except Exception as e:
         await reply_md(update,f"⚠️ Lỗi xử lý: {e}")
-
-
-
-async def _collector(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tự động lưu chat_id vào DB nếu chưa có."""
-    if update and update.effective_chat:
-        chat_id = update.effective_chat.id
-        lst = get_watch_list_for_chat(chat_id)
-        if lst is None:
-            save_watch_list_for_chat(chat_id, [])
 
 # ==============================================
 # COMMAND: /report (CÓ CACHE + COOLDOWN + RETRY)
@@ -3330,7 +3339,7 @@ REPORT_CACHE = {}
 REPORT_COOLDOWN = {}  # {chat_id: last_time}
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gửi báo cáo danh mục ngay lập tức cho user (có cache & cooldown)."""
+    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
@@ -3339,11 +3348,10 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
-
-    # Cooldown chống spam: mỗi user chỉ được dùng /report 1 lần / ngày
+    
+    # (Phần xử lý cooldown an toàn, không I/O)
     now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-    COOLDOWN_SECONDS = 24 * 3600  # 24 giờ
-
+    COOLDOWN_SECONDS = 24 * 3600
     last_time = REPORT_COOLDOWN.get(chat_id)
     if last_time and (now - last_time).total_seconds() < COOLDOWN_SECONDS:
         remaining = int(COOLDOWN_SECONDS - (now - last_time).total_seconds())
@@ -3355,37 +3363,37 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-
     REPORT_COOLDOWN[chat_id] = now
-    log_command_usage(chat_id, "/report", ADMIN_ID)   # Ghi log
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
 
-    # Lấy danh mục
-    watch = get_watch_list_for_chat(chat_id)
+    # ⭐️ SỬA: Chạy CSDL trong thread
+    watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
     symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
 
     if not symbols:
         await reply_md(update,"📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
         return
 
-    # Tạo key cache
     cache_key = "-".join(sorted(symbols))
-
     await reply_md(update,"⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi vài giây...")
 
-    # Dùng cache nếu có
+    # (Phần xử lý cache an toàn, không I/O)
     if cache_key in REPORT_CACHE:
         log.info(f"[{INSTANCE_ID}] /report cache hit for {chat_id} ({cache_key})")
         cached_text, cached_time = REPORT_CACHE[cache_key]
-        # Nếu cache dưới 12 tiếng thì dùng lại
         if (now - cached_time).total_seconds() < 12 * 3600:
             await reply_md(update,cached_text)
             return
 
-    # Gọi OpenRouter (có retry)
+    # (OK: Hàm fetch_report_with_retry đã an toàn, 
+    #  vì nó gọi call_chatgpt_for_report, 
+    #  mà call_chatgpt_for_report đã được bọc `to_thread` bên trong)
     async def fetch_report_with_retry():
         retry = 0
         while retry < 3:
             start = time.time()
+            # (OK: call_chatgpt_for_report là blocking, nhưng đã được bọc to_thread)
             text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
             duration = time.time() - start
             log.info(f"[{INSTANCE_ID}] /report round {retry+1} done in {duration:.2f}s")
@@ -3397,18 +3405,13 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return text
 
     text = await fetch_report_with_retry()
-
-    # Lưu cache
     REPORT_CACHE[cache_key] = (text, now)
 
-    # Gửi báo cáo
     try:
         await reply_md(update,text)
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] Lỗi gửi báo cáo /report cho {chat_id}: {e}")
-        # Gửi fallback rút gọn nếu lỗi parse Markdown
         await reply_md(update,"📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.")
-
 
 # ==============================================
 # VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL)
@@ -3442,7 +3445,8 @@ async def alert_loop():
         try:
             log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert (có cache)")
 
-            all_watch = get_all_watch()
+            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+            all_watch = await asyncio.to_thread(get_all_watch)
             all_state = get_state_for_all()
 
             # 🧩 1️⃣ Gom tất cả symbol cần theo dõi
@@ -3459,7 +3463,7 @@ async def alert_loop():
             # 🧩 2️⃣ Cache dữ liệu quote cho từng symbol
             quote_cache = {}
             for sym in all_symbols:
-                # Chạy hàm get_quote (blocking) trong một thread riêng
+                # (ĐÃ SỬA Ở LẦN TRƯỚC - OK)
                 data = await asyncio.to_thread(get_quote, sym)
                 if data:
                     quote_cache[sym] = data
@@ -3545,7 +3549,9 @@ async def alert_loop():
                     messages_text = "\n\n".join(messages)
                     # Đặt messages trước, header sau
                     body = messages_text + "\n\n" + header  
-                    send_msg_to(chat_id, body)
+                    
+                    # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
+                    await asyncio.to_thread(send_msg_to, chat_id, body)
 
 
 
