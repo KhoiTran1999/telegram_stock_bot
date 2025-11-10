@@ -3957,12 +3957,11 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, part)
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
-# COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await reply_md(update,"⛔ Chỉ admin mới có quyền xoá tin nhắn.")
+        await reply_md(update, "⛔ Chỉ admin mới có quyền xoá tin nhắn.")
         return
 
     args = context.args
@@ -3992,30 +3991,34 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ✅ Trường hợp có đủ 4 tham số: giữ nguyên logic xoá như hiện tại
-    await reply_md(update, f"🔎 vui lòng đợi...")
+    await reply_md(update, "🔎 vui lòng đợi...")
 
     try:
         vn_tz = pytz.timezone(TIMEZONE)
         start_str = f"{args[0]} {args[1]}"
-        end_str = f"{args[2]} {args[3]}"
+        end_str   = f"{args[2]} {args[3]}"
         start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
-        end_time = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
+        end_time   = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
 
-        # ⭐️ SỬA: Chạy CSDL trong thread
+        # ⭐️ Chạy truy vấn CSDL trong thread
         records = await asyncio.to_thread(get_bot_messages_in_range, start_time, end_time)
         if not records:
-            await reply_md(update,"📭 Không có tin nhắn nào trong khoảng thời gian này.")
+            await reply_md(update, "📭 Không có tin nhắn nào trong khoảng thời gian này.")
             return
 
         deleted = 0
 
-        # ⭐️ Bọc network I/O trong hàm riêng
-        async def _delete_message(chat_id, msg_id):
+        # ⭐️ Hàm sync để dùng với to_thread
+        def _delete_message(chat_id, msg_id):
             url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
             params = {"chat_id": chat_id, "message_id": msg_id}
-            await asyncio.to_thread(requests.get, url, params=params, timeout=10)
+            try:
+                requests.get(url, params=params, timeout=10)
+            except Exception as e:
+                log.warning(f"Lỗi gọi deleteMessage cho {msg_id} trong chat {chat_id}: {e}")
 
-        for chat_id, msg_id in records:
+        # ✅ get_bot_messages_in_range trả về (chat_id, message_id, sent_at)
+        for chat_id, msg_id, _sent_at in records:
             try:
                 await asyncio.to_thread(_delete_message, chat_id, msg_id)
                 deleted += 1
@@ -4024,10 +4027,12 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
 
         await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
-        await reply_md(update,f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
+        await reply_md(update, f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
 
     except Exception as e:
-        await reply_md(update,f"⚠️ Lỗi xử lý: {e}")
+        await reply_md(update, f"⚠️ Lỗi xử lý: {e}")
+
+
 
 
 # ==============================================
