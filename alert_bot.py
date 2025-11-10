@@ -50,6 +50,11 @@ from db_utils import (
     set_news_pref,   
     is_news_enabled_for_chat,
     cleanup_old_news_seen,
+    has_bctc_notified,
+    mark_bctc_notified,
+    add_bctc_queue,
+    get_bctc_queue_by_date,
+    clear_bctc_queue_entry,
 )
 import psutil
 import time
@@ -64,6 +69,7 @@ from telegram import BotCommand
 import telegram
 import feedparser
 from telegram.error import TelegramError
+from urllib.parse import quote_plus
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -108,7 +114,7 @@ initial_active = None  # Trạng thái bot lúc khởi động (dùng trong life
 ALERT_STATE = {}
 
 # Thời gian giãn cách giữa 2 lần báo cùng một mốc cho cùng 1 mã (giây)
-ALERT_COOLDOWN_SECONDS = 15 * 60  # 15 phút
+ALERT_COOLDOWN_SECONDS = 30 * 60  # 15 phút
 
 # Ngưỡng cảnh báo
 STOCK_LEVELS = [2, 4, 6.9, -2, -4, -6.9]
@@ -2284,6 +2290,376 @@ async def news_cleanup_loop():
             # nếu lỗi thì nghỉ 5 phút rồi tính lịch lại ở vòng sau
             await asyncio.sleep(300)
 
+# ==============================
+# BÁO CÁO TÀI CHÍNH (BCTC)
+# ==============================
+
+BCTC_MONTHS = [1, 4, 5, 10]
+
+# Ngày bắt đầu check trong từng tháng (có thể chỉnh)
+BCTC_START_DAY_BY_MONTH = {
+    1: 1,   # Tháng 1 -> BCTC Quý 4 năm trước
+    4: 1,   # Tháng 4 -> BCTC Quý 1
+    5: 1,   # Tháng 5 -> BCTC Quý 2
+    10: 1,  # Tháng 10 -> BCTC Quý 3
+}
+
+
+def get_bctc_period_for_date(dt: datetime.datetime) -> tuple[int, int] | None:
+    """
+    Map tháng hiện tại sang (year, quarter) BCTC tương ứng:
+    - Tháng 1  -> BCTC Quý 4 năm trước
+    - Tháng 4  -> BCTC Quý 1 năm nay
+    - Tháng 5  -> BCTC Quý 2 năm nay
+    - Tháng 10 -> BCTC Quý 3 năm nay
+    """
+    m = dt.month
+    y = dt.year
+    if m == 1:
+        return y - 1, 4
+    if m == 4:
+        return y, 1
+    if m == 5:
+        return y, 2
+    if m == 10:
+        return y, 3
+    return None
+
+
+def get_next_bctc_period_2am(now: datetime.datetime, vn_tz) -> datetime.datetime:
+    """
+    Tính mốc 02:00 sáng đầu kỳ quý sau (tháng BCTC kế tiếp).
+    Dùng BCTC_START_DAY_BY_MONTH làm ngày bắt đầu.
+    """
+    months = BCTC_MONTHS
+    year = now.year
+
+    # Tìm tháng BCTC tiếp theo
+    for _ in range(3):  # tối đa nhảy 2 năm là dư
+        for m in months:
+            start_day = BCTC_START_DAY_BY_MONTH.get(m, 1)
+            target_naive = datetime.datetime(year, m, start_day, 2, 0, 0)
+            target = vn_tz.localize(target_naive)
+            if target > now:
+                return target
+        year += 1  # nếu chưa tìm thấy trong năm hiện tại thì sang năm sau
+
+    # fallback: nếu có gì sai sai thì cho ngủ 1 ngày
+    return now + datetime.timedelta(days=1)
+
+
+async def sleep_until(dt_target: datetime.datetime, vn_tz):
+    """
+    Ngủ đến thời điểm dt_target (local VN).
+    Cắt nhỏ nếu khoảng cách quá dài để tránh sleep quá lâu 1 lần.
+    """
+    while True:
+        now = datetime.datetime.now(vn_tz)
+        seconds = (dt_target - now).total_seconds()
+        if seconds <= 0:
+            break
+        # ngủ tối đa 1 giờ mỗi lần cho an toàn
+        await asyncio.sleep(min(seconds, 3600))
+
+async def financial_Statements_notice_loop():
+    """
+    Logic:
+    - Chỉ hoạt động trong các tháng BCTC: 1, 4, 5, 10.
+    - Nếu trong tháng BCTC & đã qua ngày bắt đầu:
+        · 02:00 sáng:
+            - Lấy toàn bộ mã trong watchlist.
+            - Với từng mã CHƯA notify kỳ (year, quarter) này:
+                + Gọi vnstock check BCTC.
+                + Nếu đã có BCTC:
+                    · mark_bctc_notified(symbol, year, quarter)
+                    · add_bctc_queue(symbol, year, quarter, today)
+                + Nếu chưa có BCTC: để sáng hôm sau 02:00 check lại.
+        · 08:00 sáng:
+            - Lấy queue hôm nay, gửi thông báo cho tất cả user đang theo dõi các mã đó,
+              rồi clear queue.
+    - Nếu sau khi crawl mà KHÔNG còn mã nào cần check cho quý này:
+        · Vẫn gửi notify 08:00 hôm đó cho đủ,
+        · Sau đó ngủ thẳng đến 02:00 sáng đầu kỳ quý sau.
+    """
+
+    vn_tz = pytz.timezone(TIMEZONE)
+
+    while True:
+
+        now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+        period = get_bctc_period_for_date(now)
+        period_label = f"Quý {period[1]}/{period[0]}" if period else "N/A"
+        log.info(
+            f"[{INSTANCE_ID}][BCTC] Loop BCTC đang chạy – now = {now.strftime('%Y-%m-%d %H:%M:%S')}, "
+            f"period = {period_label}"
+        )
+
+        if not BOT_ACTIVE:
+            # Nếu bot đang bảo trì thì nghỉ 60s rồi check lại
+            await asyncio.sleep(60)
+            continue
+
+        now = datetime.datetime.now(vn_tz)
+
+        # 0️⃣ Nếu KHÔNG nằm trong tháng BCTC -> ngủ tới 02:00 kỳ quý tiếp theo
+        if now.month not in BCTC_MONTHS:
+            target = get_next_bctc_period_2am(now, vn_tz)
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Không phải tháng BCTC (tháng {now.month}), "
+                f"ngủ tới {target}."
+            )
+            await sleep_until(target, vn_tz)
+            continue
+
+        # Đã nằm trong tháng BCTC
+        period = get_bctc_period_for_date(now)
+        if not period:
+            # fallback an toàn
+            log.warning(f"[{INSTANCE_ID}][BCTC] Không map được kỳ BCTC, sleep 1 ngày.")
+            await asyncio.sleep(24 * 3600)
+            continue
+
+        year, quarter = period
+        period_label = f"Quý {quarter}/{year}"
+        month = now.month
+        start_day = BCTC_START_DAY_BY_MONTH.get(month, 1)
+
+        # Nếu chưa tới ngày bắt đầu check trong tháng này -> ngủ tới 02:00 ngày start_day
+        first_2am_this_month = vn_tz.localize(
+            datetime.datetime(now.year, month, start_day, 2, 0, 0)
+        )
+        if now < first_2am_this_month:
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Tháng {month} nhưng mới ngày {now.day}, "
+                f"ngủ tới {first_2am_this_month} để bắt đầu crawl BCTC {period_label}."
+            )
+            await sleep_until(first_2am_this_month, vn_tz)
+            continue
+
+        # === BẮT ĐẦU 1 VÒNG "NGÀY" TRONG KỲ BCTC HIỆN TẠI ===
+        # Ta sẽ:
+        #   1. Đợi tới 02:00 hôm nay -> CRAWL
+        #   2. Đợi tới 08:00 hôm nay -> GỬI THÔNG BÁO
+        #   3. Quyết định ngủ tới:
+        #        - 02:00 ngày mai (nếu còn mã chưa có BCTC),
+        #        - hoặc 02:00 đầu kỳ quý sau (nếu đã xong tất cả mã).
+
+        today = now.date()
+        two_am_today = vn_tz.localize(
+            datetime.datetime(today.year, today.month, today.day, 2, 0, 0)
+        )
+        eight_am_today = vn_tz.localize(
+            datetime.datetime(today.year, today.month, today.day, 8, 0, 0)
+        )
+
+        # 1️⃣ Đợi tới 02:00 sáng hôm nay (nếu giờ hiện tại còn sớm hơn)
+        now = datetime.datetime.now(vn_tz)
+        if now < two_am_today:
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Hôm nay {today} chưa tới 02:00, ngủ tới {two_am_today}."
+            )
+            await sleep_until(two_am_today, vn_tz)
+
+        # 1.1️⃣ 02:00 -> CRAWL BCTC
+        log.info(f"[{INSTANCE_ID}][BCTC] 02:00 – bắt đầu crawl BCTC {period_label} cho hôm nay.")
+
+        # Lấy toàn bộ watchlist
+        try:
+            all_watch = await asyncio.to_thread(get_all_watch)
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][BCTC] Lỗi get_all_watch: {e}")
+            # Không crawl được hôm nay, để ngày mai làm lại
+            # Ngủ tới 02:00 ngày mai
+            tomorrow = today + datetime.timedelta(days=1)
+            target = vn_tz.localize(
+                datetime.datetime(tomorrow.year, tomorrow.month, tomorrow.day, 2, 0, 0)
+            )
+            await sleep_until(target, vn_tz)
+            continue
+
+        # Gom unique symbol
+        symbol_set: set[str] = set()
+        for chat_key, info in all_watch.items():
+            syms = info.get("list") if isinstance(info, dict) else info
+            if not syms:
+                continue
+            for sym in syms:
+                s = str(sym).upper().strip()
+                if s:
+                    symbol_set.add(s)
+
+        pending_after = 0
+
+        for sym in sorted(symbol_set):
+            # Bỏ qua nếu mã này đã notify quý này rồi
+            try:
+                already = await asyncio.to_thread(
+                    has_bctc_notified, sym, year, quarter
+                )
+            except Exception as e:
+                log.warning(
+                    f"[{INSTANCE_ID}][BCTC] Lỗi has_bctc_notified({sym}): {e}"
+                )
+                continue
+
+            if already:
+                continue
+
+            # Gọi vnstock check BCTC (chạy trong thread)
+            try:
+                available = await asyncio.to_thread(
+                    check_bctc_available, sym, year, quarter
+                )
+            except Exception as e:
+                log.warning(
+                    f"[{INSTANCE_ID}][BCTC] Lỗi check_bctc_available({sym}): {e}"
+                )
+                # Coi như chưa có, sẽ check lại ngày mai
+                pending_after += 1
+                continue
+
+            if not available:
+                # Chưa có BCTC quý này -> để mai check tiếp
+                pending_after += 1
+                continue
+
+            # ✅ ĐÃ CÓ BCTC CHO MÃ NÀY / QUÝ NÀY
+            try:
+                await asyncio.to_thread(mark_bctc_notified, sym, year, quarter)
+                await asyncio.to_thread(add_bctc_queue, sym, year, quarter, today)
+            except Exception as e:
+                log.warning(
+                    f"[{INSTANCE_ID}][BCTC] Lỗi mark/add_queue({sym}, Q{quarter}/{year}): {e}"
+                )
+
+            await asyncio.sleep(0.2)  # nghỉ nhẹ tránh spam API
+
+        # Tại thời điểm này:
+        #   pending_after > 0 -> vẫn còn mã chưa có BCTC -> mai 02:00 check tiếp
+        #   pending_after == 0 -> không còn mã cần check -> sau khi notify xong sẽ ngủ tới quý sau
+
+        still_pending = pending_after > 0
+        log.info(
+            f"[{INSTANCE_ID}][BCTC] Crawl xong BCTC {period_label} hôm nay. "
+            f"still_pending = {still_pending}."
+        )
+
+        # 2️⃣ Đợi tới 08:00 để GỬI THÔNG BÁO
+        now = datetime.datetime.now(vn_tz)
+        if now < eight_am_today:
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Đợi tới 08:00 ({eight_am_today}) để gửi thông báo BCTC."
+            )
+            await sleep_until(eight_am_today, vn_tz)
+
+        # 2.1️⃣ 08:00 -> GỬI THÔNG BÁO CHO HÀNG ĐỢI HÔM NAY
+        log.info(
+            f"[{INSTANCE_ID}][BCTC] 08:00 – bắt đầu gửi thông báo BCTC {period_label} cho hôm nay."
+        )
+
+        try:
+            queue_rows = await asyncio.to_thread(get_bctc_queue_by_date, today)
+        except Exception as e:
+            log.warning(
+                f"[{INSTANCE_ID}][BCTC] Lỗi get_bctc_queue_by_date({today}): {e}"
+            )
+            queue_rows = []
+
+        if queue_rows:
+            # Lấy watchlist mới nhất để biết user nào đang theo dõi mã nào
+            try:
+                all_watch_for_send = await asyncio.to_thread(get_all_watch)
+            except Exception as e:
+                log.warning(
+                    f"[{INSTANCE_ID}][BCTC] Lỗi get_all_watch (notify): {e}"
+                )
+                all_watch_for_send = {}
+
+            symbol_to_chats: dict[str, list[int]] = {}
+            for chat_key, info in all_watch_for_send.items():
+                syms = info.get("list") if isinstance(info, dict) else info
+                if not syms:
+                    continue
+                try:
+                    chat_id = int(chat_key)
+                except Exception:
+                    continue
+                for sym in syms:
+                    s = str(sym).upper().strip()
+                    if not s:
+                        continue
+                    symbol_to_chats.setdefault(s, []).append(chat_id)
+
+            # Gửi từng mã trong queue
+            for sym, y, q in queue_rows:
+                chats = symbol_to_chats.get(sym, [])
+                # Nếu không còn ai theo dõi mã này thì chỉ cần clear queue
+                if not chats:
+                    await asyncio.to_thread(
+                        clear_bctc_queue_entry, sym, y, q, today
+                    )
+                    continue
+
+                query_text = f"{sym} báo cáo tài chính"
+                google_url = f"https://www.google.com/search?q={quote_plus(query_text)}"
+
+                lines = [
+                    "📑 *Báo cáo tài chính mới*",
+                    "",
+                    f"• Mã: *{sym}*",
+                    f"• Kỳ: *Quý {q}/{y}*",
+                    "",
+                    "👉 Mã cổ phiếu trong danh sách theo dõi của bạn đã có báo cáo tài chính.",
+                    "",
+                    "Bạn có thể tra cứu nhanh trên Google với từ khóa:",
+                    f"{query_text}",
+                    google_url,
+                ]
+                text = "\n".join(lines)
+
+                for chat_id in chats:
+                    try:
+                        await send_md(tg_app.bot, chat_id, text)
+                        await asyncio.sleep(0.2)
+                    except Exception as e:
+                        log.warning(
+                            f"[{INSTANCE_ID}][BCTC] Lỗi gửi BCTC cho {chat_id} – {sym}: {e}"
+                        )
+
+                # Xóa entry khỏi queue sau khi gửi xong
+                await asyncio.to_thread(
+                    clear_bctc_queue_entry, sym, y, q, today
+                )
+
+        else:
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Hôm nay không có mã nào trong hàng đợi BCTC."
+            )
+
+        # 3️⃣ Quyết định ngủ tới khi nào
+        now = datetime.datetime.now(vn_tz)
+        if still_pending:
+            # Vẫn còn mã chưa có BCTC -> ngày mai 02:00 check tiếp (cùng quý)
+            tomorrow = today + datetime.timedelta(days=1)
+            target = vn_tz.localize(
+                datetime.datetime(
+                    tomorrow.year, tomorrow.month, tomorrow.day, 2, 0, 0
+                )
+            )
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Vẫn còn mã chưa có BCTC {period_label}, "
+                f"ngủ tới {target} để crawl lại ngày mai."
+            )
+            await sleep_until(target, vn_tz)
+        else:
+            # Không còn mã nào để check -> nhảy luôn tới 02:00 sáng đầu kỳ quý sau
+            target = get_next_bctc_period_2am(now, vn_tz)
+            log.info(
+                f"[{INSTANCE_ID}][BCTC] Đã hoàn thành BCTC {period_label} cho tất cả mã, "
+                f"ngủ tới {target} (02:00 kỳ quý sau)."
+            )
+            await sleep_until(target, vn_tz)
+
 
 def clean_html_text(raw: str) -> str:
     """
@@ -2480,6 +2856,189 @@ async def news_macro_loop():
             log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
 
         await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS) # (OK, non-blocking)
+
+# ==============================
+# BÁO CÁO TÀI CHÍNH (BCTC)
+# ==============================
+
+BCTC_MONTHS = [1, 4, 5, 10]      # Tháng có thể ra BCTC
+# Có thể chỉnh nếu muốn bắt đầu check muộn hơn trong tháng
+BCTC_START_DAY_BY_MONTH = {
+    1: 1,   # Tháng 1 -> BCTC Q4 năm trước
+    4: 1,   # Tháng 4 -> BCTC Q1
+    5: 1,   # Tháng 5 -> BCTC Q2
+    10: 1,  # Tháng 10 -> BCTC Q3
+}
+
+# Chu kỳ wake-up khi đang trong tháng BCTC (10 phút)
+BCTC_ACTIVE_LOOP_SLEEP = 600
+# Khi ngoài tháng BCTC: ngủ 6 tiếng
+BCTC_OUTSIDE_LOOP_SLEEP = 6 * 3600
+
+def get_bctc_period_for_date(dt: datetime.datetime):
+    """
+    Map tháng hiện tại sang (year, quarter) BCTC tương ứng:
+    - Tháng 1  -> BCTC Quý 4 năm trước
+    - Tháng 4  -> BCTC Quý 1 năm nay
+    - Tháng 5  -> BCTC Quý 2 năm nay
+    - Tháng 10 -> BCTC Quý 3 năm nay
+    """
+    m = dt.month
+    y = dt.year
+    if m == 1:
+        return y - 1, 4
+    if m == 4:
+        return y, 1
+    if m == 5:
+        return y, 2
+    if m == 10:
+        return y, 3
+    return None
+
+
+def _infer_latest_quarter_from_df(df):
+    """
+    Cố gắng đoán quý mới nhất từ DataFrame BCTC.
+    Ưu tiên cột 'Năm'/'Quý' hoặc 'year'/'quarter'.
+    Không tìm thấy thì trả về None (tránh crash).
+    """
+    import pandas as pd
+
+    if df is None or df.empty:
+        return None
+
+    cols = list(df.columns)
+
+    year_col = None
+    quarter_col = None
+
+    for c in cols:
+        lc = str(c).strip().lower()
+        if lc in ("năm", "nam", "year"):
+            year_col = c
+            break
+
+    for c in cols:
+        lc = str(c).strip().lower()
+        if "quý" in lc or lc in ("quarter",):
+            quarter_col = c
+            break
+
+    if not year_col or not quarter_col:
+        return None
+
+    try:
+        tmp = df[[year_col, quarter_col]].dropna()
+        if tmp.empty:
+            return None
+        tmp["_y"] = tmp[year_col].astype(int)
+        tmp["_q"] = tmp[quarter_col].astype(int)
+        row = tmp.sort_values(["_y", "_q"]).iloc[-1]
+        return int(row["_y"]), int(row["_q"])
+    except Exception as e:
+        log.debug(f"[BCTC] _infer_latest_quarter_from_df lỗi: {e}")
+        return None
+    
+def infer_latest_quarter_from_df(df: pd.DataFrame) -> tuple[int, int] | None:
+    """
+    Lấy (year, quarter) mới nhất từ DataFrame BCTC.
+
+    Dựa trên 2 cột:
+    - 'year'
+    - 'quarter'
+    """
+    if df is None or df.empty:
+        return None
+
+    if "year" not in df.columns or "quarter" not in df.columns:
+        log.warning(f"[BCTC] DF không có cột 'year' / 'quarter'. Columns = {list(df.columns)}")
+        return None
+
+    try:
+        tmp = df[["year", "quarter"]].dropna()
+        if tmp.empty:
+            return None
+
+        tmp["_y"] = tmp["year"].astype(int)
+        tmp["_q"] = tmp["quarter"].astype(int)
+
+        row = tmp.sort_values(["_y", "_q"]).iloc[-1]
+        return int(row["_y"]), int(row["_q"])
+    except Exception as e:
+        log.warning(f"[BCTC] infer_latest_quarter_from_df lỗi: {e}")
+        return None
+
+
+def check_bctc_available(symbol: str, target_year: int, target_quarter: int) -> bool:
+    """
+    True nếu vnstock đã có BCTC quý (target_year, target_quarter) cho mã này.
+
+    Logic:
+    - Gọi Finance(symbol, source='TCBS')
+    - Lấy income_statement & balance_sheet theo kỳ 'quarter'
+    - Đoán quý mới nhất từ 2 bảng này
+    - Nếu quý mới nhất >= quý cần tìm -> coi như đã có BCTC
+    """
+    sym = str(symbol).upper().strip()
+    if not sym:
+        return False
+
+    try:
+        fin = Finance(symbol=sym, source="TCBS")
+    except Exception as e:
+        log.warning(f"[BCTC] Lỗi tạo Finance({sym}): {e}")
+        return False
+
+    dfs: list[pd.DataFrame] = []
+
+    # KQKD theo quý
+    try:
+        is_df = fin.income_statement(period="quarter", lang="vi", dropna=False)
+        dfs.append(is_df)
+    except Exception as e:
+        log.debug(f"[BCTC] income_statement(quater) lỗi cho {sym}: {e}")
+
+    # CĐKT theo quý
+    try:
+        bs_df = fin.balance_sheet(period="quarter", lang="vi", dropna=False)
+        dfs.append(bs_df)
+    except Exception as e:
+        log.debug(f"[BCTC] balance_sheet(quater) lỗi cho {sym}: {e}")
+
+    if not dfs:
+        return False
+
+    latest_yq: tuple[int, int] | None = None
+
+    for df in dfs:
+        yq = infer_latest_quarter_from_df(df)
+        if not yq:
+            continue
+
+        if latest_yq is None:
+            latest_yq = yq
+        else:
+            ly, lq = latest_yq
+            cy, cq = yq
+            if (cy > ly) or (cy == ly and cq > lq):
+                latest_yq = yq
+
+    if not latest_yq:
+        return False
+
+    latest_y, latest_q = latest_yq
+    log.info(
+        f"[BCTC] {sym} – quý mới nhất: Q{latest_q}/{latest_y}, "
+        f"đang so với Q{target_quarter}/{target_year}"
+    )
+
+    # Nếu quý mới nhất >= quý cần tìm → xem như đã có BCTC của quý đó
+    return (latest_y > target_year) or (
+        latest_y == target_year and latest_q >= target_quarter
+    )
+
+
+#------------------------------------------------------
 
 def escape_markdown_v2(text: str) -> str:
     """
@@ -3611,9 +4170,6 @@ async def alert_loop():
             # Khối log mới
             if successful_symbols:
                 log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] [QUOTE OK] {', '.join(successful_symbols)}")
-            
-            # Log cũ
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Đã lấy dữ liệu cho {len(quote_cache)}/{len(all_symbols)} symbol.")
 
             # 🧩 3️⃣ Duyệt từng user & xử lý cảnh báo
             for chat_key, user_block in all_watch.items():
@@ -3895,6 +4451,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(news_specialized_loop()),
                     MAIN_LOOP.create_task(news_macro_loop()),
                     MAIN_LOOP.create_task(news_cleanup_loop()),
+                    MAIN_LOOP.create_task(financial_Statements_notice_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                 ]

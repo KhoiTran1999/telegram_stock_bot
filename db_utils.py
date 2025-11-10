@@ -87,6 +87,32 @@ def init_db():
                 )
             """)
 
+            # Bảng log mã đã thông báo BCTC (đảm bảo mỗi mã/quý chỉ báo 1 lần)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bctc_notified (
+                    id          SERIAL PRIMARY KEY,
+                    symbol      TEXT NOT NULL,
+                    year        INTEGER NOT NULL,
+                    quarter     INTEGER NOT NULL,
+                    notified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(symbol, year, quarter)
+                )
+            """)
+
+            # Hàng đợi gửi thông báo BCTC (crawl lúc 2h, gửi lúc 8h)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bctc_notify_queue (
+                    id          SERIAL PRIMARY KEY,
+                    symbol      TEXT NOT NULL,
+                    year        INTEGER NOT NULL,
+                    quarter     INTEGER NOT NULL,
+                    notify_date DATE   NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(symbol, year, quarter, notify_date)
+                )
+            """)
+
+
         conn.commit()
 
 # ==========================================
@@ -482,4 +508,103 @@ def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
         return pref["enable_macro"]
     return True
 
-#---------------------------------------------------------
+# ==========================================
+# BÁO CÁO TÀI CHÍNH (BCTC)
+# ==========================================
+
+def has_bctc_notified(symbol: str, year: int, quarter: int) -> bool:
+    """True nếu mã này đã được thông báo BCTC cho kỳ (year, quarter)."""
+    sym = str(symbol).upper().strip()
+    if not sym:
+        return False
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM bctc_notified
+                WHERE symbol = %s AND year = %s AND quarter = %s
+                LIMIT 1
+                """,
+                (sym, year, quarter),
+            )
+            row = cur.fetchone()
+    return row is not None
+
+
+def mark_bctc_notified(symbol: str, year: int, quarter: int):
+    """Đánh dấu đã gửi thông báo BCTC cho mã / kỳ này (chỉ 1 lần / quý)."""
+    sym = str(symbol).upper().strip()
+    if not sym:
+        return
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bctc_notified (symbol, year, quarter)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (symbol, year, quarter)
+                DO UPDATE SET notified_at = NOW()
+                """,
+                (sym, year, quarter),
+            )
+        conn.commit()
+
+
+def add_bctc_queue(symbol: str, year: int, quarter: int, notify_date):
+    """
+    Thêm mã vào hàng đợi BCTC để gửi thông báo vào ngày notify_date (08:00).
+    """
+    sym = str(symbol).upper().strip()
+    if not sym:
+        return
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bctc_notify_queue (symbol, year, quarter, notify_date)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (symbol, year, quarter, notify_date)
+                DO NOTHING
+                """,
+                (sym, year, quarter, notify_date),
+            )
+        conn.commit()
+
+
+def get_bctc_queue_by_date(notify_date):
+    """Lấy danh sách (symbol, year, quarter) cần gửi vào ngày notify_date."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, year, quarter
+                FROM bctc_notify_queue
+                WHERE notify_date = %s
+                """,
+                (notify_date,),
+            )
+            return cur.fetchall()
+
+
+def clear_bctc_queue_entry(symbol: str, year: int, quarter: int, notify_date):
+    """Xóa 1 entry khỏi hàng đợi sau khi gửi xong."""
+    sym = str(symbol).upper().strip()
+    if not sym:
+        return
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM bctc_notify_queue
+                WHERE symbol = %s AND year = %s AND quarter = %s AND notify_date = %s
+                """,
+                (sym, year, quarter, notify_date),
+            )
+        conn.commit()
+
+#----------------------------------------------
