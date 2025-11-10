@@ -5,8 +5,8 @@ pytz
 requests
 flask
 hypercorn
-psycopg[binary]
 psutil
 python-dotenv
 feedparser
 asgiref
+psycopg[binary,pool]

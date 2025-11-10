@@ -2,10 +2,26 @@
 import os
 import json
 import psycopg
+from psycopg_pool import ConnectionPool
+from dotenv import load_dotenv
+load_dotenv()
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+# Lấy DATABASE_URL từ biến môi trường Render
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
 
-def get_conn():
+# Tạo connection pool dùng chung cho toàn bộ service
+# min_size: số connection tối thiểu
+# max_size: số connection tối đa (tùy gói, Render free nên để 5–10 là ổn)
+POOL = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=1,
+    max_size=5,
+    timeout=30,      # tối đa 30s chờ lấy connection trong pool
+)
+
+def get_conn(): #Lấy một connection từ pool.
     return psycopg.connect(DATABASE_URL)
 
 def init_db():

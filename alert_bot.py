@@ -2739,7 +2739,6 @@ async def news_macro_loop():
 
         await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS) # (OK, non-blocking)
 
-
 async def news_cleanup_loop():
     """
     Dọn bảng news_seen mỗi ngày 1 lần:
@@ -2789,10 +2788,10 @@ async def news_cleanup_loop():
             await asyncio.sleep(300)
 
 # ==============================
-# BÁO CÁO TÀI CHÍNH (BCTC)
+# BÁO CÁO TÀI CHÍNH (BCTC) LOOP
 # ==============================
 
-BCTC_MONTHS = [1, 4, 5, 10]
+BCTC_MONTHS = [1, 4, 5, 10] # Tháng có thể ra BCTC
 
 # Ngày bắt đầu check trong từng tháng (có thể chỉnh)
 BCTC_START_DAY_BY_MONTH = {
@@ -3194,86 +3193,13 @@ def clean_html_text(raw: str) -> str:
     return text
 
 # ==============================
-# BÁO CÁO TÀI CHÍNH (BCTC)
+# BÁO CÁO TÀI CHÍNH (BCTC) Function
 # ==============================
-
-BCTC_MONTHS = [1, 4, 5, 10]      # Tháng có thể ra BCTC
-# Có thể chỉnh nếu muốn bắt đầu check muộn hơn trong tháng
-BCTC_START_DAY_BY_MONTH = {
-    1: 1,   # Tháng 1 -> BCTC Q4 năm trước
-    4: 1,   # Tháng 4 -> BCTC Q1
-    5: 1,   # Tháng 5 -> BCTC Q2
-    10: 1,  # Tháng 10 -> BCTC Q3
-}
 
 # Chu kỳ wake-up khi đang trong tháng BCTC (10 phút)
 BCTC_ACTIVE_LOOP_SLEEP = 600
 # Khi ngoài tháng BCTC: ngủ 6 tiếng
 BCTC_OUTSIDE_LOOP_SLEEP = 6 * 3600
-
-def get_bctc_period_for_date(dt: datetime.datetime):
-    """
-    Map tháng hiện tại sang (year, quarter) BCTC tương ứng:
-    - Tháng 1  -> BCTC Quý 4 năm trước
-    - Tháng 4  -> BCTC Quý 1 năm nay
-    - Tháng 5  -> BCTC Quý 2 năm nay
-    - Tháng 10 -> BCTC Quý 3 năm nay
-    """
-    m = dt.month
-    y = dt.year
-    if m == 1:
-        return y - 1, 4
-    if m == 4:
-        return y, 1
-    if m == 5:
-        return y, 2
-    if m == 10:
-        return y, 3
-    return None
-
-
-def _infer_latest_quarter_from_df(df):
-    """
-    Cố gắng đoán quý mới nhất từ DataFrame BCTC.
-    Ưu tiên cột 'Năm'/'Quý' hoặc 'year'/'quarter'.
-    Không tìm thấy thì trả về None (tránh crash).
-    """
-    import pandas as pd
-
-    if df is None or df.empty:
-        return None
-
-    cols = list(df.columns)
-
-    year_col = None
-    quarter_col = None
-
-    for c in cols:
-        lc = str(c).strip().lower()
-        if lc in ("năm", "nam", "year"):
-            year_col = c
-            break
-
-    for c in cols:
-        lc = str(c).strip().lower()
-        if "quý" in lc or lc in ("quarter",):
-            quarter_col = c
-            break
-
-    if not year_col or not quarter_col:
-        return None
-
-    try:
-        tmp = df[[year_col, quarter_col]].dropna()
-        if tmp.empty:
-            return None
-        tmp["_y"] = tmp[year_col].astype(int)
-        tmp["_q"] = tmp[quarter_col].astype(int)
-        row = tmp.sort_values(["_y", "_q"]).iloc[-1]
-        return int(row["_y"]), int(row["_q"])
-    except Exception as e:
-        log.debug(f"[BCTC] _infer_latest_quarter_from_df lỗi: {e}")
-        return None
     
 def infer_latest_quarter_from_df(df: pd.DataFrame) -> tuple[int, int] | None:
     """
@@ -3475,7 +3401,7 @@ async def auto_on_after_delay(initial_active: bool):
 
         if ADMIN_ID:
             try:
-                send_msg_to(
+                await send_md(
                     ADMIN_ID,
                     "✅ *Hệ thống đã được kích hoạt trở lại (auto /on sau 2 phút).* \n\n"
                     "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
@@ -3519,9 +3445,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "  Sau đó lọc ra *Top cổ phiếu Value theo từng ngành* (HOSE/HNX, thanh khoản > 50 tỷ, tổng tài sản > 5.000 tỷ) và gửi báo cáo tóm tắt cho bạn.\n"
     "• *Tự động kiểm tra Báo cáo tài chính:* Trong các tháng *1, 4, 7, 10*, bot sẽ quét hệ thống để phát hiện khi doanh nghiệp bạn theo dõi có *báo cáo tài chính mới*.\n"
     "  Khi có, bot sẽ *thông báo ngay lập tức*, chỉ *một lần duy nhất mỗi kỳ* – giúp bạn không bỏ lỡ bất kỳ dữ liệu quan trọng nào! 🧾\n"
-    "• *Báo cáo AI Chủ Nhật:* Mỗi *Chủ Nhật lúc 09:00 sáng*, bot tự động tạo *báo cáo AI chi tiết* dựa trên danh mục bạn đang theo dõi,\n"
+    "• *Báo cáo AI Chủ Nhật:* Mỗi *Chủ Nhật lúc 09:00 sáng*, bot tự động tạo *báo cáo AI chi tiết* dựa trên danh mục bạn đang theo dõi, "
     "  giúp bạn nhìn lại hiệu quả tuần qua và chuẩn bị cho tuần mới.\n"
-    "• *Tin tức vĩ mô & chuyên ngành:* Khi bật nhận tin, bot sẽ tự động quét các nguồn tin tài chính (vĩ mô, doanh nghiệp, chứng khoán, BĐS...),\n"
+    "• *Tin tức vĩ mô & chuyên ngành:* Khi bật nhận tin, bot sẽ tự động quét các nguồn tin tài chính (vĩ mô, doanh nghiệp, chứng khoán, BĐS...), "
     "  nhận diện bài viết liên quan đến mã trong danh mục và gửi những tin đáng chú ý nhất. 📰\n\n"
     "📊 *Các lệnh dành cho nhà đầu tư:*\n"
     "• `/start` – Xem lại phần giới thiệu và danh sách tính năng\n"
