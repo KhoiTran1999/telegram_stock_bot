@@ -4143,8 +4143,6 @@ async def alert_loop():
 
         loop_start = now
         try:
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert (có cache)")
-
             # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
             all_watch = await asyncio.to_thread(get_all_watch)
             all_state = get_state_for_all()
