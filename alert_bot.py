@@ -48,7 +48,8 @@ from db_utils import (
     get_news_seen_count,
     get_news_pref,
     set_news_pref,   
-    is_news_enabled_for_chat
+    is_news_enabled_for_chat,
+    cleanup_old_news_seen,
 )
 import psutil
 import time
@@ -158,11 +159,8 @@ RSS_FEEDS_SPECIALIZED = {
         "https://vietstock.vn/3358/chung-khoan/etf-va-cac-quy.rss",
         "https://vietstock.vn/145/chung-khoan/y-kien-chuyen-gia.rss",
         "https://vietstock.vn/582/nhan-dinh-phan-tich/phan-tich-co-ban.rss",
-
-        
     ],
     "DOANH_NGHIEP": [
-
         "https://vneconomy.vn/nhip-cau-doanh-nghiep.rss",
         "https://vneconomy.vn/thi-truong.rss",
         "https://vneconomy.vn/tieu-dung.rss",
@@ -2236,6 +2234,55 @@ async def news_specialized_loop():
 
         await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS) # (OK, non-blocking)
 
+async def news_cleanup_loop():
+    """
+    Dọn bảng news_seen mỗi ngày 1 lần:
+    - Chỉ giữ lại các bản ghi trong 7 ngày gần nhất
+    - Xoá các dòng có created_at < NOW() - INTERVAL '7 days'
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+
+    while True:
+        loop_id += 1
+
+        # Nếu bot đang tắt (bảo trì) thì không dọn, ngủ 60s rồi kiểm tra lại
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+
+        now = datetime.datetime.now(vn_tz)
+
+        # Chạy lúc 03:00 sáng mỗi ngày (giờ VN)
+        next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += datetime.timedelta(days=1)
+
+        wait_sec = max((next_run - now).total_seconds(), 1)
+        log.info(
+            f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Ngủ {wait_sec:.0f}s tới lần dọn news_seen tiếp theo (lúc {next_run})."
+        )
+        await asyncio.sleep(wait_sec)
+
+        # Dậy xong kiểm tra lại trạng thái bot
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Thức dậy nhưng bot TẮT, bỏ qua dọn news_seen.")
+            continue
+
+        try:
+            # Chạy hàm dọn DB trong thread (vì là blocking I/O)
+            deleted = await asyncio.to_thread(cleanup_old_news_seen, 7)
+            log.info(
+                f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] "
+                f"Đã xoá {deleted} bản ghi news_seen cũ hơn 7 ngày."
+            )
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Lỗi khi dọn news_seen: {e}")
+            # nếu lỗi thì nghỉ 5 phút rồi tính lịch lại ở vòng sau
+            await asyncio.sleep(300)
+
+
 def clean_html_text(raw: str) -> str:
     """
     Làm sạch text lấy từ RSS:
@@ -2442,7 +2489,6 @@ def escape_markdown_v2(text: str) -> str:
         text = ""
     return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', str(text))
 
-
 async def reply_md(update: Update, text: str, **kwargs):
     """
     Gửi tin nhắn Markdown an toàn:
@@ -2501,8 +2547,6 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown"):
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
 
-
-
 async def auto_on_after_delay(initial_active: bool):
     """
     Tự động bật lại bot sau 2 phút kể từ khi khởi động,
@@ -2553,26 +2597,46 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ⭐️ SỬA: Chạy CSDL trong thread
         await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
 
-    await reply_md(update,
+    await reply_md(
+    update,
     "╔════════════════════════════════╗\n"
     "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n"
     "╚════════════════════════════════╝\n\n"
     "StockBot là trợ lý cảnh báo chứng khoán realtime, giúp bạn theo dõi biến động giá một cách nhanh chóng và chính xác.\n\n"
-    "📈 *Cách hoạt động:*\n"
-    "• Khi giá cổ phiếu trong danh sách của bạn *tăng hoặc giảm 2%, 4%, 6%* so với giá tham chiếu, hệ thống sẽ tự động gửi cảnh báo ngay lập tức.\n"
-    "• Mỗi cảnh báo đều hiển thị phần trăm thay đổi, xu hướng và thông tin liên quan để bạn dễ dàng nắm bắt tình hình thị trường.\n\n"
-    "📊 *Các lệnh bạn có thể sử dụng:*\n"
+    "🔥 *Tính năng tự động (không cần gõ lệnh):*\n"
+    "• *Cảnh báo giá realtime:* Trong giờ giao dịch (T2–T6, 09:15–11:30 & 13:00–14:45), bot liên tục quét giá cổ phiếu trong watchlist của bạn.\n"
+    "  Khi giá *tăng/giảm ~2%, ~4%, ~6.9%* so với tham chiếu, bot sẽ gửi cảnh báo ngay lập tức, kèm nhận xét vui vẻ, cà khịa nhẹ để bạn đỡ căng thẳng. 😏\n"
+    "• *Thông báo giờ giao dịch:* Bot tự động nhắc bạn ở 4 mốc quan trọng:\n"
+    "  09:10 (sắp mở phiên sáng), 11:25 (sắp đóng phiên sáng), 12:55 (sắp mở phiên chiều), 14:40 (sắp đóng phiên chiều).\n"
+    "• *Gợi ý cổ phiếu Value mỗi ngày:* Mỗi ngày làm việc (T2–T6), bot sẽ phân tích dữ liệu P/E, P/B, ROE, thanh khoản, vốn hoá...\n"
+    "  Sau đó lọc ra *Top cổ phiếu Value theo từng ngành* (HOSE/HNX, thanh khoản > 50 tỷ, tổng tài sản > 5.000 tỷ) và gửi báo cáo tóm tắt cho bạn.\n"
+    "• *Báo cáo AI Chủ Nhật:* Mỗi *Chủ Nhật lúc 09:00 sáng*, bot tự động tạo một bản *báo cáo AI chi tiết* dựa trên danh mục bạn đang theo dõi,\n"
+    "  giúp bạn nhìn lại hiệu quả tuần qua và chuẩn bị cho tuần mới.\n"
+    "• *Tin tức vĩ mô & chuyên ngành:* Nếu bạn bật nhận tin tức, bot sẽ tự động quét các nguồn tin (vĩ mô, chứng khoán, doanh nghiệp, BĐS...),\n"
+    "  nhận diện các bài viết liên quan đến mã trong danh mục của bạn và gửi những tin đáng chú ý nhất.\n\n"
+    "📊 *Các lệnh dành cho mọi nhà đầu tư:*\n"
+    "• `/start` – Xem lại phần giới thiệu và danh sách tính năng\n"
     "• `/add <MÃ>` – Thêm mã cổ phiếu vào danh sách theo dõi\n"
     "• `/remove <MÃ>` – Xóa mã cổ phiếu khỏi danh sách\n"
-    "• `/list` – Xem danh sách cổ phiếu đang theo dõi\n"
+    "• `/list` – Xem danh sách cổ phiếu bạn đang theo dõi\n"
     "• `/report` – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
     "• `/news_on` – Bật nhận tin tức (vĩ mô + chuyên ngành)\n"
     "• `/news_off` – Tắt nhận tin tức\n"
-    "• `/news_status` – Xem trạng thái nhận tin tức\n\n"
-    "🕓 *Báo cáo tự động:* Mỗi Chủ Nhật lúc 09:00 sáng, StockBot sẽ tổng hợp dữ liệu trong tuần và gửi đến bạn một bản *báo cáo AI chi tiết*, giúp bạn đánh giá hiệu quả đầu tư và xu hướng sắp tới.\n\n"
+    "• `/news_status` – Xem trạng thái nhận tin tức hiện tại\n\n"
+    "🛠 *Khu vực quản trị (admin – người dùng bình thường có thể bỏ qua):*\n"
+    "• `/on` – (admin) Bật bot, thoát chế độ bảo trì\n"
+    "• `/off` – (admin) Tắt bot, bật chế độ bảo trì tạm thời\n"
+    "• `/status` – (admin) Kiểm tra trạng thái hoạt động của bot\n"
+    "• `/announce` – (admin) Gửi thông báo đến tất cả người dùng\n"
+    "• `/allwatch` – (admin) Xem & thống kê toàn bộ danh sách mã đang được user theo dõi\n"
+    "• `/screener_value_clear` – (admin) Xóa dữ liệu screener cache để làm mới\n"
+    "• `/delete_range` – (admin) Xóa các tin nhắn bot gửi trong một khoảng thời gian\n"
+    "• `/news_test_macro` – (admin) Gửi thử tin tức vĩ mô mới nhất\n"
+    "• `/news_test_specialized` – (admin) Gửi thử tin tức chuyên ngành/doanh nghiệp\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi bằng lệnh `/add` ngay hôm nay!"
-    )
+)
+
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
@@ -3803,6 +3867,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(initial_value_precompute_loop()),
                     MAIN_LOOP.create_task(news_specialized_loop()),
                     MAIN_LOOP.create_task(news_macro_loop()),
+                    MAIN_LOOP.create_task(news_cleanup_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                 ]

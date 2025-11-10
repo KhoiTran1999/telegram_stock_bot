@@ -451,6 +451,27 @@ def set_news_pref(
             """, (chat_id, enable_specialized, enable_macro))
         conn.commit()
 
+def cleanup_old_news_seen(max_age_days: int = 7) -> int:
+    """
+    Xoá các bản ghi news_seen có created_at cũ hơn max_age_days (mặc định 7 ngày).
+    Trả về số dòng đã xoá.
+    """
+    if max_age_days <= 0:
+        max_age_days = 1  # chống ngáo
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Dùng created_at vì bảng không có seen_at
+            cur.execute(
+                f"""
+                DELETE FROM news_seen
+                WHERE created_at < NOW() - INTERVAL '{max_age_days} days'
+                """
+            )
+            deleted = cur.rowcount or 0
+        conn.commit()
+
+    return deleted
 
 def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
     """Kiểm tra user có bật nhận loại tin feed_type hay không."""
@@ -460,3 +481,5 @@ def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
     if feed_type.upper() == "MACRO":
         return pref["enable_macro"]
     return True
+
+#---------------------------------------------------------
