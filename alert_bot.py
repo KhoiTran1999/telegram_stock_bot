@@ -470,11 +470,13 @@ def get_git_deploy_info() -> str | None:
     # Thử lấy commit message từ git log (nếu thư mục deploy còn giữ .git)
     commit_message = None
     try:
-        commit_message = subprocess.check_output(
+        raw = subprocess.check_output(
             ["git", "log", "-1", "--pretty=%B"],
             stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip() or None
+            text=False,   # ⭐ QUAN TRỌNG: lấy raw bytes
+        )
+        # Ép decode UTF-8, nếu có ký tự lạ thì thay bằng � cho an toàn
+        commit_message = raw.decode("utf-8", errors="replace").strip() or None
     except Exception:
         # Ở môi trường production đôi khi không có .git, bỏ qua
         pass
@@ -3393,6 +3395,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, part)
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
+# COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
     user_id = update.effective_user.id
@@ -3401,17 +3404,35 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
+
+    # ❗️Trường hợp không (hoặc thiếu) tham số: chỉ gửi cú pháp + lệnh mẫu cho admin copy
     if len(args) < 4:
-        await reply_md(update,
-            "❗ Cú pháp: /delete_range <từ ngày> <giờ> <đến ngày> <giờ>\n"
-            "Ví dụ: /delete_range 2025-03-01 09:00 2025-03-01 10:30"
+        vn_tz = pytz.timezone(TIMEZONE)
+        now = datetime.datetime.now(vn_tz)
+
+        start_time = now - datetime.timedelta(minutes=1)
+        end_time   = now + datetime.timedelta(minutes=1)
+
+        start_str = start_time.strftime("%Y-%m-%d %H:%M")
+        end_str   = end_time.strftime("%Y-%m-%d %H:%M")
+
+        # Tin nhắn 1: cú pháp
+        await reply_md(
+            update,
+            "❗️ Cú pháp: `/delete_range <từ ngày> <giờ> <đến ngày> <giờ>`"
+        )
+
+        # Tin nhắn 2: lệnh mẫu (dựa trên thời điểm hiện tại ±1 phút)
+        await reply_md(
+            update,
+            f"`/delete_range {start_str} {end_str}`"
         )
         return
-    
+
+    # ✅ Trường hợp có đủ 4 tham số: giữ nguyên logic xoá như hiện tại
     await reply_md(update, f"🔎 vui lòng đợi...")
 
     try:
-        # (Phần xử lý thời gian an toàn, không I/O)
         vn_tz = pytz.timezone(TIMEZONE)
         start_str = f"{args[0]} {args[1]}"
         end_str = f"{args[2]} {args[3]}"
@@ -3425,29 +3446,27 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         deleted = 0
-        
-        # ⭐️ SỬA: Bọc network I/O trong hàm riêng
-        def _delete_message(chat_id, msg_id):
-            # Hàm này là blocking
+
+        # ⭐️ Bọc network I/O trong hàm riêng
+        async def _delete_message(chat_id, msg_id):
             url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
             params = {"chat_id": chat_id, "message_id": msg_id}
-            requests.get(url, params=params, timeout=10)
+            await asyncio.to_thread(requests.get, url, params=params, timeout=10)
 
         for chat_id, msg_id in records:
             try:
-                # ⭐️ SỬA: Chạy Network I/O trong thread
                 await asyncio.to_thread(_delete_message, chat_id, msg_id)
                 deleted += 1
-                await asyncio.sleep(0.1) # (OK, non-blocking)
+                await asyncio.sleep(0.1)
             except Exception as e:
                 log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
 
-        # ⭐️ SỬA: Chạy CSDL trong thread
         await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
         await reply_md(update,f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
 
     except Exception as e:
         await reply_md(update,f"⚠️ Lỗi xử lý: {e}")
+
 
 # ==============================================
 # COMMAND: /report (CÓ CACHE + COOLDOWN + RETRY)
@@ -3979,7 +3998,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
                 ]
 
                 if git_info:
-                    parts.append(git_info)
+                    parts.append(f"`{git_info}`")
                 if auto_on_notice:
                     parts.append(auto_on_notice)
 
