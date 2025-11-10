@@ -215,6 +215,10 @@ RSS_FEEDS_MACRO = [
 NEWS_SPECIALIZED_INTERVAL_SECONDS = 30 * 60   # 30 phút
 NEWS_MACRO_INTERVAL_SECONDS = 60 * 60        # 60 phút
 
+# Số bài tối đa gửi cho mỗi user / mỗi vòng quét tin
+NEWS_MAX_ARTICLES_PER_CHAT = 3          # tin chuyên ngành
+NEWS_MACRO_MAX_ARTICLES_PER_RUN = 3     # tin vĩ mô (broadcast)
+
 # Map symbol -> list keyword (mã + tên doanh nghiệp)
 COMPANY_KEYWORDS: dict[str, list[str]] = {}
 
@@ -762,7 +766,7 @@ async def send_eod_summary():
 
             lines.append(line)
             has_any = True
- 
+
         if not has_any:
             continue
 
@@ -2402,6 +2406,9 @@ async def news_specialized_loop():
                     continue
                 patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
 
+            # Chuẩn bị map: mỗi chat_id -> list các message bài báo
+            news_by_chat: dict[int, list[str]] = {}
+
             # 6. Xử lý từng bài mới
             for it in new_entries:
                 title = it["title"] or ""
@@ -2434,7 +2441,7 @@ async def news_specialized_loop():
                             affected.setdefault(cid, []).append(sym)
 
                 if not affected:
-                    # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+                    # Không liên quan mã nào trong watchlist -> chỉ đánh dấu đã seen
                     await asyncio.to_thread(
                         mark_news_seen,
                         NEWS_FEED_TYPE_SPECIALIZED,
@@ -2445,7 +2452,7 @@ async def news_specialized_loop():
                     )
                     continue
                 
-                # (Xử lý text - OK, non-blocking)
+                # (Xử lý thời gian & tóm tắt - OK, non-blocking)
                 if isinstance(pub_dt, datetime.datetime):
                     pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
                 else:
@@ -2454,6 +2461,7 @@ async def news_specialized_loop():
                 if len(short_sum) > 300:
                     short_sum = short_sum[:280].rstrip() + "..."
 
+                # Build message cho từng chat, nhưng CHƯA gửi vội
                 for chat_id, syms in affected.items():
                     uniq_syms = sorted(set(syms))
                     lines = [
@@ -2463,7 +2471,7 @@ async def news_specialized_loop():
                         "*Liên quan tới:* " + ", ".join(uniq_syms),
                     ]
                     if short_sum:
-                        lines.extend(["", short_sum])
+                        lines.extend(["", f"{short_sum}"])
                     if source or pub_str:
                         lines.append("")
                         meta = []
@@ -2476,12 +2484,10 @@ async def news_specialized_loop():
                         lines.append("")
                         lines.append(f"🔗 {link}")
                     text = "\n".join(lines)
-                    
-                    # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
-                    await asyncio.to_thread(send_msg_to, chat_id, text)
-                    await asyncio.sleep(0.2) # (OK, non-blocking)
 
-                # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+                    news_by_chat.setdefault(chat_id, []).append(text)
+
+                # ⭐️ Đánh dấu bài này đã xử lý (cho dù gửi cho bao nhiêu chat)
                 await asyncio.to_thread(
                     mark_news_seen,
                     NEWS_FEED_TYPE_SPECIALIZED,
@@ -2491,10 +2497,248 @@ async def news_specialized_loop():
                     published=pub_dt,
                 )
 
+            # 7. Gửi bài cho từng user: 1 header có chuông + các bài silent (tối đa 3)
+            for chat_id, articles in news_by_chat.items():
+                total = len(articles)
+                max_per_chat = NEWS_MAX_ARTICLES_PER_CHAT
+                to_send = articles[:max_per_chat]
+
+                # Nếu chỉ có 1 bài -> gửi thẳng, không header, không silent
+                if total == 1:
+                    await asyncio.to_thread(send_msg_to, chat_id, to_send[0])
+                    await asyncio.sleep(0.2)
+                    continue
+
+                # Nhiều hơn 1 bài -> 1 header + các bài silent
+                header_lines = [
+                    f"📰 Hiện tại có {total} bài báo *chuyên ngành* mới liên quan tới danh mục của bạn.",
+                ]
+                if total > max_per_chat:
+                    header_lines.append(
+                        f"Mình sẽ gửi *{max_per_chat} bài tiêu biểu* ở chế độ im lặng để tránh làm phiền bạn."
+                    )
+                else:
+                    header_lines.append(
+                        "Mình sẽ gửi từng bài ngay sau đây ở chế độ *im lặng* để tránh làm phiền bạn."
+                    )
+                header_text = "\n".join(header_lines)
+
+                # Header: gửi bình thường (có noti)
+                await asyncio.to_thread(send_msg_to, chat_id, header_text)
+                await asyncio.sleep(0.2)
+
+                # Các bài: gửi silent để user vẫn thấy nhưng không rung máy
+                for text in to_send:
+                    await asyncio.to_thread(
+                        send_msg_to, chat_id, text, "Markdown", True  # silent=True
+                    )
+                    await asyncio.sleep(0.2)  # (OK, non-blocking)
+
+
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Lỗi tổng quát: {e}")
 
         await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS) # (OK, non-blocking)
+
+async def news_macro_loop():
+    """
+    Quét RSS vĩ mô, nếu có bài mới thì broadcast cho tất cả user
+    (nhưng CHỈ những user chưa tắt tin vĩ mô).
+    
+    (ĐÃ SỬA LỖI BLOCKING I/O)
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    warmed_up = False
+
+    while True:
+        loop_id += 1
+
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+
+        try:
+            # 1. Fetch RSS (OK, đã chạy non-blocking)
+            entries = await asyncio.to_thread(
+                fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
+            )
+
+            # 2. Warm-up
+            if not warmed_up:
+                # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+                count_in_db = await asyncio.to_thread(
+                    get_news_seen_count, NEWS_FEED_TYPE_MACRO
+                )
+                
+                if count_in_db == 0 and entries:
+                    for it in entries:
+                        # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+                        await asyncio.to_thread(
+                            mark_news_seen,
+                            NEWS_FEED_TYPE_MACRO,
+                            link=it["link"],
+                            guid=None,
+                            title=it["title"],
+                            published=it["published"],
+                        )
+                    warmed_up = True
+                    log.info(
+                        f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Warm-up lần đầu, lưu {len(entries)} bài, KHÔNG gửi tin."
+                    )
+                    await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                    continue
+                else:
+                    warmed_up = True
+
+            if not entries:
+                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài RSS.")
+                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                continue
+
+            # 3. Lọc bài mới (Sửa list comprehension thành for loop)
+            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+            new_entries = []
+            for it in entries:
+                is_seen = await asyncio.to_thread(
+                    has_news_seen, NEWS_FEED_TYPE_MACRO, it["link"]
+                )
+                if not is_seen:
+                    new_entries.append(it)
+            
+            if not new_entries:
+                log.info(
+                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài vĩ mô mới."
+                )
+                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                continue
+
+            # 4. Lấy danh sách user
+            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+            all_watch = await asyncio.to_thread(get_all_watch)
+
+            # 5. Format toàn bộ bài vĩ mô mới vào list (chưa gửi vội)
+            macro_texts: list[str] = []
+            total_articles = 0
+
+            for it in new_entries:
+                title = it["title"] or ""
+                link = it["link"] or ""
+                source = it.get("source") or ""
+                pub_dt = it.get("published")
+
+                # (Xử lý ngày giờ, làm sạch summary - OK, không blocking)
+                if isinstance(pub_dt, datetime.datetime):
+                    pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
+                else:
+                    pub_str = ""
+                raw_summary = it.get("summary") or ""
+                clean_summary = clean_html_text(raw_summary)
+                short_sum = clean_summary
+                if len(short_sum) > 400:
+                    short_sum = short_sum[:380].rstrip() + "..."
+                
+                # (Ghép nội dung - OK, không blocking)
+                lines = [
+                    f"🌏 *Tin vĩ mô mới:*\n",
+                    f"*{title}*",
+                ]
+                if short_sum:
+                    lines.extend(["", short_sum])
+                meta = []
+                if source:
+                    meta.append(f"_Nguồn:_ {source}")
+                if pub_str:
+                    meta.append(f"_Thời gian: {pub_str}_")
+                if meta:
+                    lines.append("")
+                    lines.append(" | ".join(meta))
+                if link:
+                    lines.append("")
+                    lines.append(f"🔗 {link}")
+                text = "\n".join(lines)
+
+                macro_texts.append(text)
+                total_articles += 1
+
+                # 6. Đánh dấu đã xử lý bài này (dù gửi cho bao nhiêu user)
+                await asyncio.to_thread(
+                    mark_news_seen,
+                    NEWS_FEED_TYPE_MACRO,
+                    link=link,
+                    guid=None,
+                    title=title,
+                    published=pub_dt,
+                )
+
+            if not macro_texts:
+                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài vĩ mô mới sau khi lọc.")
+                # quay lại vòng while, sẽ sleep ở cuối hàm
+            else:
+                max_macro = NEWS_MACRO_MAX_ARTICLES_PER_RUN
+                to_send_global = macro_texts[:max_macro]
+
+                # 7. Gửi tới từng user (header + silent)
+                total_sent_users = 0
+                for chat_key in all_watch.keys():
+                    try:
+                        chat_id = int(chat_key)
+                    except Exception:
+                        continue
+
+                    # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+                    is_enabled = await asyncio.to_thread(
+                        is_news_enabled_for_chat, chat_id, NEWS_FEED_TYPE_MACRO
+                    )
+                    if not is_enabled:
+                        continue
+
+                    # Chỉ 1 bài -> gửi thẳng, không header, không silent
+                    if total_articles == 1:
+                        await asyncio.to_thread(send_msg_to, chat_id, macro_texts[0])
+                        await asyncio.sleep(0.2)
+                        total_sent_users += 1
+                        continue
+
+                    # >= 2 bài -> header + các bài silent (tối đa 3)
+                    header_lines = [
+                        f"🌏 Hiện tại có {total_articles} bài báo *vĩ mô* mới đáng chú ý.",
+                    ]
+                    if total_articles > max_macro:
+                        header_lines.append(
+                            f"Mình sẽ gửi *{max_macro} bài tiêu biểu* ở chế độ im lặng để tránh làm phiền bạn."
+                        )
+                    else:
+                        header_lines.append(
+                            "Mình sẽ gửi từng bài ngay sau đây ở chế độ *im lặng* để tránh làm phiền bạn."
+                        )
+                    header_text = "\n".join(header_lines)
+
+                    # Header: gửi bình thường, có noti
+                    await asyncio.to_thread(send_msg_to, chat_id, header_text)
+                    await asyncio.sleep(0.2)
+
+                    # Các bài: silent để không spam noti
+                    for text in to_send_global:
+                        await asyncio.to_thread(
+                            send_msg_to, chat_id, text, "Markdown", True  # silent=True
+                        )
+                        await asyncio.sleep(0.2)
+
+                    total_sent_users += 1
+
+                log.info(
+                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đã gửi tin vĩ mô tới {total_sent_users} user "
+                    f"(tối đa {max_macro} bài / user, tổng {total_articles} bài trong vòng quét này)."
+                )
+
+
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
+
+        await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS) # (OK, non-blocking)
+
 
 async def news_cleanup_loop():
     """
@@ -2949,168 +3193,6 @@ def clean_html_text(raw: str) -> str:
 
     return text
 
-async def news_macro_loop():
-    """
-    Quét RSS vĩ mô, nếu có bài mới thì broadcast cho tất cả user
-    (nhưng CHỈ những user chưa tắt tin vĩ mô).
-    
-    (ĐÃ SỬA LỖI BLOCKING I/O)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    warmed_up = False
-
-    while True:
-        loop_id += 1
-
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue
-
-        try:
-            # 1. Fetch RSS (OK, đã chạy non-blocking)
-            entries = await asyncio.to_thread(
-                fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
-            )
-
-            # 2. Warm-up
-            if not warmed_up:
-                # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-                count_in_db = await asyncio.to_thread(
-                    get_news_seen_count, NEWS_FEED_TYPE_MACRO
-                )
-                
-                if count_in_db == 0 and entries:
-                    for it in entries:
-                        # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-                        await asyncio.to_thread(
-                            mark_news_seen,
-                            NEWS_FEED_TYPE_MACRO,
-                            link=it["link"],
-                            guid=None,
-                            title=it["title"],
-                            published=it["published"],
-                        )
-                    warmed_up = True
-                    log.info(
-                        f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Warm-up lần đầu, lưu {len(entries)} bài, KHÔNG gửi tin."
-                    )
-                    await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
-                    continue
-                else:
-                    warmed_up = True
-
-            if not entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài RSS.")
-                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
-                continue
-
-            # 3. Lọc bài mới (Sửa list comprehension thành for loop)
-            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-            new_entries = []
-            for it in entries:
-                is_seen = await asyncio.to_thread(
-                    has_news_seen, NEWS_FEED_TYPE_MACRO, it["link"]
-                )
-                if not is_seen:
-                    new_entries.append(it)
-            
-            if not new_entries:
-                log.info(
-                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài vĩ mô mới."
-                )
-                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
-                continue
-
-            # 4. Lấy danh sách user
-            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-            all_watch = await asyncio.to_thread(get_all_watch)
-
-            for it in new_entries:
-                title = it["title"] or ""
-                link = it["link"] or ""
-                source = it.get("source") or ""
-                pub_dt = it.get("published")
-
-                # (Xử lý ngày giờ, làm sạch summary - OK, không blocking)
-                if isinstance(pub_dt, datetime.datetime):
-                    pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
-                else:
-                    pub_str = ""
-                raw_summary = it.get("summary") or ""
-                clean_summary = clean_html_text(raw_summary)
-                short_sum = clean_summary
-                if len(short_sum) > 400:
-                    short_sum = short_sum[:380].rstrip() + "..."
-                
-                # (Ghép nội dung - OK, không blocking)
-                lines = [
-                    f"🌏 *Tin vĩ mô mới:*",
-                    title,
-                ]
-                if short_sum:
-                    lines.extend(["", short_sum])
-                meta = []
-                if source:
-                    meta.append(f"_Nguồn:_ {source}")
-                if pub_str:
-                    meta.append(f"_Thời gian: {pub_str}_")
-                if meta:
-                    lines.append("")
-                    lines.append(" | ".join(meta))
-                if link:
-                    lines.append("")
-                    lines.append(f"🔗 {link}")
-                text = "\n".join(lines)
-
-                # 5. Gửi tới user
-                sent = 0
-                for chat_key in all_watch.keys():
-                    try:
-                        chat_id = int(chat_key)
-                    except Exception:
-                        continue
-
-                    # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-                    is_enabled = await asyncio.to_thread(
-                        is_news_enabled_for_chat, chat_id, NEWS_FEED_TYPE_MACRO
-                    )
-                    if not is_enabled:
-                        continue
-
-                    try:
-                        # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
-                        await asyncio.to_thread(send_msg_to, chat_id, text)
-                        
-                        sent += 1
-                        await asyncio.sleep(0.2) # (OK, non-blocking)
-                    except Exception as e:
-                        log.warning(
-                            f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi gửi cho {chat_id}: {e}"
-                        )
-
-                log.info(
-                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đã gửi tin vĩ mô tới {sent} user."
-                )
-
-                # 6. Đánh dấu đã xử lý
-                # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-                await asyncio.to_thread(
-                    mark_news_seen,
-                    NEWS_FEED_TYPE_MACRO,
-                    link=link,
-                    guid=None,
-                    title=title,
-                    published=pub_dt,
-                )
-                await asyncio.sleep(1.0) # (OK, non-blocking)
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
-
-        await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS) # (OK, non-blocking)
-
 # ==============================
 # BÁO CÁO TÀI CHÍNH (BCTC)
 # ==============================
@@ -3325,33 +3407,42 @@ async def reply_md(update: Update, text: str, **kwargs):
             **kwargs,
         )
 
-def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown"):
-    """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1) với fallback an toàn."""
+def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False):
+    """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1) với fallback an toàn.
+    
+    silent=True -> gửi disable_notification (tin nhắn im lặng, không bật noti). 
+    """
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    def _do_send(t: str, mode: str | None):
+    def _do_send(t: str, mode: str | None, silent_flag: bool):
         params = {
             "chat_id": chat_id,
             "text": t,
         }
         if mode:
             params["parse_mode"] = mode
+        if silent_flag:
+            # Gửi tin im lặng, không rung / popup trên điện thoại
+            params["disable_notification"] = True
+
         res = requests.get(url, params=params, timeout=10)
         data = res.json()
         return data
 
     try:
         # Lần 1: gửi nguyên văn
-        data = _do_send(text, parse_mode)
+        data = _do_send(text, parse_mode, silent)
 
         # Nếu lỗi do Markdown -> escape và gửi lại
-        if (not data.get("ok")
+        if (
+            not data.get("ok")
             and parse_mode == "Markdown"
             and "description" in data
-            and "can't parse entities" in data["description"].lower()):
+            and "can't parse entities" in data["description"].lower()
+        ):
             log.warning(f"[WARN] Markdown parse error, retry with escaped text: {data}")
             safe_text = escape_markdown_v2(text)
-            data = _do_send(safe_text, parse_mode)
+            data = _do_send(safe_text, parse_mode, silent)
 
         if data.get("ok") and "result" in data:
             msg_id = data["result"]["message_id"]
@@ -3361,6 +3452,7 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown"):
 
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
+
 
 async def auto_on_after_delay(initial_active: bool):
     """
@@ -3623,7 +3715,7 @@ async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         lines = [
             "🧪 *Test tin vĩ mô:*",
-            title,
+            f"*\n{title}*",
             "",
             cleaned[:500] + ("..." if len(cleaned) > 500 else ""),
         ]
@@ -3775,7 +3867,7 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
 
         lines = [
             "🧪 *Test tin chuyên ngành:*",
-            title,
+            f"*\n{title}*",
             "",
             f"Match với mã: `{', '.join(hit_syms)}`",
         ]
