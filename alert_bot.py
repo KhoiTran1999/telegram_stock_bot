@@ -721,11 +721,6 @@ def get_quote(symbol: str):
             else "None"
         )
 
-        log.info(
-            f"[{INSTANCE_ID}] [QUOTE OK] {symbol} -> "
-            f"price={price_display}, pct={pct_display}, change_abs={change_abs_display}"
-        )
-
 
         return out
     except Exception as e:
