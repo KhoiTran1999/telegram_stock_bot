@@ -12,6 +12,7 @@ import pandas as pd
 import math
 import uuid
 import logging
+import tempfile
 from dotenv import load_dotenv
 load_dotenv()
 from telegram import Update
@@ -55,6 +56,10 @@ from db_utils import (
     add_bctc_queue,
     get_bctc_queue_by_date,
     clear_bctc_queue_entry,
+    export_core_data,
+    import_core_data,
+    get_last_restore_month,
+    mark_restore_done_now,
 )
 import psutil
 import time
@@ -79,6 +84,9 @@ PORT = int(os.getenv("PASSENGER_PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# 🗂 Thư mục tạm dùng chung cho backup/restore (tự động phù hợp Windows / Linux)
+TMP_DIR = tempfile.gettempdir()
 
 # Cấu hình batch cho screener Value
 VALUE_BATCH_SIZE = 30       # 50 mã / batch
@@ -3157,6 +3165,144 @@ async def financial_Statements_notice_loop():
             )
             await sleep_until(target, vn_tz)
 
+async def restore_reminder_loop():
+    """
+    Nhắc admin vào ngày 7 hằng tháng về việc backup/restore DB.
+
+    Logic:
+    - Nếu tháng hiện tại CHƯA có record /restore_core (get_last_restore_month != current YYYY-MM):
+        · Từ ngày 7 trở đi: nhắc admin.
+        · Lần nhắc đầu tiên mỗi tháng:
+            + Tự động backup core data và gửi file JSON cho admin.
+            + Gửi hướng dẫn chi tiết các bước đổi DB + restore.
+        · Sau lần đầu: cứ mỗi 1 giờ nhắc lại 1 lần (tin nhắn ngắn, có thể để silent).
+    - Khi admin chạy /restore_core thành công:
+        · mark_restore_done_now() -> tháng đó coi như đã xong, loop ngừng nhắc.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    last_reminder_at = None  # datetime trong timezone VN
+    full_msg_sent_for_month = None  # 'YYYY-MM' đã gửi hướng dẫn + auto backup
+
+    while True:
+        loop_id += 1
+
+        # Nếu chưa set ADMIN_ID => không làm gì
+        if ADMIN_ID is None:
+            await asyncio.sleep(3600)
+            continue
+
+        now = datetime.datetime.now(vn_tz)
+        month_key = now.strftime("%Y-%m")
+
+        # Lấy tháng gần nhất đã restore từ DB (blocking -> chạy trong thread)
+        try:
+            last_restore_month = await asyncio.to_thread(get_last_restore_month)
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][RESTORE_REMIND {loop_id}] Lỗi get_last_restore_month: {e}")
+            last_restore_month = None
+
+        needs_restore = (last_restore_month != month_key)
+
+        # Nếu tháng này đã restore rồi -> reset state, ngủ tiếp 1h
+        if not needs_restore:
+            full_msg_sent_for_month = None
+            last_reminder_at = None
+            await asyncio.sleep(3600)
+            continue
+
+        # Chưa restore, nhưng chưa tới ngày 7 => ngủ 1h
+        if now.day < 7:
+            await asyncio.sleep(3600)
+            continue
+
+        # Từ ngày 7 trở đi và chưa restore:
+        # Đảm bảo tối thiểu 1h giữa các lần nhắc
+        if last_reminder_at is not None:
+            delta = (now - last_reminder_at).total_seconds()
+            if delta < 3600:
+                await asyncio.sleep(300)  # check lại sau 5 phút
+                continue
+
+        try:
+            # Lần nhắc ĐẦU TIÊN của tháng -> auto backup + hướng dẫn chi tiết
+            if full_msg_sent_for_month != month_key:
+                # 1) Export core data
+                payload = await asyncio.to_thread(export_core_data)
+
+                # 2) Lưu file tạm
+                ts = now.strftime("%Y%m%d_%H%M%S")
+                filename = f"stockbot_core_backup_{month_key}_{ts}.json"
+                tmp_path = os.path.join(TMP_DIR, filename)
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+
+                # 3) Gửi file backup auto
+                await tg_app.bot.send_document(
+                    chat_id=ADMIN_ID,
+                    document=open(tmp_path, "rb"),
+                    filename=filename,
+                    caption=(
+                        f"📦 Auto backup dữ liệu core tháng {month_key} (lúc {ts}).\n"
+                        "- Bao gồm: bot_watch, news_pref, bot_config, bctc_notified.\n"
+                        "- Dùng file này cho /restore_core sau khi bạn tạo DB Postgres mới trên Render."
+                    ),
+                )
+
+                # 4) Gửi hướng dẫn chi tiết
+                instructions = (
+                    f"⚠️ *Nhắc định kỳ ngày 7 hằng tháng: KIỂM TRA RESTORE DATABASE*\n\n"
+                    f"Hiện tại bot *chưa ghi nhận* lần chạy lệnh `/restore_core` cho tháng *{month_key}*.\n\n"
+                    "👉 Quy trình đề xuất để đổi database Render (bản free ~30 ngày):\n\n"
+                    "1️⃣ *Export env từ database cũ trước và tạo database Postgres mới trên Render*\n"
+                    "   • Vào trang Render → Postgres → New Database.\n\n"
+                    "2️⃣ *Cập nhật biến môi trường `DATABASE_URL` cho web service*\n"
+                    "   • Mở web service của bot trên Render.\n"
+                    "   • Vào tab Environment.\n"
+                    "   • Dán Internal Database URL của DB mới vào biến `DATABASE_URL`.\n"
+                    "   • Bấm Save Changes.\n\n"
+                    "3️⃣ *Restart / redeploy web service*\n"
+                    "   • Bấm Manual Deploy → Clear build cache (hoặc Restart service).\n"
+                    "   • Chờ bot khởi động lại (log có dòng đã set webhook).\n\n"
+                    "4️⃣ *Restore dữ liệu core từ file backup*\n"
+                    "   • Dùng file backup `.json` (auto backup ngày hôm nay hoặc tạo mới bằng lệnh `/backup_core`).\n"
+                    "   • Gửi file đó cho bot, trong phần caption gõ: `/restore_core`.\n"
+                    "   • Hoặc: gửi file trước, rồi reply `/restore_core` vào tin nhắn chứa file.\n"
+                    "   • Bot sẽ khôi phục: watchlist của user, cài đặt tin tức, cấu hình bot, trạng thái BCTC đã thông báo.\n\n"
+                    f"✅ Sau khi hoàn tất bước 4, bot sẽ coi *tháng {month_key}* đã restore xong và *dừng nhắc mỗi giờ*.\n"
+                )
+
+                await send_md(
+                    tg_app.bot,
+                    ADMIN_ID,
+                    instructions,
+                )
+
+                full_msg_sent_for_month = month_key
+
+            else:
+                # Các lần nhắc tiếp theo trong tháng: tin nhắn ngắn, gửi silent cho đỡ ồn
+                short_msg = (
+                    f"⏰ Nhắc lại: Tháng {month_key} bạn vẫn *chưa chạy* `\\/restore_core`.\n"
+                    "Khi nào rảnh hãy:\n"
+                    "1) Tạo DB Postgres mới trên Render,\n"
+                    "2) Cập nhật `DATABASE_URL` của web service,\n"
+                    "3) Restart service,\n"
+                    "4) Gửi file backup `.json` kèm caption `\\/restore_core` để khôi phục dữ liệu core."
+                )
+                await send_md(
+                    tg_app.bot,
+                    ADMIN_ID,
+                    short_msg,
+                    disable_notification=True,  # nhắc im lặng để đỡ phiền
+                )
+
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][RESTORE_REMIND {loop_id}] Lỗi khi nhắc admin: {e}")
+
+        last_reminder_at = datetime.datetime.now(vn_tz)
+        await asyncio.sleep(300)  # sau 5 phút check lại
+
 
 def clean_html_text(raw: str) -> str:
     """
@@ -4304,7 +4450,111 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await reply_md(update, f"⚠️ Lỗi xử lý: {e}")
 
+async def cmd_backup_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin: backup dữ liệu core (watchlist + news_pref + bot_config + bctc_notified)
+    thành file JSON và gửi cho admin.
+    """
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
+    if ADMIN_ID is None or user_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    # Log command (chạy trong thread để không block)
+    await asyncio.to_thread(log_command_usage, chat_id, "/backup_core", ADMIN_ID)
+
+    await reply_md(update, "⏳ Đang backup dữ liệu core, vui lòng đợi...")
+
+    # Export dữ liệu core (DB I/O chạy trong thread)
+    payload = await asyncio.to_thread(export_core_data)
+
+    # Tạo file tạm trong container
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    ts = now.strftime("%Y%m%d_%H%M%S")
+    month_key = now.strftime("%Y-%m")
+    filename = f"stockbot_core_backup_{month_key}_{ts}.json"
+    tmp_path = os.path.join(TMP_DIR, filename)
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    # Gửi file cho admin
+    await context.bot.send_document(
+        chat_id=chat_id,
+        document=open(tmp_path, "rb"),
+        filename=filename,
+        caption=(
+            f"📦 Backup dữ liệu core lúc {ts} (tháng {month_key}).\n"
+            "- Bao gồm: bot_watch, news_pref, bot_config, bctc_notified.\n"
+            "- Dùng file này cho lệnh /restore_core sau khi tạo DB mới trên Render."
+        ),
+    )
+
+    await reply_md(update, "✅ Đã backup xong và gửi file cho bạn.")
+
+async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin: restore dữ liệu core từ file JSON backup.
+
+    Cách dùng:
+    - Cách 1: Gửi file backup kèm caption `/restore_core`.
+    - Cách 2: Gửi file backup trước, rồi reply `/restore_core` vào tin đó.
+    """
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if ADMIN_ID is None or user_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    await asyncio.to_thread(log_command_usage, chat_id, "/restore_core", ADMIN_ID)
+
+    msg = update.effective_message
+    doc = msg.document
+
+    # Nếu không có document trong chính message này, thử lấy trong reply_to_message
+    if not doc and msg.reply_to_message and msg.reply_to_message.document:
+        doc = msg.reply_to_message.document
+
+    if not doc:
+        await reply_md(
+            update,
+            "📂 Cách dùng lệnh /restore_core:\n"
+            "1️⃣ Gửi file backup `.json` kèm *caption* `/restore_core`, hoặc\n"
+            "2️⃣ Gửi file backup `.json` trước, rồi reply `/restore_core` vào tin đó.",
+        )
+        return
+
+    await reply_md(update, "⏳ Đang restore dữ liệu core, vui lòng đợi...")
+
+    try:
+        # Tải file về /tmp
+        tg_file = await doc.get_file()
+        tmp_path = os.path.join(TMP_DIR, doc.file_name or "backup_core.json")
+        await tg_file.download_to_drive(custom_path=tmp_path)
+
+
+        # Đọc JSON
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        # Ghi vào DB (mode=replace: xóa sạch 4 bảng core rồi insert lại)
+        await asyncio.to_thread(import_core_data, payload, "replace")
+
+        # Ghi nhận rằng tháng hiện tại đã restore xong
+        await asyncio.to_thread(mark_restore_done_now)
+
+        await reply_md(
+            update,
+            "✅ Đã restore dữ liệu core vào DB hiện tại.\n"
+            "Từ giờ bot sẽ coi *tháng hiện tại* đã restore xong và dừng nhắc mỗi giờ.",
+        )
+    except Exception as e:
+        log.exception(f"[{INSTANCE_ID}] Lỗi restore_core: {e}")
+        await reply_md(update, f"⚠️ Lỗi khi restore dữ liệu core: `{e}`")   
 
 
 # ==============================================
@@ -4745,6 +4995,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(news_macro_loop()),
                     MAIN_LOOP.create_task(news_cleanup_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
+                    MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                 ]
@@ -4795,8 +5046,10 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
             ("screener_value_clear", "(admin) Xóa dữ liệu screener cache (làm mới)"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
-            ("news_test_macro", "Gửi thử tin tức vĩ mô mới nhất"),
-            ("news_test_specialized", "Gửi thử tin tức vĩ mô mới nhất"),
+            ("news_test_macro", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
+            ("news_test_specialized", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
+            ("backup_core", "(admin) Backup dữ liệu core (watchlist, news_pref, BCTC)"),
+            ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
         ]
         await app.bot.set_my_commands(
             [BotCommand(cmd, desc) for cmd, desc in commands],
@@ -4904,14 +5157,17 @@ async def main():
         .build()
     )
 
-    # Đăng ký các command handlers (giữ nguyên code của bạn)
+    # User commands
     tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
+    tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
     tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
     tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
+
+    # Admin commands
     tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))
     tg_app.add_handler(CommandHandler("news_test_specialized", cmd_news_test_specialized))
     tg_app.add_handler(CommandHandler("on", cmd_on))
@@ -4920,8 +5176,18 @@ async def main():
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
-    tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
+    tg_app.add_handler(CommandHandler("backup_core", cmd_backup_core))
+    tg_app.add_handler(CommandHandler("restore_core", cmd_restore_core))
+
+    # 🆕 Bắt case gửi file JSON + caption /restore_core
+    tg_app.add_handler(
+        MessageHandler(
+            filters.Document.ALL & filters.CaptionRegex(r"^/restore_core(@\w+)?"),
+            cmd_restore_core,
+        )
+    )
+
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
     # Cấu hình máy chủ web
