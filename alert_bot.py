@@ -3600,11 +3600,19 @@ async def alert_loop():
 
             # 🧩 2️⃣ Cache dữ liệu quote cho từng symbol
             quote_cache = {}
+            successful_symbols = [] # <-- ĐÃ THÊM
             for sym in all_symbols:
                 # (ĐÃ SỬA Ở LẦN TRƯỚC - OK)
                 data = await asyncio.to_thread(get_quote, sym)
                 if data:
                     quote_cache[sym] = data
+                    successful_symbols.append(sym) # <-- ĐÃ THÊM
+            
+            # Khối log mới
+            if successful_symbols:
+                log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] [QUOTE OK] {', '.join(successful_symbols)}")
+            
+            # Log cũ
             log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Đã lấy dữ liệu cho {len(quote_cache)}/{len(all_symbols)} symbol.")
 
             # 🧩 3️⃣ Duyệt từng user & xử lý cảnh báo
@@ -3684,7 +3692,7 @@ async def alert_loop():
                 if messages:
                     header = f"--------------------------------\n⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*"
                     # Ghép các thông điệp trong messages (list[str]) lại thành 1 chuỗi
-                    messages_text = "\n\n".join(messages)
+                    messages_text = "\n".join(messages)
                     # Đặt messages trước, header sau
                     body = messages_text + "\n\n" + header  
                     
