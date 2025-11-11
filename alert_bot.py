@@ -2263,8 +2263,8 @@ async def daily_screener_loop():
             # 3. Gửi cho tất cả user
             log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu broadcast báo cáo screener...")
             
-            # ⭐️ SỬA LỖI DB/NETWORK: Chạy hàm broadcast (blocking) trong thread
-            await asyncio.to_thread(broadcast_to_all_watchers, text)
+            # ❌ KHÔNG dùng to_thread ở đây vì hàm này là async rồi
+            await broadcast_to_all_watchers(text)
             
             log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Hoàn tất broadcast.")
 
