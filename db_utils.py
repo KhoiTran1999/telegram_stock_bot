@@ -15,6 +15,15 @@ from news_seen_cache import (
     get_news_seen_count_redis,
 )
 from redis_client import get_redis
+import logging
+
+REDIS_DEBUG = os.getenv("REDIS_DEBUG", "False").lower() in ("1", "true", "yes")
+
+def redis_debug_log(message: str):
+    """In log nhẹ khi REDIS_DEBUG bật."""
+    if REDIS_DEBUG:
+        print(f"[CACHE] {message}")
+
 
 # Lấy DATABASE_URL từ biến môi trường Render
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -169,8 +178,11 @@ def get_all_watch():
                 # Redis trả cid là str, nhưng để chắc ăn convert int->str luôn
                 data[str(int(cid))] = {"list": wl}
             return data
-    except Exception:
+        else:
+            redis_debug_log("Redis empty → fallback DB (watch_chat_ids = 0)")
+    except Exception as e:
         # Nếu có lỗi Redis, thì bỏ qua và fallback DB
+        redis_debug_log(f"Redis error in get_all_watch(): {e}")
         pass
 
     # 2) Fallback: đọc toàn bộ từ DB
@@ -219,8 +231,11 @@ def get_watch_list_for_chat(chat_id: int):
             except Exception:
                 # Nếu parse lỗi thì bỏ qua, fallback DB
                 pass
-    except Exception:
+        else:
+            redis_debug_log(f"Redis miss watch:{chat_id}")           
+    except Exception as e:
         # Có lỗi Redis thì fallback DB
+        redis_debug_log(f"Redis error watch:{chat_id}: {e}")
         pass
 
     # 2) Fallback: đọc từ DB như cũ
@@ -559,11 +574,15 @@ def get_news_pref(chat_id: int) -> dict:
                     ),
                     "enable_macro": bool(data.get("enable_macro", True)),
                 }
-            except Exception:
+            except Exception as e:
                 # Nếu JSON lỗi thì bỏ qua, fallback DB
+                redis_debug_log(f"Redis error news_pref:{chat_id}: {e}")
                 pass
+        else:
+            redis_debug_log(f"Redis miss news_pref:{chat_id}")
     except Exception:
         # Redis lỗi -> fallback DB
+        redis_debug_log(f"Redis error news_pref:{chat_id}: {e}")
         pass
 
     # 2) Fallback: đọc từ DB
