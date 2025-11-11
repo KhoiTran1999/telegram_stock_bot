@@ -24,8 +24,9 @@ POOL = ConnectionPool(
     timeout=30,      # tối đa 30s chờ lấy connection trong pool
 )
 
-def get_conn(): #Lấy một connection từ pool.
-    return psycopg.connect(DATABASE_URL)
+def get_conn():
+    # Lấy connection từ pool (tái sử dụng, không mở/đóng liên tục nữa)
+    return POOL.connection()
 
 def init_db():
     """Tạo bảng nếu chưa có."""
