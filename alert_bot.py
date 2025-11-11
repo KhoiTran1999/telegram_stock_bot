@@ -75,6 +75,9 @@ import telegram
 import feedparser
 from telegram.error import TelegramError
 from urllib.parse import quote_plus
+from news_seen_cache import (
+    get_redis
+)
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -3516,6 +3519,54 @@ async def auto_on_after_delay(initial_active: bool):
             except Exception as e:
                 log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
 
+def load_seen_news_from_redis(feed_type: str, limit: int = 10) -> list[dict[str, Any]]:
+    """
+    Đọc danh sách bài đã seen từ Redis.
+    Giả sử key có dạng: news_seen:MACRO:<hash>, value là JSON {"title": "...", "published": "..."}.
+    Nếu value không phải JSON, sẽ fallback dùng raw value làm title.
+    """
+    ft = (feed_type or "").strip().upper()
+    if not ft:
+        return []
+
+    pattern = f"news_seen:{ft}:*"
+    r = get_redis()
+
+    items: list[dict[str, Any]] = []
+    for key in r.scan_iter(pattern, count=200):
+        val = r.get(key)
+        title = ""
+        published_dt = None
+
+        if val:
+            try:
+                obj = json.loads(val)
+                title = obj.get("title") or ""
+                pub_str = obj.get("published")
+                if pub_str:
+                    published_dt = datetime.datetime.fromisoformat(pub_str)
+            except Exception:
+                # Nếu không phải JSON, dùng raw value làm title
+                if isinstance(val, (bytes, bytearray)):
+                    title = val.decode("utf-8", errors="ignore")
+                else:
+                    title = str(val)
+
+        if not published_dt:
+            # Nếu không có thời gian, cho về mốc 1970 để sort cho dễ
+            published_dt = datetime.datetime(1970, 1, 1)
+
+        items.append(
+            {
+                "title": title,
+                "published": published_dt,
+            }
+        )
+
+    # Sắp xếp mới nhất trước
+    items.sort(key=lambda x: x["published"], reverse=True)
+    return items[:limit]
+
 
 # ==============================================
 # COMMAND HANDLERS
@@ -3709,219 +3760,47 @@ async def cmd_news_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (HÀM NÀY ĐÃ AN TOÀN) """
+    """Xem danh sách bài vĩ mô đã seen gần nhất trong Redis."""
     chat_id = update.effective_chat.id
-
     if chat_id != ADMIN_ID:
         await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
         return
 
-    await reply_md(update, "⏱ Đang đọc RSS macro, đợi xíu nhé...")
+    await reply_md(update, "📡 Đang lấy danh sách bài *vĩ mô* từ Redis...")
 
-    try:
-        # (OK: Hàm này đã được bọc `to_thread` trong code gốc)
-        entries = await asyncio.to_thread(
-            fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
-        )
-    except Exception as e:
-        await reply_md(update, f"❌ Lỗi đọc RSS macro: `{e}`")
-        return
-
+    entries = await asyncio.to_thread(load_seen_news_from_redis, NEWS_FEED_TYPE_MACRO, 10)
     if not entries:
-        await reply_md(update, "❌ Không đọc được bài nào từ RSS macro.")
+        await reply_md(update, "❌ Không có bài vĩ mô nào trong Redis (news_seen:MACRO).")
         return
 
-    # Lấy 2 bài mới nhất để test
-    for it in entries[:2]:
-        title = it["title"] or ""
-        raw_summary = it.get("summary") or ""
-        link = it["link"] or ""
-        source = it.get("source") or ""
-        pub_dt = it.get("published")
+    lines = ["🧪 *Các bài vĩ mô gần nhất:*"]
+    for e in entries:
+        pub_str = e["published"].strftime("%Y-%m-%d %H:%M") if e["published"] else ""
+        lines.append(f"• {e['title']} ({pub_str})")
 
-        cleaned = clean_html_text(raw_summary)
-
-        if isinstance(pub_dt, datetime.datetime):
-            pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
-        else:
-            pub_str = ""
-
-        lines = [
-            "🧪 *Test tin vĩ mô:*",
-            f"*\n{title}*",
-            "",
-            cleaned[:500] + ("..." if len(cleaned) > 500 else ""),
-        ]
-
-        meta = []
-        if source:
-            meta.append(f"Nguồn: {source}")
-        if pub_str:
-            meta.append(f"Thời gian: {pub_str}")
-        if meta:
-            lines.append("")
-            lines.append(" | ".join(meta))
-
-        if link:
-            lines.append("")
-            lines.append(f"🔗 {link}")
-
-        await reply_md(update, "\n".join(lines))
-        await asyncio.sleep(0.3)
+    await reply_md(update, "\n".join(lines))
 
 async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
+    """Xem danh sách bài chuyên ngành đã seen gần nhất trong Redis."""
     chat_id = update.effective_chat.id
-
     if chat_id != ADMIN_ID:
         await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
         return
 
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/news_test_specialized", ADMIN_ID)
+    await reply_md(update, "📡 Đang lấy danh sách bài *chuyên ngành* từ Redis...")
 
-    # 1) Lấy danh sách symbol để test
-    args = context.args or []
-    symbols_raw: list[str] = []
-
-    if args:
-        symbols_raw = args
-    else:
-        # ⭐️ SỬA: Chạy CSDL trong thread
-        watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-        symbols_raw = watch
-
-    symbols = sorted({s.strip().upper() for s in symbols_raw if s.strip()})
-    if not symbols:
-        await reply_md(
-            update,
-            "❌ Không có mã nào để test.\n\n"
-            "Hãy dùng:\n"
-            "- `/news_test_specialized HPG SSI`\n"
-            "hoặc\n"
-            "- Thêm mã vào danh mục rồi chạy `/news_test_specialized` không tham số.",
-        )
-        return
-
-    await reply_md(
-        update,
-        "⏱ Đang đọc RSS *chuyên ngành* và quét theo các mã:\n"
-        f"`{', '.join(symbols)}`\n"
-        "_(chỉ lấy khoảng vài bài match đầu tiên để hiển thị)_",
-    )
-
-    # 2) Gộp URL RSS chuyên ngành
-    all_specialized_urls: list[str] = []
-    for urls in RSS_FEEDS_SPECIALIZED.values():
-        all_specialized_urls.extend(urls)
-
-    try:
-        # (OK: Hàm này đã được bọc `to_thread` trong code gốc)
-        entries = await asyncio.to_thread(
-            fetch_rss_entries_for_urls, all_specialized_urls
-        )
-    except Exception as e:
-        await reply_md(update, f"❌ Lỗi đọc RSS chuyên ngành: `{e}`")
-        return
-
+    entries = await asyncio.to_thread(load_seen_news_from_redis, NEWS_FEED_TYPE_SPECIALIZED, 10)
     if not entries:
-        await reply_md(update, "❌ Không đọc được bài nào từ RSS chuyên ngành.")
+        await reply_md(update, "❌ Không có bài chuyên ngành nào trong Redis (news_seen:SPECIALIZED).")
         return
 
-    # (Phần còn lại của hàm này không có I/O nên an toàn)
-    
-    # 3) Chuẩn bị pattern cho từng symbol dùng COMPANY_KEYWORDS
-    patterns: dict[str, re.Pattern] = {}
-    for sym in symbols:
-        keywords = COMPANY_KEYWORDS.get(sym, [sym])
-        combined = "|".join(re.escape(k) for k in keywords if k)
-        if not combined:
-            continue
-        patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
+    lines = ["🧪 *Các bài chuyên ngành gần nhất:*"]
+    for e in entries:
+        pub_str = e["published"].strftime("%Y-%m-%d %H:%M") if e["published"] else ""
+        lines.append(f"• {e['title']} ({pub_str})")
 
-    if not patterns:
-        await reply_md(
-            update,
-            "❌ Không tạo được pattern cho bất kỳ mã nào.\n"
-            "Kiểm tra lại COMPAN​Y_KEYWORDS hoặc file `ssi_master_list.csv`.",
-        )
-        return
+    await reply_md(update, "\n".join(lines))
 
-    # 4) Quét từng bài, tìm xem match symbol nào
-    matched_items: list[tuple[dict, list[str]]] = []  # (entry, [symbols])
-    for it in entries:
-        title = it["title"] or ""
-        raw_summary = it.get("summary") or ""
-        
-        decoded_summary = clean_html_text(raw_summary)
-        text_for_match = (title + " " + decoded_summary)
-
-        if not text_for_match.strip():
-            continue
-
-        hit_syms: list[str] = []
-        for sym, pat in patterns.items():
-            if pat.search(text_for_match):
-                hit_syms.append(sym)
-
-        if hit_syms:
-            matched_items.append((it, sorted(set(hit_syms))))
-
-        if len(matched_items) >= 5:
-            break
-
-    if not matched_items:
-        await reply_md(
-            update,
-            "ℹ️ Không tìm thấy bài chuyên ngành nào match với các mã:\n"
-            f"`{', '.join(symbols)}`\n"
-            "Thử lại sau hoặc thử với mã khác.",
-        )
-        return
-
-    # 5) Gửi kết quả test cho admin
-    for it, hit_syms in matched_items:
-        title = it["title"] or ""
-        raw_summary = it.get("summary") or ""
-        link = it["link"] or ""
-        source = it.get("source") or ""
-        pub_dt = it.get("published")
-
-        decoded_summary = clean_html_text(raw_summary)
-
-        if isinstance(pub_dt, datetime.datetime):
-            pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
-        else:
-            pub_str = ""
-
-        short_sum = decoded_summary
-        if len(short_sum) > 400:
-            short_sum = short_sum[:380].rstrip() + "..."
-
-        lines = [
-            "🧪 *Test tin chuyên ngành:*",
-            f"*\n{title}*",
-            "",
-            f"Match với mã: `{', '.join(hit_syms)}`",
-        ]
-        if short_sum:
-            lines.extend(["", short_sum])
-
-        meta = []
-        if source:
-            meta.append(f"Nguồn: {source}")
-        if pub_str:
-            meta.append(f"Thời gian: {pub_str}")
-        if meta:
-            lines.append("")
-            lines.append(" | ".join(meta))
-
-        if link:
-            lines.append("")
-            lines.append(f"🔗 {link}")
-
-        await reply_md(update, "\n".join(lines))
-        await asyncio.sleep(0.3)
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
