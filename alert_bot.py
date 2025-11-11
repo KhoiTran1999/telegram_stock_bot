@@ -1099,10 +1099,6 @@ def format_perf_line(sym: str, perf: dict) -> str:
 
 
 def build_prompt_for_symbols(symbols: list[str]) -> str:
-    """
-    Lấy GIÁ + % NGÀY / TUẦN / THÁNG thật từ lịch sử giá,
-    rồi build prompt gửi vào LLM (MiniMax M2 qua OpenRouter).
-    """
     lines = []
     for sym in symbols:
         perf = get_perf_history(sym)
@@ -1111,44 +1107,33 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
         lines.append(format_perf_line(sym, perf))
 
     if not lines:
-        return (
-            "Danh mục hiện tại không có dữ liệu giá, hãy trả lời gọn: "
-            "Chưa có dữ liệu để tổng hợp báo cáo hôm nay."
-        )
+        return "Không có dữ liệu giá để tạo báo cáo."
 
     data_block = "\n".join(lines)
 
     prompt = f"""
-Bạn là chuyên gia phân tích chứng khoán Việt Nam.
+Bạn là chuyên viên phân tích chứng khoán Việt Nam. 
+Hãy viết *báo cáo đầu tư trung–dài hạn (3–12 tháng)* cho danh mục dưới đây, dùng giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
 
-Hãy viết một bản tin Telegram gửi cho khách hàng sau phiên giao dịch hôm nay.
-
-Dữ liệu danh mục của khách (giá + % thay đổi):
+Dữ liệu danh mục:
 {data_block}
 
-YÊU CẦU:
-1. Với từng mã, hãy:
-   - Nhắc lại giá hiện tại và % thay đổi trong ngày, tuần, tháng (dựa đúng vào dữ liệu ở trên). Định dạng giá cổ phiếu ví dụ sẽ là 10.000đ
-   - Hãy cập nhật thông tin mới nhất về mã cổ phiếu, nếu không có gì mới, hãy đưa ra nhận định & phân tích về giao dịch trong ngày (cho thêm tí emoji cho sinh động):
-     điểm mạnh, rủi ro, và gợi ý chiến lược nắm giữ / chốt lời 
-     (nhưng KHÔNG dùng giọng ép buộc kiểu 'phải mua/bán').
-2. Viết bằng tiếng Việt, giọng điệu dễ gần thậm chí là cà khịa nhưng dễ hiểu, phù hợp gửi qua Telegram.
-3. Có thể dùng emoji cho sinh động, nhưng không lạm dụng.
-4. Không đặt câu hỏi ở cuối bản tin, chỉ tóm tắt / kết luận nhẹ.
-5. Quan trọng là không được đưa ra khuyến nghị mua bán cụ thể, chỉ phân tích và nhận định chung.
-
-FORMAT:
-- Mỗi mã theo block:
+Với MỖI cổ phiếu, trình bày theo mẫu:
 
 🔹 MÃ
 - Giá hiện tại: ...
-- Biến động: Ngày ..., Tuần ..., Tháng ...
-- Thông tin mới: ...
-- Nhận định: ...
+- KQKD nổi bật: (tóm tắt kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
+- Triển vọng: (các động lực 6–12 tháng tới như dự án, mở rộng, chính sách hỗ trợ, xu hướng ngành)
+- Rủi ro: (yếu tố tiêu cực như pháp lý, nợ vay, giá nguyên liệu, chu kỳ)
+- Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi thêm)
 
-- Cuối cùng thêm 1–2 câu tổng kết chung về danh mục (thiên về ngành nào, rủi ro / cơ hội tổng thể).
+Cuối cùng viết phần:
+📊 **Tổng quan danh mục:** (nhận xét cơ cấu ngành, mức rủi ro chung và gợi ý định hướng 3–12 tháng)
 
-Hãy trả về đúng nội dung tin nhắn Telegram, KHÔNG giải thích thêm.
+Yêu cầu:
+- Không nói chuyện “hôm nay tăng giảm”, không nêu giá mục tiêu.
+- Giọng phân tích chuyên nghiệp, tránh câu khẳng định tuyệt đối.
+- Mỗi mã ngắn gọn, rõ ý, tối đa khoảng 800 ký tự.
 """
     return prompt.strip()
 
