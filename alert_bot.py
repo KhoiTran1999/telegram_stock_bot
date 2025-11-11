@@ -3283,12 +3283,12 @@ async def restore_reminder_loop():
             else:
                 # Các lần nhắc tiếp theo trong tháng: tin nhắn ngắn, gửi silent cho đỡ ồn
                 short_msg = (
-                    f"⏰ Nhắc lại: Tháng {month_key} bạn vẫn *chưa chạy* `\\/restore_core`.\n"
+                    f"⏰ Nhắc lại: Tháng {month_key} bạn vẫn *chưa chạy* `/restore_core`.\n"
                     "Khi nào rảnh hãy:\n"
                     "1) Tạo DB Postgres mới trên Render,\n"
                     "2) Cập nhật `DATABASE_URL` của web service,\n"
                     "3) Restart service,\n"
-                    "4) Gửi file backup `.json` kèm caption `\\/restore_core` để khôi phục dữ liệu core."
+                    "4) Gửi file backup `.json` kèm caption `/restore_core` để khôi phục dữ liệu core."
                 )
                 await send_md(
                     tg_app.bot,
@@ -3612,13 +3612,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• `/allwatch` – Xem & thống kê toàn bộ danh sách mã được user theo dõi\n"
     "• `/screener_value_clear` – Làm mới dữ liệu screener cache\n"
     "• `/delete_range` – Xóa tin nhắn bot gửi trong một khoảng thời gian\n"
+    "• `/backup_core` – Backup dữ liệu core (watchlist, news_pref, BCTC)\n"
+    "• `/restore_core` – Khôi phục dữ liệu core từ file backup\n"
     "• `/news_test_macro` – Gửi thử tin tức vĩ mô mới nhất\n"
     "• `/news_test_specialized` – Gửi thử tin tức chuyên ngành/doanh nghiệp\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi ngay hôm nay bằng lệnh `/add <MÃ>`!"
 )
-
-
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
