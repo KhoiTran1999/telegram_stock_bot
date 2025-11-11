@@ -469,7 +469,7 @@ NOTICE_SPECS = [
         "label": "AFTERNOON_CLOSE",
         "hour": 14,
         "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
-        "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:45...ứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
+        "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:45... Hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
     },
     {
         "label": "EOD_SUMMARY",

@@ -14,7 +14,7 @@ from news_seen_cache import (
     mark_news_seen_redis,
     get_news_seen_count_redis,
 )
-
+from redis_client import get_redis
 
 # Lấy DATABASE_URL từ biến môi trường Render
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -146,17 +146,84 @@ def init_db():
 # WATCHLIST
 # ==========================================
 def get_all_watch():
-    """Trả về dict {str(chat_id): {'list': [...]}}."""
-    data = {}
+    """
+    Trả về dict {str(chat_id): {'list': [...]}}.
+    Ưu tiên đọc từ Redis, nếu miss / lỗi thì fallback DB và warm lại Redis.
+    """
+    data: dict[str, dict] = {}
+
+    # 1) Thử đọc từ Redis trước
+    try:
+        r = get_redis()
+        chat_ids = r.smembers("watch_chat_ids") or set()
+        if chat_ids:
+            for cid in chat_ids:
+                raw = r.get(f"watch:{cid}")
+                if raw:
+                    try:
+                        wl = json.loads(raw)
+                    except Exception:
+                        wl = []
+                else:
+                    wl = []
+                # Redis trả cid là str, nhưng để chắc ăn convert int->str luôn
+                data[str(int(cid))] = {"list": wl}
+            return data
+    except Exception:
+        # Nếu có lỗi Redis, thì bỏ qua và fallback DB
+        pass
+
+    # 2) Fallback: đọc toàn bộ từ DB
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id, watch_list FROM bot_watch")
-            for chat_id, watch_list in cur.fetchall():
-                data[str(chat_id)] = {"list": watch_list or []}
+            rows = cur.fetchall()
+
+    for chat_id, watch_list in rows:
+        data[str(chat_id)] = {"list": watch_list or []}
+
+    # 3) Warm lại Redis từ DB (best-effort)
+    try:
+        r = get_redis()
+        pipe = r.pipeline()
+        pipe.delete("watch_chat_ids")
+        for chat_id, watch_list in rows:
+            key = f"watch:{chat_id}"
+            wl = watch_list or []
+            if wl:
+                pipe.set(key, json.dumps(wl))
+                pipe.sadd("watch_chat_ids", chat_id)
+            else:
+                pipe.delete(key)
+                pipe.srem("watch_chat_ids", chat_id)
+        pipe.execute()
+    except Exception:
+        pass
+
     return data
 
 
+
 def get_watch_list_for_chat(chat_id: int):
+    """
+    Lấy watchlist của 1 chat_id.
+    Ưu tiên đọc từ Redis, nếu miss thì fallback DB và warm lại cache.
+    """
+    # 1) Thử lấy từ Redis trước
+    try:
+        r = get_redis()
+        raw = r.get(f"watch:{chat_id}")
+        if raw is not None:
+            try:
+                return json.loads(raw)
+            except Exception:
+                # Nếu parse lỗi thì bỏ qua, fallback DB
+                pass
+    except Exception:
+        # Có lỗi Redis thì fallback DB
+        pass
+
+    # 2) Fallback: đọc từ DB như cũ
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -164,19 +231,55 @@ def get_watch_list_for_chat(chat_id: int):
                 (chat_id,),
             )
             row = cur.fetchone()
-    return row[0] if row else None
+    watch_list = row[0] if row else None
 
+    # 3) Warm lại Redis nếu có dữ liệu
+    if watch_list is not None:
+        try:
+            r = get_redis()
+            key = f"watch:{chat_id}"
+            if watch_list:
+                r.set(key, json.dumps(watch_list))
+                r.sadd("watch_chat_ids", chat_id)
+            else:
+                r.delete(key)
+                r.srem("watch_chat_ids", chat_id)
+        except Exception:
+            pass
+
+    return watch_list
 
 def save_watch_list_for_chat(chat_id: int, watch_list):
+    """
+    Lưu watchlist vào DB và đồng thời cập nhật cache Redis.
+    """
+    # 1) Ghi vào DB (nguồn sự thật)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO bot_watch (chat_id, watch_list)
                 VALUES (%s, %s::jsonb)
                 ON CONFLICT (chat_id)
                 DO UPDATE SET watch_list = EXCLUDED.watch_list
-            """, (chat_id, json.dumps(watch_list)))
+                """,
+                (chat_id, json.dumps(watch_list)),
+            )
         conn.commit()
+
+    # 2) Cập nhật Redis cache (best-effort, không để lỗi Redis làm chết hàm)
+    try:
+        r = get_redis()
+        key = f"watch:{chat_id}"
+        if watch_list:
+            r.set(key, json.dumps(watch_list))
+            r.sadd("watch_chat_ids", chat_id)
+        else:
+            r.delete(key)
+            r.srem("watch_chat_ids", chat_id)
+    except Exception:
+        pass
+
 
 # ==========================================
 # BOT ACTIVE (BẢO TRÌ)
@@ -440,8 +543,30 @@ def get_news_seen_count(feed_type: str) -> int:
 def get_news_pref(chat_id: int) -> dict:
     """
     Lấy preference nhận tin tức của 1 user.
+    Ưu tiên đọc từ Redis, nếu miss thì fallback DB và warm lại cache.
     Mặc định: cả hai đều True nếu chưa có record.
     """
+    # 1) Thử lấy từ Redis
+    try:
+        r = get_redis()
+        raw = r.get(f"news_pref:{chat_id}")
+        if raw is not None:
+            try:
+                data = json.loads(raw)
+                return {
+                    "enable_specialized": bool(
+                        data.get("enable_specialized", True)
+                    ),
+                    "enable_macro": bool(data.get("enable_macro", True)),
+                }
+            except Exception:
+                # Nếu JSON lỗi thì bỏ qua, fallback DB
+                pass
+    except Exception:
+        # Redis lỗi -> fallback DB
+        pass
+
+    # 2) Fallback: đọc từ DB
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -451,13 +576,23 @@ def get_news_pref(chat_id: int) -> dict:
             row = cur.fetchone()
 
     if not row:
-        return {"enable_specialized": True, "enable_macro": True}
+        pref = {"enable_specialized": True, "enable_macro": True}
+    else:
+        enable_specialized, enable_macro = row
+        pref = {
+            "enable_specialized": bool(enable_specialized),
+            "enable_macro": bool(enable_macro),
+        }
 
-    enable_specialized, enable_macro = row
-    return {
-        "enable_specialized": bool(enable_specialized),
-        "enable_macro": bool(enable_macro),
-    }
+    # 3) Warm lại Redis (best-effort)
+    try:
+        r = get_redis()
+        r.set(f"news_pref:{chat_id}", json.dumps(pref))
+    except Exception:
+        pass
+
+    return pref
+
 
 
 def set_news_pref(
@@ -466,25 +601,42 @@ def set_news_pref(
     enable_macro: bool | None = None,
 ):
     """
-    Cập nhật preference nhận tin:
-    - Nếu None -> giữ nguyên giá trị cũ (hoặc True mặc định nếu chưa có record).
+    Cập nhật preference nhận tin tức cho 1 user.
+    Ghi vào DB và sync sang Redis.
     """
     current = get_news_pref(chat_id)
+
     if enable_specialized is None:
         enable_specialized = current["enable_specialized"]
     if enable_macro is None:
         enable_macro = current["enable_macro"]
 
+    # 1) Ghi vào DB
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO news_pref (chat_id, enable_specialized, enable_macro)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (chat_id) DO UPDATE
                 SET enable_specialized = EXCLUDED.enable_specialized,
                     enable_macro       = EXCLUDED.enable_macro
-            """, (chat_id, enable_specialized, enable_macro))
+                """,
+                (chat_id, enable_specialized, enable_macro),
+            )
         conn.commit()
+
+    # 2) Cập nhật Redis (best-effort)
+    pref = {
+        "enable_specialized": bool(enable_specialized),
+        "enable_macro": bool(enable_macro),
+    }
+    try:
+        r = get_redis()
+        r.set(f"news_pref:{chat_id}", json.dumps(pref))
+    except Exception:
+        pass
+
 
 def cleanup_old_news_seen(max_age_days: int = 7) -> int:
     """
