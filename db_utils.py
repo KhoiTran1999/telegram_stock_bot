@@ -9,6 +9,13 @@ from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 load_dotenv()
 
+from news_seen_cache import (
+    has_news_seen_redis,
+    mark_news_seen_redis,
+    get_news_seen_count_redis,
+)
+
+
 # Lấy DATABASE_URL từ biến môi trường Render
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -404,19 +411,13 @@ def clear_stock_value_cache():
         conn.commit()
 
 # ==========================================
-# NEWS: RSS SEEN + PREFERENCES
+# NEWS: RSS SEEN + PREFERENCES + REDIS
 # ==========================================
 def has_news_seen(feed_type: str, link: str) -> bool:
-    """Kiểm tra xem 1 bài báo (link) của loại feed_type đã được xử lý chưa."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM news_seen WHERE feed_type = %s AND link = %s LIMIT 1",
-                (feed_type, link),
-            )
-            row = cur.fetchone()
-    return row is not None
-
+    """
+    Bọc lại hàm Redis để giữ API cũ cho alert_bot.py.
+    """
+    return has_news_seen_redis(feed_type, link)
 
 def mark_news_seen(
     feed_type: str,
@@ -425,29 +426,17 @@ def mark_news_seen(
     title: str | None = None,
     published=None,
 ):
-    """Đánh dấu 1 bài báo là đã xử lý (đã gửi hoặc đã warm-up)."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO news_seen (feed_type, guid, link, title, published)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (feed_type, link) DO NOTHING
-            """, (feed_type, guid, link, title, published))
-        conn.commit()
-
+    """
+    Bọc lại hàm Redis. guid/title/published hiện chưa dùng trong Redis,
+    nhưng giữ tham số để không phải sửa các chỗ gọi hàm.
+    """
+    mark_news_seen_redis(feed_type, link)
 
 def get_news_seen_count(feed_type: str) -> int:
-    """Số lượng bài đã lưu dấu theo từng loại feed (MACRO / SPECIALIZED)."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM news_seen WHERE feed_type = %s",
-                (feed_type,),
-            )
-            row = cur.fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
-
-
+    """
+    Dùng Redis để đếm số bài đã seen (cho logic warm-up).
+    """
+    return get_news_seen_count_redis(feed_type)
 def get_news_pref(chat_id: int) -> dict:
     """
     Lấy preference nhận tin tức của 1 user.
@@ -499,25 +488,10 @@ def set_news_pref(
 
 def cleanup_old_news_seen(max_age_days: int = 7) -> int:
     """
-    Xoá các bản ghi news_seen có created_at cũ hơn max_age_days (mặc định 7 ngày).
-    Trả về số dòng đã xoá.
+    Trước đây dọn DB, giờ không cần nữa vì Redis tự hết hạn theo TTL.
+    Giữ hàm này để news_cleanup_loop vẫn gọi được mà không lỗi.
     """
-    if max_age_days <= 0:
-        max_age_days = 1  # chống ngáo
-
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Dùng created_at vì bảng không có seen_at
-            cur.execute(
-                f"""
-                DELETE FROM news_seen
-                WHERE created_at < NOW() - INTERVAL '{max_age_days} days'
-                """
-            )
-            deleted = cur.rowcount or 0
-        conn.commit()
-
-    return deleted
+    return 0
 
 def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
     """Kiểm tra user có bật nhận loại tin feed_type hay không."""

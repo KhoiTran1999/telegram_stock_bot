@@ -2749,51 +2749,12 @@ async def news_macro_loop():
 
 async def news_cleanup_loop():
     """
-    Dọn bảng news_seen mỗi ngày 1 lần:
-    - Chỉ giữ lại các bản ghi trong 7 ngày gần nhất
-    - Xoá các dòng có created_at < NOW() - INTERVAL '7 days'
+    Loop dọn news_seen (giữ lại để tương thích, nhưng Redis đã tự xoá theo TTL).
     """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
     while True:
-        loop_id += 1
+        log.info("[NEWS_CLEANUP] Redis tự xoá news_seen, không cần dọn thủ công.")
+        await asyncio.sleep(3600)  # chạy mỗi 1h chỉ để log nhắc nhẹ
 
-        # Nếu bot đang tắt (bảo trì) thì không dọn, ngủ 60s rồi kiểm tra lại
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-
-        # Chạy lúc 03:00 sáng mỗi ngày (giờ VN)
-        next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
-        if next_run <= now:
-            next_run += datetime.timedelta(days=1)
-
-        wait_sec = max((next_run - now).total_seconds(), 1)
-        log.info(
-            f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Ngủ {wait_sec:.0f}s tới lần dọn news_seen tiếp theo (lúc {next_run})."
-        )
-        await asyncio.sleep(wait_sec)
-
-        # Dậy xong kiểm tra lại trạng thái bot
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Thức dậy nhưng bot TẮT, bỏ qua dọn news_seen.")
-            continue
-
-        try:
-            # Chạy hàm dọn DB trong thread (vì là blocking I/O)
-            deleted = await asyncio.to_thread(cleanup_old_news_seen, 7)
-            log.info(
-                f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] "
-                f"Đã xoá {deleted} bản ghi news_seen cũ hơn 7 ngày."
-            )
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NEWS_CLEAN {loop_id}] Lỗi khi dọn news_seen: {e}")
-            # nếu lỗi thì nghỉ 5 phút rồi tính lịch lại ở vòng sau
-            await asyncio.sleep(300)
 
 # ==============================
 # BÁO CÁO TÀI CHÍNH (BCTC) LOOP

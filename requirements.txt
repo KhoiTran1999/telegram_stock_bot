@@ -10,3 +10,4 @@ python-dotenv
 feedparser
 asgiref
 psycopg[binary,pool]
+redis

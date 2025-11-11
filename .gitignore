@@ -4,3 +4,6 @@
 .venv
 
 *.test_vnstock_import.py
+
+__pycache__/
+*.pyc
