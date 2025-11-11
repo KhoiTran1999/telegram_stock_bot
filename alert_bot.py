@@ -8,6 +8,7 @@ import datetime
 import asyncio
 import pytz
 import requests
+import pytz
 import pandas as pd
 import math
 import uuid
@@ -77,6 +78,11 @@ from telegram.error import TelegramError
 from urllib.parse import quote_plus
 from news_seen_cache import (
     get_redis
+)
+from report_cache import (
+    make_report_cache_key,
+    get_report_from_redis,
+    save_report_to_redis,
 )
 
 # ==============================================
@@ -1973,12 +1979,19 @@ def format_roe_pct(roe_decimal: float | None) -> str:
 # ==============================================
 # BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
 # ==============================================
-async def daily_report_loop():
+async def weekly_report_loop():
     """
-    Gửi báo cáo danh mục cho từng user vào 09:00 sáng Chủ Nhật hằng tuần
-    (dùng chung cache với /report, có retry nếu lỗi LLM).
-    
-    (ĐÃ SỬA LỖI BLOCKING I/O)
+    Gửi báo cáo danh mục cho từng user vào 09:00 sáng Chủ Nhật hằng tuần.
+
+    Logic:
+    - Ngủ tới 09:00 Chủ Nhật gần nhất (theo TIMEZONE).
+    - Lấy toàn bộ watchlist từ DB.
+    - Với từng danh mục:
+        · Chuẩn hoá danh mục -> cache_key (HPG-SSI-VNM).
+        · Thử lấy báo cáo từ Redis:
+              - Nếu còn hạn (<= DEFAULT_MAX_AGE_DAYS) -> gửi luôn.
+              - Nếu không có / quá cũ -> gọi LLM tạo mới.
+        · Lưu báo cáo mới vào Redis để /report có thể dùng lại bất cứ lúc nào.
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -1990,16 +2003,16 @@ async def daily_report_loop():
         if not BOT_ACTIVE:
             log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] [gửi báo cáo tự động 09:00 Chủ Nhật hằng tuần] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
-            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
+            continue  # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
 
         if not OPENROUTER_API_KEY:
             log.warning(
-                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Chưa có OPENROUTER_API_KEY, "
-                "bỏ qua gửi báo cáo tuần, sleep 3600s."
+                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Chưa có OPENROUTER_API_KEY, bỏ qua gửi báo cáo tuần, sleep 3600s."
             )
             await asyncio.sleep(3600)
             continue
 
+        # Ngủ tới 09:00 Chủ Nhật gần nhất
         wait_sec = seconds_until_next_weekly_report()
         log.info(
             f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
@@ -2018,8 +2031,8 @@ async def daily_report_loop():
 
         try:
             log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bắt đầu gửi báo cáo tuần")
-            
-            # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
+
+            # ⭐️ Chạy CSDL trong thread
             all_watch = await asyncio.to_thread(get_all_watch)
 
             if not all_watch:
@@ -2034,7 +2047,7 @@ async def daily_report_loop():
             for chat_key, user_block in all_watch.items():
                 # ❗️ KIỂM TRA BOT TRƯỚC KHI GỬI CHO TỪNG USER
                 if not BOT_ACTIVE:
-                    log.info(f"[{INSTANCE_ID}][WEEKLY] Bot TẮT giữa chừng, dừng gửi.")
+                    log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bot TẮT giữa chừng, dừng gửi.")
                     break
 
                 chat_id = int(chat_key)
@@ -2052,27 +2065,31 @@ async def daily_report_loop():
                     skipped_count += 1
                     continue
 
-                cache_key = "-".join(sorted(symbols))
-                now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+                cache_key = make_report_cache_key(symbols)
+                log.info(
+                    f"[{INSTANCE_ID}][WEEKLY {loop_id}] Xử lý chat_id={chat_id}, cache_key={cache_key}"
+                )
 
-                # 🧠 Dùng cache nếu còn hạn (12h) để tiết kiệm token
-                if cache_key in REPORT_CACHE:
-                    cached_text, cached_time = REPORT_CACHE[cache_key]
-                    if (now - cached_time).total_seconds() < 12 * 3600:
-                        
-                        # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
-                        await asyncio.to_thread(send_msg_to, chat_id, cached_text)
-                        
-                        log.info(
-                            f"[{INSTANCE_ID}][WEEKLY] Cache hit cho {chat_id} ({cache_key})"
-                        )
-                        await asyncio.sleep(1.5)
-                        sent_count += 1
-                        continue
+                # 🧠 Dùng cache Redis nếu còn hạn để tiết kiệm token
+                cached = get_report_from_redis(cache_key)
+                if cached is not None:
+                    cached_text, generated_at = cached
+                    log.info(
+                        f"[{INSTANCE_ID}][WEEKLY {loop_id}] Cache hit (Redis) cho {chat_id} ({cache_key}), generated_at={generated_at}"
+                    )
+
+                    # Chạy send_msg_to (blocking) trong thread
+                    await asyncio.to_thread(send_msg_to, chat_id, cached_text)
+                    sent_count += 1
+
+                    # Giãn nhịp gửi để tránh spam Telegram (3s/user)
+                    await asyncio.sleep(3)
+                    continue
 
                 # 🧩 Gọi AI (có retry - OK, non-blocking)
                 async def fetch_report_with_retry():
                     retry = 0
+                    last_text = "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau."
                     while retry < 3:
                         start = time.time()
                         text = await asyncio.to_thread(
@@ -2080,29 +2097,36 @@ async def daily_report_loop():
                         )
                         duration = time.time() - start
                         log.info(
-                            f"[{INSTANCE_ID}][WEEKLY] Round {retry+1} cho {chat_id} ({duration:.1f}s)"
+                            f"[{INSTANCE_ID}][WEEKLY {loop_id}] Round {retry+1} cho {chat_id} ({duration:.1f}s)"
                         )
+                        last_text = text
 
                         if "⚠️" not in text and "429" not in text:
                             return text
                         retry += 1
                         await asyncio.sleep(10 * retry)
-                    return text
+                    return last_text
 
                 try:
                     text = await fetch_report_with_retry()
-                    REPORT_CACHE[cache_key] = (text, now)
-                    
-                    # ⭐️ SỬA LỖI NETWORK: Chạy send_msg_to (blocking) trong thread
+
+                    # Lưu vào Redis để /report có thể dùng lại
+                    save_report_to_redis(cache_key, text, source="weekly_loop")
+
+                    now = datetime.datetime.now(vn_tz)
+                    footer = f"\n\n🕓 _Báo cáo được tạo vào {now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+                    final_text = text.strip() + footer
+
+                    # Chạy send_msg_to (blocking) trong thread
                     await asyncio.to_thread(send_msg_to, chat_id, text)
-                    
+
                     log.info(
-                        f"[{INSTANCE_ID}][WEEKLY] Đã gửi báo cáo tuần cho {chat_id}"
+                        f"[{INSTANCE_ID}][WEEKLY {loop_id}] Đã gửi báo cáo tuần cho {chat_id}"
                     )
                     sent_count += 1
                 except Exception as e:
                     log.warning(
-                        f"[{INSTANCE_ID}][WEEKLY] Lỗi gửi cho {chat_id}: {e}"
+                        f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi gửi cho {chat_id}: {e}"
                     )
 
                 # Giãn nhịp gửi để tránh spam Telegram (3s/user)
@@ -2115,6 +2139,7 @@ async def daily_report_loop():
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi tổng quát: {e}")
             await asyncio.sleep(300)  # 5 phút retry nếu lỗi tổng
+
 
 async def screener_value_update_loop():
     """
@@ -4398,87 +4423,92 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==============================================
-# COMMAND: /report (CÓ CACHE + COOLDOWN + RETRY)
-# Cache nội dung report theo danh mục
-REPORT_CACHE = {}
-REPORT_COOLDOWN = {}  # {chat_id: last_time}
-
+# COMMAND: /report (CÓ CACHE REDIS + RETRY, KHÔNG COOLDOWN)
+# Cache nội dung report theo danh mục vào Redis (theo cache_key = danh mục chuẩn hoá)
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
+    """
+    Gửi báo cáo danh mục hiện tại cho user.
+
+    - Không cooldown: user có thể gọi bất cứ lúc nào.
+    - Ưu tiên đọc cache từ Redis (theo danh mục chuẩn hoá).
+    - Nếu chưa có cache hoặc cache quá cũ -> gọi LLM tạo mới & lưu lại Redis.
+    """
+
     if not BOT_ACTIVE:
-        await reply_md(update,"⚙️ Bot đang bảo trì.")
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
+
+    vn_tz = pytz.timezone(TIMEZONE)
 
     if not update or not update.effective_chat:
         return
 
     chat_id = update.effective_chat.id
 
-    await reply_md(update, f"🔎 vui lòng đợi...")
-    
-    # (Phần xử lý cooldown an toàn, không I/O)
-    now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-    COOLDOWN_SECONDS = 24 * 3600
-    last_time = REPORT_COOLDOWN.get(chat_id)
-    if last_time and (now - last_time).total_seconds() < COOLDOWN_SECONDS:
-        remaining = int(COOLDOWN_SECONDS - (now - last_time).total_seconds())
-        hours = remaining // 3600
-        mins = (remaining % 3600) // 60
-        await reply_md(update,
-            f"⏳ /report chỉ được dùng 1 lần mỗi ngày. "
-            f"Vui lòng thử lại sau {hours} giờ {mins} phút."
-        )
-        return
+    # Nhắc nhẹ trước để user biết bot đang xử lý
+    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp báo cáo danh mục...")
 
-    REPORT_COOLDOWN[chat_id] = now
-    # ⭐️ SỬA: Chạy CSDL trong thread
+    # Ghi log sử dụng lệnh (chạy trong thread để tránh block)
     await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
 
-    # ⭐️ SỬA: Chạy CSDL trong thread
+    # Lấy danh mục từ DB (chạy trong thread)
     watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
     symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
 
     if not symbols:
-        await reply_md(update,"📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
+        await reply_md(update, "📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
         return
 
-    cache_key = "-".join(sorted(symbols))
-    await reply_md(update,"⏳ Đang tổng hợp báo cáo danh mục, vui lòng đợi vài giây...")
+    cache_key = make_report_cache_key(symbols)
+    log.info(f"[{INSTANCE_ID}] /report cache_key={cache_key} for chat_id={chat_id}")
 
-    # (Phần xử lý cache an toàn, không I/O)
-    if cache_key in REPORT_CACHE:
-        log.info(f"[{INSTANCE_ID}] /report cache hit for {chat_id} ({cache_key})")
-        cached_text, cached_time = REPORT_CACHE[cache_key]
-        if (now - cached_time).total_seconds() < 12 * 3600:
-            await reply_md(update,cached_text)
-            return
+    # 1️⃣ Thử lấy báo cáo từ Redis trước
+    cached = get_report_from_redis(cache_key)
+    if cached is not None:
+        text, generated_at = cached
+        log.info(...)
+        footer = f"\n\n🕓 _Báo cáo được tạo vào {generated_at.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+        final_text = text.strip() + footer
+        await reply_md(update, final_text)
+        return
 
-    # (OK: Hàm fetch_report_with_retry đã an toàn, 
-    #  vì nó gọi call_chatgpt_for_report, 
-    #  mà call_chatgpt_for_report đã được bọc `to_thread` bên trong)
+
+    # 2️⃣ Nếu không có cache -> gọi LLM với cơ chế retry
     async def fetch_report_with_retry():
         retry = 0
+        last_text = "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau."
         while retry < 3:
             start = time.time()
-            # (OK: call_chatgpt_for_report là blocking, nhưng đã được bọc to_thread)
             text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
             duration = time.time() - start
-            log.info(f"[{INSTANCE_ID}] /report round {retry+1} done in {duration:.2f}s")
+            log.info(
+                f"[{INSTANCE_ID}] /report round {retry+1} done in {duration:.2f}s (chat_id={chat_id})"
+            )
+            last_text = text
 
             if "⚠️ Hiện tại không tạo được" not in text and "429" not in text:
                 return text
             retry += 1
             await asyncio.sleep(10 * retry)
-        return text
+        return last_text
 
     text = await fetch_report_with_retry()
-    REPORT_CACHE[cache_key] = (text, now)
+
+    # 3️⃣ Lưu vào Redis để lần sau /report hoặc weekly_report_loop dùng lại
+    save_report_to_redis(cache_key, text, source="on_demand")
+
+    now = datetime.now(vn_tz)
+    footer = f"\n\n🕓 _Báo cáo được tạo vào {now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+    final_text = text.strip() + footer
 
     try:
-        await reply_md(update,text)
+        await reply_md(update, text)
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] Lỗi gửi báo cáo /report cho {chat_id}: {e}")
-        await reply_md(update,"📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.")
+        await reply_md(
+            update,
+            "📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.",
+        )
 
 # ==============================================
 # VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL)
@@ -4827,7 +4857,7 @@ async def asgi_wrapper_app(scope, receive, send):
                 BACKGROUND_TASKS = [
                     MAIN_LOOP.create_task(alert_loop()),
                     MAIN_LOOP.create_task(session_notice_loop()),
-                    MAIN_LOOP.create_task(daily_report_loop()),
+                    MAIN_LOOP.create_task(weekly_report_loop()),
                     MAIN_LOOP.create_task(screener_value_update_loop()),
                     MAIN_LOOP.create_task(daily_screener_loop()),
                     MAIN_LOOP.create_task(initial_value_precompute_loop()),
