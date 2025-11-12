@@ -86,7 +86,7 @@ from report_cache import (
 )
 from pathlib import Path
 from vnstock import Quote
-
+from openai import OpenAI
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -1177,56 +1177,105 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
 
     prompt = build_prompt_for_symbols(symbols)
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        # 2 header này OpenRouter khuyến khích gửi thêm
-        "HTTP-Referer": "https://github.com/Thinpad/telegram_stock_bot",
-        "X-Title": "Telegram Stock Bot",
-    }
-    body = {
-        "model": "minimax/minimax-m2:free",  # MiniMax M2 free trên OpenRouter
-        "messages": [
-            {
-                "role": "system",
-                "content": "Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram.",
-            },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        "temperature": 0.4,
-    }
-
+    # Tạo client OpenRouter (sử dụng SDK openai)
     try:
-        resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
-        if resp.status_code != 200:
-            log.warning(
-                f"[{INSTANCE_ID}][LLM ERROR] HTTP {resp.status_code}: {resp.text[:300]}"
-            )
-            return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM trả lỗi HTTP). Bạn thử lại sau nhé."
-
-        data = resp.json()
-        if "error" in data:
-            log.warning(f"[{INSTANCE_ID}][LLM ERROR] {data['error']}")
-            return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM báo lỗi nội bộ)."
-
-        choices = data.get("choices")
-        if not choices:
-            log.warning(
-                f"[{INSTANCE_ID}][LLM ERROR] Response không có 'choices': {list(data.keys())}"
-            )
-            return "⚠️ Hiện tại không tạo được báo cáo danh mục (không nhận được nội dung phù hợp)."
-
-        content = choices[0]["message"]["content"]
-        return content.strip()
-
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][LLM EXCEPTION] {e}")
-        return "⚠️ Hiện tại không tạo được báo cáo danh mục do lỗi kết nối LLM."
+        log.warning(f"[{INSTANCE_ID}][LLM INIT ERROR] {e}")
+        return "⚠️ Không khởi tạo được OpenRouter client."
+    
+    models = [
+        "minimax/minimax-m2",      # hoạt động ổn định nhất hiện tại
+    ]
 
+     # Prompt messages
+    messages = [
+        {
+            "role": "user",
+            "content": f"Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram. {prompt}",
+        },
+    ]
+    
+     # Gọi OpenRouter có retry + fallback
+    last_error = None
+    for model in models:
+        for attempt in range(3):
+            try:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                )
+                text = completion.choices[0].message.content.strip()
+                log.info(f"[{INSTANCE_ID}][LLM OK] Model={model} round={attempt+1}")
+                return text
+
+            except Exception as e:
+                last_error = e
+                log.warning(
+                    f"[{INSTANCE_ID}][LLM ERROR] Model={model} round={attempt+1}: {e}"
+                )
+                log.info(f"[{INSTANCE_ID}][LLM ERROR] OPENROUTER_API_KEY: {OPENROUTER_API_KEY}")
+                time.sleep(20)  # exponential backoff
+                continue
+
+    return (
+        f"⚠️ Hiện tại không tạo được báo cáo danh mục (LLM lỗi: {type(last_error).__name__}). "
+        "Bạn thử lại sau nhé."
+    )
+
+
+#--------------------------------------------------------------------
+    # url = "https://openrouter.ai/api/v1/chat/completions"
+    # headers = {
+    #     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    #     "Content-Type": "application/json",
+    # }
+    # body = {
+    #     "model": "z-ai/glm-4.5-air:free",  # MiniMax M2 free trên OpenRouter
+    #     "messages": [
+    #         {
+    #             "role": "user",
+    #             "content": "Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram.",
+    #         },
+    #         {
+    #             "role": "user",
+    #             "content": prompt,
+    #         },
+    #     ],
+    #     "temperature": 0.4,
+    # }
+
+    # try:
+    #     resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
+    #     if resp.status_code != 200:
+    #         log.warning(
+    #             f"[{INSTANCE_ID}][LLM ERROR] HTTP {resp.status_code}: {resp.text[:300]}"
+    #         )
+    #         return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM trả lỗi HTTP). Bạn thử lại sau nhé."
+
+    #     data = resp.json()
+    #     if "error" in data:
+    #         log.warning(f"[{INSTANCE_ID}][LLM ERROR] {data['error']}")
+    #         return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM báo lỗi nội bộ)."
+
+    #     choices = data.get("choices")
+    #     if not choices:
+    #         log.warning(
+    #             f"[{INSTANCE_ID}][LLM ERROR] Response không có 'choices': {list(data.keys())}"
+    #         )
+    #         return "⚠️ Hiện tại không tạo được báo cáo danh mục (không nhận được nội dung phù hợp)."
+
+    #     content = choices[0]["message"]["content"]
+    #     return content.strip()
+
+    # except Exception as e:
+    #     log.warning(f"[{INSTANCE_ID}][LLM EXCEPTION] {e}")
+    #     return "⚠️ Hiện tại không tạo được báo cáo danh mục do lỗi kết nối LLM."
+
+#--------------------------------------------
 
 def seconds_until_next_weekly_report():
     """
@@ -2261,7 +2310,7 @@ async def alert_loop():
 
 async def weekly_report_loop():
     """
-    (ĐÃ SỬA) Gửi báo cáo danh mục cho từng user (Pro + Admin)
+    Gửi báo cáo danh mục cho từng user (Pro + Admin)
     vào 09:00 sáng Chủ Nhật hằng tuần.
     """
     vn_tz = pytz.timezone(TIMEZONE)
@@ -5166,6 +5215,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1️⃣ Thử lấy báo cáo từ Redis trước
     cached = get_report_from_redis(cache_key)
+
     if cached is not None:
         text, generated_at = cached
         log.info(...)
