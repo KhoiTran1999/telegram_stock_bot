@@ -1,6 +1,3 @@
-# ==============================================
-# alert_bot.py - phiên bản dùng OpenRouter + MiniMax M2
-# ==============================================
 import os
 import json
 import random
@@ -1343,14 +1340,19 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 # 🧮 SCREENER VALUE – PRECOMPUTE
 # ==============================
-def precompute_value_data():
+def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool = True):
     """
     Crawl P/E, P/B, ROE (TCBS) VÀ Thanh khoản, Tài sản (VCI Price Board)
     lưu vào stock_value_cache.
     (Phiên bản hoàn chỉnh, đã fix _safe_float)
-    
-    ⚠️ HÀM NÀY LÀ BLOCKING (ĐỒNG BỘ) VÀ PHẢI ĐƯỢC GỌI BẰNG
-    `await asyncio.to_thread(precompute_value_data)`
+
+    Tham số:
+    - full_refresh=False: chỉ fill các mã CHƯA có trong DB (dùng cho lần chạy đầu).
+    - full_refresh=True : quét TOÀN BỘ mã và ghi đè (dùng cho lịch 00:00 hằng ngày).
+    - skip_if_fresh_today=True: nếu đã refresh hôm nay thì bỏ qua (tránh double-run khi restart).
+
+    ⚠️ HÀM NÀY LÀ BLOCKING (ĐỒNG BỘ) VÀ PHẢI ĐƯỢC GỌI BẰNG:
+        await asyncio.to_thread(precompute_value_data, ...)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
@@ -1359,7 +1361,7 @@ def precompute_value_data():
         f"{started_at.strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
-    # 1️⃣ Lấy danh sách tất cả mã từ Listing
+    # 1) Lấy danh sách mã từ Listing()
     try:
         listing = Listing()
         listing_df = listing.all_symbols()
@@ -1396,7 +1398,7 @@ def precompute_value_data():
     symbols = filtered_df[symbol_col].dropna().unique().tolist()
     log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã từ Listing(): {len(symbols)}")
 
-    # 🔹 Load industry_map từ CSV (Topi)
+    # 🔹 Load industry map từ CSV (Topi)
     industry_map = load_industry_map_from_csv("ssi_master_list.csv")
     if industry_map:
         symbols = [s for s in symbols if s in industry_map]
@@ -1416,52 +1418,16 @@ def precompute_value_data():
         (c for c in exchange_col_candidates if c in filtered_df.columns),
         None,
     )
-    
+
+    # Tiền xử lý: map thông tin exchange/floor từ listing_df (nếu có)
     exchange_map = {}
     if exchange_col:
-        exchange_map = pd.Series(
-            filtered_df[exchange_col].values, 
-            index=filtered_df[symbol_col].str.upper()
-        ).to_dict()
-        log.info(f"[{INSTANCE_ID}][VALUE] Đã map được {len(exchange_map)} mã với sàn (exchange).")
-    else:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột sàn (exchange/floor/san).")
-
-    # ❗️ TẢI FILE SÀN 1 LẦN (FIX 2)
-    floor_map = load_floor_map_from_csv("ssi_master_list.csv")
-    if not floor_map:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không load được ssi_master_list.csv, "
-                    "dữ liệu 'floor' sẽ bị NULL.")
-    
-    # ❗️ Copy 2 hàm helper này vào đây để dùng
-    def _norm(x):
-        if x is None: return None
         try:
-            if hasattr(x, "item"): x = x.item()
-        except Exception: pass
-        try: x = float(x)
-        except Exception: return None
-        if isinstance(x, float) and math.isnan(x): return None
-        return x
-
-    def _pick_from_candidates(row, candidates, substrings):
-        for key in candidates:
-            try:
-                if key in row:
-                    v = _norm(row.get(key, None))
-                    if v is not None: return v
-            except Exception: continue
-        for k in row.index:
-            name = ""
-            if isinstance(k, tuple):
-                name = str(k[1]).lower()
-            else:
-                name = str(k).lower()
-            if any(sub in name for sub in substrings):
-                try: v = _norm(row.get(k, None))
-                except Exception: v = None
-                if v is not None: return v
-        return None
+            tmp = filtered_df[[symbol_col, exchange_col]].dropna()
+            for _, row in tmp.iterrows():
+                exchange_map[str(row[symbol_col]).upper()] = str(row[exchange_col]).upper()
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][VALUE] Không build được exchange_map: {e}")
 
     # Khởi tạo trading 1 lần
     try:
@@ -1469,25 +1435,52 @@ def precompute_value_data():
     except Exception as e:
         trading = None
         log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
-        return # Bắt buộc phải có trading để tính TK/TS
+        return  # Bắt buộc phải có trading để tính TK/TS
 
-    # 2️⃣ Đọc các mã đã có trong DB để auto-resume
+    # 2️⃣ Đọc các mã đã có trong DB (để quyết định full refresh / fill mới)
     existing_records = load_stock_value_cache()
-    processed_symbols = {r["symbol"] for r in existing_records if r.get("symbol")}
-    todo_symbols = [s for s in symbols if s not in processed_symbols]
 
-    total_symbols = len(symbols)
-    total_todo = len(todo_symbols)
-    already = len(processed_symbols)
+    # Nếu yêu cầu full_refresh thì có thể bỏ qua cơ chế resume + cho phép skip nếu đã fresh hôm nay
+    if full_refresh and skip_if_fresh_today:
+        try:
+            last = max(
+                (r.get("updated_at") for r in existing_records if r.get("updated_at")),
+                default=None
+            )
+            if last is not None:
+                last_vn_date = last.astimezone(vn_tz).date() if last.tzinfo else last.date()
+                today_vn_date = started_at.date()
+                if last_vn_date == today_vn_date:
+                    log.info(
+                        f"[{INSTANCE_ID}][VALUE] stock_value_cache đã được refresh hôm nay ({today_vn_date}), bỏ qua."
+                    )
+                    return
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}][VALUE] Không kiểm tra được last updated_at: {e}")
 
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Đã có trong DB: {already} | "
-        f"Cần crawl thêm: {total_todo} | Tổng: {total_symbols}"
-    )
-
-    if not todo_symbols:
+    # 🔹 Chọn tập mã cần crawl
+    if full_refresh:
+        todo_symbols = symbols
+        already = 0
+        total_symbols = len(symbols)
+        total_todo = len(todo_symbols)
         log.info(
-            f"[{INSTANCE_ID}][VALUE] Không còn mã cần crawl, kết thúc precompute."
+            f"[{INSTANCE_ID}][VALUE] CHẾ ĐỘ FULL REFRESH: crawl toàn bộ {total_todo}/{total_symbols} mã."
+        )
+    else:
+        processed_symbols = {r["symbol"] for r in existing_records if r.get("symbol")}
+        todo_symbols = [s for s in symbols if s not in processed_symbols]
+        total_symbols = len(symbols)
+        total_todo = len(todo_symbols)
+        already = len(processed_symbols)
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Đã có trong DB: {already} | "
+            f"Cần crawl thêm: {total_todo} | Tổng: {total_symbols}"
+        )
+
+    if total_todo == 0:
+        log.info(
+            f"[{INSTANCE_ID}][VALUE] Không còn mã cần crawl. Kết thúc precompute."
         )
         return
 
@@ -1505,18 +1498,55 @@ def precompute_value_data():
                 val = val.item()
         except Exception:
             pass
-        
-        # FIX: Ép kiểu sang float TRƯỚC khi gọi isnan
-        try:
-            val = float(val)
-        except Exception:
-            return None # Nếu không thể convert sang float, trả về None
-        
-        if math.isnan(val):
-            return None
-            
-        return val
 
+        try:
+            if isinstance(val, str):
+                val = val.strip()
+                if val == "" or val.lower() in {"nan", "none", "null"}:
+                    return None
+                # thay dấu phẩy bằng chấm nếu cần
+                if "," in val and val.count(",") == 1 and "." not in val:
+                    val = val.replace(",", ".")
+            v = float(val)
+        except Exception:
+            return None  # Nếu không thể convert sang float, trả về None
+
+        if math.isnan(v):
+            return None
+        return v
+
+    def _norm(x):
+        try:
+            if pd.isna(x):
+                return None
+        except Exception:
+            pass
+        return x
+
+    # Tìm nhanh các cột có chứa cụm từ mong muốn (dùng cho DataFrame có MultiIndex)
+    def _pick_from_candidates(row, candidates, substrings):
+        for key in candidates:
+            try:
+                if key in row:
+                    v = _norm(row.get(key, None))
+                    if v is not None:
+                        return v
+            except Exception:
+                continue
+        for k in row.index:
+            name = ""
+            if isinstance(k, tuple):
+                name = str(k[1]).lower()
+            else:
+                name = str(k).lower()
+            if any(sub in name for sub in substrings):
+                try:
+                    v = _norm(row.get(k, None))
+                except Exception:
+                    v = None
+                if v is not None:
+                    return v
+        return None
 
     for batch_idx in range(total_batches):
         batch_syms = todo_symbols[
@@ -1524,41 +1554,26 @@ def precompute_value_data():
         ]
         log.info(
             f"[{INSTANCE_ID}][VALUE] Batch {batch_idx+1}/{total_batches} – "
-            f"{len(batch_syms)} mã."
+            f"{len(batch_syms)} symbols: {', '.join(batch_syms[:8])}"
         )
 
-        # ❗️ TỐI ƯU: LẤY TK/TS THEO BATCH
-        liquidity_map: dict[str, float] = {}
-        asset_map: dict[str, float] = {}
+        # 3️⃣ Lấy price_board cho batch để có 'floor' + proxies
+        pb_df = None
         try:
-            pb_df = trading.price_board(batch_syms)
-            if pb_df is not None and not pb_df.empty:
-                for idx, row in pb_df.iterrows():
-                    sym = None
-                    for ksym in [("listing", "symbol"), ("stock", "symbol"), ("listing", "ticker")]:
-                        try: val = row.get(ksym, None)
-                        except Exception: val = None
-                        if val: sym = str(val).upper(); break
-                    if not sym: sym = str(idx).upper()
-                    
-                    price = _pick_from_candidates(row, [("match", "match_price"), ("match", "reference_price"), ("listing", "ref_price")], ["price"])
-                    volume = _pick_from_candidates(row, [("match", "accumulated_vol"), ("match", "match_volume")], ["vol"])
-                    shares = _pick_from_candidates(row, [("listing", "listed_share"), ("listing", "outstanding_share"), ("listing", "listed_shares"), ("listing", "outstanding_shares")],["share"])
-
-                    if price is not None and volume is not None:
-                        liquidity_map[sym] = float(price) * float(volume)
-                    if price is not None and shares is not None:
-                        asset_map[sym] = float(price) * float(shares)
+            pb_df = trading.price_board(symbols=batch_syms)
+            # Gợi ý: log cột để map
+            if pb_df is not None:
+                log.info(f"[{INSTANCE_ID}][VALUE] price_board columns: {pb_df.columns.tolist()}")
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi price_board batch: {e}")
-        
+
         batch_records = []
 
         for sym in batch_syms:
             sym = str(sym).upper()
-            
-            # ⭐️ SỬA LỖI BLOCKING: Đổi `await asyncio.sleep` -> `time.sleep`
-            time.sleep(per_symbol_sleep) # Vẫn sleep để throttle fin.ratio
+
+            # ⭐️ SỬA LỖI BLOCKING: Đổi await asyncio.sleep -> time.sleep
+            time.sleep(per_symbol_sleep)  # Vẫn sleep để throttle fin.ratio
 
             ratio_df = None
             last_err = None
@@ -1577,10 +1592,8 @@ def precompute_value_data():
                     )
                     if "Rate limit exceeded" in msg:
                         log.warning(
-                            f"[{INSTANCE_ID}][VALUE] Bị rate limit từ TCBS, nghỉ {rate_limit_sleep}s rồi thử lại (lần {attempt+1}/3)..."
+                            f"[{INSTANCE_ID}][VALUE] Bị rate limit TCBS, nghỉ {rate_limit_sleep}s rồi thử lại (lần {attempt+1}/3)..."
                         )
-                        
-                        # ⭐️ SỬA LỖI BLOCKING: Đổi `await asyncio.sleep` -> `time.sleep`
                         time.sleep(rate_limit_sleep)
                         continue
                     else:
@@ -1588,66 +1601,126 @@ def precompute_value_data():
                 except Exception as e:
                     last_err = e
                     log.warning(
-                        f"[{INSTANCE_ID}][VALUE] Lỗi Finance.ratio(TCBS) cho {sym}: {e}"
+                        f"[{INSTANCE_ID}][VALUE] Lỗi gọi Finance.ratio(TCBS) cho {sym}: {e}"
                     )
-                    break
+                    time.sleep(2.0)
+                    continue
 
-            if ratio_df is None or ratio_df.empty:
-                if last_err is not None:
-                    log.debug(
-                        f"[{INSTANCE_ID}][VALUE] {sym}: không lấy được ratio_df TCBS, lỗi cuối: {last_err}"
+            pe = None
+            pb = None
+            roe = None
+            if ratio_df is not None and not ratio_df.empty:
+                try:
+                    last_row = ratio_df.iloc[-1]
+                except Exception:
+                    last_row = None
+
+                if last_row is not None:
+                    pe = _pick_from_candidates(
+                        last_row,
+                        ["pe", "P/E", "P/E trailing", "pe_ttm"],
+                        ["pe", "p/e"]
                     )
-                else:
-                    log.debug(
-                        f"[{INSTANCE_ID}][VALUE] {sym}: ratio_df TCBS rỗng, bỏ qua."
+                    pb = _pick_from_candidates(
+                        last_row,
+                        ["pb", "P/B", "pb_ttm"],
+                        ["pb", "p/b"]
                     )
-                continue
+                    roe = _pick_from_candidates(
+                        last_row,
+                        ["roe", "ROE", "roe_12m"],
+                        ["roe"]
+                    )
+                    pe = _safe_float(pe)
+                    pb = _safe_float(pb)
+                    roe = _safe_float(roe)
 
-            df = ratio_df.copy()
+            # 4️⃣ Lấy floor + proxies từ price_board (hoặc fallback từ exchange_map)
+            exchange = exchange_map.get(sym)
+            floor = None
+            asset_proxy = None
+            liquidity_proxy = None
 
-            # Sắp xếp để lấy kỳ mới nhất
-            if "year" in df.columns:
-                df = df.sort_values("year", ascending=False)
-            elif "report_period" in df.columns:
-                df = df.sort_values("report_period", ascending=False)
+            if pb_df is not None and not pb_df.empty:
+                try:
+                    # Tìm hàng của sym trong pb_df
+                    # Có thể cột symbol khác nhau: ('listing','symbol') hoặc 'symbol'
+                    pb_symbol_candidates = [
+                        ('listing', 'symbol'),
+                        ('symbol',),
+                        'symbol'
+                    ]
+                    sym_col_found = None
+                    for cand in pb_symbol_candidates:
+                        try:
+                            if isinstance(cand, tuple) and len(cand) == 2:
+                                if cand[0] in pb_df.columns.names or cand[1] in pb_df.columns:
+                                    # bỏ qua vì mapping khó – dùng cách dưới
+                                    pass
+                            if isinstance(cand, str) and cand in pb_df.columns:
+                                sym_col_found = cand
+                                break
+                        except Exception:
+                            continue
 
-            latest = df.iloc[0]
+                    row = None
+                    if sym_col_found:
+                        try:
+                            row = pb_df[pb_df[sym_col_found].astype(str).str.upper() == sym]
+                            if row is not None and not row.empty:
+                                row = row.iloc[0]
+                            else:
+                                row = None
+                        except Exception:
+                            row = None
 
-            # 🧮 Lấy các chỉ số chính từ TCBS
-            pe = _safe_float(latest.get("price_to_earning"))
-            pb = _safe_float(latest.get("price_to_book"))
-            roe = _safe_float(latest.get("roe"))
-            eps = _safe_float(latest.get("earning_per_share"))
+                    if row is None:
+                        # Thử cách khác: set index rồi .loc
+                        try:
+                            tmp = pb_df.copy()
+                            if sym_col_found:
+                                tmp = tmp.set_index(sym_col_found)
+                                row = tmp.loc[sym] if sym in tmp.index else None
+                        except Exception:
+                            row = None
 
-            # Chỉ chấp nhận > 0 cho pe/pb/roe
-            if pe is not None and pe <= 0: pe = None
-            if pb is not None and pb <= 0: pb = None
-            if roe is not None and roe <= 0: roe = None
+                    if row is not None:
+                        # Map floor
+                        if ("listing", "floor") in row.index:
+                            floor = str(row[("listing","floor")])
+                        elif "floor" in row:
+                            floor = str(row["floor"])
+                        elif "exchange" in row:
+                            floor = str(row["exchange"])
+                        elif "san" in row:
+                            floor = str(row["san"])
 
-            # Ước tính giá để lọc penny: price_est ≈ P/E * EPS
-            price_est = None
-            if pe is not None and eps is not None and eps > 0:
-                price_est = pe * eps
+                        # Proxies (tuỳ cấu trúc price_board)
+                        # asset_proxy: tổng tài sản/ vốn hoá đại diện – placeholder tuỳ nguồn bạn đã chuẩn hoá từ trước
+                        # liquidity_proxy: thanh khoản bình quân, v.v.
+                        for k in row.index:
+                            try:
+                                key_name = k[1] if isinstance(k, tuple) else k
+                                key_low = str(key_name).lower()
+                            except Exception:
+                                key_low = ""
 
-            if price_est is not None and price_est < MIN_PENNY_PRICE:
-                log.debug(
-                    f"[{INSTANCE_ID}][VALUE] {sym}: price_est≈{price_est:.0f} < {MIN_PENNY_PRICE}, coi là penny, bỏ qua."
-                )
-                continue
+                            if "asset" in key_low and asset_proxy is None:
+                                asset_proxy = _safe_float(row.get(k, None))
+                            if ("liquid" in key_low or "volume" in key_low) and liquidity_proxy is None:
+                                liquidity_proxy = _safe_float(row.get(k, None))
 
-            if pe is None or pb is None or roe is None:
-                log.debug(
-                    f"[{INSTANCE_ID}][VALUE] {sym}: thiếu P/E/P/B/ROE hợp lệ, bỏ qua."
-                )
-                continue
+                except Exception as e:
+                    log.warning(f"[{INSTANCE_ID}][VALUE] Map floor/proxies từ price_board lỗi ({sym}): {e}")
 
-            industry = industry_map.get(sym, "Khác")
-            exchange = exchange_map.get(sym, None)
-            floor = floor_map.get(sym, None)
-            
-            # ❗️ Lấy TK/TS từ map đã tính toán
-            asset_proxy = asset_map.get(sym)
-            liquidity_proxy = liquidity_map.get(sym)
+            # Fallback floor nếu chưa có
+            if floor is None:
+                fallback_floor = exchange_map.get(sym)
+                if fallback_floor:
+                    floor = str(fallback_floor)
+
+            # Ngành
+            industry = industry_map.get(sym, "Khác") if industry_map else "Khác"
 
             record = {
                 "symbol": sym,
@@ -1657,34 +1730,30 @@ def precompute_value_data():
                 "pb": pb,
                 "roe": roe,
                 "floor": floor,
-                "asset_proxy": asset_proxy,         # ⬅️ THÊM VÀO RECORD
-                "liquidity_proxy": liquidity_proxy, # ⬅️ THÊM VÀO RECORD
+                "asset_proxy": asset_proxy,
+                "liquidity_proxy": liquidity_proxy,
             }
             batch_records.append(record)
 
-        # Ghi batch vào DB (upsert theo symbol)
+        # 5️⃣ Ghi batch vào DB (upsert theo symbol)
         try:
-            # ❗️ Dùng hàm upsert mới, nó sẽ tự động chạy executemany
             upsert_stock_value_batch(batch_records)
         except Exception as e:
             log.exception(
                 f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}"
             )
-        
+
         # Cập nhật tiến độ
         processed_count += len(batch_syms)
         done = processed_count
         percent = (done / total_symbols * 100) if total_symbols > 0 else 0.0
-
         log.info(
             f"[{INSTANCE_ID}][VALUE] Tiến độ: {done}/{total_symbols} mã "
-            f"({percent:.1f}%). Batch {batch_idx+1}/{total_batches} xong, "
-            f"upsert {len(batch_records)} mã vào DB."
+            f"({percent:.1f}%). Batch {batch_idx+1}/{total_batches} hoàn tất."
         )
 
         # Nghỉ nhẹ giữa các batch
         if batch_idx < total_batches - 1:
-            # ⭐️ SỬA LỖI BLOCKING: Đổi `await asyncio.sleep` -> `time.sleep`
             time.sleep(VALUE_BATCH_SLEEP)
 
     finished_at = datetime.datetime.now(vn_tz)
@@ -1693,6 +1762,7 @@ def precompute_value_data():
         f"[{INSTANCE_ID}][VALUE] Hoàn thành precompute_value_data sau {duration:.1f}s. "
         f"Tổng mã trong DB hiện tại: {get_stock_value_cache_count()}."
     )
+
 
 def compute_value_screener(
     top_per_industry: int = 3,
@@ -2176,7 +2246,7 @@ async def screener_value_update_loop():
             log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Bắt đầu chạy precompute_value_data() theo lịch.")
             
             # ⭐️ SỬA LỖI BLOCKING: Chạy hàm precompute (blocking) trong thread
-            await asyncio.to_thread(precompute_value_data)
+            await asyncio.to_thread(precompute_value_data, True, True)
             
         except Exception:
             log.exception(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi chạy precompute_value_data() theo lịch.")
@@ -4061,57 +4131,52 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
 
-async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    if ADMIN_ID is None:
-        await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
+async def cmd_screener_value_clear(update: Update, context):
+    """
+    Xoá cache screener trong Redis để buộc build lại báo cáo.
+    Mặc định: chỉ xoá key hôm nay. Thêm tham số 'all' để xoá toàn bộ.
 
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await reply_md(update,"⛔ Chỉ admin mới có quyền dùng lệnh này.")
-        return
+    Ví dụ:
+      /screener_value_clear          -> xoá hôm nay
+      /screener_value_clear all      -> xoá tất cả key screener_value:*
+    """
+    try:
+        args = context.args if context.args else []
+        clear_all = (len(args) > 0 and args[0].lower() == "all")
 
-    await reply_md(update, f"🔎 vui lòng đợi...")
+        from redis_client import redis_client
+        vn_tz = pytz.timezone(TIMEZONE)
+        today = datetime.datetime.now(vn_tz).date()
 
-    now = datetime.datetime.now(datetime.timezone.utc)
-
-
-    if user_id in pending_clear_confirmations:
-        confirm_time = pending_clear_confirmations[user_id]
-        if now - confirm_time < timedelta(seconds=30):
-            del pending_clear_confirmations[user_id]
-
-            before_count = 0
-            try:
-                # ⭐️ SỬA: Chạy CSDL trong thread
-                before_count = await asyncio.to_thread(get_stock_value_cache_count)
-            except Exception:
-                pass 
-
-            # ⭐️ SỬA: Chạy CSDL trong thread
-            await asyncio.to_thread(clear_stock_value_cache)
-            
-            # ⭐️ SỬA: Chạy CSDL trong thread
-            after = await asyncio.to_thread(get_stock_value_cache_count)
-
-            msg = (
-                f"🧹 Đã **XOÁ HOÀN TOÀN BẢNG** (DROP TABLE) `stock_value_cache`.\n"
-                f"Trước khi xoá: **{before_count}** dòng.\n"
-                f"Sau khi xoá: **{after}** dòng.\n\n"
-                "✅ Bot sẽ tự động *tạo lại bảng với cấu trúc mới nhất* trong lần crawl tiếp theo (khi khởi động lại hoặc vào 00:00)."
-            )
-            await reply_md(update, msg)
-            return
+        if clear_all:
+            deleted = redis_client.delete_pattern("screener_value:*")
+            await reply_md(update, f"*[ADMIN]* Đã xoá *{deleted}* key Redis: `screener_value:*` ✅")
         else:
-            del pending_clear_confirmations[user_id]
+            key = f"screener_value:{today.isoformat()}"
+            ok = redis_client.delete(key)
+            if ok:
+                await reply_md(update, f"*[ADMIN]* Đã xoá key Redis hôm nay: `{key}` ✅")
+            else:
+                await reply_md(update, f"*[ADMIN]* Key hôm nay chưa tồn tại hoặc đã xoá: `{key}`")
 
-    pending_clear_confirmations[user_id] = now
-    await reply_md(update,
-        "⚠️ *XÁC NHẬN XOÁ BẢNG (DROP TABLE)*\n\n"
-        "Thao tác này sẽ **XOÁ HOÀN TOÀN** bảng `stock_value_cache` để cập nhật cấu trúc mới.\n"
-        "Gõ lệnh */screener_value_clear* lần nữa trong vòng *30 giây* để xác nhận."
-    )
+    except Exception as e:
+        log.exception("[ADMIN] Lỗi xoá screener cache: %s", e)
+        await reply_md(update, f"*[ADMIN]* Lỗi xoá screener cache: `{e}`")
+
+
+async def cmd_value_refresh_now(update: Update, context):
+    """
+    Chạy precompute_value_data(full_refresh=True, skip_if_fresh_today=False)
+    -> Quét toàn bộ mã và upsert vào stock_value_cache.
+    -> KHÔNG xoá Redis, KHÔNG xoá bảng.
+    """
+    await reply_md(update, "*[ADMIN]* Đang full-refresh dữ liệu Value trong nền…")
+    try:
+        await asyncio.to_thread(precompute_value_data, True, False)
+        await reply_md(update, "*[ADMIN]* Hoàn tất full-refresh Value ✅")
+    except Exception as e:
+        log.exception("[ADMIN] Lỗi full-refresh Value: %s", e)
+        await reply_md(update, f"*[ADMIN]* Lỗi full-refresh: `{e}`")
 
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
