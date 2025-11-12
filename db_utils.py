@@ -146,6 +146,15 @@ def init_db():
                 )
             """)
 
+            # Tổng hợp những paid_users
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS paid_users (
+                chat_id     BIGINT PRIMARY KEY,
+                expiry_date TIMESTAMPTZ NOT NULL, -- Ngày hết hạn gói Pro
+                plan_name   TEXT DEFAULT 'pro'
+                )
+            """)
+
 
         conn.commit()
 
@@ -982,3 +991,114 @@ def mark_restore_done_now():
             )
         conn.commit()
 
+# ==========================================
+# QUẢN LÝ USER TRẢ PHÍ (GÓI PRO)
+# ==========================================
+def add_paid_user(chat_id: int, days_to_add: int):
+    """
+    Thêm hoặc gia hạn Gói Pro cho user.
+    - Nếu user đã hết hạn: Gia hạn `days_to_add` ngày kể từ HÔM NAY.
+    - Nếu user vẫn còn hạn: Cộng dồn `days_to_add` ngày vào ngày hết hạn HIỆN TẠI.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Logic:
+            # 1. INSERT... ON CONFLICT: Thử thêm mới
+            # 2. DO UPDATE: Nếu đã tồn tại
+            # 3. GREATEST(paid_users.expiry_date, NOW()): Lấy mốc thời gian
+            #    là ngày hết hạn hiện tại, hoặc HÔM NAY (nếu đã hết hạn).
+            # 4. + interval '1 day' * %s: Cộng thêm số ngày gia hạn.
+            cur.execute(
+                """
+                INSERT INTO paid_users (chat_id, expiry_date)
+                VALUES (%s, NOW() + interval '1 day' * %s)
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    expiry_date = GREATEST(paid_users.expiry_date, NOW()) + interval '1 day' * %s;
+                """,
+                (chat_id, days_to_add, days_to_add), # `days_to_add` được dùng 2 lần
+            )
+        conn.commit()
+
+
+def is_user_pro(chat_id: int) -> bool:
+    """
+    Trả về True nếu user có trong bảng paid_users VÀ ngày hết hạn > NOW()
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 
+                FROM paid_users
+                WHERE chat_id = %s AND expiry_date > NOW()
+                LIMIT 1;
+                """,
+                (chat_id,),
+            )
+            row = cur.fetchone()
+    
+    # Nếu row không phải là None (tức là tìm thấy 1 dòng) -> True
+    # Nếu row là None (không tìm thấy) -> False
+    return bool(row)
+
+def deactivate_paid_user(chat_id: int) -> int:
+    """
+    Ngưng hoạt động Gói Pro của user ngay lập tức.
+    Hàm này set ngày hết hạn về quá khứ (NOW() - 1 giây).
+    Trả về số dòng đã được cập nhật (0 hoặc 1).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE paid_users
+                SET expiry_date = NOW() - interval '1 second'
+                WHERE chat_id = %s;
+                """,
+                (chat_id,),
+            )
+            # cur.rowcount là số dòng bị ảnh hưởng bởi lệnh UPDATE
+            updated_rows = cur.rowcount
+        conn.commit()
+    return updated_rows
+
+def remove_paid_user(chat_id: int) -> int:
+    """
+    Xoá vĩnh viễn Gói Pro của user khỏi bảng.
+    Trả về số dòng đã bị xoá (0 hoặc 1).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM paid_users
+                WHERE chat_id = %s;
+                """,
+                (chat_id,),
+            )
+            # cur.rowcount là số dòng bị ảnh hưởng bởi lệnh DELETE
+            deleted_rows = cur.rowcount
+        conn.commit()
+    return deleted_rows
+
+# Dán hàm này vào file db_utils.py
+
+def get_all_pro_chat_ids() -> set[int]:
+    """
+    Lấy MỘT TẬP (set) chứa chat_id của tất cả user
+    đang có Gói Pro (còn hạn).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT chat_id 
+                FROM paid_users
+                WHERE expiry_date > NOW();
+                """,
+            )
+            rows = cur.fetchall()
+    
+    # Trả về set (tập hợp) để tra cứu O(1) (siêu nhanh)
+    return {int(row[0]) for row in rows}
