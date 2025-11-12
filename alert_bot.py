@@ -4882,14 +4882,17 @@ def same_sign(a: float, b: float) -> bool:
     """Hai số cùng dấu (cùng dương hoặc cùng âm) hay không."""
     return (a > 0 and b > 0) or (a < 0 and b < 0)
 
-
 async def alert_loop():
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
     TARGET_INTERVAL = 15  # giãn cách giữa 2 vòng quét (giây)
 
-    # Mốc cảnh báo theo % thay đổi giá cổ phiếu
-    STOCK_LEVELS = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6]
+    # Khởi tạo Trading object MỘT LẦN bên ngoài vòng lặp
+    try:
+        trading = Trading(source="VCI")
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] Không thể khởi tạo Trading(VCI): {e}. Vòng lặp Alert sẽ không chạy.")
+        return # Thoát hoàn toàn
 
     while True:
         loop_id += 1
@@ -4906,7 +4909,7 @@ async def alert_loop():
             next_start = next_session_start(now)
             delay = max((next_start - now).total_seconds(), 60.0)
             log.info(
-                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao... "
+                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch... "
                 f"sleep {delay:.0f}s tới {next_start.strftime('%Y-%m-%d %H:%M')}"
             )
             await asyncio.sleep(delay)
@@ -4914,36 +4917,107 @@ async def alert_loop():
 
         loop_start = now
         try:
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bắt đầu vòng alert (có cache)")
-
-            # 🧩 1️⃣ Lấy danh sách tất cả user & mã họ theo dõi
+            # ==================================================
+            # 1. GATHER (GOM)
+            # ==================================================
+            
+            # ⭐️ Chạy CSDL (Redis/Postgre) trong thread
             all_watch = await asyncio.to_thread(get_all_watch)
-            all_state = get_state_for_all()
+            all_state = get_state_for_all() # Cái này nhanh, từ RAM, không cần thread
 
-            # Gom tất cả mã cổ phiếu cần quét
             all_symbols: set[str] = set()
             for block in all_watch.values():
                 for sym in (block.get("list", []) or []):
-                    all_symbols.add(sym.upper())
+                    # Chỉ lấy mã cổ phiếu, bỏ qua index (nếu có)
+                    if len(sym) == 3 and sym.isalpha():
+                         all_symbols.add(sym.upper())
 
             if not all_symbols:
                 log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Không có symbol nào, sleep 60s.")
                 await asyncio.sleep(60)
                 continue
+            
+            symbols_list = sorted(list(all_symbols))
 
-            # 🧩 2️⃣ Cache quote data
+            # ==================================================
+            # 2. FETCH (Lấy dữ liệu - 1 LẦN GỌI DUY NHẤT)
+            # ==================================================       
+            try:
+                # ⭐️ Chạy Network I/O trong thread
+                # Dùng object `trading` đã khởi tạo bên ngoài
+                df = await asyncio.to_thread(trading.price_board, symbols_list)
+            except Exception as e:
+                log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] Lỗi khi gọi batch price_board: {e}")
+                df = None # Bỏ qua vòng lặp này
+
+            if df is None or df.empty:
+                log.warning(f"[{INSTANCE_ID}][LOOP {loop_id}] price_board trả về rỗng. Bỏ qua.")
+                await asyncio.sleep(TARGET_INTERVAL)
+                continue
+
+            # ==================================================
+            # 3. PROCESS (Xử lý & Build Cache)
+            # ==================================================
             quote_cache: dict[str, dict] = {}
-            successful_symbols: list[str] = []
-            for sym in all_symbols:
-                data = await asyncio.to_thread(get_quote, sym)
-                if data:
-                    quote_cache[sym] = data
-                    successful_symbols.append(sym)
 
-            if successful_symbols:
-                log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] [QUOTE OK] {', '.join(successful_symbols)}")
+            # Hàm norm() (lấy từ get_quote)
+            def norm(x):
+                if x is None: return None
+                try:
+                    if hasattr(x, "item"):
+                        x = x.item()
+                except Exception: pass
+                try:
+                    x = float(x)
+                except Exception: return None
+                if isinstance(x, float) and math.isnan(x): return None
+                return x
 
-            # 🧩 3️⃣ Duyệt từng user
+            for _, row in df.iterrows():
+                try:
+                    # === ĐỌC DỮ LIỆU TỪ OUTPUT BẠN CUNG CẤP ===
+                    
+                    # 1. Lấy mã symbol
+                    # Output của bạn xác nhận nó nằm ở ('listing', 'symbol')
+                    sym = row[('listing', 'symbol')]
+                    sym_u = sym.upper()
+
+                    # 2. Lấy giá
+                    # Output xác nhận nó nằm ở ('match', 'match_price')
+                    match_price = norm(row.get(("match", "match_price")))
+                    
+                    # 3. Lấy giá tham chiếu
+                    # Output xác nhận nó nằm ở ('match', 'reference_price')
+                    # Chúng ta dùng logic của `get_quote` (đã sửa lỗi)
+                    ref_price = norm(
+                        row.get(("match", "reference_price"))
+                        if ("match", "reference_price") in row.index 
+                        else row.get(("listing", "ref_price"))
+                    )
+                    # === KẾT THÚC ĐỌC DỮ LIỆU ===
+
+                    price = match_price if match_price is not None else ref_price
+                    pct_change = (
+                        ((float(match_price) - float(ref_price)) / float(ref_price)) * 100.0
+                        if match_price is not None and ref_price is not None and ref_price != 0
+                        else None
+                    )
+                    
+                    if price is None or pct_change is None:
+                        continue
+                        
+                    quote_cache[sym_u] = {"price": price, "pct": pct_change}
+
+                except Exception as e:
+                    # Nếu có lỗi ở 1 hàng, chỉ log và bỏ qua hàng đó
+                    sym_debug = row.get(('listing', 'symbol'), 'Unknown')
+                    log.warning(f"[{INSTANCE_ID}][LOOP {loop_id}] Lỗi xử lý hàng {sym_debug}: {e}")
+            
+            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Đã build cache cho {len(quote_cache)} mã.")
+
+            # ==================================================
+            # 4. DISTRIBUTE (Phân phối cho User)
+            # ==================================================
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
                 watch_list = user_block.get("list", []) or []
@@ -4957,18 +5031,20 @@ async def alert_loop():
 
                 for sym in watch_list:
                     sym_u = sym.upper()
+                    
+                    # ⭐️ THAY ĐỔI CỐT LÕI: Tra cứu cache (dict), KHÔNG gọi to_thread
                     quote = quote_cache.get(sym_u)
+                    
                     if not quote:
-                        continue
+                        continue # Mã này không có dữ liệu (hoặc đã bị lọc)
 
                     price = quote["price"]
                     pct = quote["pct"]
 
-                    # metric = phần trăm thay đổi
+                    # Logic bên dưới được giữ nguyên y hệt
                     metric = pct
                     new_lvl = pick_new_level(metric, STOCK_LEVELS)
 
-                    # Lấy trạng thái lần trước
                     state_entry = personal_state.get(sym_u, {})
                     prev_lvl = state_entry.get("last_level", 0)
                     last_alert_at_str = state_entry.get("last_alert_at")
@@ -4980,25 +5056,20 @@ async def alert_loop():
                         except Exception:
                             pass
 
-                    # 🔥 LOGIC CHỐNG SPAM
                     should_alert = False
                     if new_lvl is not None:
-                        # Chưa từng báo mã này -> cho báo lần đầu
                         if prev_lvl == 0:
                             should_alert = True
                         else:
                             if same_sign(new_lvl, prev_lvl):
-                                # Cùng chiều: chỉ báo khi đi xa hơn khỏi tham chiếu
                                 if abs(new_lvl) > abs(prev_lvl):
                                     should_alert = True
-                                # Hoặc quá thời gian cooldown thì nhắc lại
                                 elif (
                                     last_alert_at is None
                                     or (now - last_alert_at).total_seconds() >= ALERT_COOLDOWN_SECONDS
                                 ):
                                     should_alert = True
                             else:
-                                # Đổi chiều -> luôn đáng báo
                                 should_alert = True
 
                     if should_alert:
@@ -5016,7 +5087,6 @@ async def alert_loop():
                             "last_alert_at": now.isoformat(),
                         }
                     else:
-                        # Nếu chưa có state cho mã này thì khởi tạo
                         if sym_u not in personal_state:
                             personal_state[sym_u] = {
                                 "last_level": 0,
@@ -5031,22 +5101,23 @@ async def alert_loop():
                     )
                     messages_text = "\n".join(messages)
                     body = messages_text + "\n" + header
-                    await send_md(tg_app.bot, chat_id, body)
+                    
+                    # ⭐️ Chạy Network I/O trong thread
+                    await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown")
 
                 all_state[chat_key] = personal_state
 
-            # 🧩 4️⃣ Lưu state vào DB
-            save_state_for_all(all_state)
+            # 🧩 5️⃣ Lưu state
+            save_state_for_all(all_state) # Nhanh, từ RAM, không cần thread
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] ERROR: {e}")
+            log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] Lỗi nghiêm trọng trong vòng lặp: {e}")
 
         # 🕒 Giữ nhịp quét cố định
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(TARGET_INTERVAL - elapsed, 1)
         log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s\n")
         await asyncio.sleep(delay)
-
 
 # ==============================================
 # FLASK KEEPALIVE
