@@ -79,6 +79,8 @@ from report_cache import (
     save_report_to_redis,
 )
 from pathlib import Path
+from vnstock import Quote
+
 # ==============================================
 # CẤU HÌNH CƠ BẢN
 # ==============================================
@@ -2774,6 +2776,188 @@ async def news_cleanup_loop():
         log.info("[NEWS_CLEANUP] Redis tự xoá news_seen, không cần dọn thủ công.")
         await asyncio.sleep(3600)  # chạy mỗi 1h chỉ để log nhắc nhẹ
 
+# ===== VN30F1M realtime alert (no Redis) =====================================
+# Yêu cầu: mốc di động ±5 điểm, 15s/lần, gửi có thông báo, chiều dùng mốc sáng,
+# reset theo ngày mới; user có thể bật/tắt, admin quản qua BOT_ACTIVE.
+
+# --- Tham số riêng
+VN30F1M_SYMBOL = "VN30F1M"
+VN30F1M_DELTA_THRESHOLD = 5.0    # ±5 điểm
+VN30F1M_TICK_SECONDS = 15        # chu kỳ quét
+
+# --- State trong RAM
+_vn30f1m_anchor: float | None = None      # mốc di động trong ngày
+_vn30f1m_date: datetime.date | None = None
+_vn30f1m_enabled_cache: set[int] = set()  # tập chat_id đang bật
+
+def ensure_bot_user_settings_table():
+    """Bảng dùng chung cho toàn project, lưu settings dạng JSONB."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_user_settings (
+                    chat_id     BIGINT PRIMARY KEY,
+                    settings    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+
+def get_vn30f1m_enabled_map() -> dict[int, bool]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id,
+                       COALESCE((settings ->> 'vn30f1m_enabled')::boolean, FALSE) AS enabled
+                FROM bot_user_settings
+            """)
+            rows = cur.fetchall()
+    return {int(r[0]): bool(r[1]) for r in rows}
+
+def set_vn30f1m_enabled(chat_id: int, enabled: bool):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('vn30f1m_enabled', %s))
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
+                               || jsonb_build_object('vn30f1m_enabled', EXCLUDED.settings->'vn30f1m_enabled'),
+                    updated_at = NOW()
+            """, (chat_id, enabled))
+        conn.commit()
+
+def reload_vn30f1m_enabled_cache():
+    """Load lại tập chat_id đang bật nhận tin từ DB vào RAM."""
+    global _vn30f1m_enabled_cache
+    mp = get_vn30f1m_enabled_map()
+    _vn30f1m_enabled_cache = {cid for cid, en in mp.items() if en}
+
+def _vn30f1m_reset_if_new_day(now: datetime.datetime):
+    """Đầu ngày mới: reset anchor (phiên chiều dùng mốc đã hình thành từ sáng)."""
+    global _vn30f1m_date, _vn30f1m_anchor
+    if (_vn30f1m_date is None) or (now.date() != _vn30f1m_date):
+        _vn30f1m_date = now.date()
+        _vn30f1m_anchor = None
+        log.info(f"[VN30F1M] New trading day: {_vn30f1m_date}. Reset anchor.")
+
+def _vn30f1m_clear_after_close():
+    """Cuối ngày: xóa sạch state trong RAM (không dùng Redis)."""
+    global _vn30f1m_anchor
+    if _vn30f1m_anchor is not None:
+        log.info("[VN30F1M] End of day → clear in-memory anchor.")
+    _vn30f1m_anchor = None
+
+def vn30f1m_day_healthcheck():
+    """
+    Health-check nhẹ đầu ngày theo đường ống bạn đã test:
+    from vnstock import Quote; Quote(symbol="VN30F1M", source="vci").history(..., "1D")
+    """
+    try:
+        today = datetime.datetime.now(pytz.timezone(TIMEZONE)).date()
+        start = (today - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+        end   = today.strftime("%Y-%m-%d")
+        q = Quote(symbol=VN30F1M_SYMBOL, source="vci")
+        df = q.history(start=start, end=end, interval="1D")
+        if df is None or len(df) == 0:
+            log.warning("[VN30F1M] LIVE_PROBE 1D empty.")
+            return
+        last_close = float(df.iloc[-1]["close"])
+        log.info(f"[VN30F1M] LIVE_PROBE 1D last close ~ {last_close}")
+    except Exception as e:
+        log.warning(f"[VN30F1M] LIVE_PROBE error: {e}")
+
+async def _vn30f1m_get_current_price() -> float | None:
+    try:
+        quote = Quote(symbol="VN30F1M", source="vci")
+        df = quote.history(start="2025-11-12", end="2025-11-12", interval="1D")
+        if df is None or len(df) == 0:
+            return None
+        return float(df.iloc[-1]["close"])
+    except Exception as e:
+        log.warning(f"[VN30F1M] vnstock get_current_price error: {e}")
+        return None
+
+async def _vn30f1m_process_tick(price: float):
+    """Xử lý một tick: bắn khi ±5 điểm và cập nhật mốc di động."""
+    global _vn30f1m_anchor
+    if _vn30f1m_anchor is None:
+        _vn30f1m_anchor = float(price)
+        log.info(f"[VN30F1M] ⛳ Anchor set = {_vn30f1m_anchor:.2f}")
+        return
+
+    delta = float(price) - _vn30f1m_anchor
+    if abs(delta) >= VN30F1M_DELTA_THRESHOLD:
+        direction = "tăng" if delta > 0 else "giảm"
+        pct = (delta / _vn30f1m_anchor) * 100 if _vn30f1m_anchor else 0.0
+        now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
+        text = (
+            f"*VN30F1M {direction} {abs(delta):.2f} điểm* so với mốc gần nhất {_vn30f1m_anchor:.2f}\n"
+            f"Giá hiện tại: *{float(price):.2f}* ({pct:+.2f}%) — {now_str}"
+        )
+        # broadcast
+        for cid in list(_vn30f1m_enabled_cache):
+            try:
+                await send_md(tg_app.bot, cid, text)
+            except Exception as e:
+                log.warning(f"[VN30F1M] send to {cid} failed: {e}")
+
+        _vn30f1m_anchor = float(price)
+        log.info(f"[VN30F1M] 🔁 Anchor moved to {_vn30f1m_anchor:.2f}")
+
+async def vn30f1m_alert_loop():
+    """
+    - Chạy 24/7; chỉ gửi trong giờ giao dịch (in_session_vietnam()).
+    - Đầu ngày: health-check 1D + reset anchor; phiên chiều dùng chung mốc đã hình thành.
+    - Hết phiên: clear state in-memory.
+    - Tôn trọng BOT_ACTIVE (admin).
+    - Không dùng Redis.
+    """
+    ensure_bot_user_settings_table()
+    reload_vn30f1m_enabled_cache()
+    log.info(f"[VN30F1M] Enabled users at start: {len(_vn30f1m_enabled_cache)}")
+
+    last_healthcheck_date: datetime.date | None = None
+
+    while True:
+        try:
+            now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+            _vn30f1m_reset_if_new_day(now)
+
+            # Health-check 1D đầu ngày (mỗi ngày một lần)
+            if last_healthcheck_date != now.date():
+                vn30f1m_day_healthcheck()
+                last_healthcheck_date = now.date()
+
+            # Admin OFF → ngủ ngắn
+            if not BOT_ACTIVE:
+                await asyncio.sleep(30)
+                continue
+
+            # Ngoài giờ → clear & ngủ dài
+            if not in_session_vietnam():
+                _vn30f1m_clear_after_close()
+                await asyncio.sleep(60)
+                continue
+
+            # Trong giờ → lấy giá
+            price = await _vn30f1m_get_current_price()
+            if price is None:
+                await asyncio.sleep(VN30F1M_TICK_SECONDS)
+                continue
+
+            await _vn30f1m_process_tick(float(price))
+            await asyncio.sleep(VN30F1M_TICK_SECONDS)
+
+        except asyncio.CancelledError:
+            log.info("[VN30F1M] loop cancelled.")
+            break
+        except Exception as e:
+            log.warning(f"[VN30F1M] loop error: {e}")
+            await asyncio.sleep(5)
+#-------------------------------
+
 
 # ==============================
 # BÁO CÁO TÀI CHÍNH (BCTC) LOOP
@@ -3632,6 +3816,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• `/news_on` – Bật nhận tin tức (vĩ mô + chuyên ngành)\n"
     "• `/news_off` – Tắt nhận tin tức\n"
     "• `/news_status` – Xem trạng thái nhận tin tức hiện tại\n\n"
+    "• `/vn30f1m_off` – Tắt nhận cập nhật VN30F1M\n"
+    "• `/vn30f1m_on` – Bật nhận cập nhật VN30F1M\n"
+    "• `/vn30f1m_status` – Xem trạng thái nhận cập nhật VN30F1M\n\n"
     "🛠 *Khu vực quản trị (admin – người dùng bình thường có thể bỏ qua):*\n"
     "• `/on` – Bật bot, thoát chế độ bảo trì\n"
     "• `/off` – Tắt bot, bật chế độ bảo trì tạm thời\n"
@@ -3648,7 +3835,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi ngay hôm nay bằng lệnh `/add <MÃ>`!"
 )
-
+    
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
     global BOT_ACTIVE
@@ -3714,6 +3901,31 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_md(update,
         f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)"
     )
+
+async def cmd_vn30f1m_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    mp = get_vn30f1m_enabled_map()
+    enabled = bool(mp.get(chat_id, False))
+    lines = [
+        f"Trạng thái VN30F1M của bạn: *{'Đang bật' if enabled else 'Đang tắt'}*",
+        "Ngưỡng: *±5 điểm* · Chu kỳ: *15s* · Mốc: *Di động*",
+    ]
+    if not BOT_ACTIVE:
+        lines.append("_Lưu ý: Hệ thống đang tắt bởi admin (BOT_ACTIVE=False)._")
+    lines.append("Bật: `/vn30f1m_on` · Tắt: `/vn30f1m_off`")
+    await reply_md(update, "\n".join(lines))
+
+async def cmd_vn30f1m_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    set_vn30f1m_enabled(chat_id, True)
+    reload_vn30f1m_enabled_cache()
+    await reply_md(update, "Đã *bật* nhận cảnh báo VN30F1M cho bạn.")
+
+async def cmd_vn30f1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    set_vn30f1m_enabled(chat_id, False)
+    reload_vn30f1m_enabled_cache()
+    await reply_md(update, "Đã *tắt* nhận cảnh báo VN30F1M cho bạn.")
 
 async def cmd_news_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
@@ -4950,6 +5162,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
+                    MAIN_LOOP.create_task(vn30f1m_alert_loop()),
                 ]
                 log.info(f"[Lifespan] Đã khởi động {len(BACKGROUND_TASKS)} tác vụ nền.")
             
@@ -4991,6 +5204,9 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("news_on", "Bật nhận tin tức (vĩ mô + chuyên ngành)"),
             ("news_off", "Tắt nhận tin tức"),
             ("news_status", "Xem trạng thái nhận tin tức"),
+            ("vn30f1m_off", "Tắt nhận cập nhật VN30F1M"),
+            ("vn30f1m_on", "Bật nhận cập nhật VN30F1M"),
+            ("vn30f1m_status", "Xem trạng thái nhận cập nhật VN30F1M"),
             ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
             ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
             ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
@@ -5119,6 +5335,9 @@ async def main():
     tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
     tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
     tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
+    tg_app.add_handler(CommandHandler("vn30f1m_status", cmd_vn30f1m_status))
+    tg_app.add_handler(CommandHandler("vn30f1m_on", cmd_vn30f1m_on))
+    tg_app.add_handler(CommandHandler("vn30f1m_off", cmd_vn30f1m_off))
 
     # Admin commands
     tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))
