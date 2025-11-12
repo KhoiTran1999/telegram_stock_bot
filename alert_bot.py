@@ -4289,6 +4289,11 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ✅ get_bot_messages_in_range trả về (chat_id, message_id, sent_at)
         for chat_id, msg_id, _sent_at in records:
             try:
+                sent_at_vn = _sent_at.astimezone(vn_tz) if _sent_at.tzinfo else _sent_at.replace(tzinfo=pytz.UTC).astimezone(vn_tz)
+                if (now - sent_at_vn).total_seconds() > 48*3600:
+                    skipped_old += 1
+                    continue
+
                 await asyncio.to_thread(_delete_message, chat_id, msg_id)
                 deleted += 1
                 await asyncio.sleep(0.1)
