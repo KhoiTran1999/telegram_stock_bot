@@ -3,7 +3,6 @@ import os
 import json
 import datetime
 
-import psycopg
 from psycopg import rows
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
@@ -15,7 +14,6 @@ from news_seen_cache import (
     get_news_seen_count_redis,
 )
 from redis_client import get_redis
-import logging
 
 REDIS_DEBUG = os.getenv("REDIS_DEBUG", "False").lower() in ("1", "true", "yes")
 
@@ -580,7 +578,7 @@ def get_news_pref(chat_id: int) -> dict:
                 pass
         else:
             redis_debug_log(f"Redis miss news_pref:{chat_id}")
-    except Exception:
+    except Exception as e:
         # Redis lỗi -> fallback DB
         redis_debug_log(f"Redis error news_pref:{chat_id}: {e}")
         pass
@@ -655,14 +653,6 @@ def set_news_pref(
         r.set(f"news_pref:{chat_id}", json.dumps(pref))
     except Exception:
         pass
-
-
-def cleanup_old_news_seen(max_age_days: int = 7) -> int:
-    """
-    Trước đây dọn DB, giờ không cần nữa vì Redis tự hết hạn theo TTL.
-    Giữ hàm này để news_cleanup_loop vẫn gọi được mà không lỗi.
-    """
-    return 0
 
 def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
     """Kiểm tra user có bật nhận loại tin feed_type hay không."""

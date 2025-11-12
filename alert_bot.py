@@ -5,7 +5,6 @@ import datetime
 import asyncio
 import pytz
 import requests
-import pytz
 import pandas as pd
 import math
 import uuid
@@ -41,14 +40,12 @@ from db_utils import (
     upsert_stock_value_batch,
     load_stock_value_cache,
     get_stock_value_cache_count,
-    clear_stock_value_cache,
     has_news_seen,
     mark_news_seen,          
     get_news_seen_count,
     get_news_pref,
     set_news_pref,   
     is_news_enabled_for_chat,
-    cleanup_old_news_seen,
     has_bctc_notified,
     mark_bctc_notified,
     add_bctc_queue,
@@ -64,7 +61,6 @@ import time
 import subprocess
 import re
 import csv
-from datetime import timedelta
 from telegram.error import BadRequest
 from typing import Any
 import html
@@ -1219,67 +1215,6 @@ def seconds_until_next_weekly_report():
         )
 
     return max((target - now).total_seconds(), 0)
-
-def load_floor_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, str]:
-    """
-    Đọc file CSV mapping sàn niêm yết, trả về:
-        {symbol: floor}
-    CSV kỳ vọng có cột: symbol, floor
-    Ví dụ:
-        symbol,floor
-        AAA,hose
-        AAM,hnx
-    """
-    mapping: dict[str, str] = {}
-    try:
-        # dùng utf-8-sig để auto bỏ BOM nếu có
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return {}
-
-            raw_cols = reader.fieldnames
-            cols = [
-                (c or "").strip().lstrip("\ufeff").lower()
-                for c in raw_cols
-            ]
-
-            try:
-                symbol_idx = cols.index("symbol")
-            except ValueError:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'symbol'. "
-                    f"fieldnames raw = {raw_cols}"
-                )
-                return {}
-
-            try:
-                floor_idx = cols.index("floor")
-            except ValueError:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'floor'. "
-                    f"fieldnames raw = {raw_cols}"
-                )
-                return {}
-
-            for row in reader:
-                values = list(row.values())
-                sym = (values[symbol_idx] or "").strip().upper()
-                flr = (values[floor_idx] or "").strip().upper()
-                if not sym or not flr:
-                    continue
-                mapping[sym] = flr
-
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Đã load {len(mapping)} mã từ {path} (floor HOSE/HNX/...)."
-        )
-
-    except FileNotFoundError:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không tìm thấy file {path}.")
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi đọc CSV {path}: {e}")
-
-    return mapping
 
 # =============================================
 # HÀM XỬ LÝ TIN NHẮN KHÔNG RÕ NGHĨA
@@ -4964,7 +4899,8 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
             ("announce", "(admin) Gửi thông báo đến tất cả người dùng"),
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
-            ("screener_value_clear", "(admin) Xóa dữ liệu screener cache (làm mới)"),
+            ("screener_value_clear", "(admin) Xóa dữ liệu screener cache"),
+            ("value_refresh_now", "(admin) Làm mới liệu screener cache"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
             ("news_test_macro", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
             ("news_test_specialized", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
@@ -5097,6 +5033,7 @@ async def main():
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
+    tg_app.add_handler(CommandHandler("value_refresh_now", cmd_value_refresh_now))
     tg_app.add_handler(CommandHandler("backup_core", cmd_backup_core))
     tg_app.add_handler(CommandHandler("restore_core", cmd_restore_core))
 
