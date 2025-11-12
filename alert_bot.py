@@ -1344,6 +1344,13 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
             f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ ssi_master_list.csv. "
             f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl."
         )
+        # --- Sanitize symbol list: chỉ giữ mã 3 chữ cái [A-Z] ---
+        _symbols_before = len(symbols)
+        symbols = [s for s in symbols if isinstance(s, str) and re.fullmatch(r"[A-Z]{3}", (s or ""))]
+        dropped = _symbols_before - len(symbols)
+        if dropped > 0:
+            log.info(f"[{INSTANCE_ID}][VALUE] Đã lọc {dropped} mã không phải 3 chữ cái A-Z (loại mã gây lỗi batch).")
+                
     else:
         log.info(
             f"[{INSTANCE_ID}][VALUE] Không load được ssi_master_list.csv, "
@@ -1498,10 +1505,11 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
         # 3️⃣ Lấy price_board cho batch để có 'floor' + proxies
         pb_df = None
         try:
-            pb_df = trading.price_board(symbols=batch_syms)
+            pb_df = _fetch_price_board_with_fallback(trading, batch_syms, log, INSTANCE_ID)
             # Gợi ý: log cột để map
-            if pb_df is not None:
-                log.info(f"[{INSTANCE_ID}][VALUE] price_board columns: {pb_df.columns.tolist()}")
+            if pb_df is None or pb_df.empty:
+                log.warning(f"[{INSTANCE_ID}][VALUE] price_board rỗng sau fallback cho batch {batch_idx}/{total_batches}. Bỏ qua batch này.")
+                continue
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi price_board batch: {e}")
 
@@ -3766,6 +3774,43 @@ def load_seen_news_from_redis(feed_type: str, limit: int = 10) -> list[dict[str,
     # Sắp xếp mới nhất trước
     items.sort(key=lambda x: x["published"], reverse=True)
     return items[:limit]
+
+def _fetch_price_board_with_fallback(trading, batch_syms, log, INSTANCE_ID):
+    """
+    Cố gắng gọi price_board theo batch; nếu lỗi (RetryError/TypeError/...), fallback gọi từng mã.
+    Trả về DataFrame đã concat hoặc None nếu rỗng.
+    """
+    import time
+    import pandas as pd
+
+    pb_df = None
+    try:
+        pb_df = trading.price_board(batch_syms)
+        if pb_df is not None and not pb_df.empty:
+            return pb_df
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi price_board batch (sẽ fallback từng mã): {type(e).__name__}: {e}")
+
+    # Fallback từng mã để không mất dữ liệu
+    rows = []
+    for s in batch_syms:
+        try:
+            _df = trading.price_board([s])
+            if _df is not None and not _df.empty:
+                rows.append(_df)
+            else:
+                log.debug(f"[{INSTANCE_ID}][VALUE] price_board rỗng cho {s}")
+        except Exception as e1:
+            log.debug(f"[{INSTANCE_ID}][VALUE] Lỗi price_board({s}): {type(e1).__name__}: {e1}")
+        time.sleep(0.15)  # throttle nhẹ để đỡ bị chặn
+
+    if rows:
+        try:
+            return pd.concat(rows, axis=0, ignore_index=True)
+        except Exception as e2:
+            log.warning(f"[{INSTANCE_ID}][VALUE] Không ghép được pb_df fallback: {type(e2).__name__}: {e2}")
+
+    return None
 
 
 # ==============================================
