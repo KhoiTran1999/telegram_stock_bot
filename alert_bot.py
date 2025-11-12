@@ -4505,11 +4505,11 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
+    vn_tz = pytz.timezone(TIMEZONE) # ✅ Đảm bảo vn_tz luôn được định nghĩa
 
-    # ❗️Trường hợp không (hoặc thiếu) tham số: chỉ gửi cú pháp + lệnh mẫu cho admin copy
+    # ❗️Trường hợp không (hoặc thiếu) tham số:
     if len(args) < 4:
-        vn_tz = pytz.timezone(TIMEZONE)
-        now = datetime.datetime.now(vn_tz)
+        now = datetime.datetime.now(vn_tz) # 'now' cần ở đây cho lệnh mẫu
 
         start_time = now - datetime.timedelta(minutes=1)
         end_time   = now + datetime.timedelta(minutes=1)
@@ -4523,18 +4523,22 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❗️ Cú pháp: `/delete_range <từ ngày> <giờ> <đến ngày> <giờ>`"
         )
 
-        # Tin nhắn 2: lệnh mẫu (dựa trên thời điểm hiện tại ±1 phút)
+        # Tin nhắn 2: lệnh mẫu
         await reply_md(
             update,
             f"`/delete_range {start_str} {end_str}`"
         )
         return
 
-    # ✅ Trường hợp có đủ 4 tham số: giữ nguyên logic xoá như hiện tại
+    # ✅ Trường hợp có đủ 4 tham số:
     await reply_md(update, "🔎 vui lòng đợi...")
 
     try:
-        vn_tz = pytz.timezone(TIMEZONE)
+        # ✅✅✅ [SỬA LỖI] Khởi tạo 'now' và 'skipped_old'
+        now = datetime.datetime.now(vn_tz)
+        skipped_old = 0
+        deleted = 0
+        
         start_str = f"{args[0]} {args[1]}"
         end_str   = f"{args[2]} {args[3]}"
         start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
@@ -4546,33 +4550,42 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_md(update, "📭 Không có tin nhắn nào trong khoảng thời gian này.")
             return
 
-        deleted = 0
-
         # ⭐️ Hàm sync để dùng với to_thread
         def _delete_message(chat_id, msg_id):
             url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
             params = {"chat_id": chat_id, "message_id": msg_id}
             try:
-                requests.get(url, params=params, timeout=10)
+                # Sửa: Dùng POST thay vì GET cho deleteMessage để an toàn hơn
+                requests.post(url, params=params, timeout=10)
             except Exception as e:
                 log.warning(f"Lỗi gọi deleteMessage cho {msg_id} trong chat {chat_id}: {e}")
 
         # ✅ get_bot_messages_in_range trả về (chat_id, message_id, sent_at)
         for chat_id, msg_id, _sent_at in records:
             try:
+                # Logic xử lý timezone của bạn (đã đúng)
                 sent_at_vn = _sent_at.astimezone(vn_tz) if _sent_at.tzinfo else _sent_at.replace(tzinfo=pytz.UTC).astimezone(vn_tz)
+                
+                # Giờ 'now' đã được định nghĩa và có thể so sánh
                 if (now - sent_at_vn).total_seconds() > 48*3600:
                     skipped_old += 1
                     continue
 
                 await asyncio.to_thread(_delete_message, chat_id, msg_id)
                 deleted += 1
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1) # Tránh rate limit của Telegram
             except Exception as e:
                 log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
 
+        # Xoá log trong DB
         await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
-        await reply_md(update, f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}.")
+        
+        # Tạo thông báo kết quả
+        summary = f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}."
+        if skipped_old > 0:
+            summary += f"\n(Đã bỏ qua {skipped_old} tin nhắn cũ hơn 48 giờ, không thể xoá)."
+        
+        await reply_md(update, summary)
 
     except Exception as e:
         await reply_md(update, f"⚠️ Lỗi xử lý: {e}")
