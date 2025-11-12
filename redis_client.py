@@ -1,4 +1,3 @@
-# redis_client.py
 import os
 from dotenv import load_dotenv
 import redis

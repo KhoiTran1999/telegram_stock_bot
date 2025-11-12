@@ -40,6 +40,7 @@ from db_utils import (
     upsert_stock_value_batch,
     load_stock_value_cache,
     get_stock_value_cache_count,
+    clear_stock_value_cache,
     has_news_seen,
     mark_news_seen,          
     get_news_seen_count,
@@ -4325,38 +4326,50 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
 
+# Dùng dict lưu tạm xác nhận theo admin_id
+pending_clear_confirmations = {}
+
 async def cmd_screener_value_clear(update: Update, context):
     """
-    Xoá cache screener trong Redis để buộc build lại báo cáo.
-    Mặc định: chỉ xoá key hôm nay. Thêm tham số 'all' để xoá toàn bộ.
-
-    Ví dụ:
-      /screener_value_clear          -> xoá hôm nay
-      /screener_value_clear all      -> xoá tất cả key screener_value:*
+    [ĐÃ SỬA] Xoá toàn bộ cache screener value trong PostgreSQL (bảng stock_value_cache).
+    Đây là hành động nguy hiểm, yêu cầu xác nhận.
+    
+    Cách dùng: /screener_value_clear confirm
     """
+    chat_id = update.effective_chat.id
+    if chat_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    args = context.args if context.args else []
+    
+    # Bước 1: Yêu cầu xác nhận
+    if not args or args[0].lower() != "confirm":
+        # ⭐️ Chạy CSDL trong thread
+        count = await asyncio.to_thread(get_stock_value_cache_count)
+        
+        await reply_md(
+            update,
+            f"⚠️ *Xác nhận xoá toàn bộ cache Value?*\n\n"
+            f"Hành động này sẽ xoá *toàn bộ {count} dòng* trong bảng `stock_value_cache` của PostgreSQL.\n"
+            f"Bot sẽ cần chạy lại `/value_refresh_now` (tốn nhiều thời gian) để có lại dữ liệu.\n\n"
+            f"Để xác nhận, gõ chính xác lệnh:\n"
+            f"`/screener_value_clear confirm`"
+        )
+        return
+
+    # Bước 2: Đã xác nhận -> Thực hiện xoá
     try:
-        args = context.args if context.args else []
-        clear_all = (len(args) > 0 and args[0].lower() == "all")
-
-        from redis_client import redis_client
-        vn_tz = pytz.timezone(TIMEZONE)
-        today = datetime.datetime.now(vn_tz).date()
-
-        if clear_all:
-            deleted = redis_client.delete_pattern("screener_value:*")
-            await reply_md(update, f"*[ADMIN]* Đã xoá *{deleted}* key Redis: `screener_value:*` ✅")
-        else:
-            key = f"screener_value:{today.isoformat()}"
-            ok = redis_client.delete(key)
-            if ok:
-                await reply_md(update, f"*[ADMIN]* Đã xoá key Redis hôm nay: `{key}` ✅")
-            else:
-                await reply_md(update, f"*[ADMIN]* Key hôm nay chưa tồn tại hoặc đã xoá: `{key}`")
-
+        await reply_md(update, "⏳ *[ADMIN]* Đang thực hiện TRUNCATE bảng `stock_value_cache` trong PostgreSQL...")
+        
+        # ⭐️ Chạy CSDL trong thread
+        await asyncio.to_thread(clear_stock_value_cache)
+        
+        await reply_md(update, "✅ *[ADMIN]* Đã xoá thành công toàn bộ dữ liệu trong `stock_value_cache`.")
+        
     except Exception as e:
-        log.exception("[ADMIN] Lỗi xoá screener cache: %s", e)
-        await reply_md(update, f"*[ADMIN]* Lỗi xoá screener cache: `{e}`")
-
+        log.exception("[ADMIN] Lỗi xoá stock_value_cache (PostgreSQL): %s", e)
+        await reply_md(update, f"*[ADMIN]* Lỗi khi xoá bảng `stock_value_cache`: `{e}`")
 
 async def cmd_value_refresh_now(update: Update, context):
     """
