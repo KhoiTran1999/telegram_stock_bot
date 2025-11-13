@@ -3369,7 +3369,6 @@ async def vn30f1m_alert_loop():
         # Giữ nhịp 5 giây chính xác
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(0.1, VN30F1M_TICK_SECONDS - elapsed)
-        log.info(f"[VN30F1M][TICKER]   -> Ngủ {delay:.1f}s")
         await asyncio.sleep(delay)
 
 async def vn30f1m_price_fetcher_loop():
@@ -3378,6 +3377,7 @@ async def vn30f1m_price_fetcher_loop():
     - Loop này CHỈ LẤY GIÁ từ API.
     - Cập nhật _vn30f1m_current_price_cache.
     """
+    global _vn30f1m_current_price_cache
     vn_tz = pytz.timezone(TIMEZONE)
     FETCH_INTERVAL = 10 # Theo yêu cầu của bạn
     last_healthcheck_date: datetime.date | None = None
@@ -3403,9 +3403,9 @@ async def vn30f1m_price_fetcher_loop():
                 continue
                 
             price = await _vn30f1m_get_current_price()
-            
+
             if price is not None:
-                log.info(f"[VN30F1M][FETCHER] API trả về giá = {price:.2f}. Cập nhật cache.")
+                log.info(f"[VN30F1M][FETCHER] _vn30f1m_anchor = {_vn30f1m_anchor}")
                 _vn30f1m_current_price_cache = float(price)
             else:
                 log.warning("[VN30F1M][FETCHER] API trả về None.")
