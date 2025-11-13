@@ -2661,63 +2661,101 @@ async def initial_value_precompute_loop():
     # Kết thúc loop một lần, không lặp lại
     log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] initial_value_precompute_loop() kết thúc.")
 
+
+#================= DAILY_SCREENER_LOOP ===============
+async def execute_daily_screener(admin_update: Update | None = None):
+    """
+    Hàm lõi: Chạy, tính toán và gửi báo cáo screener.
+    Nếu có admin_update, sẽ gửi phản hồi cho admin.
+    """
+    global INSTANCE_ID, log, tg_app # Cần tg_app để gửi tin
+
+    instance_label = f"[{INSTANCE_ID}][EXEC_SCREENER]"
+    admin_chat_id = admin_update.effective_chat.id if admin_update else None
+
+    try:
+        log.info(f"{instance_label} Bắt đầu chạy (trigger by: {'Admin' if admin_chat_id else 'Scheduler'}).")
+        if admin_chat_id:
+            # Gửi tin nhắn bằng bot instance toàn cục
+            await tg_app.bot.send_message(admin_chat_id, "⏳ Bắt đầu chạy tác vụ gửi Daily Screener thủ công...")
+
+        # === BÊ NGUYÊN LOGIC TỪ daily_screener_loop VÀO ĐÂY ===
+        
+        # 1. Tính toán
+        result = await asyncio.to_thread(compute_value_screener)
+        
+        # 2. Format
+        text = format_screener_report_text(result)
+        
+        if not text:
+            log.warning(f"{instance_label} Không có dữ liệu screener để gửi (text=None).")
+            if admin_chat_id:
+                await tg_app.bot.send_message(admin_chat_id, "⚠️ Không có dữ liệu screener để gửi (text=None).")
+            return # Dừng hàm
+
+        # 3. Gửi cho tất cả user (Pro)
+        log.info(f"{instance_label} Bắt đầu broadcast báo cáo screener...")
+        
+        await broadcast_to_all_watchers(text, target_audience="pro")
+        
+        # === KẾT THÚC LOGIC CŨ ===
+
+        log.info(f"{instance_label} Hoàn tất broadcast.")
+        if admin_chat_id:
+            await tg_app.bot.send_message(admin_chat_id, "✅ Đã gửi Daily Screener thành công.")
+
+    except Exception as e:
+        log.exception(f"{instance_label} Lỗi nghiêm trọng: {e}")
+        if admin_chat_id:
+            try:
+                await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi khi chạy Daily Screener: {e}")
+            except Exception as e2:
+                log.error(f"{instance_label} Lỗi gửi tin nhắn lỗi cho admin: {e2}")
+
 async def daily_screener_loop():
     """
-    Gửi báo cáo screener value cho TẤT CẢ user vào 09:00 sáng T2-T6.
-    
-    (ĐÃ SỬA LỖI BLOCKING I/O)
+    (Đã sửa) Gửi báo cáo screener value (CHỈ LÊN LỊCH)
+    vào 09:00 sáng T2-T6.
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
 
     while True:
         loop_id += 1
+        instance_label = f"[{INSTANCE_ID}][SCREENER {loop_id}]" # Giữ log label
 
         # ❗️ KIỂM TRA TRẠNG THÁI BOT
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] [gửi báo cáo screener 09:00 T2-T6] Bot đang TẮT, sleep 60s.")
+            log.info(f"{instance_label} [gửi báo cáo screener 09:00 T2-T6] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue
 
         wait_sec = seconds_until_next_weekday_screener()
         log.info(
-            f"[{INSTANCE_ID}][SCREENER {loop_id}] Ngủ tới 09:00 ngày làm việc tiếp theo, còn {wait_sec:.0f}s"
+            f"{instance_label} Ngủ tới 09:00 ngày làm việc tiếp theo, còn {wait_sec:.0f}s"
         )
         await asyncio.sleep(wait_sec)
 
         # ❗️ KIỂM TRA LẦN NỮA SAU KHI THỨC DẬY
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Thức dậy nhưng bot đang TẮT, bỏ qua.")
+            log.info(f"{instance_label} Thức dậy nhưng bot đang TẮT, bỏ qua.")
             continue
 
         now = datetime.datetime.now(vn_tz)
         if now.weekday() > 4: # 5=T7, 6=CN
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Thức dậy nhưng không phải T2-T6, bỏ qua.")
+            log.info(f"{instance_label} Thức dậy nhưng không phải T2-T6, bỏ qua.")
             continue
         
         try:
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu chạy compute_value_screener() lúc 09:00.")
+            # Chỉ cần gọi hàm lõi (không truyền admin_update)
+            log.info(f"{instance_label} 09:00, bắt đầu chạy execute_daily_screener() theo lịch.")
+            await execute_daily_screener(admin_update=None)
             
-            # 1. Tính toán (OK, đã chạy non-blocking)
-            result = await asyncio.to_thread(compute_value_screener)
-            
-            # 2. Format (OK, non-blocking)
-            text = format_screener_report_text(result)
-            
-            if not text:
-                log.warning(f"[{INSTANCE_ID}][SCREENER {loop_id}] Không có dữ liệu screener để gửi.")
-                continue
-
-            # 3. Gửi cho tất cả user
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Bắt đầu broadcast báo cáo screener...")
-            
-            await broadcast_to_all_watchers(text, target_audience="pro")
-            
-            log.info(f"[{INSTANCE_ID}][SCREENER {loop_id}] Hoàn tất broadcast.")
-
         except Exception as e:
-            log.exception(f"[{INSTANCE_ID}][SCREENER {loop_id}] Lỗi tổng quát: {e}")
+            # Lỗi này chỉ là lỗi khi *gọi* hàm, chứ ko phải lỗi *trong* hàm
+            log.exception(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_daily_screener: {e}")
             await asyncio.sleep(300) # 5 phút retry nếu lỗi
+#-----------------------------------------
 
 async def news_specialized_loop():
     """
@@ -5611,6 +5649,25 @@ async def cmd_admin_remove_user(update: Update, context: ContextTypes.DEFAULT_TY
             
     except Exception as e:
         await reply_md(update, f"Lỗi: {e}. Cú pháp: /admin_remove_user <chat_id> confirm")
+
+async def cmd_run_screener_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    (Admin) Chạy tác vụ gửi daily screener ngay lập tức.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    # Log command
+    await asyncio.to_thread(log_command_usage, update.effective_chat.id, "/cmd_run_screener_now", ADMIN_ID)
+    
+    # Báo cho admin biết là lệnh đã được nhận
+    await reply_md(update, "🏃 Bắt đầu chạy tác vụ `execute_daily_screener` trong nền. Sẽ thông báo khi hoàn tất...")
+
+    # Gọi hàm lõi (truyền update vào để nhận phản hồi)
+    # Chạy tác vụ này trong một task riêng để nó không block bot
+    asyncio.create_task(execute_daily_screener(admin_update=update))
+
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
