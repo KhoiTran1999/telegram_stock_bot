@@ -3253,8 +3253,21 @@ async def vn30f1m_alert_loop():
                 continue
 
             if not in_session_vietnam():
+                # Clear anchor, price cache... mỗi khi ra ngoài giờ
                 _vn30f1m_clear_after_close()
-                await asyncio.sleep(60)
+                now = datetime.datetime.now(vn_tz)
+
+                next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+                if now >= next_open:
+                    next_open += datetime.timedelta(days=1)
+
+                while next_open.weekday() >= 5:
+                    next_open += datetime.timedelta(days=1)
+
+                sleep_seconds = max(5, (next_open - now).total_seconds())
+
+                log.info(f"[VN30F1M][TICKER] Ngoài giờ. Ngủ tới {next_open.strftime('%Y-%m-%d %H:%M:%S')} ({int(sleep_seconds)}s)")
+                await asyncio.sleep(sleep_seconds)
                 continue
                 
             price = _vn30f1m_current_price_cache
@@ -3304,8 +3317,22 @@ async def vn30f1m_price_fetcher_loop():
                 continue
                 
             if not in_session_vietnam():
-                log.info("[VN30F1M][FETCHER] Ngoài giờ, ngủ 60s.")
-                await asyncio.sleep(60)
+                # Tính thời điểm mở cửa tiếp theo: 09:15 T2–T6
+                now = datetime.datetime.now(vn_tz)
+
+                next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+                if now >= next_open:
+                    # Nếu đã qua giờ mở cửa hôm nay → sang ngày mai
+                    next_open += datetime.timedelta(days=1)
+
+                # Nếu ngày mai là T7/CN → nhảy tới thứ 2
+                while next_open.weekday() >= 5:
+                    next_open += datetime.timedelta(days=1)
+
+                sleep_seconds = max(5, (next_open - now).total_seconds())
+
+                log.info(f"[VN30F1M][FETCHER] Ngoài giờ. Ngủ tới {next_open.strftime('%Y-%m-%d %H:%M:%S')} ({int(sleep_seconds)}s)")
+                await asyncio.sleep(sleep_seconds)
                 continue
                 
             price = await _vn30f1m_get_current_price()
