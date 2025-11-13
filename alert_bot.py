@@ -13,6 +13,12 @@ import tempfile
 from dotenv import load_dotenv
 load_dotenv(override=True)
 from telegram import Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+)
+import telegram
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -71,8 +77,6 @@ import csv
 from telegram.error import BadRequest
 from typing import Any
 import html
-from telegram import BotCommand
-import telegram
 import feedparser
 from telegram.error import TelegramError
 from urllib.parse import quote_plus
@@ -5788,10 +5792,22 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("cmd_run_weekly_report_now", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
         ]
 
+        # Tách commands
+        user_cmds = [(c, d) for c, d in commands if "(admin)" not in d]
+        admin_cmds = commands
+
+        # 1) Set commands cho USERS: tất cả private chats
         await app.bot.set_my_commands(
-            [BotCommand(cmd, desc) for cmd, desc in commands],
-            scope=telegram.BotCommandScopeDefault()
+            [BotCommand(cmd, desc) for cmd, desc in user_cmds],
+            scope=BotCommandScopeAllPrivateChats(),
         )
+
+        # 2) Set commands cho ADMIN: private chat 1088200599
+        await app.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in admin_cmds],
+            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+        )
+
         log.info(f"[{instance_id}] ✅ Đã đăng ký danh sách lệnh Telegram thành công.")
 
     except Exception as e:
