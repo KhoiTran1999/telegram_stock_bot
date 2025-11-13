@@ -3209,7 +3209,7 @@ async def news_cleanup_loop():
 # --- Tham số riêng
 VN30F1M_SYMBOL = "VN30F1M"
 VN30F1M_DELTA_THRESHOLD = 5.0    # ±5 điểm
-VN30F1M_TICK_SECONDS = 10        # chu kỳ quét
+VN30F1M_TICK_SECONDS = 3        # chu kỳ quét
 
 # --- State trong RAM
 _vn30f1m_anchor: float | None = None      # mốc di động trong ngày
@@ -3391,13 +3391,11 @@ async def vn30f1m_alert_loop():
             _vn30f1m_reset_if_new_day(now)
 
             if not BOT_ACTIVE:
-                log.info("[VN30F1M][TICKER] Bot OFF, ngủ 30s.")
                 await asyncio.sleep(30)
                 continue
 
             if not in_session_vietnam():
                 _vn30f1m_clear_after_close()
-                log.info("[VN30F1M][TICKER] Ngoài giờ, ngủ 60s.")
                 await asyncio.sleep(60)
                 continue
                 
@@ -3408,7 +3406,6 @@ async def vn30f1m_alert_loop():
                 continue
 
             # Gọi hàm xử lý (cực nhanh)
-            log.info(f"[VN30F1M][TICKER]   -> Xử lý giá {price:.2f}...")
             await _vn30f1m_process_tick(float(price))
 
         except asyncio.CancelledError:
