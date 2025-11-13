@@ -11,7 +11,7 @@ import uuid
 import logging
 import tempfile
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -1142,7 +1142,7 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
 
     prompt = f"""
 Bạn là chuyên viên phân tích chứng khoán Việt Nam. 
-Hãy viết *báo cáo đầu tư trung–dài hạn (3–12 tháng)* cho danh mục dưới đây, dùng giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
+Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây, dùng giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
 
 Dữ liệu danh mục:
 {data_block}
@@ -1157,7 +1157,7 @@ Với MỖI cổ phiếu, trình bày theo mẫu:
 - Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi thêm)
 
 Cuối cùng viết phần:
-📊 **Tổng quan danh mục:** (nhận xét cơ cấu ngành, mức rủi ro chung và gợi ý định hướng 3–12 tháng)
+📊 Tổng quan danh mục: (nhận xét cơ cấu ngành, mức rủi ro chung và gợi ý định hướng 3–12 tháng)
 
 Yêu cầu:
 - Không nói chuyện “hôm nay tăng giảm”, không nêu giá mục tiêu.
@@ -1169,6 +1169,7 @@ Yêu cầu:
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
     """Gọi OpenRouter (MiniMax M2) để sinh bản tin báo cáo danh mục."""
+
     if not OPENROUTER_API_KEY:
         return (
             "⚠️ Hệ thống chưa cấu hình OPENROUTER_API_KEY nên chưa tạo được báo cáo tự động."
@@ -1224,55 +1225,6 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
         f"⚠️ Hiện tại không tạo được báo cáo danh mục (LLM lỗi: {type(last_error).__name__}). "
         "Bạn thử lại sau nhé."
     )
-
-
-#--------------------------------------------------------------------
-    # url = "https://openrouter.ai/api/v1/chat/completions"
-    # headers = {
-    #     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    #     "Content-Type": "application/json",
-    # }
-    # body = {
-    #     "model": "z-ai/glm-4.5-air:free",  # MiniMax M2 free trên OpenRouter
-    #     "messages": [
-    #         {
-    #             "role": "user",
-    #             "content": "Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram.",
-    #         },
-    #         {
-    #             "role": "user",
-    #             "content": prompt,
-    #         },
-    #     ],
-    #     "temperature": 0.4,
-    # }
-
-    # try:
-    #     resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
-    #     if resp.status_code != 200:
-    #         log.warning(
-    #             f"[{INSTANCE_ID}][LLM ERROR] HTTP {resp.status_code}: {resp.text[:300]}"
-    #         )
-    #         return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM trả lỗi HTTP). Bạn thử lại sau nhé."
-
-    #     data = resp.json()
-    #     if "error" in data:
-    #         log.warning(f"[{INSTANCE_ID}][LLM ERROR] {data['error']}")
-    #         return "⚠️ Hiện tại không tạo được báo cáo danh mục (LLM báo lỗi nội bộ)."
-
-    #     choices = data.get("choices")
-    #     if not choices:
-    #         log.warning(
-    #             f"[{INSTANCE_ID}][LLM ERROR] Response không có 'choices': {list(data.keys())}"
-    #         )
-    #         return "⚠️ Hiện tại không tạo được báo cáo danh mục (không nhận được nội dung phù hợp)."
-
-    #     content = choices[0]["message"]["content"]
-    #     return content.strip()
-
-    # except Exception as e:
-    #     log.warning(f"[{INSTANCE_ID}][LLM EXCEPTION] {e}")
-    #     return "⚠️ Hiện tại không tạo được báo cáo danh mục do lỗi kết nối LLM."
 
 #--------------------------------------------
 
