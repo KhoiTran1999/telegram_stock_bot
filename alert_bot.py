@@ -100,7 +100,7 @@ ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 TMP_DIR = tempfile.gettempdir()
 
 # Cấu hình batch cho screener Value
-VALUE_BATCH_SIZE = 30       # 50 mã / batch
+VALUE_BATCH_SIZE = 20       # 20 mã / batch
 VALUE_BATCH_SLEEP = 2       # nghỉ 2 giây giữa các batch
 MIN_PENNY_PRICE = 15000      # Giá tối thiểu (VND) để KHÔNG bị coi là penny
 
@@ -1499,7 +1499,7 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
 
     total_batches = math.ceil(total_todo / VALUE_BATCH_SIZE)
     processed_count = already
-    per_symbol_sleep = 0.5 # Giảm sleep một chút vì logic TCBS nhanh hơn
+    per_symbol_sleep = 1 # 🔧 DÙNG VCI: nên tăng sleep để tránh rate limit
 
     # --- Các hàm Helper (đã sửa _safe_float) ---
     def _safe_float(val):
