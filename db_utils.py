@@ -208,13 +208,12 @@ def get_all_watch():
         pipe.delete("watch_chat_ids")
         for chat_id, watch_list in rows:
             key = f"watch:{chat_id}"
-            wl = watch_list or []
-            if wl:
-                pipe.set(key, json.dumps(wl))
-                pipe.sadd("watch_chat_ids", chat_id)
-            else:
-                pipe.delete(key)
-                pipe.srem("watch_chat_ids", chat_id)
+            wl = watch_list or [] # wl sẽ là [] (rỗng) hoặc ['HPG']
+
+            # SỬA LỖI: Không kiểm tra 'if wl:',
+            # user nào cũng phải được cache (kể cả list rỗng)
+            pipe.set(key, json.dumps(wl))
+            pipe.sadd("watch_chat_ids", chat_id) # Luôn thêm user vào set
         pipe.execute()
     except Exception:
         pass
@@ -293,10 +292,14 @@ def save_watch_list_for_chat(chat_id: int, watch_list):
     try:
         r = get_redis()
         key = f"watch:{chat_id}"
-        if watch_list:
+        
+        # SỬA LỖI: Kiểm tra 'is not None' thay vì 'if list:'
+        # List rỗng [] vẫn là một giá trị hợp lệ cần cache
+        if watch_list is not None: 
             r.set(key, json.dumps(watch_list))
-            r.sadd("watch_chat_ids", chat_id)
+            r.sadd("watch_chat_ids", chat_id) # Luôn thêm user vào set
         else:
+            # Trường hợp này ít xảy ra, nhưng để an toàn
             r.delete(key)
             r.srem("watch_chat_ids", chat_id)
     except Exception:
