@@ -3308,7 +3308,7 @@ async def _vn30f1m_process_tick(price: float):
         pct = (delta / _vn30f1m_anchor) * 100 if _vn30f1m_anchor else 0.0
         now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
         text = (
-            f"*VN30F1M {direction} {abs(delta):.2f} điểm* so với mốc gần nhất {_vn30f1m_anchor:.2f}\n"
+            f"🔔 *VN30F1M {direction} {abs(delta):.2f} điểm* so với mốc gần nhất {_vn30f1m_anchor:.2f}\n"
             f"Giá hiện tại: *{float(price):.2f}* ({pct:+.2f}%) — {now_str}"
         )
         
@@ -3321,9 +3321,7 @@ async def _vn30f1m_process_tick(price: float):
         # Cập nhật mốc
         _vn30f1m_anchor = float(price)
         log.info(f"[VN30F1M][PROCESS]     >>> 🔁 Anchor moved to {_vn30f1m_anchor:.2f}")
-    else:
-        log.info(f"[VN30F1M][PROCESS]     >>> (Chưa đủ {VN30F1M_DELTA_THRESHOLD})")
-
+    
 async def vn30f1m_alert_loop():
     """
     (Tác vụ 2: Ticker - 5 giây)
