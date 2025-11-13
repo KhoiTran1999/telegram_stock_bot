@@ -2532,50 +2532,6 @@ async def screener_value_update_loop():
             # tránh spam lỗi, nghỉ 1h rồi tính lịch mới
             await asyncio.sleep(3600)
 
-async def initial_value_precompute_loop():
-    """
-    Chạy 1 lần sau khi bot khởi động:
-    - Đợi vài giây cho service & webhook mở port xong
-    - Kiểm tra DB, nếu chưa có dữ liệu screener Value thì crawl lần đầu
-    
-    (ĐÃ SỬA LỖI BLOCKING I/O)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 1
-
-    # Đợi 20s cho Hypercorn/Flask & Telegram webhook ổn định
-    await asyncio.sleep(20)
-
-    try:
-        # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
-        current_count = await asyncio.to_thread(get_stock_value_cache_count)
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi kiểm tra stock_value_cache: {e}")
-        current_count = 0
-
-    if current_count == 0:
-        now = datetime.datetime.now(vn_tz)
-        log.info(
-            f"[{INSTANCE_ID}][VALUE {loop_id}] DB chưa có dữ liệu screener Value, "
-            f"bắt đầu precompute_value_data() lần đầu (background) lúc {now.strftime('%Y-%m-%d %H:%M:%S')}."
-        )
-        try:
-            # ⭐️ SỬA LỖI BLOCKING: Chạy hàm precompute (blocking) trong thread
-            await asyncio.to_thread(precompute_value_data)
-        except Exception:
-            log.exception(
-                f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi chạy precompute_value_data() lần đầu (background)."
-            )
-    else:
-        log.info(
-            f"[{INSTANCE_ID}][VALUE {loop_id}] stock_value_cache đã có {current_count} dòng, "
-            "không cần precompute lần đầu."
-        )
-
-    # Kết thúc loop một lần, không lặp lại
-    log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] initial_value_precompute_loop() kết thúc.")
-
-
 #================= DAILY_SCREENER_LOOP ===============
 async def execute_daily_screener(admin_update: Update | None = None):
     """
@@ -5778,7 +5734,6 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(weekly_report_loop()),
                     MAIN_LOOP.create_task(screener_value_update_loop()),
                     MAIN_LOOP.create_task(daily_screener_loop()),
-                    MAIN_LOOP.create_task(initial_value_precompute_loop()),
                     MAIN_LOOP.create_task(news_specialized_loop()),
                     MAIN_LOOP.create_task(news_macro_loop()),
                     MAIN_LOOP.create_task(news_cleanup_loop()),
