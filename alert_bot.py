@@ -3116,12 +3116,17 @@ async def news_cleanup_loop():
 # --- Tham số riêng
 VN30F1M_SYMBOL = "VN30F1M"
 VN30F1M_DELTA_THRESHOLD = 5.0    # ±5 điểm
-VN30F1M_TICK_SECONDS = 15        # chu kỳ quét
+VN30F1M_TICK_SECONDS = 10        # chu kỳ quét
 
 # --- State trong RAM
 _vn30f1m_anchor: float | None = None      # mốc di động trong ngày
 _vn30f1m_date: datetime.date | None = None
 _vn30f1m_enabled_cache: set[int] = set()  # tập chat_id đang bật
+
+# --- [TỐI ƯU] Thêm các biến dùng chung cho 3 tác vụ ---
+_vn30f1m_broadcast_queue = asyncio.Queue()
+_vn30f1m_current_price_cache: float | None = None
+quote_vn30f1m = Quote(symbol=VN30F1M_SYMBOL, source="vci") # Khởi tạo 1 lần
 
 def ensure_bot_user_settings_table():
     """Bảng dùng chung cho toàn project, lưu settings dạng JSONB."""
@@ -3202,26 +3207,58 @@ def vn30f1m_day_healthcheck():
         log.warning(f"[VN30F1M] LIVE_PROBE error: {e}")
 
 async def _vn30f1m_get_current_price() -> float | None:
+    """
+    (V7 - Đã tối ưu) Lấy giá 1m.
+    Sử dụng object 'quote_vn30f1m' toàn cục, không khởi tạo lại.
+    """
     try:
-        quote = Quote(symbol="VN30F1M", source="vci")
-        df = quote.history(start="2025-11-12", end="2025-11-12", interval="1D")
-        if df is None or len(df) == 0:
+        # 1. Lấy ngày hôm nay (giờ VN)
+        vn_tz = pytz.timezone(TIMEZONE)
+        today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
+
+        # 2. Dùng object 'quote_vn30f1m' (đã khởi tạo 1 lần)
+        df = await asyncio.to_thread(quote_vn30f1m.history, start=today, end=today, interval="1m")
+        
+        if df is None or df.empty:
+            log.warning(f"[VN30F1M] quote.history(interval='1m') trả về rỗng cho hôm nay.")
+            # (Fallback)
+            try:
+                df_1d = await asyncio.to_thread(quote_vn30f1m.history, start=today, end=today, interval="1D")
+                if df_1d is not None and not df_1d.empty:
+                    return float(df_1d.iloc[-1]["close"])
+            except Exception:
+                pass 
             return None
-        return float(df.iloc[-1]["close"])
+
+        # 3. Lấy giá 'close' của dòng CUỐI CÙNG
+        price = float(df.iloc[-1]["close"])
+        return price
+
     except Exception as e:
-        log.warning(f"[VN30F1M] vnstock get_current_price error: {e}")
+        log.warning(f"[VN30F1M] Lỗi khi lấy giá 1m (quote.history): {e}")
         return None
 
 async def _vn30f1m_process_tick(price: float):
-    """Xử lý một tick: bắn khi ±5 điểm và cập nhật mốc di động."""
+    """
+    (Đã tối ưu + log)
+    - KHÔNG gửi tin nhắn (để tránh block).
+    - Chỉ so sánh mốc anchor.
+    - Nếu có biến động -> ĐẨY (put) tin nhắn vào Queue.
+    """
     global _vn30f1m_anchor
     if _vn30f1m_anchor is None:
         _vn30f1m_anchor = float(price)
-        log.info(f"[VN30F1M] ⛳ Anchor set = {_vn30f1m_anchor:.2f}")
+        log.info(f"[VN30F1M][PROCESS]     >>> ⛳ Anchor set = {_vn30f1m_anchor:.2f}")
         return
 
     delta = float(price) - _vn30f1m_anchor
+    
+    # Log so sánh
+    log.info(f"[VN30F1M][PROCESS]     >>> Delta: {delta:.2f} (Hiện tại: {price:.2f} | Mốc: {_vn30f1m_anchor:.2f})")
+    
     if abs(delta) >= VN30F1M_DELTA_THRESHOLD:
+        log.info(f"[VN30F1M][PROCESS]     >>> VƯỢT MỐC! ({abs(delta):.2f} >= {VN30F1M_DELTA_THRESHOLD})")
+        
         direction = "tăng" if delta > 0 else "giảm"
         pct = (delta / _vn30f1m_anchor) * 100 if _vn30f1m_anchor else 0.0
         now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
@@ -3229,66 +3266,162 @@ async def _vn30f1m_process_tick(price: float):
             f"*VN30F1M {direction} {abs(delta):.2f} điểm* so với mốc gần nhất {_vn30f1m_anchor:.2f}\n"
             f"Giá hiện tại: *{float(price):.2f}* ({pct:+.2f}%) — {now_str}"
         )
-        # broadcast
-        for cid in list(_vn30f1m_enabled_cache):
-            try:
-                await send_md(tg_app.bot, cid, text)
-            except Exception as e:
-                log.warning(f"[VN30F1M] send to {cid} failed: {e}")
+        
+        try:
+            _vn30f1m_broadcast_queue.put_nowait(text)
+            log.info("[VN30F1M][PROCESS]     >>> Đã đẩy tin nhắn vào Queue.")
+        except asyncio.QueueFull:
+            log.warning("[VN30F1M][PROCESS]     >>> LỖI: Broadcast queue bị đầy, bỏ lỡ 1 tin nhắn.")
 
+        # Cập nhật mốc
         _vn30f1m_anchor = float(price)
-        log.info(f"[VN30F1M] 🔁 Anchor moved to {_vn30f1m_anchor:.2f}")
+        log.info(f"[VN30F1M][PROCESS]     >>> 🔁 Anchor moved to {_vn30f1m_anchor:.2f}")
+    else:
+        log.info(f"[VN30F1M][PROCESS]     >>> (Chưa đủ {VN30F1M_DELTA_THRESHOLD})")
 
 async def vn30f1m_alert_loop():
     """
-    - Chạy 24/7; chỉ gửi trong giờ giao dịch (in_session_vietnam()).
-    - Đầu ngày: health-check 1D + reset anchor; phiên chiều dùng chung mốc đã hình thành.
-    - Hết phiên: clear state in-memory.
-    - Tôn trọng BOT_ACTIVE (admin).
-    - Không dùng Redis.
+    (Tác vụ 2: Ticker - 5 giây)
+    - Loop này KHÔNG gọi API (chỉ đọc cache).
+    - KHÔNG gửi tin (chỉ đẩy vào queue).
     """
     ensure_bot_user_settings_table()
     reload_vn30f1m_enabled_cache()
-    log.info(f"[VN30F1M] Enabled users at start: {len(_vn30f1m_enabled_cache)}")
-
-    last_healthcheck_date: datetime.date | None = None
+    log.info(f"[VN30F1M][TICKER] Bắt đầu. Users đang bật: {len(_vn30f1m_enabled_cache)}")
+    
+    vn_tz = pytz.timezone(TIMEZONE)
 
     while True:
+        loop_start = datetime.datetime.now(vn_tz)
         try:
-            now = datetime.datetime.now(pytz.timezone(TIMEZONE))
+            now = loop_start
             _vn30f1m_reset_if_new_day(now)
 
-            # Health-check 1D đầu ngày (mỗi ngày một lần)
-            if last_healthcheck_date != now.date():
-                vn30f1m_day_healthcheck()
-                last_healthcheck_date = now.date()
-
-            # Admin OFF → ngủ ngắn
             if not BOT_ACTIVE:
+                log.info("[VN30F1M][TICKER] Bot OFF, ngủ 30s.")
                 await asyncio.sleep(30)
                 continue
 
-            # Ngoài giờ → clear & ngủ dài
             if not in_session_vietnam():
                 _vn30f1m_clear_after_close()
+                log.info("[VN30F1M][TICKER] Ngoài giờ, ngủ 60s.")
                 await asyncio.sleep(60)
                 continue
-
-            # Trong giờ → lấy giá
-            price = await _vn30f1m_get_current_price()
+                
+            price = _vn30f1m_current_price_cache
+            
             if price is None:
                 await asyncio.sleep(VN30F1M_TICK_SECONDS)
                 continue
 
+            # Gọi hàm xử lý (cực nhanh)
+            log.info(f"[VN30F1M][TICKER]   -> Xử lý giá {price:.2f}...")
             await _vn30f1m_process_tick(float(price))
-            await asyncio.sleep(VN30F1M_TICK_SECONDS)
 
         except asyncio.CancelledError:
-            log.info("[VN30F1M] loop cancelled.")
+            log.info("[VN30F1M][TICKER] Bị huỷ (Cancelled).")
             break
         except Exception as e:
-            log.warning(f"[VN30F1M] loop error: {e}")
-            await asyncio.sleep(5)
+            log.warning(f"[VN30F1M][TICKER] Lỗi: {e}")
+        
+        # Giữ nhịp 5 giây chính xác
+        elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
+        delay = max(0.1, VN30F1M_TICK_SECONDS - elapsed)
+        log.info(f"[VN30F1M][TICKER]   -> Ngủ {delay:.1f}s")
+        await asyncio.sleep(delay)
+
+async def vn30f1m_price_fetcher_loop():
+    """
+    (Tác vụ 1: Fetcher - Yêu cầu 5 giây)
+    - Loop này CHỈ LẤY GIÁ từ API.
+    - Cập nhật _vn30f1m_current_price_cache.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    FETCH_INTERVAL = 10 # Theo yêu cầu của bạn
+    last_healthcheck_date: datetime.date | None = None
+    
+    while True:
+        loop_start = datetime.datetime.now(vn_tz)
+        try:
+            now = loop_start
+            
+            if last_healthcheck_date != now.date():
+                log.info("[VN30F1M][FETCHER] Đầu ngày, chạy health-check 1D...")
+                vn30f1m_day_healthcheck()
+                last_healthcheck_date = now.date()
+
+            if not BOT_ACTIVE:
+                log.info("[VN30F1M][FETCHER] Bot OFF, ngủ 30s.")
+                await asyncio.sleep(30)
+                continue
+                
+            if not in_session_vietnam():
+                log.info("[VN30F1M][FETCHER] Ngoài giờ, ngủ 60s.")
+                await asyncio.sleep(60)
+                continue
+                
+            price = await _vn30f1m_get_current_price()
+            
+            if price is not None:
+                log.info(f"[VN30F1M][FETCHER] API trả về giá = {price:.2f}. Cập nhật cache.")
+                _vn30f1m_current_price_cache = float(price)
+            else:
+                log.warning("[VN30F1M][FETCHER] API trả về None.")
+
+        except asyncio.CancelledError:
+            log.info("[VN30F1M][FETCHER] Bị huỷ (Cancelled).")
+            break
+        except Exception as e:
+            log.warning(f"[VN30F1M][FETCHER] Lỗi: {e}")
+        
+        # Giữ nhịp 5 giây
+        elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
+        delay = max(0.1, FETCH_INTERVAL - elapsed)
+        await asyncio.sleep(delay)
+
+async def vn30f1m_broadcast_loop():
+    """
+    (Tác vụ 3: Broadcaster)
+    - Loop này CHỈ GỬI TIN NHẮN.
+    - Chờ tin nhắn trong Queue.
+    """
+    log.info("[VN30F1M][BCASTER] Bắt đầu. Chờ tin nhắn trong queue...")
+    
+    while True:
+        try:
+            # Chờ Ticker đẩy tin nhắn vào
+            text = await _vn30f1m_broadcast_queue.get()
+            
+            if not text:
+                _vn30f1m_broadcast_queue.task_done()
+                continue
+
+            user_count = len(_vn30f1m_enabled_cache)
+            log.info(f"[VN30F1M][BCASTER] NHẬN ĐƯỢC TIN! Bắt đầu gửi cho {user_count} users...")
+            log.info(f"[VN30F1M][BCASTER] Nội dung: {text.splitlines()[0]}") # Log dòng đầu của tin nhắn
+
+            tasks = []
+            for cid in list(_vn30f1m_enabled_cache):
+                tasks.append(send_md(tg_app.bot, cid, text))
+            
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            _vn30f1m_broadcast_queue.task_done()
+            log.info("[VN30F1M][BCASTER] Gửi tin xong. Quay lại chờ queue...")
+
+        except asyncio.CancelledError:
+            log.info("[VN30F1M][BCASTER] Bị huỷ (Cancelled).")
+            break
+        except Exception as e:
+            log.warning(f"[VN30F1M][BCASTER] Lỗi: {e}")
+            # Đảm bảo task_done được gọi ngay cả khi gather lỗi, 
+            # để queue không bị kẹt
+            if '_vn30f1m_broadcast_queue' in locals():
+                try:
+                    _vn30f1m_broadcast_queue.task_done()
+                except ValueError:
+                    pass # nếu task_done đã được gọi
 #-------------------------------
 
 
@@ -5573,7 +5706,11 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
-                    MAIN_LOOP.create_task(vn30f1m_alert_loop()),
+                    #-------------- vn30f1m_alert_loop ------------
+                    MAIN_LOOP.create_task(vn30f1m_alert_loop()),      # Ticker (5s)
+                    MAIN_LOOP.create_task(vn30f1m_price_fetcher_loop()), # Fetcher (61s)
+                    MAIN_LOOP.create_task(vn30f1m_broadcast_loop()),   # Broadcaster (chờ queue)
+                    #----------------------------------------------
                 ]
                 log.info(f"[Lifespan] Đã khởi động {len(BACKGROUND_TASKS)} tác vụ nền.")
             
