@@ -24,7 +24,7 @@ from flask import Flask, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
-from vnstock import Trading, Quote, Listing, Finance
+from vnstock import Trading, Quote, Listing, Finance, Company
 from db_utils import (
     init_db,
     get_all_watch,
@@ -85,7 +85,6 @@ from report_cache import (
     save_report_to_redis,
 )
 from pathlib import Path
-from vnstock import Quote
 from openai import OpenAI
 
 # ==============================================
@@ -1363,22 +1362,19 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool = True):
     """
-    Crawl P/E, P/B, ROE (TCBS) VÀ Thanh khoản, Tài sản (VCI Price Board)
+    Crawl P/E, P/B, ROE VÀ Thanh khoản, Tài sản (TẤT CẢ TỪ VCI)
     lưu vào stock_value_cache.
-    (Phiên bản hoàn chỉnh, đã fix _safe_float)
-
-    Tham số:
-    - full_refresh=False: chỉ fill các mã CHƯA có trong DB (dùng cho lần chạy đầu).
-    - full_refresh=True : quét TOÀN BỘ mã và ghi đè (dùng cho lịch 00:00 hằng ngày).
-    - skip_if_fresh_today=True: nếu đã refresh hôm nay thì bỏ qua (tránh double-run khi restart).
-
-    ⚠️ HÀM NÀY LÀ BLOCKING (ĐỒNG BỘ) VÀ PHẢI ĐƯỢC GỌI BẰNG:
-        await asyncio.to_thread(precompute_value_data, ...)
+    
+    (ĐÃ SỬA LỖI - 13/11/2025)
+    - Dùng VCI (price_board) để lấy Vốn hoá, Thanh khoản, Sàn.
+    - Dùng VCI (Company().ratio_summary()) để lấy P/E, P/B, ROE.
+    - Không còn phụ thuộc vào nguồn TCBS (Finance.ratio()) bị lỗi.
     """
+    
     vn_tz = pytz.timezone(TIMEZONE)
     started_at = datetime.datetime.now(vn_tz)
     log.info(
-        f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data (có TK/TS) lúc "
+        f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data (Chỉ dùng VCI) lúc "
         f"{started_at.strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
@@ -1396,13 +1392,7 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
         )
         return
 
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] listing_df columns: {listing_df.columns.tolist()}"
-    )
-
     filtered_df = listing_df.copy()
-
-    # Cột mã
     symbol_col_candidates = ["symbol", "ticker", "code"]
     symbol_col = next(
         (c for c in symbol_col_candidates if c in filtered_df.columns),
@@ -1433,21 +1423,18 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
         dropped = _symbols_before - len(symbols)
         if dropped > 0:
             log.info(f"[{INSTANCE_ID}][VALUE] Đã lọc {dropped} mã không phải 3 chữ cái A-Z (loại mã gây lỗi batch).")
-                
     else:
         log.info(
             f"[{INSTANCE_ID}][VALUE] Không load được ssi_master_list.csv, "
             "tất cả mã sẽ gán industry='Khác'."
         )
 
-    # ❗️ SỬA LỖI LẤY SÀN (FIX 1)
     exchange_col_candidates = ["exchange", "floor", "san"]
     exchange_col = next(
         (c for c in exchange_col_candidates if c in filtered_df.columns),
         None,
     )
 
-    # Tiền xử lý: map thông tin exchange/floor từ listing_df (nếu có)
     exchange_map = {}
     if exchange_col:
         try:
@@ -1457,18 +1444,16 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][VALUE] Không build được exchange_map: {e}")
 
-    # Khởi tạo trading 1 lần
     try:
         trading = Trading(source="VCI")
     except Exception as e:
         trading = None
         log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
-        return  # Bắt buộc phải có trading để tính TK/TS
+        return
 
-    # 2️⃣ Đọc các mã đã có trong DB (để quyết định full refresh / fill mới)
+    # 2️⃣ Đọc các mã đã có trong DB
     existing_records = load_stock_value_cache()
 
-    # Nếu yêu cầu full_refresh thì có thể bỏ qua cơ chế resume + cho phép skip nếu đã fresh hôm nay
     if full_refresh and skip_if_fresh_today:
         try:
             last = max(
@@ -1514,10 +1499,9 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
 
     total_batches = math.ceil(total_todo / VALUE_BATCH_SIZE)
     processed_count = already
-    rate_limit_sleep = 60
-    per_symbol_sleep = 0.7
+    per_symbol_sleep = 0.5 # Giảm sleep một chút vì logic TCBS nhanh hơn
 
-    # ❗️ HÀM _safe_float ĐÃ SỬA LỖI TypeError
+    # --- Các hàm Helper (đã sửa _safe_float) ---
     def _safe_float(val):
         if val is None:
             return None
@@ -1526,56 +1510,21 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
                 val = val.item()
         except Exception:
             pass
-
         try:
             if isinstance(val, str):
                 val = val.strip()
                 if val == "" or val.lower() in {"nan", "none", "null"}:
                     return None
-                # thay dấu phẩy bằng chấm nếu cần
                 if "," in val and val.count(",") == 1 and "." not in val:
                     val = val.replace(",", ".")
             v = float(val)
         except Exception:
-            return None  # Nếu không thể convert sang float, trả về None
-
+            return None
         if math.isnan(v):
             return None
         return v
-
-    def _norm(x):
-        try:
-            if pd.isna(x):
-                return None
-        except Exception:
-            pass
-        return x
-
-    # Tìm nhanh các cột có chứa cụm từ mong muốn (dùng cho DataFrame có MultiIndex)
-    def _pick_from_candidates(row, candidates, substrings):
-        for key in candidates:
-            try:
-                if key in row:
-                    v = _norm(row.get(key, None))
-                    if v is not None:
-                        return v
-            except Exception:
-                continue
-        for k in row.index:
-            name = ""
-            if isinstance(k, tuple):
-                name = str(k[1]).lower()
-            else:
-                name = str(k).lower()
-            if any(sub in name for sub in substrings):
-                try:
-                    v = _norm(row.get(k, None))
-                except Exception:
-                    v = None
-                if v is not None:
-                    return v
-        return None
-
+    
+    # --- Bắt đầu vòng lặp Batch ---
     for batch_idx in range(total_batches):
         batch_syms = todo_symbols[
             batch_idx * VALUE_BATCH_SIZE : (batch_idx + 1) * VALUE_BATCH_SIZE
@@ -1585,11 +1534,10 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
             f"{len(batch_syms)} symbols: {', '.join(batch_syms[:8])}"
         )
 
-        # 3️⃣ Lấy price_board cho batch để có 'floor' + proxies
+        # 3️⃣ Lấy price_board cho batch (VCI - Lấy Giá + Proxies)
         pb_df = None
         try:
             pb_df = _fetch_price_board_with_fallback(trading, batch_syms, log, INSTANCE_ID)
-            # Gợi ý: log cột để map
             if pb_df is None or pb_df.empty:
                 log.warning(f"[{INSTANCE_ID}][VALUE] price_board rỗng sau fallback cho batch {batch_idx}/{total_batches}. Bỏ qua batch này.")
                 continue
@@ -1600,71 +1548,10 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
 
         for sym in batch_syms:
             sym = str(sym).upper()
+            
+            time.sleep(per_symbol_sleep) # Throttle VCI API
 
-            # ⭐️ SỬA LỖI BLOCKING: Đổi await asyncio.sleep -> time.sleep
-            time.sleep(per_symbol_sleep)  # Vẫn sleep để throttle fin.ratio
-
-            ratio_df = None
-            last_err = None
-
-            # 🔁 Thử gọi TCBS, nếu bị rate limit thì nghỉ rồi thử lại (tối đa 3 lần)
-            for attempt in range(3):
-                try:
-                    fin = Finance(symbol=sym, source="TCBS")
-                    ratio_df = fin.ratio(period="year", lang="vi", dropna=False)
-                    break  # OK
-                except SystemExit as e:
-                    msg = str(e)
-                    last_err = e
-                    log.warning(
-                        f"[{INSTANCE_ID}][VALUE] SystemExit từ Finance.ratio(TCBS) cho {sym}: {msg}"
-                    )
-                    if "Rate limit exceeded" in msg:
-                        log.warning(
-                            f"[{INSTANCE_ID}][VALUE] Bị rate limit TCBS, nghỉ {rate_limit_sleep}s rồi thử lại (lần {attempt+1}/3)..."
-                        )
-                        time.sleep(rate_limit_sleep)
-                        continue
-                    else:
-                        break
-                except Exception as e:
-                    last_err = e
-                    log.warning(
-                        f"[{INSTANCE_ID}][VALUE] Lỗi gọi Finance.ratio(TCBS) cho {sym}: {e}"
-                    )
-                    time.sleep(2.0)
-                    continue
-
-            pe = None
-            pb = None
-            roe = None
-            if ratio_df is not None and not ratio_df.empty:
-                try:
-                    last_row = ratio_df.iloc[-1]
-                except Exception:
-                    last_row = None
-
-                if last_row is not None:
-                    pe = _pick_from_candidates(
-                        last_row,
-                        ["pe", "P/E", "P/E trailing", "pe_ttm"],
-                        ["pe", "p/e"]
-                    )
-                    pb = _pick_from_candidates(
-                        last_row,
-                        ["pb", "P/B", "pb_ttm"],
-                        ["pb", "p/b"]
-                    )
-                    roe = _pick_from_candidates(
-                        last_row,
-                        ["roe", "ROE", "roe_12m"],
-                        ["roe"]
-                    )
-                    pe = _safe_float(pe)
-                    pb = _safe_float(pb)
-                    roe = _safe_float(roe)
-
-            # 4️⃣ Lấy floor + proxies từ price_board (hoặc fallback từ exchange_map)
+            # 4️⃣ Lấy thông tin từ price_board (VCI)
             exchange = exchange_map.get(sym)
             floor = None
             asset_proxy = None
@@ -1673,92 +1560,70 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
             if pb_df is not None and not pb_df.empty:
                 try:
                     # Tìm hàng của sym trong pb_df
-                    # Có thể cột symbol khác nhau: ('listing','symbol') hoặc 'symbol'
-                    pb_symbol_candidates = [
-                        ('listing', 'symbol'),
-                        ('symbol',),
-                        'symbol'
-                    ]
-                    sym_col_found = None
-                    for cand in pb_symbol_candidates:
-                        try:
-                            if isinstance(cand, tuple) and len(cand) == 2:
-                                if cand[0] in pb_df.columns.names or cand[1] in pb_df.columns:
-                                    # bỏ qua vì mapping khó – dùng cách dưới
-                                    pass
-                            if isinstance(cand, str) and cand in pb_df.columns:
-                                sym_col_found = cand
-                                break
-                        except Exception:
-                            continue
-
                     row = None
-                    if sym_col_found:
-                        try:
-                            row = pb_df[pb_df[sym_col_found].astype(str).str.upper() == sym]
-                            if row is not None and not row.empty:
-                                row = row.iloc[0]
-                            else:
-                                row = None
-                        except Exception:
-                            row = None
-
+                    try:
+                        if sym in pb_df.index:
+                             row = pb_df.loc[sym]
+                    except Exception:
+                        row = None
+                        
                     if row is None:
-                        # Thử cách khác: set index rồi .loc
                         try:
-                            tmp = pb_df.copy()
-                            if sym_col_found:
-                                tmp = tmp.set_index(sym_col_found)
-                                row = tmp.loc[sym] if sym in tmp.index else None
+                            pb_df_sym_col = pb_df[('listing', 'symbol')].astype(str).str.upper()
+                            row_match = pb_df[pb_df_sym_col == sym]
+                            if row_match is not None and not row_match.empty:
+                                row = row_match.iloc[0]
+                        except KeyError:
+                             row = None
                         except Exception:
-                            row = None
+                             row = None
 
-                        if row is not None:
-                        # 1. ❗️ LẤY SÀN (Đã sửa)
-                            floor = None
-                            try:
-                                # Lấy Sàn: ('listing', 'exchange') -> 'HSX'
-                                if ('listing', 'exchange') in row.index:
-                                    floor = str(row[('listing', 'exchange')]).upper()
-                                elif 'exchange' in row: # Fallback
-                                    floor = str(row['exchange']).upper()
-                            except Exception:
-                                floor = None # An toàn
+                    if row is not None:
+                        # 1. LẤY SÀN
+                        if ('listing', 'exchange') in row.index:
+                            floor = str(row[('listing', 'exchange')]).upper()
+                        elif 'exchange' in row.index:
+                            floor = str(row['exchange']).upper()
 
-                            # 2. ❗️ LẤY THANH KHOẢN (Đã sửa)
-                            liquidity_proxy = None
-                            try:
-                                # Lấy GTGD: ('match', 'accumulated_value') -> (triệu VND)
-                                # Dùng hàm _safe_float của precompute_value_data
-                                raw_liq = _safe_float(row.get(('match', 'accumulated_value')))
-                                if raw_liq is not None:
-                                    liquidity_proxy = raw_liq * 1_000_000  # Đổi ra VND
-                            except Exception:
-                                liquidity_proxy = None
+                        # 2. LẤY THANH KHOẢN (GTGD)
+                        raw_liq = _safe_float(row.get(('match', 'accumulated_value')))
+                        if raw_liq is not None:
+                            liquidity_proxy = raw_liq * 1_000_000  # Đổi ra VND
 
-                            # 3. ❗️ TÍNH VỐN HOÁ (Đã sửa)
-                            asset_proxy = None
-                            try:
-                                # Tự tính Vốn hoá = Giá * Khối lượng
-                                # Giá: ('match', 'match_price')
-                                # KL: ('listing', 'listed_share')
-                                price = _safe_float(row.get(('match', 'match_price')))
-                                shares = _safe_float(row.get(('listing', 'listed_share')))
-                                
-                                if price is not None and shares is not None and shares > 0:
-                                    asset_proxy = price * shares
-                            except Exception:
-                                asset_proxy = None
-                            # KẾT THÚC SỬA LỖI
+                        # 3. TÍNH VỐN HOÁ (ASSET PROXY)
+                        price_for_asset = _safe_float(row.get(('match', 'match_price')))
+                        shares = _safe_float(row.get(('listing', 'listed_share')))
+                        if price_for_asset is not None and shares is not None and shares > 0:
+                            asset_proxy = price_for_asset * shares
 
                 except Exception as e:
-                    log.warning(f"[{INSTANCE_ID}][VALUE] Map floor/proxies từ price_board lỗi ({sym}): {e}")
+                    log.warning(f"[{INSTANCE_ID}][VALUE] Map VCI/proxies lỗi ({sym}): {e}")
 
             # Fallback floor nếu chưa có
             if floor is None:
                 fallback_floor = exchange_map.get(sym)
                 if fallback_floor:
                     floor = str(fallback_floor)
+
+            # 5️⃣ Lấy P/E, P/B, ROE từ VCI (Company().ratio_summary())
+            pe = None
+            pb = None
+            roe = None
+            
+            try:
+                company = Company(symbol=sym)
+                summary_df = company.ratio_summary()
+                
+                if summary_df is not None and not summary_df.empty:
+                    row = summary_df.iloc[0]
+                    pe = _safe_float(row.get('pe'))
+                    pb = _safe_float(row.get('pb'))
+                    roe = _safe_float(row.get('roe'))
+                else:
+                    log.warning(f"[{INSTANCE_ID}][VALUE] Không lấy được ratio_summary (VCI) cho {sym}.")
+            
+            except Exception as e:
+                 log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi gọi Company.ratio_summary cho {sym}: {e}")
 
             # Ngành
             industry = industry_map.get(sym, "Khác") if industry_map else "Khác"
@@ -1767,9 +1632,9 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
                 "symbol": sym,
                 "exchange": exchange,
                 "industry": industry,
-                "pe": pe,
-                "pb": pb,
-                "roe": roe,
+                "pe": pe, # <-- P/E từ VCI
+                "pb": pb, # <-- P/B từ VCI
+                "roe": roe, # <-- ROE từ VCI
                 "floor": floor,
                 "asset_proxy": asset_proxy,
                 "liquidity_proxy": liquidity_proxy,
@@ -1804,14 +1669,13 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
         f"Tổng mã trong DB hiện tại: {get_stock_value_cache_count()}."
     )
 
-
 def compute_value_screener(
     top_per_industry: int = 3,
     max_industries: int = 19,
 ):
     """
     So sánh cổ phiếu (đã tính toán trước) và tính điểm value_score.
-    (Đã fix lỗi UnboundLocalError)
+    (ĐÃ SỬA: Dùng bộ lọc nghiêm ngặt, loại bỏ None/NaN/<=0)
     """
     rows = load_stock_value_cache()
     if not rows:
@@ -1819,7 +1683,6 @@ def compute_value_screener(
 
     df = pd.DataFrame(rows)
     
-    # ❗️ Cần 4 cột mới: floor, asset_proxy, liquidity_proxy
     required_cols = {
         "symbol", "industry", "pe", "pb", "roe", "floor",
         "asset_proxy", "liquidity_proxy"
@@ -1832,7 +1695,6 @@ def compute_value_screener(
 
     df["symbol"] = df["symbol"].astype(str).str.upper()
 
-    # Lọc theo industry map (TOPI) nếu có
     try:
         industry_map = load_industry_map_from_csv("ssi_master_list.csv")
     except Exception as e:
@@ -1850,18 +1712,26 @@ def compute_value_screener(
             return None
         df["industry"] = df["symbol"].map(industry_map).fillna(df["industry"])
 
-    # Loại bỏ giá trị xấu
+    # ❗️ BỘ LỌC NGHIÊM NGẶT (FIX 2 - Theo yêu cầu)
+    # 1. Loại bỏ BẤT KỲ hàng nào có None (NaN)
     df = df.dropna(
         subset=[
             "pe", "pb", "roe", "industry", "floor", 
-            "asset_proxy", "liquidity_proxy" # ⬅️ Thêm vào dropna
+            "asset_proxy", "liquidity_proxy"
         ]
     )
+    
+    # 2. Loại bỏ BẤT KỲ hàng nào có chỉ số <= 0
     df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
+    
     if df.empty:
+        log.warning(
+            f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau khi lọc nghiêm ngặt (dropna và > 0)."
+        )
         return None
+    # KẾT THÚC BỘ LỌC NGHIÊM NGẶT
 
-    # ❗️ LỌC SÀN TỪ DB (SIÊU NHANH)
+    # LỌC SÀN TỪ DB (SIÊU NHANH)
     before_count = len(df)
     allowed_floors = {"HOSE", "HNX"}
     df = df[df["floor"].isin(allowed_floors)]
@@ -1869,14 +1739,14 @@ def compute_value_screener(
         f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX (từ DB): {before_count} -> {len(df)} mã."
     )
     
-    # ❗️ LỌC THANH KHOẢN TỪ DB (SIÊU NHANH)
+    # LỌC THANH KHOẢN TỪ DB (SIÊU NHANH)
     before_count = len(df)
     df = df[df["liquidity_proxy"] >= 50_000_000_000]  # 50 tỷ
     log.info(
         f"[{INSTANCE_ID}][VALUE] Lọc thanh khoản >=50 tỷ (từ DB): {before_count} -> {len(df)} mã."
     )
    
-    # ❗️ LỌC TÀI SẢN TỪ DB (SIÊU NHANH)
+    # LỌC TÀI SẢN TỪ DB (SIÊU NHANH)
     before_count = len(df)
     df = df[df["asset_proxy"] >= 5_000_000_000_000]  # 5000 tỷ
     log.info(
@@ -1897,6 +1767,7 @@ def compute_value_screener(
     )
     df = df.join(industry_group, on="industry")
 
+    # (Logic này đã an toàn vì df đã được lọc roe > 0)
     df = df[df["roe_industry"] > 0]
     if df.empty:
         return None
@@ -1919,7 +1790,6 @@ def compute_value_screener(
                 as_of = str(latest_ts)
         except Exception:
             as_of = str(latest_ts)
-    # ❗️ ĐÃ XOÁ KHỐI ELSE GÂY LỖI TẠI ĐÂY
 
     industries_data = []
     for industry_name, g in df.groupby("industry"):
@@ -2160,8 +2030,10 @@ async def stock_price_fetcher_loop():
             df = None
             try:
                 df = await asyncio.to_thread(stock_trading.price_board, symbols_list)
-            except Exception as e:
-                log.error(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi price_board: {e}")
+            except (Exception, SystemExit) as e: # <-- SỬA Ở ĐÂY
+                log.error(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi price_board (hoặc rate limit VCI): {e}")
+                # Thêm sleep 60s khi lỗi để chờ VCI
+                await asyncio.sleep(60)
 
             if df is None or df.empty:
                 log.warning(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] price_board rỗng.")
@@ -2411,11 +2283,153 @@ async def stock_broadcast_loop():
 # ==============================================
 # BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
 # ==============================================
-# Thay thế hàm này trong alert_bot.py
+async def execute_weekly_report(admin_update: Update | None = None):
+    """
+    Hàm lõi: Chạy, tính toán và gửi báo cáo tuần (Pro + Admin).
+    Nếu có admin_update, sẽ gửi phản hồi cho admin.
+    """
+    global INSTANCE_ID, log, tg_app, BOT_ACTIVE, OPENROUTER_API_KEY, ADMIN_ID
+
+    instance_label = f"[{INSTANCE_ID}][EXEC_WEEKLY]"
+    admin_chat_id = admin_update.effective_chat.id if admin_update else None
+    vn_tz = pytz.timezone(TIMEZONE)
+    
+    try:
+        log.info(f"{instance_label} Bắt đầu chạy (trigger by: {'Admin' if admin_chat_id else 'Scheduler'}).")
+        if admin_chat_id:
+            await tg_app.bot.send_message(admin_chat_id, "⏳ Bắt đầu chạy tác vụ gửi Weekly Report thủ công...")
+
+        if not BOT_ACTIVE:
+            log.info(f"{instance_label} Bot TẮT, huỷ tác vụ.")
+            if admin_chat_id:
+                await tg_app.bot.send_message(admin_chat_id, "⚠️ Bot đang TẮT, đã huỷ tác vụ.")
+            return
+
+        if not OPENROUTER_API_KEY:
+            log.warning(f"{instance_label} Chưa có OPENROUTER_API_KEY, bỏ qua.")
+            if admin_chat_id:
+                await tg_app.bot.send_message(admin_chat_id, "⚠️ Chưa có OPENROUTER_API_KEY, đã huỷ tác vụ.")
+            return
+
+        # === BÊ NGUYÊN LOGIC TỪ weekly_report_loop VÀO ĐÂY ===
+
+        # 1. Lấy TẤT CẢ user
+        all_watch = await asyncio.to_thread(get_all_watch)
+        
+        # 2. Lấy user Pro (1 lần gọi DB)
+        pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
+
+        if not all_watch:
+            log.info(f"{instance_label} Không có user nào theo dõi, bỏ qua.")
+            if admin_chat_id:
+                await tg_app.bot.send_message(admin_chat_id, "ℹ️ Không có user nào theo dõi, bỏ qua.")
+            return
+
+        sent_count = 0
+        skipped_count = 0
+
+        for chat_key, user_block in all_watch.items():
+            if not BOT_ACTIVE:
+                log.info(f"{instance_label} Bot TẮT giữa chừng, dừng gửi.")
+                if admin_chat_id:
+                    await tg_app.bot.send_message(admin_chat_id, "⚠️ Bot TẮT giữa chừng, dừng gửi.")
+                break
+
+            chat_id = int(chat_key)
+            
+            # === LOGIC PAYWALL ===
+            if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
+                skipped_count += 1
+                continue # Bỏ qua user thường
+            # =====================
+
+            watch_list = user_block.get("list", []) or []
+            if not watch_list:
+                skipped_count += 1
+                continue
+
+            symbols = [
+                s.upper()
+                for s in watch_list
+                if not s.upper().startswith("VN")
+            ]
+            if not symbols:
+                skipped_count += 1
+                continue
+
+            cache_key = make_report_cache_key(symbols)
+            log.info(
+                f"{instance_label} Xử lý Pro user: chat_id={chat_id}, cache_key={cache_key}"
+            )
+
+            cached = get_report_from_redis(cache_key)
+            if cached is not None:
+                cached_text, generated_at = cached
+                log.info(
+                    f"{instance_label} Cache hit (Redis) cho {chat_id} ({cache_key}), generated_at={generated_at}"
+                )
+                await asyncio.to_thread(send_msg_to, chat_id, cached_text)
+                sent_count += 1
+                await asyncio.sleep(3)
+                continue
+
+            # (Hàm lồng bên trong được giữ nguyên)
+            async def fetch_report_with_retry():
+                retry = 0
+                last_text = "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau."
+                while retry < 3:
+                    start = time.time()
+                    text = await asyncio.to_thread(
+                        call_chatgpt_for_report, symbols
+                    )
+                    duration = time.time() - start
+                    log.info(
+                        f"{instance_label} Round {retry+1} cho {chat_id} ({duration:.1f}s)"
+                    )
+                    last_text = text
+
+                    if "⚠️" not in text and "429" not in text:
+                        return text
+                    retry += 1
+                    await asyncio.sleep(10 * retry)
+                return last_text
+            
+            try:
+                text = await fetch_report_with_retry()
+                save_report_to_redis(cache_key, text, source="weekly_loop" if not admin_chat_id else "admin_trigger")
+                now_footer = datetime.datetime.now(vn_tz)
+                footer = f"\n\n🕓 _Báo cáo được tạo vào {now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+                final_text = text.strip() + footer
+                await asyncio.to_thread(send_msg_to, chat_id, final_text)
+                log.info(
+                    f"{instance_label} Đã gửi báo cáo tuần cho {chat_id}"
+                )
+                sent_count += 1
+            except Exception as e:
+                log.warning(
+                    f"{instance_label} Lỗi gửi cho {chat_id}: {e}"
+                )
+            
+            await asyncio.sleep(3) # Giữ nguyên sleep để tránh spam
+
+        # === KẾT THÚC LOGIC CŨ ===
+
+        final_msg = f"Hoàn tất — gửi {sent_count} (Pro), bỏ qua {skipped_count} (Free)."
+        log.info(f"{instance_label} {final_msg}")
+        if admin_chat_id:
+            await tg_app.bot.send_message(admin_chat_id, f"✅ {final_msg}")
+
+    except Exception as e:
+        log.error(f"{instance_label} Lỗi tổng quát: {e}")
+        if admin_chat_id:
+            try:
+                await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi tổng quát khi chạy Weekly Report: {e}")
+            except Exception as e2:
+                log.error(f"{instance_label} Lỗi gửi tin nhắn lỗi cho admin: {e2}")
 
 async def weekly_report_loop():
     """
-    Gửi báo cáo danh mục cho từng user (Pro + Admin)
+    (Đã sửa) Gửi báo cáo danh mục (CHỈ LÊN LỊCH)
     vào 09:00 sáng Chủ Nhật hằng tuần.
     """
     vn_tz = pytz.timezone(TIMEZONE)
@@ -2423,142 +2437,42 @@ async def weekly_report_loop():
 
     while True:
         loop_id += 1
+        instance_label = f"[{INSTANCE_ID}][WEEKLY {loop_id}]"
 
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"{instance_label} Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue
 
         if not OPENROUTER_API_KEY:
             log.warning(
-                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Chưa có OPENROUTER_API_KEY, bỏ qua báo cáo tuần."
+                f"{instance_label} Chưa có OPENROUTER_API_KEY, bỏ qua báo cáo tuần."
             )
             await asyncio.sleep(3600)
             continue
 
         wait_sec = seconds_until_next_weekly_report()
         log.info(
-            f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
+            f"{instance_label} Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
         )
         await asyncio.sleep(wait_sec)
 
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Thức dậy nhưng bot TẮT, bỏ qua.")
+            log.info(f"{instance_label} Thức dậy nhưng bot TẮT, bỏ qua.")
             continue
 
         now = datetime.datetime.now(vn_tz)
         if now.weekday() != 6:
-            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Không phải Chủ Nhật, bỏ qua.")
+            log.info(f"{instance_label} Không phải Chủ Nhật, bỏ qua.")
             continue
 
         try:
-            log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bắt đầu gửi báo cáo tuần")
-
-            # 1. Lấy TẤT CẢ user
-            all_watch = await asyncio.to_thread(get_all_watch)
+            # Chỉ cần gọi hàm lõi (không truyền admin_update)
+            log.info(f"{instance_label} 09:00 Chủ Nhật, bắt đầu chạy execute_weekly_report() theo lịch.")
+            await execute_weekly_report(admin_update=None)
             
-            # 2. Lấy user Pro (1 lần gọi DB)
-            pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-
-            if not all_watch:
-                log.info(
-                    f"[{INSTANCE_ID}][WEEKLY {loop_id}] Không có user nào theo dõi, bỏ qua."
-                )
-                continue
-
-            sent_count = 0
-            skipped_count = 0
-
-            for chat_key, user_block in all_watch.items():
-                if not BOT_ACTIVE:
-                    log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Bot TẮT giữa chừng, dừng gửi.")
-                    break
-
-                chat_id = int(chat_key)
-                
-                # === LOGIC PAYWALL ===
-                if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
-                    skipped_count += 1
-                    continue # Bỏ qua user thường
-                # =====================
-
-                watch_list = user_block.get("list", []) or []
-                if not watch_list:
-                    skipped_count += 1
-                    continue
-
-                symbols = [
-                    s.upper()
-                    for s in watch_list
-                    if not s.upper().startswith("VN")
-                ]
-                if not symbols:
-                    skipped_count += 1
-                    continue
-
-                cache_key = make_report_cache_key(symbols)
-                log.info(
-                    f"[{INSTANCE_ID}][WEEKLY {loop_id}] Xử lý Pro user: chat_id={chat_id}, cache_key={cache_key}"
-                )
-
-                # (Phần code còn lại của hàm giữ nguyên y hệt)
-                # ... (Logic gọi cache, gọi AI) ...
-                cached = get_report_from_redis(cache_key)
-                if cached is not None:
-                    cached_text, generated_at = cached
-                    log.info(
-                        f"[{INSTANCE_ID}][WEEKLY {loop_id}] Cache hit (Redis) cho {chat_id} ({cache_key}), generated_at={generated_at}"
-                    )
-                    await asyncio.to_thread(send_msg_to, chat_id, cached_text)
-                    sent_count += 1
-                    await asyncio.sleep(3)
-                    continue
-
-                async def fetch_report_with_retry():
-                    # ... (Code của bạn) ...
-                    retry = 0
-                    last_text = "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau."
-                    while retry < 3:
-                        start = time.time()
-                        text = await asyncio.to_thread(
-                            call_chatgpt_for_report, symbols
-                        )
-                        duration = time.time() - start
-                        log.info(
-                            f"[{INSTANCE_ID}][WEEKLY {loop_id}] Round {retry+1} cho {chat_id} ({duration:.1f}s)"
-                        )
-                        last_text = text
-
-                        if "⚠️" not in text and "429" not in text:
-                            return text
-                        retry += 1
-                        await asyncio.sleep(10 * retry)
-                    return last_text
-                
-                try:
-                    text = await fetch_report_with_retry()
-                    save_report_to_redis(cache_key, text, source="weekly_loop")
-                    now_footer = datetime.datetime.now(vn_tz)
-                    footer = f"\n\n🕓 _Báo cáo được tạo vào {now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
-                    final_text = text.strip() + footer
-                    await asyncio.to_thread(send_msg_to, chat_id, final_text) # (Sửa: gửi final_text)
-                    log.info(
-                        f"[{INSTANCE_ID}][WEEKLY {loop_id}] Đã gửi báo cáo tuần cho {chat_id}"
-                    )
-                    sent_count += 1
-                except Exception as e:
-                    log.warning(
-                        f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi gửi cho {chat_id}: {e}"
-                    )
-                
-                await asyncio.sleep(3)
-
-            log.info(
-                f"[{INSTANCE_ID}][WEEKLY {loop_id}] Hoàn tất — gửi {sent_count} (Pro), bỏ qua {skipped_count} (Free)."
-            )
-
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Lỗi tổng quát: {e}")
+            log.error(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_weekly_report: {e}")
             await asyncio.sleep(300)
 
 async def screener_value_update_loop():
@@ -3365,7 +3279,7 @@ async def _vn30f1m_get_current_price() -> float | None:
         price = float(df.iloc[-1]["close"])
         return price
 
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         log.warning(f"[VN30F1M] Lỗi khi lấy giá 1m (quote.history): {e}")
         return None
 
@@ -4451,6 +4365,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• `/admin_add_user` – Thêm/gia hạn Gói Pro cho user\n"
     "• `/admin_deactivate` – Ngưng hoạt động Gói Pro của user\n"
     "• `/admin_remove_user` – Xoá vĩnh viễn Gói Pro của user\n\n"
+    "• `/cmd_run_screener_now` – (Test) Chạy và gửi Daily Screener ngay lập tức\n"
+    "• `/cmd_run_weekly_report_now` – (Test) Chạy và gửi Weekly Report ngay lập tức\n\n"
     "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
     "🚀 Bắt đầu theo dõi ngay hôm nay bằng lệnh `/add <MÃ>`!"
 )
@@ -5668,6 +5584,21 @@ async def cmd_run_screener_now(update: Update, context: ContextTypes.DEFAULT_TYP
     # Chạy tác vụ này trong một task riêng để nó không block bot
     asyncio.create_task(execute_daily_screener(admin_update=update))
 
+async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    (Admin) Chạy tác vụ gửi weekly report ngay lập tức.
+    """
+    if update.effective_user.id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    # Log command
+    await asyncio.to_thread(log_command_usage, update.effective_chat.id, "/cmd_run_weekly_report_now", ADMIN_ID)
+    
+    await reply_md(update, "🏃 Bắt đầu chạy tác vụ `execute_weekly_report` trong nền. Tác vụ này rất lâu, bot sẽ thông báo khi hoàn tất...")
+
+    # Gọi hàm lõi (truyền update vào để nhận phản hồi)
+    asyncio.create_task(execute_weekly_report(admin_update=update))
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
@@ -5921,6 +5852,8 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("admin_add_user", "(admin) (admin) Thêm/gia hạn Gói Pro cho user"),
             ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
+            ("cmd_run_screener_now", "(admin) Chạy và gửi Daily Screener ngay lập tức"),
+            ("cmd_run_weekly_report_now", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
         ]
 
         await app.bot.set_my_commands(
@@ -6058,6 +5991,8 @@ async def main():
     tg_app.add_handler(CommandHandler("admin_add_user", cmd_admin_add_user))
     tg_app.add_handler(CommandHandler("admin_deactivate", cmd_admin_deactivate))
     tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
+    tg_app.add_handler(CommandHandler("cmd_run_screener_now", cmd_run_screener_now))
+    tg_app.add_handler(CommandHandler("cmd_run_weekly_report_now", cmd_run_weekly_report_now))
 
     # 🆕 Bắt case gửi file JSON + caption /restore_core
     tg_app.add_handler(
