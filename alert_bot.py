@@ -1713,31 +1713,43 @@ def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool 
                         except Exception:
                             row = None
 
-                    if row is not None:
-                        # Map floor
-                        if ("listing", "floor") in row.index:
-                            floor = str(row[("listing","floor")])
-                        elif "floor" in row:
-                            floor = str(row["floor"])
-                        elif "exchange" in row:
-                            floor = str(row["exchange"])
-                        elif "san" in row:
-                            floor = str(row["san"])
-
-                        # Proxies (tuỳ cấu trúc price_board)
-                        # asset_proxy: tổng tài sản/ vốn hoá đại diện – placeholder tuỳ nguồn bạn đã chuẩn hoá từ trước
-                        # liquidity_proxy: thanh khoản bình quân, v.v.
-                        for k in row.index:
+                        if row is not None:
+                        # 1. ❗️ LẤY SÀN (Đã sửa)
+                            floor = None
                             try:
-                                key_name = k[1] if isinstance(k, tuple) else k
-                                key_low = str(key_name).lower()
+                                # Lấy Sàn: ('listing', 'exchange') -> 'HSX'
+                                if ('listing', 'exchange') in row.index:
+                                    floor = str(row[('listing', 'exchange')]).upper()
+                                elif 'exchange' in row: # Fallback
+                                    floor = str(row['exchange']).upper()
                             except Exception:
-                                key_low = ""
+                                floor = None # An toàn
 
-                            if "asset" in key_low and asset_proxy is None:
-                                asset_proxy = _safe_float(row.get(k, None))
-                            if ("liquid" in key_low or "volume" in key_low) and liquidity_proxy is None:
-                                liquidity_proxy = _safe_float(row.get(k, None))
+                            # 2. ❗️ LẤY THANH KHOẢN (Đã sửa)
+                            liquidity_proxy = None
+                            try:
+                                # Lấy GTGD: ('match', 'accumulated_value') -> (triệu VND)
+                                # Dùng hàm _safe_float của precompute_value_data
+                                raw_liq = _safe_float(row.get(('match', 'accumulated_value')))
+                                if raw_liq is not None:
+                                    liquidity_proxy = raw_liq * 1_000_000  # Đổi ra VND
+                            except Exception:
+                                liquidity_proxy = None
+
+                            # 3. ❗️ TÍNH VỐN HOÁ (Đã sửa)
+                            asset_proxy = None
+                            try:
+                                # Tự tính Vốn hoá = Giá * Khối lượng
+                                # Giá: ('match', 'match_price')
+                                # KL: ('listing', 'listed_share')
+                                price = _safe_float(row.get(('match', 'match_price')))
+                                shares = _safe_float(row.get(('listing', 'listed_share')))
+                                
+                                if price is not None and shares is not None and shares > 0:
+                                    asset_proxy = price * shares
+                            except Exception:
+                                asset_proxy = None
+                            # KẾT THÚC SỬA LỖI
 
                 except Exception as e:
                     log.warning(f"[{INSTANCE_ID}][VALUE] Map floor/proxies từ price_board lỗi ({sym}): {e}")
