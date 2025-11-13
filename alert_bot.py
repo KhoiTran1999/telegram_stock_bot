@@ -2072,147 +2072,199 @@ def format_roe_pct(roe_decimal: float | None) -> str:
     return f"{pct:.1f}%"
 
 # ==============================================
-# VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL)
+# VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL) - ALERT_LOOP
 # ==============================================
+
+# [TỐI ƯU] Khởi tạo Trading object MỘT LẦN dùng chung
+try:
+    stock_trading = Trading(source="VCI")
+    log.info(f"[{INSTANCE_ID}] Khởi tạo 'stock_trading' (VCI) dùng chung thành công.")
+except Exception as e:
+    stock_trading = None
+    log.error(f"[{INSTANCE_ID}] KHÔNG THỂ KHỞI TẠO 'stock_trading' (VCI): {e}. Vòng lặp Alert sẽ không chạy.")
+
+# [TỐI ƯU] Hàng đợi và Cache cho 3 tác vụ (Stock)
+_stock_broadcast_queue = asyncio.Queue()
+_stock_current_price_cache: dict[str, dict] = {} # Cache giá {HPG: {"price": ..., "pct": ...}}
+_stock_current_watch_cache: dict[str, dict] = {} # Cache watchlist {chat_id: {"list": [...]}}
+TICKER_INTERVAL_SECONDS = 3  # Tần suất Ticker (check cache)
+FETCHER_INTERVAL_SECONDS = 15 # Tần suất Fetcher (gọi API)
+
+# (Các hàm same_sign, get_quote... của bạn nằm ở đây)
 def same_sign(a: float, b: float) -> bool:
     """Hai số cùng dấu (cùng dương hoặc cùng âm) hay không."""
     return (a > 0 and b > 0) or (a < 0 and b < 0)
 
-async def alert_loop():
+async def stock_price_fetcher_loop():
+    """
+    (TÁC VỤ 1 - FETCHER - MỚI)
+    - Loop này chạy 15 GIÂY/LẦN (FETCHER_INTERVAL_SECONDS).
+    - Chỉ làm 2 việc nặng: Lấy DB (get_all_watch) và Lấy API (price_board).
+    - Cập nhật kết quả vào 2 biến cache toàn cục.
+    """
+    global _stock_current_price_cache, _stock_current_watch_cache
+    
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
-    TARGET_INTERVAL = 15  # giãn cách giữa 2 vòng quét (giây)
 
-    # Khởi tạo Trading object MỘT LẦN bên ngoài vòng lặp
-    try:
-        trading = Trading(source="VCI")
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Không thể khởi tạo Trading(VCI): {e}. Vòng lặp Alert sẽ không chạy.")
-        return # Thoát hoàn toàn
+    if not stock_trading:
+        log.error(f"[{INSTANCE_ID}][FETCHER_STOCK] 'stock_trading' (VCI) bị lỗi, không thể chạy.")
+        return # Thoát
 
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
-        # ⚙️ Kiểm tra trạng thái bot
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Bot TẮT, ngủ 60s.")
             await asyncio.sleep(60)
             continue
 
-        # ⏰ Ngoài giờ giao dịch → ngủ đến phiên sau
         if not in_session_vietnam():
             next_start = next_session_start(now)
             delay = max((next_start - now).total_seconds(), 60.0)
             log.info(
-                f"[{INSTANCE_ID}][LOOP {loop_id}] Ngoài giờ giao dịch... "
+                f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Ngoài giờ... "
                 f"sleep {delay:.0f}s tới {next_start.strftime('%Y-%m-%d %H:%M')}"
             )
             await asyncio.sleep(delay)
             continue
 
         loop_start = now
+        log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Bắt đầu lấy DB (watch) và API (price)...")
         try:
             # ==================================================
-            # 1. GATHER (GOM)
+            # 1. GATHER (GOM) - (I/O Nặng 1: DB)
             # ==================================================
-            
-            # ⭐️ Chạy CSDL (Redis/Postgre) trong thread
             all_watch = await asyncio.to_thread(get_all_watch)
-            all_state = get_state_for_all() # Cái này nhanh, từ RAM, không cần thread
 
             all_symbols: set[str] = set()
             for block in all_watch.values():
                 for sym in (block.get("list", []) or []):
-                    # Chỉ lấy mã cổ phiếu, bỏ qua index (nếu có)
                     if len(sym) == 3 and sym.isalpha():
                          all_symbols.add(sym.upper())
 
             if not all_symbols:
-                log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Không có symbol nào, sleep 60s.")
+                log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Không có symbol nào, sleep 60s.")
+                _stock_current_watch_cache = {} # Xóa cache
+                _stock_current_price_cache = {}
                 await asyncio.sleep(60)
                 continue
             
             symbols_list = sorted(list(all_symbols))
+            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Cần lấy giá cho {len(symbols_list)} mã.")
 
             # ==================================================
-            # 2. FETCH (Lấy dữ liệu - 1 LẦN GỌI DUY NHẤT)
+            # 2. FETCH (Lấy dữ liệu - I/O Nặng 2: API)
             # ==================================================       
+            df = None
             try:
-                # ⭐️ Chạy Network I/O trong thread
-                # Dùng object `trading` đã khởi tạo bên ngoài
-                df = await asyncio.to_thread(trading.price_board, symbols_list)
+                df = await asyncio.to_thread(stock_trading.price_board, symbols_list)
             except Exception as e:
-                log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] Lỗi khi gọi batch price_board: {e}")
-                df = None # Bỏ qua vòng lặp này
+                log.error(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi price_board: {e}")
 
             if df is None or df.empty:
-                log.warning(f"[{INSTANCE_ID}][LOOP {loop_id}] price_board trả về rỗng. Bỏ qua.")
-                await asyncio.sleep(TARGET_INTERVAL)
+                log.warning(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] price_board rỗng.")
+                await asyncio.sleep(FETCHER_INTERVAL_SECONDS)
                 continue
 
             # ==================================================
             # 3. PROCESS (Xử lý & Build Cache)
             # ==================================================
             quote_cache: dict[str, dict] = {}
-
-            # Hàm norm() (lấy từ get_quote)
             def norm(x):
                 if x is None: return None
                 try:
-                    if hasattr(x, "item"):
-                        x = x.item()
+                    if hasattr(x, "item"): x = x.item()
                 except Exception: pass
-                try:
-                    x = float(x)
+                try: x = float(x)
                 except Exception: return None
                 if isinstance(x, float) and math.isnan(x): return None
                 return x
 
             for _, row in df.iterrows():
                 try:
-                    # === ĐỌC DỮ LIỆU TỪ OUTPUT BẠN CUNG CẤP ===
-                    
-                    # 1. Lấy mã symbol
-                    # Output của bạn xác nhận nó nằm ở ('listing', 'symbol')
                     sym = row[('listing', 'symbol')]
                     sym_u = sym.upper()
-
-                    # 2. Lấy giá
-                    # Output xác nhận nó nằm ở ('match', 'match_price')
                     match_price = norm(row.get(("match", "match_price")))
-                    
-                    # 3. Lấy giá tham chiếu
-                    # Output xác nhận nó nằm ở ('match', 'reference_price')
-                    # Chúng ta dùng logic của `get_quote` (đã sửa lỗi)
                     ref_price = norm(
                         row.get(("match", "reference_price"))
                         if ("match", "reference_price") in row.index 
                         else row.get(("listing", "ref_price"))
                     )
-                    # === KẾT THÚC ĐỌC DỮ LIỆU ===
-
                     price = match_price if match_price is not None else ref_price
                     pct_change = (
                         ((float(match_price) - float(ref_price)) / float(ref_price)) * 100.0
                         if match_price is not None and ref_price is not None and ref_price != 0
                         else None
                     )
-                    
                     if price is None or pct_change is None:
                         continue
-                        
                     quote_cache[sym_u] = {"price": price, "pct": pct_change}
-
                 except Exception as e:
-                    # Nếu có lỗi ở 1 hàng, chỉ log và bỏ qua hàng đó
                     sym_debug = row.get(('listing', 'symbol'), 'Unknown')
-                    log.warning(f"[{INSTANCE_ID}][LOOP {loop_id}] Lỗi xử lý hàng {sym_debug}: {e}")
+                    log.warning(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi xử lý hàng {sym_debug}: {e}")
             
-            log.info(f"[{INSTANCE_ID}][LOOP {loop_id}] Đã build cache cho {len(quote_cache)} mã.")
+            # ==================================================
+            # 4. CẬP NHẬT CACHE TOÀN CỤC
+            # ==================================================
+            _stock_current_watch_cache = all_watch
+            _stock_current_price_cache = quote_cache
+            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Cập nhật cache: {len(all_watch)} users, {len(quote_cache)} mã.")
+
+        except Exception as e:
+            log.error(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi nghiêm trọng: {e}")
+
+        # Giữ nhịp quét 15 giây
+        elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
+        delay = max(FETCHER_INTERVAL_SECONDS - elapsed, 1)
+        log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Sleep {delay:.1f}s")
+        await asyncio.sleep(delay)
+
+# (Hàm alert_loop() gốc của bạn sẽ nằm ở dưới)
+async def alert_loop():
+    """
+    (TÁC VỤ 2 - TICKER - ĐÃ TỐI ƯU)
+    - Loop này chạy 3 GIÂY/LẦN (TICKER_INTERVAL_SECONDS).
+    - Chỉ đọc cache (từ Fetcher) và RAM (state).
+    - KHÔNG gọi API, KHÔNG gọi DB.
+    - Nếu có alert -> Đẩy tin nhắn vào _stock_broadcast_queue.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    
+    log.info(f"[{INSTANCE_ID}][TICKER_STOCK] Bắt đầu.")
+
+    while True:
+        loop_id += 1
+        now = datetime.datetime.now(vn_tz)
+
+        if not BOT_ACTIVE:
+            await asyncio.sleep(30) # Ngủ ngắn, vì Fetcher sẽ ngủ dài
+            continue
+
+        if not in_session_vietnam():
+            await asyncio.sleep(60) # Ngủ ngắn, vì Fetcher sẽ ngủ dài
+            continue
+
+        loop_start = now
+        try:
+            # ==================================================
+            # 1. GATHER (GOM) - (Đọc từ RAM, siêu nhanh)
+            # ==================================================
+            all_watch = _stock_current_watch_cache
+            quote_cache = _stock_current_price_cache
+            all_state = get_state_for_all() # Cái này từ RAM
+
+            if not all_watch or not quote_cache:
+                log.info(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Cache rỗng, chờ Fetcher...")
+                await asyncio.sleep(TICKER_INTERVAL_SECONDS)
+                continue
+            
+            # log.info(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Bắt đầu quét {len(all_watch)} users...")
 
             # ==================================================
-            # 4. DISTRIBUTE (Phân phối cho User)
+            # 2. DISTRIBUTE (Phân phối & Đẩy vào Queue)
             # ==================================================
             for chat_key, user_block in all_watch.items():
                 chat_id = int(chat_key)
@@ -2228,16 +2280,12 @@ async def alert_loop():
                 for sym in watch_list:
                     sym_u = sym.upper()
                     
-                    # ⭐️ THAY ĐỔI CỐT LÕI: Tra cứu cache (dict), KHÔNG gọi to_thread
                     quote = quote_cache.get(sym_u)
-                    
                     if not quote:
-                        continue # Mã này không có dữ liệu (hoặc đã bị lọc)
+                        continue 
 
                     price = quote["price"]
                     pct = quote["pct"]
-
-                    # Logic bên dưới được giữ nguyên y hệt
                     metric = pct
                     new_lvl = pick_new_level(metric, STOCK_LEVELS)
 
@@ -2289,7 +2337,7 @@ async def alert_loop():
                                 "last_alert_at": None,
                             }
 
-                # Gửi thông báo nếu có
+                # [TỐI ƯU] Đẩy vào Queue, KHÔNG gửi tin
                 if messages:
                     header = (
                         "--------------------------------\n"
@@ -2298,22 +2346,67 @@ async def alert_loop():
                     messages_text = "\n".join(messages)
                     body = messages_text + "\n" + header
                     
-                    # ⭐️ Chạy Network I/O trong thread
-                    await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown")
+                    try:
+                        _stock_broadcast_queue.put_nowait({"chat_id": chat_id, "body": body})
+                    except asyncio.QueueFull:
+                        log.warning(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Queue cổ phiếu bị đầy!")
 
                 all_state[chat_key] = personal_state
 
-            # 🧩 5️⃣ Lưu state
-            save_state_for_all(all_state) # Nhanh, từ RAM, không cần thread
+            # 🧩 3️⃣ Lưu state
+            save_state_for_all(all_state) # Nhanh, từ RAM
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][LOOP {loop_id}] Lỗi nghiêm trọng trong vòng lặp: {e}")
+            log.error(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Lỗi nghiêm trọng: {e}")
 
-        # 🕒 Giữ nhịp quét cố định
+        # 🕒 Giữ nhịp quét 3 giây
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
-        delay = max(TARGET_INTERVAL - elapsed, 1)
-        log.info(f"[{INSTANCE_ID}] Sleep {delay:.1f}s\n")
+        delay = max(TICKER_INTERVAL_SECONDS - elapsed, 0.1)
+        # log.info(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Sleep {delay:.1f}s")
         await asyncio.sleep(delay)
+
+async def stock_broadcast_loop():
+    """
+    (TÁC VỤ 3 - BROADCASTER - MỚI)
+    - Loop này CHỈ GỬI TIN NHẮN (cho cổ phiếu thường).
+    - Chờ tin nhắn trong _stock_broadcast_queue.
+    - Gọi (blocking) send_msg_to trong thread.
+    """
+    log.info("[BCASTER_STOCK] Bắt đầu. Chờ tin nhắn trong queue...")
+    
+    while True:
+        try:
+            # Chờ Ticker đẩy tin nhắn vào
+            item = await _stock_broadcast_queue.get()
+            
+            chat_id = item.get("chat_id")
+            body = item.get("body")
+            
+            if not chat_id or not body:
+                _stock_broadcast_queue.task_done()
+                continue
+            
+            # log.info(f"[BCASTER_STOCK] Nhận được tin cho {chat_id}, đang gửi...")
+
+            # [TỐI ƯU] Gọi hàm blocking send_msg_to trong thread
+            await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown")
+
+            _stock_broadcast_queue.task_done()
+            # log.info(f"[BCASTER_STOCK] Gửi xong cho {chat_id}. Quay lại chờ...")
+            
+            await asyncio.sleep(0.1) # Thêm 1 sleep nhỏ 100ms để tránh dồn dập
+
+        except asyncio.CancelledError:
+            log.info("[BCASTER_STOCK] Bị huỷ (Cancelled).")
+            break
+        except Exception as e:
+            log.warning(f"[BCASTER_STOCK] Lỗi: {e}")
+            if '_stock_broadcast_queue' in locals():
+                try:
+                    _stock_broadcast_queue.task_done()
+                except ValueError:
+                    pass
+#-------------------------------------------
 
 # ==============================================
 # BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
@@ -5693,7 +5786,11 @@ async def asgi_wrapper_app(scope, receive, send):
    
                 # (Lấy toàn bộ các loop từ hàm main() chuyển lên đây)
                 BACKGROUND_TASKS = [
+                    #----------------alert_loop---------------
                     MAIN_LOOP.create_task(alert_loop()),
+                    MAIN_LOOP.create_task(stock_price_fetcher_loop()), # Fetcher (15s)
+                    MAIN_LOOP.create_task(stock_broadcast_loop()),   # Broadcaster (chờ queue)
+                    #-----------------------------------------
                     MAIN_LOOP.create_task(session_notice_loop()),
                     MAIN_LOOP.create_task(weekly_report_loop()),
                     MAIN_LOOP.create_task(screener_value_update_loop()),
