@@ -5029,6 +5029,13 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - Đồng bộ lại Redis từ PostgreSQL (watchlist).
     - Trả về thống kê before -> after (chịu lỗi nếu import_core_data không trả kết quả).
     """
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if ADMIN_ID is None or user_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
     
 
     # 1) Lấy file đính kèm
