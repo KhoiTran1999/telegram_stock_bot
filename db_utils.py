@@ -204,17 +204,18 @@ def get_all_watch():
     # 3) Warm lại Redis từ DB (best-effort)
     try:
         r = get_redis()
-        pipe = r.pipeline()
-        pipe.delete("watch_chat_ids")
+        # Xóa set cũ
+        r.delete("watch_chat_ids")
+        
+        # Dùng vòng lặp thay vì pipeline (an toàn hơn trong một số môi trường)
         for chat_id, watch_list in rows:
             key = f"watch:{chat_id}"
             wl = watch_list or [] # wl sẽ là [] (rỗng) hoặc ['HPG']
 
-            # SỬA LỖI: Không kiểm tra 'if wl:',
-            # user nào cũng phải được cache (kể cả list rỗng)
-            pipe.set(key, json.dumps(wl))
-            pipe.sadd("watch_chat_ids", chat_id) # Luôn thêm user vào set
-        pipe.execute()
+            # SỬA LỖI: Luôn set (kể cả list rỗng)
+            r.set(key, json.dumps(wl))
+            r.sadd("watch_chat_ids", chat_id) # Luôn thêm user vào set
+            
     except Exception:
         pass
 
@@ -259,15 +260,16 @@ def get_watch_list_for_chat(chat_id: int):
         try:
             r = get_redis()
             key = f"watch:{chat_id}"
-            if watch_list:
-                r.set(key, json.dumps(watch_list))
-                r.sadd("watch_chat_ids", chat_id)
-            else:
-                r.delete(key)
-                r.srem("watch_chat_ids", chat_id)
+            
+            # SỬA LỖI: List rỗng [] vẫn là một giá trị hợp lệ,
+            # vẫn phải set key và add vào set toàn cục.
+            
+            # (watch_list có thể là [] hoặc ['HPG'])
+            r.set(key, json.dumps(watch_list))
+            r.sadd("watch_chat_ids", chat_id)
+            
         except Exception:
             pass
-
     return watch_list
 
 def save_watch_list_for_chat(chat_id: int, watch_list):
