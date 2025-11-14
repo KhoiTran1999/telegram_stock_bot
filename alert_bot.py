@@ -84,6 +84,7 @@ from report_cache import (
     make_report_cache_key,
     get_report_from_redis,
     save_report_to_redis,
+    delete_report_from_redis
 )
 from pathlib import Path
 from openai import OpenAI
@@ -1075,7 +1076,7 @@ def get_perf_history(symbol: str):
 
         last = df.iloc[-1]
         last_date = last["time"].date()
-        price = float(last["close"])
+        price = int(last["close"]*1000)
 
         def find_price_before(target_date: datetime.date):
             """Tìm giá close gần nhất TRƯỚC hoặc BẰNG target_date."""
@@ -1087,21 +1088,21 @@ def get_perf_history(symbol: str):
         # % NGÀY: so với trading day gần nhất trước hôm nay
         prev_price = find_price_before(last_date - datetime.timedelta(days=1))
         if prev_price is not None and prev_price != 0:
-            day_pct = (price - prev_price) / prev_price * 100.0
+            day_pct = (price/1000 - prev_price) / prev_price * 100.0
         else:
             day_pct = None
 
         # % TUẦN: so với close gần nhất trước (hôm nay - 7 ngày)
         week_price = find_price_before(last_date - datetime.timedelta(days=7))
         if week_price is not None and week_price != 0:
-            week_pct = (price - week_price) / week_price * 100.0
+            week_pct = (price/1000 - week_price) / week_price * 100.0
         else:
             week_pct = None
 
         # % THÁNG: so với close gần nhất trước (hôm nay - 30 ngày)
         month_price = find_price_before(last_date - datetime.timedelta(days=30))
         if month_price is not None and month_price != 0:
-            month_pct = (price - month_price) / month_price * 100.0
+            month_pct = (price/1000 - month_price) / month_price * 100.0
         else:
             month_pct = None
 
@@ -1123,7 +1124,7 @@ def format_perf_line(sym: str, perf: dict) -> str:
     week_pct = perf.get("week_pct")
     month_pct = perf.get("month_pct")
 
-    price_str = f"{float(price):,.0f} đ" if price is not None else "N/A"
+    price_str = f"{price} vnđ" if price is not None else "N/A"
     day_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
     week_str = f"{week_pct:+.2f}%" if week_pct is not None else "N/A"
     month_str = f"{month_pct:+.2f}%" if month_pct is not None else "N/A"
@@ -1148,20 +1149,22 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
     data_block = "\n".join(lines)
 
     prompt = f"""
-Bạn là chuyên viên phân tích chứng khoán Việt Nam. 
+Bạn là một nhà đầu tư chứng khoán chuyên nghiệp theo chiến lược đầu tư tăng trưởng ở Việt Nam. 
 Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây, dùng giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
 
-Dữ liệu danh mục:
+Dữ liệu danh mục ngày {datetime.datetime.now()} là:
 {data_block}
 
 Với MỖI cổ phiếu, trình bày theo mẫu:
 
 🔹 MÃ
-- Giá hiện tại: ...
-- KQKD nổi bật: (tóm tắt kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
-- Triển vọng: (các động lực 6–12 tháng tới như dự án, mở rộng, chính sách hỗ trợ, xu hướng ngành)
-- Rủi ro: (yếu tố tiêu cực như pháp lý, nợ vay, giá nguyên liệu, chu kỳ)
-- Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi thêm)
+• Giá hiện tại: ...
+• KQKD nổi bật: (tóm tắt kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
+• Lợi thế cạnh tranh: (Điều gì khiến DN vượt trội? vd: thị phần, biên lợi nhuận, công nghệ, thương hiệu)
+• Triển vọng & Động lực (6-12 tháng): (Các catalyst cụ thể: dự án mới, M&A, chính sách hỗ trợ, câu chuyện ngành).
+• Bối cảnh định giá: (Nhận định định giá so với tiềm năng tăng trưởng, vd: hấp dẫn, đã phản ánh, cần chiết khấu thêm)
+• Rủi ro: (yếu tố tiêu cực như pháp lý, nợ vay, giá nguyên liệu, chu kỳ)
+• Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi thêm)
 
 Cuối cùng viết phần:
 📊 Tổng quan danh mục: (nhận xét cơ cấu ngành, mức rủi ro chung và gợi ý định hướng 3–12 tháng)
@@ -1169,7 +1172,8 @@ Cuối cùng viết phần:
 Yêu cầu:
 - Không nói chuyện “hôm nay tăng giảm”, không nêu giá mục tiêu.
 - Giọng phân tích chuyên nghiệp, tránh câu khẳng định tuyệt đối.
-- Mỗi mã ngắn gọn, rõ ý, tối đa khoảng 800 ký tự.
+- Hãy cho thông tin, không cho lời khuyên.
+- Hãy truyền đạt trung thực, thẳng thắng, tối đa khoảng 3000 ký tự.
 """
     return prompt.strip()
 
@@ -1184,6 +1188,8 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
 
     prompt = build_prompt_for_symbols(symbols)
 
+    print("Prompt: ", prompt)
+
     # Tạo client OpenRouter (sử dụng SDK openai)
     try:
         client = OpenAI(
@@ -1195,7 +1201,11 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
         return "⚠️ Không khởi tạo được OpenRouter client."
     
     models = [
-        "minimax/minimax-m2",      # hoạt động ổn định nhất hiện tại
+        "google/gemini-2.0-flash-exp:free",
+        "qwen/qwen3-coder:free",
+        "tngtech/deepseek-r1t2-chimera:free",
+        "kwaipilot/kat-coder-pro:free",
+        "z-ai/glm-4.5-air:free",
     ]
 
      # Prompt messages
@@ -1206,32 +1216,29 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
         },
     ]
     
-     # Gọi OpenRouter có retry + fallback
-    last_error = None
     for model in models:
-        for attempt in range(3):
-            try:
-                completion = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                )
-                text = completion.choices[0].message.content.strip()
-                log.info(f"[{INSTANCE_ID}][LLM OK] Model={model} round={attempt+1}")
-                return text
+            for attempt in range(3):
+                try:
+                    completion = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                    )
+                    text = completion.choices[0].message.content.strip()
+                    log.info(f"[{INSTANCE_ID}][LLM OK] Model={model} round={attempt+1}")
+                    return text
 
-            except Exception as e:
-                last_error = e
-                log.warning(
-                    f"[{INSTANCE_ID}][LLM ERROR] Model={model} round={attempt+1}: {e}"
-                )
-                log.info(f"[{INSTANCE_ID}][LLM ERROR] OPENROUTER_API_KEY: {OPENROUTER_API_KEY}")
-                time.sleep(20)  # exponential backoff
-                continue
-
-    return (
-        f"⚠️ Hiện tại không tạo được báo cáo danh mục (LLM lỗi: {type(last_error).__name__}). "
-        "Bạn thử lại sau nhé."
-    )
+                except Exception as e:
+                    last_error = e
+                    log.warning(
+                        f"[{INSTANCE_ID}][LLM ERROR] Model={model} round={attempt+1}: {e}"
+                    )
+                    log.info(f"[{INSTANCE_ID}][LLM ERROR] Sleep 30s for the next request")
+                    time.sleep(30)  # exponential backoff
+                    continue
+            return (
+                f"⚠️ Hiện tại không tạo được báo cáo danh mục (LLM lỗi: {type(last_error).__name__}). "
+                "Bạn thử lại sau nhé."
+            )
 
 #--------------------------------------------
 
@@ -2246,15 +2253,18 @@ async def execute_weekly_report(admin_update: Update | None = None):
             
             try:
                 text = await fetch_report_with_retry()
-                save_report_to_redis(cache_key, text, source="weekly_loop" if not admin_chat_id else "admin_trigger")
-                now_footer = datetime.datetime.now(vn_tz)
-                footer = f"\n\n🕓 _Báo cáo được tạo vào {now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
-                final_text = text.strip() + footer
-                await asyncio.to_thread(send_msg_to, chat_id, final_text)
-                log.info(
-                    f"{instance_label} Đã gửi báo cáo tuần cho {chat_id}"
-                )
-                sent_count += 1
+                if "⚠️" not in text and "429" not in text:
+                    save_report_to_redis(cache_key, text, source="weekly_loop" if not admin_chat_id else "admin_trigger")
+                    now_footer = datetime.datetime.now(vn_tz)
+                    footer = f"\n\n🕓 _Báo cáo được tạo vào {now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+                    final_text = text.strip() + footer
+                    await asyncio.to_thread(send_msg_to, chat_id, final_text)
+                    log.info(
+                        f"{instance_label} Đã gửi báo cáo tuần cho {chat_id}"
+                    )
+                    sent_count += 1
+                else:
+                    await asyncio.to_thread(send_msg_to, chat_id, "⚠️ Hiện tại không tạo được báo cáo. Vui lòng liên hệ Admin để được hỗ trợ: https://t.me/KhoiTran99")
             except Exception as e:
                 log.warning(
                     f"{instance_label} Lỗi gửi cho {chat_id}: {e}"
@@ -5214,7 +5224,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cached is not None:
         text, generated_at = cached
         log.info(...)
-        footer = f"\n\n🕓 _Báo cáo được tạo vào {generated_at.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+        footer = f"\n\n🕓 Báo cáo được tạo vào {generated_at.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian."
         final_text = text.strip() + footer
         await reply_md(update, final_text)
         return
@@ -5241,11 +5251,14 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = await fetch_report_with_retry()
 
-    # 3️⃣ Lưu vào Redis để lần sau /report hoặc weekly_report_loop dùng lại
-    save_report_to_redis(cache_key, text, source="on_demand")
+    if "⚠️ Hiện tại không tạo được" not in text and "429" not in text:
+        # 3️⃣ Lưu vào Redis để lần sau /report hoặc weekly_report_loop dùng lại
+        save_report_to_redis(cache_key, text, source="on_demand")
+    else:
+        reply_md(update, "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau.")
 
     now = datetime.datetime.now(vn_tz)
-    footer = f"\n\n🕓 _Báo cáo được tạo vào {now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+    footer = f"\n\n🕓 Báo cáo được tạo vào {now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian."
     final_text = text.strip() + footer
 
     try:
@@ -5257,6 +5270,56 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.",
         )
 
+# (Dán sau hàm cmd_report)
+
+async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    (Admin) Xóa cache báo cáo AI trong Redis
+    cho danh mục watchlist CỦA CHÍNH ADMIN.
+    """
+    if not update or not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
+
+    # 1. Chỉ Admin mới được dùng
+    if chat_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    # 2. Ghi log
+    await asyncio.to_thread(log_command_usage, chat_id, "/report_clear", ADMIN_ID)
+    await reply_md(update, "🔎 Đang tìm và xoá cache báo cáo (report cache) cho danh mục của bạn...")
+
+    # 3. Lấy watchlist của Admin từ DB
+    watch_list = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
+    
+    if not watch_list:
+        await reply_md(update, "ℹ️ Danh mục của bạn trống, không có cache nào để xoá.")
+        return
+
+    # 4. Lọc bỏ các mã index (như VN30)
+    symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+    if not symbols:
+        await reply_md(update, "ℹ️ Danh mục của bạn không chứa cổ phiếu, không có cache báo cáo để xoá.")
+        return
+
+    # 5. Tạo cache_key (giống hệt logic của cmd_report)
+    cache_key = make_report_cache_key(symbols)
+
+    # 6. Gọi hàm xoá cache từ report_cache.py (chạy trong thread)
+    deleted_count = await asyncio.to_thread(
+        delete_report_from_redis, cache_key
+    )
+
+    # 7. Phản hồi
+    if deleted_count > 0:
+        await reply_md(update, f"✅ Đã xoá thành công cache báo cáo cho key:\n`{cache_key}`")
+    else:
+        await reply_md(
+            update,
+            f"ℹ️ Không tìm thấy cache nào trong Redis cho key:\n`{cache_key}`\n(Có thể nó đã bị xoá hoặc chưa được tạo.)"
+        )
 #==========================================
 # Dán hàm này vào file alert_bot.py
 
@@ -5623,6 +5686,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("announce", "(admin) Gửi thông báo đến tất cả người dùng"),
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
             ("screener_value_clear", "(admin) Xóa dữ liệu screener cache"),
+            ("report_clear", "(admin) Xóa dữ liệu AI report trên redis"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
             ("news_test_macro", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
             ("news_test_specialized", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
@@ -5633,6 +5697,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
         ]
+        tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
 
         # Tách commands
         user_cmds = [(c, d) for c, d in commands if "(admin)" not in d]
@@ -5758,6 +5823,7 @@ async def main():
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("report", cmd_report))
+    tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
     tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
     tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
     tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
