@@ -4803,17 +4803,17 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 6. Cập nhật Header (thêm 2 nhóm Pro)
     header = (
         cmd_summary +
-        "📋 *Tổng hợp danh sách mã đang được theo dõi*\n"
+        "📌 *Thống kê theo mã:*\n"
+        + "\n".join(stats_lines) +
+        f"\n🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
+        +"📋 *Tổng hợp danh sách users*\n"
         f"👥 Tổng số user: {len(all_watch)}\n"
         f"😎 Admin: {total_admin_count}\n"
         f"👑 Pro (còn hạn): {total_active_safe_count}\n"
         f"⚠️ Pro (sắp hết hạn): {total_active_expiring_count}\n" # <-- MỚI
         f"🆓 Pro (đã hết hạn): {total_expired_pro_count}\n"
         f"🆓 Free Users: {total_free_count}\n"
-        f"🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
-        "📌 *Thống kê theo mã:*\n"
-        + "\n".join(stats_lines)
-        + "\n\n📌 *Chi tiết theo từng user (chatId):*"
+        + "\n📌 *Chi tiết theo từng user (chatId):*"
     )
 
     # 7. Gửi tin nhắn (Nối 5 "xô" theo thứ tự)
