@@ -1265,11 +1265,7 @@ def seconds_until_next_weekly_report():
 # =============================================
 
 # Dùng HTML để bot gửi tin nhắn format đẹp và an toàn
-USER_HELP_TEXT_HTML = """📊 <b>Các lệnh bạn có thể sử dụng:</b>
-• <code>/add &lt;MÃ&gt;</code> – Thêm mã cổ phiếu vào danh sách theo dõi
-• <code>/remove &lt;MÃ&gt;</code> – Xóa mã cổ phiếu khỏi danh sách
-• <code>/list</code> – Xem danh sách cổ phiếu đang theo dõi
-• <code>/report</code> – Nhận báo cáo phân tích AI về danh mục của bạn"""
+USER_HELP_TEXT_HTML = """Nhấn `/start` để xem hướng dẫn sử dụng đi bạn."""
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1296,21 +1292,17 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_text = update.message.text
     
-    try:
-        # ⭐️ SỬA: Chạy CSDL trong thread
-        # Log lại hành vi này (tận dụng hàm bạn đã có)
-        await asyncio.to_thread(
-            log_command_usage, chat_id, f"unknown: {user_text[:50]}", ADMIN_ID
-        )
-    except Exception as e:
-        log.warning(f"Không thể log 'unknown' command: {e}")
-
-    # Dùng html.escape để đảm bảo text người dùng nhập (ví dụ: <HAG>) 
-    # không làm hỏng format HTML của bot
-    safe_user_text = html.escape(user_text)
+    # try:
+    #     # ⭐️ SỬA: Chạy CSDL trong thread
+    #     # Log lại hành vi này (tận dụng hàm bạn đã có)
+    #     await asyncio.to_thread(
+    #         log_command_usage, chat_id, f"unknown: {user_text[:50]}", ADMIN_ID
+    #     )
+    # except Exception as e:
+    #     log.warning(f"Không thể log 'unknown' command: {e}")
     
     reply_text = (
-        f"🤔 Hmm, có vẻ tôi chưa được lập trình để hiểu <code>{safe_user_text}</code>.\n\n"
+        f"Gõ bậy bạ gì vậy...😒 \n"
         f"{USER_HELP_TEXT_HTML}"
     )
     
