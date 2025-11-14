@@ -5856,9 +5856,9 @@ async def main():
             cmd_restore_core,
         )
     )
-
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
-
+    
+    tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
+    
     # Cấu hình máy chủ web
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
