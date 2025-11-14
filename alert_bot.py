@@ -2325,57 +2325,6 @@ async def weekly_report_loop():
             log.error(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_weekly_report: {e}")
             await asyncio.sleep(300)
 
-#================= DAILY_SCREENER_LOOP ===============
-async def execute_daily_screener(admin_update: Update | None = None):
-    """
-    Hàm lõi: Chạy, tính toán và gửi báo cáo screener.
-    Nếu có admin_update, sẽ gửi phản hồi cho admin.
-    """
-    global INSTANCE_ID, log, tg_app # Cần tg_app để gửi tin
-
-    instance_label = f"[{INSTANCE_ID}][EXEC_SCREENER]"
-    admin_chat_id = admin_update.effective_chat.id if admin_update else None
-
-    try:
-        log.info(f"{instance_label} Bắt đầu chạy (trigger by: {'Admin' if admin_chat_id else 'Scheduler'}).")
-        if admin_chat_id:
-            # Gửi tin nhắn bằng bot instance toàn cục
-            await tg_app.bot.send_message(admin_chat_id, "⏳ Bắt đầu chạy tác vụ gửi Daily Screener thủ công...")
-
-        # === BÊ NGUYÊN LOGIC TỪ daily_screener_loop VÀO ĐÂY ===
-        
-        # 1. Tính toán
-        result = await asyncio.to_thread(compute_value_screener)
-        
-        # 2. Format
-        text = format_screener_report_text(result)
-        
-        if not text:
-            log.warning(f"{instance_label} Không có dữ liệu screener để gửi (text=None).")
-            if admin_chat_id:
-                await tg_app.bot.send_message(admin_chat_id, "⚠️ Không có dữ liệu screener để gửi (text=None).")
-            return # Dừng hàm
-
-        # 3. Gửi cho tất cả user (Pro)
-        log.info(f"{instance_label} Bắt đầu broadcast báo cáo screener...")
-        
-        await broadcast_to_all_watchers(text, target_audience="pro")
-        
-        # === KẾT THÚC LOGIC CŨ ===
-
-        log.info(f"{instance_label} Hoàn tất broadcast.")
-        if admin_chat_id:
-            await tg_app.bot.send_message(admin_chat_id, "✅ Đã gửi Daily Screener thành công.")
-
-    except Exception as e:
-        log.exception(f"{instance_label} Lỗi nghiêm trọng: {e}")
-        if admin_chat_id:
-            try:
-                await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi khi chạy Daily Screener: {e}")
-            except Exception as e2:
-                log.error(f"{instance_label} Lỗi gửi tin nhắn lỗi cho admin: {e2}")
-#-----------------------------------------
-
 async def news_specialized_loop():
     """
     Quét RSS chuyên ngành, tìm bài có chứa mã cổ phiếu HOẶC tên doanh nghiệp
@@ -4183,28 +4132,11 @@ async def cmd_vn30f1m_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.to_thread(log_command_usage, chat_id, "/vn30f1m_on", ADMIN_ID)
 
     # ===============================================
-    # 💎 LOGIC PAYWALL
+    # 💎 CHECK PAYWALL
     # ===============================================
-    
-    # 1. Kiểm tra Pro (CSDL trong thread)
-    is_pro = await asyncio.to_thread(is_user_pro, chat_id) #
-    
-    # 2. Kiểm tra Admin
-    is_admin = (chat_id == ADMIN_ID)
-    
-    # 3. Áp dụng luật
-    if not is_pro and not is_admin: # Nếu là user thường
-        log.warning(f"[PAYWALL] User {chat_id} (Free) bị chặn bật /vn30f1m_on.")
-        await reply_md(
-            update, 
-            "⚠️ Tính năng cảnh báo phái sinh VN30F1M chỉ dành cho Gói Pro.\n\n"
-            f"Vui lòng liên hệ Admin `https://t.me/KhoiTran99` để nâng cấp. 😏"
-        )
-        return # Dừng hàm, không cho bật
-    
-    # ===============================================
-    # (Nếu vượt qua Paywall, tiếp tục bật)
-    # ===============================================
+    if not await check_pro_access(update, context):
+        return # Dừng lại, vì check_pro_access đã gửi tin nhắn paywall rồi
+    # -----------------------
 
     set_vn30f1m_enabled(chat_id, True)
     reload_vn30f1m_enabled_cache()
@@ -4831,12 +4763,17 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for part in parts:
         await reply_md(update, part)
 
-async def cmd_screen_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id if update.effective_chat else None
     log_id = str(uuid.uuid4())[:8]
     log_prefix = f"[{log_id}][/screener_value]"
 
-    log.info("%s User %s gọi /screener_value", log_prefix, chat_id)
+    # ===============================================
+    # 💎 CHECK PAYWALL
+    # ===============================================
+    if not await check_pro_access(update, context):
+        return # Dừng lại, vì check_pro_access đã gửi tin nhắn paywall rồi
+    # -----------------------
 
     # 1) Kiểm tra cache Redis trước
     cached = load_value_screener_from_redis()
@@ -5821,7 +5758,7 @@ async def main():
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("report", cmd_report))
-    tg_app.add_handler(CommandHandler("screener_value", cmd_screen_value))
+    tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
     tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
     tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
     tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
