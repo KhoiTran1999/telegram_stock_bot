@@ -44,10 +44,7 @@ from db_utils import (
     save_bot_message,
     get_bot_messages_in_range,
     delete_bot_messages_in_range,
-    upsert_stock_value_batch,
     load_stock_value_cache,
-    get_stock_value_cache_count,
-    clear_stock_value_cache,
     has_news_seen,
     mark_news_seen,          
     get_news_seen_count,
@@ -62,7 +59,6 @@ from db_utils import (
     export_core_data,
     import_core_data,
     get_last_restore_month,
-    mark_restore_done_now,
     get_conn,
     add_paid_user,
     is_user_pro,
@@ -4657,8 +4653,21 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.warning(f"Lỗi khi gửi /announce: {e}")
         await reply_md(update, f"⚠️ Lỗi khi gửi broadcast: {e}")
 
+# (Đảm bảo bạn đã import pytz và datetime ở đầu file)
+import pytz
+import datetime
+# ...
+from db_utils import (
+    # ...
+    get_all_paid_users_expiry
+)
+
+# ...
+
+# (Dán vào file alert_bot.py, thay thế hàm cmd_allwatch cũ)
+
 async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
+    """ (ĐÃ SỬA LỖI BLOCKING I/O + THÊM STATUS PRO + SORT 5 NHÓM + RELATIVE TIME) """
     if ADMIN_ID is None:
         await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
         return
@@ -4667,35 +4676,115 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update,"⛔ Không có quyền.")
         return
 
-    # ⭐️ SỬA: Chạy CSDL trong thread
+    # 0. Lấy ADMIN_ID dưới dạng string để so sánh
+    admin_id_str = str(ADMIN_ID) if ADMIN_ID else None
+
+    # 1. Lấy dữ liệu (Watchlist & Pro Expiry)
     all_watch = await asyncio.to_thread(get_all_watch)
+    expiry_map_int_key = await asyncio.to_thread(get_all_paid_users_expiry)
+    
+    # Chuyển key sang string để tra cứu nhanh
+    expiry_map_str_key = {str(k): v for k, v in expiry_map_int_key.items()}
+
     if not all_watch:
         await reply_md(update,"📭 Chưa có user nào lưu danh sách theo dõi.")
         return
 
-    await reply_md(update, f"🔎 vui lòng đợi...")
+    await reply_md(update, f"🔎 Đang tổng hợp, vui lòng đợi...")
 
-    # (Phần xử lý dict/list bên dưới là an toàn, không I/O)
+    # 2. Chuẩn bị (Biến đếm, Thời gian, và 5 "Xô" phân loại)
     symbol_counts = {}
-    detail_lines = []
+    
+    # Năm "xô" để chứa các dòng text đã định dạng (theo thứ tự ưu tiên MỚI)
+    admin_lines = []
+    active_pro_safe_lines = []      # (còn > 24h)
+    active_pro_expiring_lines = []  # (còn <= 24h)
+    expired_pro_lines = []          # (đã hết hạn)
+    free_user_lines = []            # (free)
+    
+    # Biến đếm (5 nhóm)
+    total_admin_count = 0
+    total_active_safe_count = 0
+    total_active_expiring_count = 0
+    total_expired_pro_count = 0
+    total_free_count = 0
+    
+    vn_tz = pytz.timezone(TIMEZONE)
+    now_aware = datetime.datetime.now(pytz.utc) # Giả định DB lưu UTC
+    SECONDS_IN_A_DAY = 86400
+
+    # 3. Vòng lặp Phân loại & Xử lý
     for chat_key, block in all_watch.items():
         lst = block.get("list", []) or []
+        
+        # Đếm symbol (luôn chạy)
         for sym in lst:
             symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
-        if lst:
-            detail_lines.append(f"- {chat_key}: {', '.join(lst)}")
-        else:
-            detail_lines.append(f"- {chat_key}: (trống)")
+            
+        list_str = ", ".join(lst) if lst else "(trống)"
 
+        # === Logic Phân loại (5 nhóm) ===
+
+        # NHÓM 1: ADMIN
+        if chat_key == admin_id_str:
+            total_admin_count += 1
+            line_text = f"😎 ({chat_key}) Admin : {list_str}"
+            admin_lines.append(line_text)
+            continue # Xong, đi user tiếp theo
+
+        # NHÓM 2, 3, 4: Pro / Free
+        if chat_key in expiry_map_str_key:
+            # Đây là user Pro
+            expiry_date_utc = expiry_map_str_key[chat_key]
+            delta_seconds = (expiry_date_utc - now_aware).total_seconds()
+
+            if delta_seconds > SECONDS_IN_A_DAY:
+                # 👑 NHÓM 2: Pro (An toàn, còn > 24h)
+                total_active_safe_count += 1
+                days_remaining = int(delta_seconds // SECONDS_IN_A_DAY)
+                date_str = f"còn {days_remaining} ngày"
+                
+                line_text = f"👑 {chat_key} ({date_str}): {list_str}"
+                active_pro_safe_lines.append(line_text) # Bỏ vào xô 2
+
+            elif delta_seconds > 0:
+                # ⚠️ NHÓM 3: Pro (Sắp hết hạn, còn <= 24h)
+                total_active_expiring_count += 1
+                hours_remaining = int(delta_seconds // 3600)
+                if hours_remaining <= 0:
+                    date_str = "còn <1 giờ"
+                else:
+                    date_str = f"còn {hours_remaining} giờ"
+                
+                line_text = f"⚠️ {chat_key} ({date_str}): {list_str}" # Icon ⚠️ như bạn yêu cầu
+                active_pro_expiring_lines.append(line_text) # Bỏ vào xô 3
+                
+            else:
+                # 🆓 NHÓM 4: Pro (Đã hết hạn)
+                total_expired_pro_count += 1
+                days_past = int(abs(delta_seconds) // SECONDS_IN_A_DAY)
+                
+                if days_past == 0:
+                    date_str = "hết <1 ngày"
+                else:
+                    date_str = f"hết {days_past} ngày"
+                line_text = f"🆓 {chat_key} ({date_str}): {list_str}" 
+                expired_pro_lines.append(line_text) # Bỏ vào xô 4
+        else:
+            # 🆓 NHÓM 5: User Free
+            total_free_count += 1
+            line_text = f"🆓 {chat_key}: {list_str}"
+            free_user_lines.append(line_text) # Bỏ vào xô 5
+
+    # 4. Thống kê mã (giữ nguyên)
     stats_lines = []
     for sym, cnt in sorted(symbol_counts.items()):
         stats_lines.append(f"{sym}: {cnt} user")
 
-    # ⭐️ SỬA: Chạy CSDL trong thread
+    # 5. Thống kê lệnh (giữ nguyên)
     cmd_stats = await asyncio.to_thread(get_command_stats)
-    
     cmd_stats = [s for s in cmd_stats if not s["command"].startswith("unknown:")]
-
+    
     if cmd_stats:
         cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
         for row in cmd_stats:
@@ -4710,21 +4799,39 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         cmd_summary = "📊 *Chưa có dữ liệu lệnh được sử dụng.*\n\n"
 
+
+    # 6. Cập nhật Header (thêm 2 nhóm Pro)
     header = (
         cmd_summary +
         "📋 *Tổng hợp danh sách mã đang được theo dõi*\n"
         f"👥 Tổng số user: {len(all_watch)}\n"
+        f"😎 Admin: {total_admin_count}\n"
+        f"👑 Pro (còn hạn): {total_active_safe_count}\n"
+        f"⚠️ Pro (sắp hết hạn): {total_active_expiring_count}\n" # <-- MỚI
+        f"🆓 Pro (đã hết hạn): {total_expired_pro_count}\n"
+        f"🆓 Free Users: {total_free_count}\n"
         f"🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
         "📌 *Thống kê theo mã:*\n"
         + "\n".join(stats_lines)
-        + "\n\n📌 *Chi tiết theo từng user (chat-id):*"
+        + "\n\n📌 *Chi tiết theo từng user (chatId):*"
     )
 
-    # (Phần xử lý text an toàn, không I/O)
+    # 7. Gửi tin nhắn (Nối 5 "xô" theo thứ tự)
+    
+    # Nối 5 danh sách theo thứ tự ưu tiên MỚI của bạn
+    all_detail_lines = (
+        admin_lines + 
+        active_pro_safe_lines + 
+        active_pro_expiring_lines + 
+        expired_pro_lines + 
+        free_user_lines
+    )
+
     max_len = 3500
     parts = []
     current = header
-    for line in detail_lines:
+    
+    for line in all_detail_lines: # Dùng danh sách đã được sắp xếp
         if len(current) + len(line) + 1 > max_len:
             parts.append(current)
             current = line

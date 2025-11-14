@@ -1105,3 +1105,29 @@ def get_all_pro_chat_ids() -> set[int]:
     
     # Trả về set (tập hợp) để tra cứu O(1) (siêu nhanh)
     return {int(row[0]) for row in rows}
+
+def get_all_paid_users_expiry() -> dict[int, datetime.datetime]:
+    """
+    Lấy MỘT DICT (dictionary) chứa {chat_id: expiry_date}
+    của TẤT CẢ user trong bảng paid_users (bao gồm cả user đã hết hạn).
+    """
+    mapping = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT chat_id, expiry_date 
+                FROM paid_users;
+                """
+            )
+            rows = cur.fetchall()
+    
+    # Trả về dict để tra cứu O(1)
+    # expiry_date là kiểu TIMESTAMPTZ, nên nó sẽ là đối tượng datetime
+    for row in rows:
+        try:
+            mapping[int(row[0])] = row[1] 
+        except Exception:
+            pass # Bỏ qua nếu parse lỗi
+            
+    return mapping
