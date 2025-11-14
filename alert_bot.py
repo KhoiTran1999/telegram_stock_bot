@@ -1264,9 +1264,6 @@ def seconds_until_next_weekly_report():
 # HÀM XỬ LÝ TIN NHẮN KHÔNG RÕ NGHĨA
 # =============================================
 
-# Dùng HTML để bot gửi tin nhắn format đẹp và an toàn
-USER_HELP_TEXT_HTML = """Nhấn `/start` để xem hướng dẫn sử dụng đi bạn."""
-
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Phản hồi khi người dùng gõ văn bản tự do hoặc lệnh không tồn tại.
@@ -1303,10 +1300,10 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_text = (
         f"Gõ bậy bạ gì vậy...😒 \n"
-        f"{USER_HELP_TEXT_HTML}"
+        f"Nhấn `/start` để xem hướng dẫn sử dụng đi bạn."
     )
     
-    await update.message.reply_text(reply_text, parse_mode="HTML")
+    await reply_md(update, reply_text)
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
@@ -5856,7 +5853,7 @@ async def main():
             cmd_restore_core,
         )
     )
-    
+
     tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
     
     # Cấu hình máy chủ web
