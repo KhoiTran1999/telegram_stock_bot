@@ -18,6 +18,7 @@ from telegram import (
     BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
 )
+from telegram.constants import ChatAction
 import telegram
 from telegram.ext import (
     ApplicationBuilder,
@@ -30,7 +31,7 @@ from flask import Flask, request
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
-from vnstock import Trading, Quote, Listing, Finance, Company
+from vnstock import Trading, Quote, Listing, Finance, Company, Screener
 from db_utils import (
     init_db,
     get_all_watch,
@@ -75,7 +76,7 @@ import subprocess
 import re
 import csv
 from telegram.error import BadRequest
-from typing import Any
+from typing import Any, Optional
 import html
 import feedparser
 from telegram.error import TelegramError
@@ -90,6 +91,7 @@ from report_cache import (
 )
 from pathlib import Path
 from openai import OpenAI
+import uuid
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -99,6 +101,11 @@ PORT = int(os.getenv("PASSENGER_PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# === VALUE SCREENER (API) CONFIG ===
+VALUE_SCREENER_REDIS_KEY_PREFIX = "value_screener_api"
+VALUE_SCREENER_MIN_LIQUIDITY = 50_000_000_000      # 50 tỷ
+VALUE_SCREENER_MIN_ASSET = 5_000_000_000_000       # 5000 tỷ
 
 # 🗂 Thư mục tạm dùng chung cho backup/restore (tự động phù hợp Windows / Linux)
 TMP_DIR = tempfile.gettempdir()
@@ -1313,317 +1320,239 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(reply_text, parse_mode="HTML")
 
-# ==============================
-# 🧮 SCREENER VALUE – PRECOMPUTE
-# ==============================
-def precompute_value_data(full_refresh: bool = False, skip_if_fresh_today: bool = True):
+# =====================================================================
+# =============== VALUE SCREENER (VNSTOCK API VERSION) ================
+# =====================================================================
+
+def build_value_df_from_screener(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
-    Crawl P/E, P/B, ROE VÀ Thanh khoản, Tài sản (TẤT CẢ TỪ VCI)
-    lưu vào stock_value_cache.
-    
-    (ĐÃ SỬA LỖI - 13/11/2025)
-    - Dùng VCI (price_board) để lấy Vốn hoá, Thanh khoản, Sàn.
-    - Dùng VCI (Company().ratio_summary()) để lấy P/E, P/B, ROE.
-    - Không còn phụ thuộc vào nguồn TCBS (Finance.ratio()) bị lỗi.
+    Chuẩn hoá DataFrame từ Screener().stock(...) về dạng:
+    symbol, floor, industry, pe, pb, roe, liquidity_proxy, asset_proxy
     """
-    
+    df = df_raw.copy()
+
+    df["symbol"] = df["ticker"].astype(str).str.upper().str.strip()
+
+    def map_floor(exchange: str) -> str:
+        if not isinstance(exchange, str):
+            return "UNKNOWN"
+        ex = exchange.upper()
+        if ex in ("HOSE", "HSX"):
+            return "HOSE"
+        if ex == "HNX":
+            return "HNX"
+        if ex == "UPCOM":
+            return "UPCOM"
+        return "UNKNOWN"
+
+    df["floor"] = df["exchange"].apply(map_floor)
+    df["industry"] = df["industry"].fillna("Khác").astype(str)
+
+    # PE / PB / ROE
+    for col in ["pe", "pb", "roe"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Thanh khoản (tỷ → VND)
+    if "avg_trading_value_20d" in df.columns:
+        df["liquidity_proxy"] = (
+            pd.to_numeric(df["avg_trading_value_20d"], errors="coerce").fillna(0) * 1e9
+        )
+    else:
+        df["liquidity_proxy"] = (
+            pd.to_numeric(df["total_trading_value"], errors="coerce").fillna(0) * 1e9
+        )
+
+    # Tài sản (market_cap tỷ → VND)
+    df["asset_proxy"] = (
+        pd.to_numeric(df["market_cap"], errors="coerce").fillna(0) * 1e9
+    )
+
+    return df[[
+        "symbol",
+        "floor",
+        "industry",
+        "pe",
+        "pb",
+        "roe",
+        "liquidity_proxy",
+        "asset_proxy",
+    ]]
+
+
+def run_value_screener_on_value_df(df: pd.DataFrame) -> Optional[dict]:
+    """Chạy logic screener value từ DataFrame đã chuẩn hoá."""
+    df = df.copy()
+
+    total_all = len(df)
+
+    # Bộ lọc cơ bản
+    df = df.dropna(subset=["pe", "pb", "roe", "liquidity_proxy", "asset_proxy"])
+    df = df[
+        (df["pe"] > 0)
+        & (df["pb"] > 0)
+        & (df["roe"] > 0)
+        & (df["liquidity_proxy"] > 0)
+        & (df["asset_proxy"] > 0)
+    ]
+    after_strict = len(df)
+
+    df = df[df["floor"].isin(["HOSE", "HNX"])]
+    after_floor = len(df)
+
+    df = df[df["liquidity_proxy"] >= VALUE_SCREENER_MIN_LIQUIDITY]
+    after_liquidity = len(df)
+
+    df = df[df["asset_proxy"] >= VALUE_SCREENER_MIN_ASSET]
+    after_asset = len(df)
+
+    if df.empty:
+        return None
+
+    df["roe_decimal"] = df["roe"] / 100.0
+
+    industry_stats = df.groupby("industry").agg(
+        pe_industry=("pe", "mean"),
+        pb_industry=("pb", "mean"),
+        roe_industry=("roe_decimal", "mean"),
+    ).reset_index()
+
+    df = df.merge(industry_stats, on="industry", how="left")
+
+    df = df[df["roe_industry"] > 0]
+    after_industry_roe = len(df)
+
+    if df.empty:
+        return None
+
+    df["pe_rel"] = df["pe_industry"] / df["pe"]
+    df["pb_rel"] = df["pb_industry"] / df["pb"]
+    df["roe_rel"] = df["roe_decimal"] / df["roe_industry"]
+
+    df["value_score"] = (
+        df["pe_rel"] * 0.4 +
+        df["pb_rel"] * 0.3 +
+        df["roe_rel"] * 0.3
+    ).round(2)
+
+    # Top ngành
+    industries_data = []
+    for industry, g in df.groupby("industry"):
+        rows = g.sort_values("value_score", ascending=False).head(3)
+        if rows.empty:
+            continue
+
+        rows_list = []
+        for _, r in rows.iterrows():
+            rows_list.append({
+                "symbol": r["symbol"],
+                "pe": float(r["pe"]),
+                "pb": float(r["pb"]),
+                "roe": float(r["roe_decimal"]),     # decimal
+                "value_score": float(r["value_score"]),
+
+                # 3 FIELD BẮT BUỘC CHO FORMATTER CŨ
+                "pe_industry": float(r["pe_industry"]) if pd.notna(r["pe_industry"]) else None,
+                "pb_industry": float(r["pb_industry"]) if pd.notna(r["pb_industry"]) else None,
+                "roe_industry": float(r["roe_industry"]) if pd.notna(r["roe_industry"]) else None,
+            })
+
+
+        industries_data.append({
+            "industry": industry,
+            "rows": rows_list,
+            "best_score": rows_list[0]["value_score"],
+        })
+
+    industries_data.sort(key=lambda x: x["best_score"], reverse=True)
+    industries_data = industries_data[:19]
+
+    # Top toàn thị trường
+    top_all = df.sort_values("value_score", ascending=False).head(5)
+    top_all_list = []
+    for _, r in top_all.iterrows():
+        top_all_list.append({
+            "symbol": r["symbol"],
+            "industry": r["industry"],
+            "pe": float(r["pe"]),
+            "pb": float(r["pb"]),
+            "roe": float(r["roe_decimal"]),
+            "value_score": float(r["value_score"]),
+        })
+
     vn_tz = pytz.timezone(TIMEZONE)
-    started_at = datetime.datetime.now(vn_tz)
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Bắt đầu precompute_value_data (Chỉ dùng VCI) lúc "
-        f"{started_at.strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+    as_of = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M")
 
-    # 1) Lấy danh sách mã từ Listing()
+    return {
+        "as_of": as_of,
+        "stats": {
+            "total_all": total_all,
+            "after_strict_filter": after_strict,
+            "after_floor_filter": after_floor,
+            "after_liquidity_filter": after_liquidity,
+            "after_asset_filter": after_asset,
+            "after_industry_roe_filter": after_industry_roe,
+        },
+        "industries": industries_data,
+        "top_all": top_all_list,
+    }
+
+
+def run_value_screener_from_api() -> Optional[dict]:
+    log.info("[VALUE_SCREENER_API] Gọi vnstock Screener()...")
     try:
-        listing = Listing()
-        listing_df = listing.all_symbols()
+        df_raw = Screener().stock(
+            params={"exchangeName": "HOSE,HNX,UPCOM"},
+            limit=1700,
+        )
     except Exception as e:
-        log.exception(f"[{INSTANCE_ID}][VALUE] Lỗi gọi Listing().all_symbols(): {e}")
-        return
+        log.exception("[VALUE_SCREENER_API] Lỗi gọi API: %s", e)
+        return None
 
-    if listing_df is None or listing_df.empty:
-        log.warning(
-            f"[{INSTANCE_ID}][VALUE] listing.all_symbols() trả về rỗng, dừng."
-        )
-        return
+    if df_raw is None or len(df_raw) == 0:
+        return None
 
-    filtered_df = listing_df.copy()
-    symbol_col_candidates = ["symbol", "ticker", "code"]
-    symbol_col = next(
-        (c for c in symbol_col_candidates if c in filtered_df.columns),
-        None,
+    value_df = build_value_df_from_screener(df_raw)
+    return run_value_screener_on_value_df(value_df)
+
+
+# -------------------------- Redis Helper --------------------------
+
+def _value_screener_key_today() -> str:
+    vn_tz = pytz.timezone(TIMEZONE)
+    today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
+    return f"{VALUE_SCREENER_REDIS_KEY_PREFIX}:{today}"
+
+
+def _ttl_until_midnight() -> int:
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    midnight = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=3, microsecond=0
     )
-    if not symbol_col:
-        log.error(
-            f"[{INSTANCE_ID}][VALUE] Không tìm thấy cột mã (symbol/ticker/code). "
-            f"Columns: {filtered_df.columns.tolist()}"
-        )
-        return
+    return max(60, int((midnight - now).total_seconds()))
 
-    filtered_df[symbol_col] = filtered_df[symbol_col].astype(str).str.upper()
-    symbols = filtered_df[symbol_col].dropna().unique().tolist()
-    log.info(f"[{INSTANCE_ID}][VALUE] Tổng số mã từ Listing(): {len(symbols)}")
 
-    # 🔹 Load industry map từ CSV (Topi)
-    industry_map = load_industry_map_from_csv("ssi_master_list.csv")
-    if industry_map:
-        symbols = [s for s in symbols if s in industry_map]
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Đã load {len(industry_map)} mã có ngành từ ssi_master_list.csv. "
-            f"Sau khi lọc, còn {len(symbols)} mã sẽ được crawl."
-        )
-        # --- Sanitize symbol list: chỉ giữ mã 3 chữ cái [A-Z] ---
-        _symbols_before = len(symbols)
-        symbols = [s for s in symbols if isinstance(s, str) and re.fullmatch(r"[A-Z]{3}", (s or ""))]
-        dropped = _symbols_before - len(symbols)
-        if dropped > 0:
-            log.info(f"[{INSTANCE_ID}][VALUE] Đã lọc {dropped} mã không phải 3 chữ cái A-Z (loại mã gây lỗi batch).")
-    else:
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Không load được ssi_master_list.csv, "
-            "tất cả mã sẽ gán industry='Khác'."
-        )
-
-    exchange_col_candidates = ["exchange", "floor", "san"]
-    exchange_col = next(
-        (c for c in exchange_col_candidates if c in filtered_df.columns),
-        None,
-    )
-
-    exchange_map = {}
-    if exchange_col:
-        try:
-            tmp = filtered_df[[symbol_col, exchange_col]].dropna()
-            for _, row in tmp.iterrows():
-                exchange_map[str(row[symbol_col]).upper()] = str(row[exchange_col]).upper()
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][VALUE] Không build được exchange_map: {e}")
-
+def load_value_screener_from_redis() -> Optional[dict]:
     try:
-        trading = Trading(source="VCI")
+        r = get_redis()
+        raw = r.get(_value_screener_key_today())
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def save_value_screener_to_redis(result: dict):
+    try:
+        r = get_redis()
+        r.set(_value_screener_key_today(), json.dumps(result, ensure_ascii=False), ex=_ttl_until_midnight())
+        log.info("[VALUE_SCREENER_API] Đã lưu cache screener trong ngày.")
     except Exception as e:
-        trading = None
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không khởi tạo được Trading(source='VCI'): {e}")
-        return
+        log.warning("[VALUE_SCREENER_API] Lỗi lưu Redis: %s", e)
 
-    # 2️⃣ Đọc các mã đã có trong DB
-    existing_records = load_stock_value_cache()
-
-    if full_refresh and skip_if_fresh_today:
-        try:
-            last = max(
-                (r.get("updated_at") for r in existing_records if r.get("updated_at")),
-                default=None
-            )
-            if last is not None:
-                last_vn_date = last.astimezone(vn_tz).date() if last.tzinfo else last.date()
-                today_vn_date = started_at.date()
-                if last_vn_date == today_vn_date:
-                    log.info(
-                        f"[{INSTANCE_ID}][VALUE] stock_value_cache đã được refresh hôm nay ({today_vn_date}), bỏ qua."
-                    )
-                    return
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][VALUE] Không kiểm tra được last updated_at: {e}")
-
-    # 🔹 Chọn tập mã cần crawl
-    if full_refresh:
-        todo_symbols = symbols
-        already = 0
-        total_symbols = len(symbols)
-        total_todo = len(todo_symbols)
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] CHẾ ĐỘ FULL REFRESH: crawl toàn bộ {total_todo}/{total_symbols} mã."
-        )
-    else:
-        processed_symbols = {r["symbol"] for r in existing_records if r.get("symbol")}
-        todo_symbols = [s for s in symbols if s not in processed_symbols]
-        total_symbols = len(symbols)
-        total_todo = len(todo_symbols)
-        already = len(processed_symbols)
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Đã có trong DB: {already} | "
-            f"Cần crawl thêm: {total_todo} | Tổng: {total_symbols}"
-        )
-
-    if total_todo == 0:
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Không còn mã cần crawl. Kết thúc precompute."
-        )
-        return
-
-    total_batches = math.ceil(total_todo / VALUE_BATCH_SIZE)
-    processed_count = already
-    per_symbol_sleep = 1 # 🔧 DÙNG VCI: nên tăng sleep để tránh rate limit
-
-    # --- Các hàm Helper (đã sửa _safe_float) ---
-    def _safe_float(val):
-        if val is None:
-            return None
-        try:
-            if hasattr(val, "item"):
-                val = val.item()
-        except Exception:
-            pass
-        try:
-            if isinstance(val, str):
-                val = val.strip()
-                if val == "" or val.lower() in {"nan", "none", "null"}:
-                    return None
-                if "," in val and val.count(",") == 1 and "." not in val:
-                    val = val.replace(",", ".")
-            v = float(val)
-        except Exception:
-            return None
-        if math.isnan(v):
-            return None
-        return v
-    
-    # --- Bắt đầu vòng lặp Batch ---
-    for batch_idx in range(total_batches):
-        batch_syms = todo_symbols[
-            batch_idx * VALUE_BATCH_SIZE : (batch_idx + 1) * VALUE_BATCH_SIZE
-        ]
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Batch {batch_idx+1}/{total_batches} – "
-            f"{len(batch_syms)} symbols: {', '.join(batch_syms[:8])}"
-        )
-
-        # 3️⃣ Lấy price_board cho batch (VCI - Lấy Giá + Proxies)
-        pb_df = None
-        try:
-            pb_df = _fetch_price_board_with_fallback(trading, batch_syms, log, INSTANCE_ID)
-            if pb_df is None or pb_df.empty:
-                log.warning(f"[{INSTANCE_ID}][VALUE] price_board rỗng sau fallback cho batch {batch_idx}/{total_batches}. Bỏ qua batch này.")
-                continue
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi price_board batch: {e}")
-
-        batch_records = []
-
-        for sym in batch_syms:
-            sym = str(sym).upper()
-            
-            time.sleep(per_symbol_sleep) # Throttle VCI API
-
-            # 4️⃣ Lấy thông tin từ price_board (VCI)
-            exchange = exchange_map.get(sym)
-            floor = None
-            asset_proxy = None
-            liquidity_proxy = None
-
-            if pb_df is not None and not pb_df.empty:
-                try:
-                    # Tìm hàng của sym trong pb_df
-                    row = None
-                    try:
-                        if sym in pb_df.index:
-                             row = pb_df.loc[sym]
-                    except Exception:
-                        row = None
-                        
-                    if row is None:
-                        try:
-                            pb_df_sym_col = pb_df[('listing', 'symbol')].astype(str).str.upper()
-                            row_match = pb_df[pb_df_sym_col == sym]
-                            if row_match is not None and not row_match.empty:
-                                row = row_match.iloc[0]
-                        except KeyError:
-                             row = None
-                        except Exception:
-                             row = None
-
-                    if row is not None:
-                        # 1. LẤY SÀN
-                        if ('listing', 'exchange') in row.index:
-                            floor = str(row[('listing', 'exchange')]).upper()
-                        elif 'exchange' in row.index:
-                            floor = str(row['exchange']).upper()
-
-                        # 2. LẤY THANH KHOẢN (GTGD)
-                        raw_liq = _safe_float(row.get(('match', 'accumulated_value')))
-                        if raw_liq is not None:
-                            liquidity_proxy = raw_liq * 1_000_000  # Đổi ra VND
-
-                        # 3. TÍNH VỐN HOÁ (ASSET PROXY)
-                        price_for_asset = _safe_float(row.get(('match', 'match_price')))
-                        shares = _safe_float(row.get(('listing', 'listed_share')))
-                        if price_for_asset is not None and shares is not None and shares > 0:
-                            asset_proxy = price_for_asset * shares
-
-                except Exception as e:
-                    log.warning(f"[{INSTANCE_ID}][VALUE] Map VCI/proxies lỗi ({sym}): {e}")
-
-            # Fallback floor nếu chưa có
-            if floor is None:
-                fallback_floor = exchange_map.get(sym)
-                if fallback_floor:
-                    floor = str(fallback_floor)
-
-            # 5️⃣ Lấy P/E, P/B, ROE từ VCI (Company().ratio_summary())
-            pe = None
-            pb = None
-            roe = None
-            
-            try:
-                company = Company(symbol=sym)
-                summary_df = company.ratio_summary()
-                
-                if summary_df is not None and not summary_df.empty:
-                    row = summary_df.iloc[0]
-                    pe = _safe_float(row.get('pe'))
-                    pb = _safe_float(row.get('pb'))
-                    roe = _safe_float(row.get('roe'))
-                else:
-                    log.warning(f"[{INSTANCE_ID}][VALUE] Không lấy được ratio_summary (VCI) cho {sym}.")
-            
-            except Exception as e:
-                 log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi gọi Company.ratio_summary cho {sym}: {e}")
-
-            # Ngành
-            industry = industry_map.get(sym, "Khác") if industry_map else "Khác"
-
-            record = {
-                "symbol": sym,
-                "exchange": exchange,
-                "industry": industry,
-                "pe": pe, # <-- P/E từ VCI
-                "pb": pb, # <-- P/B từ VCI
-                "roe": roe, # <-- ROE từ VCI
-                "floor": floor,
-                "asset_proxy": asset_proxy,
-                "liquidity_proxy": liquidity_proxy,
-            }
-            batch_records.append(record)
-
-        # 5️⃣ Ghi batch vào DB (upsert theo symbol)
-        try:
-            upsert_stock_value_batch(batch_records)
-        except Exception as e:
-            log.exception(
-                f"[{INSTANCE_ID}][VALUE] Lỗi khi upsert batch {batch_idx+1}: {e}"
-            )
-
-        # Cập nhật tiến độ
-        processed_count += len(batch_syms)
-        done = processed_count
-        percent = (done / total_symbols * 100) if total_symbols > 0 else 0.0
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Tiến độ: {done}/{total_symbols} mã "
-            f"({percent:.1f}%). Batch {batch_idx+1}/{total_batches} hoàn tất."
-        )
-
-        # Nghỉ nhẹ giữa các batch
-        if batch_idx < total_batches - 1:
-            time.sleep(VALUE_BATCH_SLEEP)
-
-    finished_at = datetime.datetime.now(vn_tz)
-    duration = (finished_at - started_at).total_seconds()
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Hoàn thành precompute_value_data sau {duration:.1f}s. "
-        f"Tổng mã trong DB hiện tại: {get_stock_value_cache_count()}."
-    )
 
 def compute_value_screener(
     top_per_industry: int = 3,
@@ -1668,129 +1597,109 @@ def compute_value_screener(
             return None
         df["industry"] = df["symbol"].map(industry_map).fillna(df["industry"])
 
-    # ❗️ BỘ LỌC NGHIÊM NGẶT (FIX 2 - Theo yêu cầu)
+    # ❗️ BỘ LỌC NGHIÊM NGẶT
     # 1. Loại bỏ BẤT KỲ hàng nào có None (NaN)
     df = df.dropna(
         subset=[
-            "pe", "pb", "roe", "industry", "floor", 
+            "pe", "pb", "roe", "industry", "floor",
             "asset_proxy", "liquidity_proxy"
         ]
     )
-    
+
     # 2. Loại bỏ BẤT KỲ hàng nào có chỉ số <= 0
     df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
-    
+
     if df.empty:
         log.warning(
             f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau khi lọc nghiêm ngặt (dropna và > 0)."
         )
         return None
-    # KẾT THÚC BỘ LỌC NGHIÊM NGẶT
 
-    # LỌC SÀN TỪ DB (SIÊU NHANH)
-    before_count = len(df)
-    allowed_floors = {"HOSE", "HNX"}
-    df = df[df["floor"].isin(allowed_floors)]
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Lọc sàn HOSE/HNX (từ DB): {before_count} -> {len(df)} mã."
-    )
-    
-    # LỌC THANH KHOẢN TỪ DB (SIÊU NHANH)
-    before_count = len(df)
-    df = df[df["liquidity_proxy"] >= 50_000_000_000]  # 50 tỷ
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Lọc thanh khoản >=50 tỷ (từ DB): {before_count} -> {len(df)} mã."
-    )
-   
-    # LỌC TÀI SẢN TỪ DB (SIÊU NHANH)
-    before_count = len(df)
-    df = df[df["asset_proxy"] >= 5_000_000_000_000]  # 5000 tỷ
-    log.info(
-        f"[{INSTANCE_ID}][VALUE] Lọc tổng tài sản proxy >=5000 tỷ (từ DB): {before_count} -> {len(df)} mã."
-    )
-    
-    if df.empty:
-        log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau khi filter 3 tiêu chí."
-        )
-        return None
+    # Chuẩn hoá ROE về decimal
+    df["roe_decimal"] = df["roe"] / 100.0
 
     # Tính trung bình ngành
-    industry_group = df.groupby("industry").agg(
+    industry_stats = df.groupby("industry").agg(
         pe_industry=("pe", "mean"),
         pb_industry=("pb", "mean"),
-        roe_industry=("roe", "mean"),
-    )
-    df = df.join(industry_group, on="industry")
+        roe_industry=("roe_decimal", "mean"),
+    ).reset_index()
 
-    # (Logic này đã an toàn vì df đã được lọc roe > 0)
+    df = df.merge(industry_stats, on="industry", how="left")
+
+    # Loại ngành ROE ngành <= 0
     df = df[df["roe_industry"] > 0]
     if df.empty:
+        log.warning(f"[{INSTANCE_ID}][VALUE] Không còn mã sau khi lọc theo ROE ngành > 0.")
         return None
+
+    # Tính tương đối so với ngành
+    df["pe_rel"] = df["pe_industry"] / df["pe"]
+    df["pb_rel"] = df["pb_industry"] / df["pb"]
+    df["roe_rel"] = df["roe_decimal"] / df["roe_industry"]
 
     df["value_score"] = (
-        (df["pe_industry"] / df["pe"]) * 0.3
-        + (df["pb_industry"] / df["pb"]) * 0.3
-        + (df["roe"] / df["roe_industry"]) * 0.4
-    )
+        df["pe_rel"] * 0.4 +
+        df["pb_rel"] * 0.3 +
+        df["roe_rel"] * 0.3
+    ).round(2)
 
-    # Ngày dữ liệu
-    as_of = None
-    if "updated_at" in df.columns and not df["updated_at"].isna().all():
-        latest_ts = df["updated_at"].max()
-        try:
-            if isinstance(latest_ts, datetime.datetime):
-                vn_tz = pytz.timezone(TIMEZONE)
-                as_of = latest_ts.astimezone(vn_tz).strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                as_of = str(latest_ts)
-        except Exception:
-            as_of = str(latest_ts)
-
+    # Top từng ngành
     industries_data = []
-    for industry_name, g in df.groupby("industry"):
-        g_sorted = g.sort_values("value_score", ascending=False)
-        top_g = g_sorted.head(top_per_industry)
+    for industry, g in df.groupby("industry"):
+        rows = g.sort_values("value_score", ascending=False).head(top_per_industry)
+        if rows.empty:
+            continue
 
         rows_list = []
-        for _, r in top_g.iterrows():
-            rows_list.append(
-                {
-                    "symbol": r["symbol"],
-                    "industry": industry_name,
-                    "pe": float(r["pe"]),
-                    "pb": float(r["pb"]),
-                    "roe": float(r["roe"]),
-                    "pe_industry": float(r["pe_industry"]),
-                    "pb_industry": float(r["pb_industry"]),
-                    "roe_industry": float(r["roe_industry"]),
-                    "value_score": float(r["value_score"]),
-                }
-            )
+        for _, r in rows.iterrows():
+            rows_list.append({
+                "symbol": r["symbol"],
+                "pe": float(r["pe"]),
+                "pb": float(r["pb"]),
+                "roe": float(r["roe_decimal"]),     # decimal
+                "value_score": float(r["value_score"]),
 
-        if rows_list:
-            best_score = rows_list[0]["value_score"]
-            industries_data.append(
-                {
-                    "industry": industry_name,
-                    "best_score": best_score,
-                    "rows": rows_list,
-                }
-            )
+                # 3 FIELD BẮT BUỘC CHO FORMATTER CŨ
+                "pe_industry": float(r["pe_industry"]) if pd.notna(r["pe_industry"]) else None,
+                "pb_industry": float(r["pb_industry"]) if pd.notna(r["pb_industry"]) else None,
+                "roe_industry": float(r["roe_industry"]) if pd.notna(r["roe_industry"]) else None,
+            })
 
-    if not industries_data:
-        return None
+        industries_data.append({
+            "industry": industry,
+            "rows": rows_list,
+            "best_score": rows_list[0]["value_score"],
+        })
 
     industries_data.sort(key=lambda x: x["best_score"], reverse=True)
     industries_data = industries_data[:max_industries]
 
-    for item in industries_data:
-        item.pop("best_score", None)
+    # Top toàn thị trường
+    top_all = df.sort_values("value_score", ascending=False).head(5)
+    top_all_list = []
+    for _, r in top_all.iterrows():
+        top_all_list.append({
+            "symbol": r["symbol"],
+            "industry": r["industry"],
+            "pe": float(r["pe"]),
+            "pb": float(r["pb"]),
+            "roe": float(r["roe_decimal"]),
+            "value_score": float(r["value_score"]),
+        })
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    as_of = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M")
 
     return {
         "as_of": as_of,
+        "stats": {
+            "total_all": len(df),
+        },
         "industries": industries_data,
+        "top_all": top_all_list,
     }
+
 
 def seconds_until_next_weekday_screener():
     """
@@ -2431,63 +2340,6 @@ async def weekly_report_loop():
             log.error(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_weekly_report: {e}")
             await asyncio.sleep(300)
 
-async def screener_value_update_loop():
-    """
-    Chạy precompute_value_data() vào 00:00 (giờ VN) các ngày Thứ 2–Thứ 6.
-    
-    (ĐÃ SỬA LỖI BLOCKING I/O)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # ❗️ KIỂM TRA TRẠNG THÁI BOT (kiểm tra trước khi ngủ dài)
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] [precompute screener Value 00:00 T2–T6] Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
-
-        # Tính thời điểm 00:00 tiếp theo
-        next_run = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        if next_run <= now:
-            next_run += datetime.timedelta(days=1)
-
-        # Nhảy qua cuối tuần (T7=5, CN=6)
-        while next_run.weekday() > 4:
-            next_run += datetime.timedelta(days=1)
-
-        wait_sec = (next_run - now).total_seconds()
-        log.info(
-            f"[{INSTANCE_ID}][VALUE {loop_id}] Ngủ {wait_sec:.0f}s tới 00:00 ngày {next_run.date()} "
-            f"(weekday={next_run.weekday()})."
-        )
-        await asyncio.sleep(max(wait_sec, 0))
-
-        # ❗️ KIỂM TRA LẦN NỮA SAU KHI THỨC DẬY
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Thức dậy nhưng bot đang TẮT, bỏ qua.")
-            continue
-
-        # Đảm bảo đúng ngày T2–T6
-        now = datetime.datetime.now(vn_tz)
-        if now.weekday() > 4:
-            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Thức dậy nhưng không phải T2–T6, bỏ qua.")
-            continue
-
-        try:
-            log.info(f"[{INSTANCE_ID}][VALUE {loop_id}] Bắt đầu chạy precompute_value_data() theo lịch.")
-            
-            # ⭐️ SỬA LỖI BLOCKING: Chạy hàm precompute (blocking) trong thread
-            await asyncio.to_thread(precompute_value_data, True, True)
-            
-        except Exception:
-            log.exception(f"[{INSTANCE_ID}][VALUE {loop_id}] Lỗi khi chạy precompute_value_data() theo lịch.")
-            # tránh spam lỗi, nghỉ 1h rồi tính lịch mới
-            await asyncio.sleep(3600)
-
 #================= DAILY_SCREENER_LOOP ===============
 async def execute_daily_screener(admin_update: Update | None = None):
     """
@@ -2537,50 +2389,6 @@ async def execute_daily_screener(admin_update: Update | None = None):
                 await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi khi chạy Daily Screener: {e}")
             except Exception as e2:
                 log.error(f"{instance_label} Lỗi gửi tin nhắn lỗi cho admin: {e2}")
-
-async def daily_screener_loop():
-    """
-    (Đã sửa) Gửi báo cáo screener value (CHỈ LÊN LỊCH)
-    vào 09:00 sáng T2-T6.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
-    while True:
-        loop_id += 1
-        instance_label = f"[{INSTANCE_ID}][SCREENER {loop_id}]" # Giữ log label
-
-        # ❗️ KIỂM TRA TRẠNG THÁI BOT
-        if not BOT_ACTIVE:
-            log.info(f"{instance_label} [gửi báo cáo screener 09:00 T2-T6] Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue
-
-        wait_sec = seconds_until_next_weekday_screener()
-        log.info(
-            f"{instance_label} Ngủ tới 09:00 ngày làm việc tiếp theo, còn {wait_sec:.0f}s"
-        )
-        await asyncio.sleep(wait_sec)
-
-        # ❗️ KIỂM TRA LẦN NỮA SAU KHI THỨC DẬY
-        if not BOT_ACTIVE:
-            log.info(f"{instance_label} Thức dậy nhưng bot đang TẮT, bỏ qua.")
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-        if now.weekday() > 4: # 5=T7, 6=CN
-            log.info(f"{instance_label} Thức dậy nhưng không phải T2-T6, bỏ qua.")
-            continue
-        
-        try:
-            # Chỉ cần gọi hàm lõi (không truyền admin_update)
-            log.info(f"{instance_label} 09:00, bắt đầu chạy execute_daily_screener() theo lịch.")
-            await execute_daily_screener(admin_update=None)
-            
-        except Exception as e:
-            # Lỗi này chỉ là lỗi khi *gọi* hàm, chứ ko phải lỗi *trong* hàm
-            log.exception(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_daily_screener: {e}")
-            await asyncio.sleep(300) # 5 phút retry nếu lỗi
 #-----------------------------------------
 
 async def news_specialized_loop():
@@ -4252,21 +4060,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n\n"
     "StockBot là *trợ lý chứng khoán realtime* – giúp bạn theo dõi biến động giá, tin tức và dữ liệu doanh nghiệp một cách nhanh chóng, chính xác,... 💩💩💩\n\n"
     "*--- (Gói Dùng Thử Miễn Phí 😏) ---*\n\n"
-    "🎁 *Gói Miễn Phí (Free Plan)*\n"
+    "🎁 *Gói Miễn Phí (Free Plan)*\n\n"
     "Bot cung cấp các tính năng cơ bản để bạn trải nghiệm:\n"
     "• Theo dõi **tối đa 1 mã cổ phiếu** (dùng `/add <MÃ>`).\n"
     "• Xem danh sách (`/list`) và xoá (`/remove <MÃ>`).\n"
     "• Nhận thông báo tự động 4 mốc giờ giao dịch (sắp mở/đóng phiên sáng/chiều).\n"
-    "• 📰 *Tin tức Theo Watchlist:* Bật/tắt nhận tin tức vĩ mô và tin chuyên ngành được lọc tự động theo danh mục của bạn (`/news_on`). "
-    " Nhận diện bài viết liên quan đến mã trong danh mục và gửi những tin đáng chú ý nhất. 📰\n"
+    "• 📰 *Tin tức Theo Watchlist:* Bật/tắt nhận tin tức vĩ mô và tin chuyên ngành được lọc tự động theo danh mục của bạn (`/news_on`)."
+    " Nhận diện bài viết liên quan đến mã trong danh mục và gửi những tin đáng chú ý nhất.\n"
     "• ⚡ *Cảnh báo Giá Realtime:* Nhận cảnh báo tức thì (kèm nhận xét vui vẻ) khi mã trong watchlist của bạn biến động ±1%...±6% (quét 15 giây/lần).\n\n"
     "*--- (Gói Chuyên Nghiệp 😎) ---*\n\n"
     "👑 *Gói Nâng Cấp (Pro Plan) - 99k/tháng*\n"
     "Mở khoá toàn bộ sức mạnh của bot trợ lý AI:\n\n"
     "• 📈 *Theo dõi Không giới hạn:* Thêm không giới hạn số mã cổ phiếu vào watchlist.\n"
-    "• 🧠 *Báo cáo AI Chuyên sâu:* Nhận báo cáo AI hàng tuần (`weekly_report_loop`) và phân tích chuyên sâu bất kỳ mã nào (`/info <MÃ>`) hoặc toàn bộ danh mục (`/report`).\n"
-    "• 💰 *Bộ lọc Cổ phiếu Value:* Nhận báo cáo Top cổ phiếu Value (P/E, P/B, ROE, Vốn hoá > 5000 tỷ, TK > 50 tỷ) vào 09:00 mỗi sáng T2-T6 (`daily_screener_loop`).\n"
-    "• 🧾 *Cảnh báo Báo cáo Tài chính:* Tự động báo cho bạn ngay khi công ty bạn theo dõi ra BCTC mới trong các tháng 1, 4, 5, 10 (`financial_Statements_notice_loop`).\n"
+    "• 🧠 *Báo cáo AI Chuyên sâu:* Nhận báo cáo AI hàng tuần và phân tích chuyên sâu bất kỳ mã nào (`/info <MÃ>`) hoặc toàn bộ danh mục (`/report`).\n"
+    "• 💰 *Bộ lọc Cổ phiếu Value:* Dùng lệnh `/screener_value` để lấy báo cáo Top cổ phiếu value trong ngày "
+    "(lọc theo P/E, P/B, ROE, vốn hoá & thanh khoản).\n"
+    "• 🧾 *Cảnh báo Báo cáo Tài chính:* Tự động báo cho bạn ngay khi công ty bạn theo dõi ra BCTC mới trong các tháng 1, 4, 5, 10.\n"
     "• 📊 *Cảnh báo Phái sinh:* Nhận alert realtime cho VN30F1M (`/vn30f1m_on`).\n\n"
     "--- (Cách Nâng Cấp) ---\n\n"
     f"🚀 *Cách Nâng Cấp Gói Pro:*\n"
@@ -4280,34 +4089,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "• `/remove <MÃ>` – Xóa mã cổ phiếu khỏi danh sách\n"
     "• `/list` – Xem danh sách cổ phiếu bạn đang theo dõi\n"
     "• `/report` – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
+    "• `/screen_value` – Lọc cổ phiếu value trong ngày (dùng dữ liệu mới nhất từ vnstock)\n"
     "• `/news_on` – Bật nhận tin tức (vĩ mô + chuyên ngành)\n"
     "• `/news_off` – Tắt nhận tin tức\n"
     "• `/news_status` – Xem trạng thái nhận tin tức hiện tại\n"
     "• `/vn30f1m_off` – Tắt nhận cập nhật VN30F1M\n"
     "• `/vn30f1m_on` – Bật nhận cập nhật VN30F1M\n"
     "• `/vn30f1m_status` – Xem trạng thái nhận cập nhật VN30F1M\n\n"
-    "🛠 *Khu vực quản trị (admin – người dùng bình thường có thể bỏ qua):*\n"
-    "• `/on` – Bật bot, thoát chế độ bảo trì\n"
-    "• `/off` – Tắt bot, bật chế độ bảo trì tạm thời\n"
-    "• `/status` – Kiểm tra trạng thái hoạt động của bot\n"
-    "• `/announce` – Gửi thông báo đến tất cả người dùng\n"
-    "• `/allwatch` – Xem & thống kê toàn bộ danh sách mã được user theo dõi\n"
-    "• `/screener_value_clear` – Xóa dữ liệu screener cache\n"
-    "• `/cmd_value_refresh_now` – Làm mới dữ liệu screener cache\n"
-    "• `/delete_range` – Xóa tin nhắn bot gửi trong một khoảng thời gian\n"
-    "• `/backup_core` – Backup dữ liệu core (watchlist, newsPref, BCTC)\n"
-    "• `/restore_core` – Khôi phục dữ liệu core từ file backup\n"
-    "• `/news_test_macro` – Gửi thử tin tức vĩ mô mới nhất\n"
-    "• `/news_test_specialized` – Gửi thử tin tức chuyên ngành/doanh nghiệp\n\n"
-    "• `/admin_add_user` – Thêm/gia hạn Gói Pro cho user\n"
-    "• `/admin_deactivate` – Ngưng hoạt động Gói Pro của user\n"
-    "• `/admin_remove_user` – Xoá vĩnh viễn Gói Pro của user\n\n"
-    "• `/cmd_run_screener_now` – (Test) Chạy và gửi Daily Screener ngay lập tức\n"
-    "• `/cmd_run_weekly_report_now` – (Test) Chạy và gửi Weekly Report ngay lập tức\n\n"
-    "💬 Với StockBot, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
-    "🚀 Bắt đầu theo dõi ngay hôm nay bằng lệnh `/add <MÃ>`!"
+    "💬 Với *KT StockBot 🚀*, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
+    "🔥 Bắt đầu theo dõi ngay hôm nay bằng lệnh `/add <MÃ>`!"
 )
-    
+
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
     global BOT_ACTIVE
@@ -4331,7 +4123,6 @@ async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log.info("[ADMIN] Bot đã bật (BOT_ACTIVE=True, lưu vào DB).")
     await reply_md(update, msg)
-
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tắt bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
@@ -4460,7 +4251,6 @@ async def cmd_news_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👉 Tin chuyên ngành theo danh mục: Bật\n\n"
         "💡 Có thể dùng `/news_off` nếu sau này muốn tạm tắt.",
     )
-
 
 async def cmd_news_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
@@ -4837,65 +4627,6 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
 
-# Dùng dict lưu tạm xác nhận theo admin_id
-pending_clear_confirmations = {}
-
-async def cmd_screener_value_clear(update: Update, context):
-    """
-    [ĐÃ SỬA] Xoá toàn bộ cache screener value trong PostgreSQL (bảng stock_value_cache).
-    Đây là hành động nguy hiểm, yêu cầu xác nhận.
-    
-    Cách dùng: /screener_value_clear confirm
-    """
-    chat_id = update.effective_chat.id
-    if chat_id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-
-    args = context.args if context.args else []
-    
-    # Bước 1: Yêu cầu xác nhận
-    if not args or args[0].lower() != "confirm":
-        # ⭐️ Chạy CSDL trong thread
-        count = await asyncio.to_thread(get_stock_value_cache_count)
-        
-        await reply_md(
-            update,
-            f"⚠️ *Xác nhận xoá toàn bộ cache Value?*\n\n"
-            f"Hành động này sẽ xoá *toàn bộ {count} dòng* trong bảng `stock_value_cache` của PostgreSQL.\n"
-            f"Bot sẽ cần chạy lại `/value_refresh_now` (tốn nhiều thời gian) để có lại dữ liệu.\n\n"
-            f"Để xác nhận, gõ chính xác lệnh:\n"
-            f"`/screener_value_clear confirm`"
-        )
-        return
-
-    # Bước 2: Đã xác nhận -> Thực hiện xoá
-    try:
-        await reply_md(update, "⏳ *[ADMIN]* Đang thực hiện TRUNCATE bảng `stock_value_cache` trong PostgreSQL...")
-        
-        # ⭐️ Chạy CSDL trong thread
-        await asyncio.to_thread(clear_stock_value_cache)
-        
-        await reply_md(update, "✅ *[ADMIN]* Đã xoá thành công toàn bộ dữ liệu trong `stock_value_cache`.")
-        
-    except Exception as e:
-        log.exception("[ADMIN] Lỗi xoá stock_value_cache (PostgreSQL): %s", e)
-        await reply_md(update, f"*[ADMIN]* Lỗi khi xoá bảng `stock_value_cache`: `{e}`")
-
-async def cmd_value_refresh_now(update: Update, context):
-    """
-    Chạy precompute_value_data(full_refresh=True, skip_if_fresh_today=False)
-    -> Quét toàn bộ mã và upsert vào stock_value_cache.
-    -> KHÔNG xoá Redis, KHÔNG xoá bảng.
-    """
-    await reply_md(update, "*[ADMIN]* Đang full-refresh dữ liệu Value trong nền…")
-    try:
-        await asyncio.to_thread(precompute_value_data, True, False)
-        await reply_md(update, "*[ADMIN]* Hoàn tất full-refresh Value ✅")
-    except Exception as e:
-        log.exception("[ADMIN] Lỗi full-refresh Value: %s", e)
-        await reply_md(update, f"*[ADMIN]* Lỗi full-refresh: `{e}`")
-
 async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA) Gửi thông báo tới TẤT CẢ user (Pro + Free). """
     user_id = update.effective_user.id
@@ -5003,6 +4734,104 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for part in parts:
         await reply_md(update, part)
+
+async def cmd_screen_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    log_id = str(uuid.uuid4())[:8]
+    log_prefix = f"[{log_id}][/screener_value]"
+
+    log.info("%s User %s gọi /screener_value", log_prefix, chat_id)
+
+    # 1) Kiểm tra cache Redis trước
+    cached = load_value_screener_from_redis()
+    if cached is not None:
+        log.info("%s Dùng data cached.", log_prefix)
+        text = format_screener_report_text(cached)
+        await reply_md(update, text)
+        return
+
+    # 2) Chưa có => gọi API mới
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except:
+        pass
+
+    result = run_value_screener_from_api()
+
+    if result is None:
+        msg = (
+            "⚠️ *Không tìm thấy mã nào thỏa tiêu chí value hôm nay.*\n"
+            "_Có thể do dữ liệu API thiếu hoặc điều kiện lọc quá chặt._"
+        )
+        await reply_md(update, context, msg)
+        return
+
+    # 3) Lưu Redis snapshot ngày
+    save_value_screener_to_redis(result)
+
+    # 4) Trả kết quả
+    text = format_screener_report_text(result)
+    await reply_md(update, text)
+
+import uuid  # nếu chưa có
+
+async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    [NEW] Force refresh snapshot screener value từ vnstock và ghi đè cache Redis hôm nay.
+    Không còn đụng tới precompute_value_data hay PostgreSQL nữa.
+    """
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    log_id = log_id = uuid.uuid4().hex[:8]
+    log_prefix = f"[{log_id}][/screener_value_clear]"
+
+    if chat_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+
+    log.info("%s Admin %s gọi /screener_value_clear (refetch vnstock Screener)", log_prefix, chat_id)
+
+    # Thông báo cho admin
+    await reply_md(
+        update,
+        "⏳ *Đang làm mới dữ liệu Value Screener từ vnstock...*\n"
+        "_Lệnh này sẽ gọi lại API Screener, tính toán lại và ghi đè cache Redis trong ngày._"
+    )
+
+    # Gọi API + tính toán lại
+    try:
+        result = run_value_screener_from_api()
+    except Exception as e:
+        log.exception("%s Lỗi khi gọi run_value_screener_from_api: %s", log_prefix, e)
+        await reply_md(
+            update,
+            f"⚠️ Lỗi khi gọi API Screener: `{e}`"
+        )
+        return
+
+    if result is None:
+        await reply_md(
+            update,
+            "⚠️ Không thể làm mới dữ liệu Value Screener.\n"
+            "_Có thể do API vnstock trả về rỗng hoặc lỗi._"
+        )
+        return
+
+    # Ghi đè cache Redis
+    save_value_screener_to_redis(result)
+    stats = result.get("stats", {})
+    total_all = stats.get("total_all", "N/A")
+    after_asset = stats.get("after_asset_filter", "N/A")
+    after_liq = stats.get("after_liquidity_filter", "N/A")
+
+    await reply_md(
+        update,
+        "✅ *Đã làm mới dữ liệu Value Screener từ vnstock và ghi đè cache Redis hôm nay.*\n\n"
+        f"📔 Tổng mã ban đầu: *{total_all}*\n"
+        f"📕 Sau lọc thanh khoản: *{after_liq}*\n"
+        f"📘 Sau lọc tài sản: *{after_asset}*\n\n"
+        f"Bạn có thể dùng `/screener_value` để xem báo cáo mới nhất."
+    )
+
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5503,24 +5332,6 @@ async def cmd_admin_remove_user(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         await reply_md(update, f"Lỗi: {e}. Cú pháp: /admin_remove_user <chat_id> confirm")
 
-async def cmd_run_screener_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (Admin) Chạy tác vụ gửi daily screener ngay lập tức.
-    """
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-
-    # Log command
-    await asyncio.to_thread(log_command_usage, update.effective_chat.id, "/cmd_run_screener_now", ADMIN_ID)
-    
-    # Báo cho admin biết là lệnh đã được nhận
-    await reply_md(update, "🏃 Bắt đầu chạy tác vụ `execute_daily_screener` trong nền. Sẽ thông báo khi hoàn tất...")
-
-    # Gọi hàm lõi (truyền update vào để nhận phản hồi)
-    # Chạy tác vụ này trong một task riêng để nó không block bot
-    asyncio.create_task(execute_daily_screener(admin_update=update))
-
 async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     (Admin) Chạy tác vụ gửi weekly report ngay lập tức.
@@ -5536,6 +5347,7 @@ async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAUL
 
     # Gọi hàm lõi (truyền update vào để nhận phản hồi)
     asyncio.create_task(execute_weekly_report(admin_update=update))
+
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
@@ -5712,23 +5524,21 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(alert_loop()),
                     MAIN_LOOP.create_task(stock_price_fetcher_loop()), # Fetcher (15s)
                     MAIN_LOOP.create_task(stock_broadcast_loop()),   # Broadcaster (chờ queue)
-                    #-----------------------------------------
-                    MAIN_LOOP.create_task(session_notice_loop()),
-                    MAIN_LOOP.create_task(weekly_report_loop()),
-                    MAIN_LOOP.create_task(screener_value_update_loop()),
-                    MAIN_LOOP.create_task(daily_screener_loop()),
-                    MAIN_LOOP.create_task(news_specialized_loop()),
-                    MAIN_LOOP.create_task(news_macro_loop()),
-                    MAIN_LOOP.create_task(news_cleanup_loop()),
-                    MAIN_LOOP.create_task(financial_Statements_notice_loop()),
-                    MAIN_LOOP.create_task(restore_reminder_loop()),
-                    MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
-                    MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                     #-------------- vn30f1m_alert_loop ------------
                     MAIN_LOOP.create_task(vn30f1m_alert_loop()),      # Ticker (5s)
                     MAIN_LOOP.create_task(vn30f1m_price_fetcher_loop()), # Fetcher (61s)
                     MAIN_LOOP.create_task(vn30f1m_broadcast_loop()),   # Broadcaster (chờ queue)
-                    #----------------------------------------------
+                    #-------------- News_loop ------------
+                    MAIN_LOOP.create_task(news_specialized_loop()),
+                    MAIN_LOOP.create_task(news_macro_loop()),
+                    MAIN_LOOP.create_task(news_cleanup_loop()),
+                    #--------------------------------------
+                    MAIN_LOOP.create_task(session_notice_loop()),
+                    MAIN_LOOP.create_task(weekly_report_loop()),
+                    MAIN_LOOP.create_task(financial_Statements_notice_loop()),
+                    MAIN_LOOP.create_task(restore_reminder_loop()),
+                    MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
+                    MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                 ]
                 log.info(f"[Lifespan] Đã khởi động {len(BACKGROUND_TASKS)} tác vụ nền.")
             
@@ -5760,13 +5570,14 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
     sau khi máy chủ web đã khởi động.
     """
     try:
-        # Tác vụ 1: Đăng ký lệnh bot (network call)
+        # Tác vụ 1: Đăng ký lệnh bot (network call) - Thêm (admin) để phân loại commands của users và admin
         commands = [
             ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
             ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
             ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
             ("report", "Phân tích danh mục bằng AI"),
+            ("screener_value", "Lọc cổ phiếu value theo dữ liệu thực"),
             ("news_on", "Bật nhận tin tức (vĩ mô + chuyên ngành)"),
             ("news_off", "Tắt nhận tin tức"),
             ("news_status", "Xem trạng thái nhận tin tức"),
@@ -5779,17 +5590,15 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("announce", "(admin) Gửi thông báo đến tất cả người dùng"),
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
             ("screener_value_clear", "(admin) Xóa dữ liệu screener cache"),
-            ("value_refresh_now", "(admin) Làm mới liệu screener cache"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
             ("news_test_macro", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
             ("news_test_specialized", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
+            ("cmd_run_weekly_report_now", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
             ("backup_core", "(admin) Backup dữ liệu core (watchlist, news_pref, BCTC)"),
             ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
             ("admin_add_user", "(admin) (admin) Thêm/gia hạn Gói Pro cho user"),
             ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
-            ("cmd_run_screener_now", "(admin) Chạy và gửi Daily Screener ngay lập tức"),
-            ("cmd_run_weekly_report_now", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
         ]
 
         # Tách commands
@@ -5916,6 +5725,7 @@ async def main():
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("report", cmd_report))
+    tg_app.add_handler(CommandHandler("screener_value", cmd_screen_value))
     tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
     tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
     tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
@@ -5933,13 +5743,11 @@ async def main():
     tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
-    tg_app.add_handler(CommandHandler("value_refresh_now", cmd_value_refresh_now))
     tg_app.add_handler(CommandHandler("backup_core", cmd_backup_core))
     tg_app.add_handler(CommandHandler("restore_core", cmd_restore_core))
     tg_app.add_handler(CommandHandler("admin_add_user", cmd_admin_add_user))
     tg_app.add_handler(CommandHandler("admin_deactivate", cmd_admin_deactivate))
     tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
-    tg_app.add_handler(CommandHandler("cmd_run_screener_now", cmd_run_screener_now))
     tg_app.add_handler(CommandHandler("cmd_run_weekly_report_now", cmd_run_weekly_report_now))
 
     # 🆕 Bắt case gửi file JSON + caption /restore_core
