@@ -1134,6 +1134,17 @@ def format_perf_line(sym: str, perf: dict) -> str:
         f"ngày {day_str}, tuần {week_str}, tháng {month_str}"
     )
 
+def clean_and_highlight_report(text: str, headings: list[str]) -> str:
+    # Xóa toàn bộ dấu * và _
+    text = text.replace("*", "").replace("_", "")
+
+    # Thêm dấu * vào đúng các heading mong muốn
+    for h in headings:
+        text = text.replace(h, f"*{h}*")
+
+    return text
+
+
 
 def build_prompt_for_symbols(symbols: list[str]) -> str:
     lines = []
@@ -1156,8 +1167,10 @@ YÊU CẦU:
 - Giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
 - Không nói “hôm nay tăng/giảm”, không nêu giá mục tiêu.
 - Tránh câu khẳng định tuyệt đối. Không đưa lời khuyên, chỉ cung cấp thông tin và nhận định.
-- Truyền đạt trung thực, rõ ràng, tối đa khoảng 3000 ký tự.
-- Không dùng ký tự markdown: *, _.
+- Truyền đạt trung thực, rõ ràng.
+- Mỗi mã cổ phiếu riêng sẽ có khoảng 1200 ký tự (không tính câu mở đầu và kết thúc).
+- Nếu danh mục có từ 1 đến 3 mã, có thể phân tích chi tiết hơn cho từng mã (trung bình khoản 1000-1300 ký tự); nếu có nhiều mã, vẫn giữ độ sâu hợp lý nhưng không cần kéo dài quá mức.
+- Không được dùng ký tự markdown: *, _
 - Không xuất hiện câu giải thích quy trình như: “dưới đây là”, “theo yêu cầu”, “tôi viết thế này vì”… 
 - Không đề cập đến bản thân hoặc người yêu cầu (không dùng: tôi, bạn, AI).
 - Không chèn lời tự giới thiệu, không có câu meta. Chỉ tạo nội dung báo cáo cuối cùng dành cho nhà đầu tư.
@@ -1166,11 +1179,10 @@ DANH MỤC NGÀY {dateStock}:
 {data_block}
 
 MỞ ĐẦU BẰNG ĐOẠN:
-Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam.
+🔥 Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam. 🚀
 
 Với mỗi cổ phiếu, trình bày theo cấu trúc:
-
-🔹 MÃ
+🔹 *MÃ*
 • Giá hiện tại: ...
 • KQKD nổi bật: (kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
 • Lợi thế cạnh tranh: (thị phần, biên lợi nhuận, công nghệ, thương hiệu…)
@@ -2289,11 +2301,26 @@ async def execute_weekly_report(admin_update: Update | None = None):
             # 2) Không có cache OK -> gọi Gemini 1 lần
             try:
                 start = time.time()
-                text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                output_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
                 duration = time.time() - start
                 log.info(
                     f"{instance_label} Gemini weekly done in {duration:.1f}s cho chat_id={chat_id}"
                 )
+
+                #Xóa dấu * và _ và add dấu * và tiêu đề đã chỉ định
+                REPORT_HEADINGS = [
+                    "Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam.",
+                    "Giá hiện tại:",
+                    "KQKD nổi bật:",
+                    "Lợi thế cạnh tranh:",
+                    "Triển vọng & Động lực:",
+                    "Bối cảnh định giá:",
+                    "Rủi ro:",
+                    "Hành động:",
+                    "Tổng quan danh mục:",
+                    *symbols
+                ]
+                text = clean_and_highlight_report(output_text, REPORT_HEADINGS)
 
                 # Lưu báo cáo OK vào Redis
                 save_report_to_redis(
@@ -5314,6 +5341,7 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 # COMMAND: /report (CÓ CACHE REDIS + RETRY, KHÔNG COOLDOWN)
 # Cache nội dung report theo danh mục vào Redis (theo cache_key = danh mục chuẩn hoá)
+# ==============================================
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Gửi báo cáo danh mục hiện tại cho user.
@@ -5324,6 +5352,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - Nếu lỗi:
         + Lỗi quota: bảo user thử lại sau 2 phút, cache lỗi 60s.
         + Lỗi kỹ thuật: bảo user đợi, đã báo Admin, cache lỗi 60s, notify Admin 1 lần.
+    - Nếu thời gian xử lý > ~10s: gửi thêm 1 tin nhắn nhẹ nhàng kiểu CS nhắc user chờ tiếp.
     """
 
     if not BOT_ACTIVE:
@@ -5342,7 +5371,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # Hàm check_pro_access đã gửi tin nhắn paywall rồi
 
     # Nhắc nhẹ để user biết bot đang xử lý
-    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp báo cáo danh mục...")
+    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp báo cáo danh mục....")
 
     # Ghi log sử dụng lệnh (chạy trong thread để tránh block)
     await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
@@ -5357,7 +5386,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!",
         )
         return
-    
+
     cache_key = make_report_cache_key(symbols)
     log.info(f"[{INSTANCE_ID}] /report cache_key={cache_key} for chat_id={chat_id}")
 
@@ -5419,16 +5448,54 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "báo cáo vào _Chủ Nhật tuần sau_."
             )
             await reply_md(update, note)
+
             return
 
     # 2️⃣ Không có cache -> gọi Gemini 1 lần
+    # Thêm reminder: sau 10s nếu chưa xong thì gửi thêm 1 tin nhắn "đợi xíu"
+    done_flag = {"done": False}
+
+    async def send_slow_notice():
+        try:
+            await asyncio.sleep(10)
+            if not done_flag["done"]:
+                await send_md(
+                    context.bot,
+                    chat_id,
+                    "⏳ Báo cáo danh mục này hơi dài nên bot cần thêm chút thời gian để tổng hợp...\n"
+                    "Cảm ơn bạn đã kiên nhẫn chờ cùng StockBot ạ 🙏",
+                )
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] /report reminder error: {e}")
+
+    # Fire-and-forget reminder
+    asyncio.create_task(send_slow_notice())
+
     try:
         start = time.time()
-        text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+        output_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
         duration = time.time() - start
+        done_flag["done"] = True  # báo với reminder là đã xong
+
         log.info(
             f"[{INSTANCE_ID}] /report Gemini done in {duration:.2f}s (chat_id={chat_id})"
         )
+
+        # Xóa dấu * và _ và add dấu * và tiêu đề đã chỉ định
+        REPORT_HEADINGS = [
+            "Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam.",
+            "Giá hiện tại:",
+            "KQKD nổi bật:",
+            "Lợi thế cạnh tranh:",
+            "Triển vọng & Động lực:",
+            "Bối cảnh định giá:",
+            "Rủi ro:",
+            "Hành động:",
+            "Tổng quan danh mục:",
+            *watch,  # giữ nguyên logic bạn đang dùng để nhét watchlist vào heading
+        ]
+        text = clean_and_highlight_report(output_text, REPORT_HEADINGS)
+        print("Prompt Adjusted: ", text)
 
         # Lưu báo cáo OK vào Redis (TTL 10 ngày)
         save_report_to_redis(cache_key, text, source="on_demand")
@@ -5442,7 +5509,18 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await reply_md(update, final_text)
 
+        # Thông báo behavior Weekly
+        note = (
+            "ℹ️ Vì bạn đã nhận báo cáo qua lệnh `/report`, báo cáo tự động vào "
+            "_Chủ Nhật tuần này_ sẽ được *bỏ qua*.\n"
+            "Nếu trong tuần tới bạn không dùng lại `/report`, bot sẽ tự động gửi "
+            "báo cáo vào _Chủ Nhật tuần sau_."
+        )
+        await reply_md(update, note)
+
     except Exception as e:
+        done_flag["done"] = True  # tránh gửi reminder muộn sau khi đã lỗi
+
         # Phân loại lỗi
         is_quota = classify_error_quota(e)
 
@@ -5472,21 +5550,20 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_detail=str(e),
         )
 
-        # Gửi message cho user
         await reply_md(update, user_msg)
 
-        # Notify Admin (chỉ 1 lần cho mỗi cache_key)
-        if notify_admin_flag:
+        if notify_admin_flag and tg_app and tg_app.bot:
             try:
                 await notify_admin_report_error_once(
-                    context.bot,
+                    tg_app.bot,
                     cache_key,
                     e,
                 )
             except Exception as e2:
                 log.warning(
-                    f"[{INSTANCE_ID}] /report notify_admin_report_error_once lỗi: {e2}"
+                    f"[{INSTANCE_ID}] notify_admin_report_error_once lỗi: {e2}"
                 )
+
 
 async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
