@@ -1149,32 +1149,38 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
     data_block = "\n".join(lines)
     dateStock = datetime.datetime.now().strftime('%d/%m/%Y')
     prompt = f"""
-Bạn là một nhà đầu tư chứng khoán chuyên nghiệp theo chiến lược đầu tư tăng trưởng ở Việt Nam. 
-Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây, dùng giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
+Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng. 
+Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây.
 
-Dữ liệu danh mục ngày {dateStock} là:
+YÊU CẦU:
+- Giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
+- Không nói “hôm nay tăng/giảm”, không nêu giá mục tiêu.
+- Tránh câu khẳng định tuyệt đối. Không đưa lời khuyên, chỉ cung cấp thông tin và nhận định.
+- Truyền đạt trung thực, rõ ràng, tối đa khoảng 3000 ký tự.
+- Không dùng ký tự markdown: *, _.
+- Không xuất hiện câu giải thích quy trình như: “dưới đây là”, “theo yêu cầu”, “tôi viết thế này vì”… 
+- Không đề cập đến bản thân hoặc người yêu cầu (không dùng: tôi, bạn, AI).
+- Không chèn lời tự giới thiệu, không có câu meta. Chỉ tạo nội dung báo cáo cuối cùng dành cho nhà đầu tư.
+
+DANH MỤC NGÀY {dateStock}:
 {data_block}
 
-Với MỖI cổ phiếu, trình bày theo mẫu:
+MỞ ĐẦU BẰNG ĐOẠN:
+Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam.
+
+Với mỗi cổ phiếu, trình bày theo cấu trúc:
 
 🔹 MÃ
 • Giá hiện tại: ...
-• KQKD nổi bật: (tóm tắt kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
-• Lợi thế cạnh tranh: (Điều gì khiến DN vượt trội? vd: thị phần, biên lợi nhuận, công nghệ, thương hiệu)
-• Triển vọng & Động lực (6-12 tháng): (Các catalyst cụ thể: dự án mới, M&A, chính sách hỗ trợ, câu chuyện ngành).
-• Bối cảnh định giá: (Nhận định định giá so với tiềm năng tăng trưởng, vd: hấp dẫn, đã phản ánh, cần chiết khấu thêm)
-• Rủi ro: (yếu tố tiêu cực như pháp lý, nợ vay, giá nguyên liệu, chu kỳ)
-• Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi thêm)
+• KQKD nổi bật: (kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
+• Lợi thế cạnh tranh: (thị phần, biên lợi nhuận, công nghệ, thương hiệu…)
+• Triển vọng & Động lực (6–12 tháng): (catalyst, dự án mới, M&A, chính sách, câu chuyện ngành)
+• Bối cảnh định giá: (so với tiềm năng tăng trưởng: hấp dẫn / đã phản ánh / cần chiết khấu)
+• Rủi ro: (pháp lý, nợ vay, giá nguyên liệu, chu kỳ…)
+• Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi)
 
-Cuối cùng viết phần:
-📊 Tổng quan danh mục: (nhận xét cơ cấu ngành, mức rủi ro chung và gợi ý định hướng 3–12 tháng)
-
-Yêu cầu:
-- Không nói chuyện “hôm nay tăng giảm”, không nêu giá mục tiêu.
-- Giọng phân tích chuyên nghiệp, tránh câu khẳng định tuyệt đối.
-- Hãy cho thông tin, không cho lời khuyên.
-- Hãy truyền đạt trung thực, thẳng thắng, tối đa khoảng 3000 ký tự.
-- Không sử dụng markdown dấu: *, _
+Cuối báo cáo:
+📊 Tổng quan danh mục: (nhận xét cơ cấu ngành, mức rủi ro chung và định hướng 3–12 tháng)
 """
     return prompt.strip()
 
@@ -4791,7 +4797,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # NHÓM 1: ADMIN
         if chat_key == admin_id_str:
             total_admin_count += 1
-            line_text = f"😎 ({chat_key}) Admin : {list_str}"
+            line_text = f"😎 {chat_key} Admin : {list_str}"
             admin_lines.append(line_text)
             continue # Xong, đi user tiếp theo
 
