@@ -84,10 +84,10 @@ from report_cache import (
     make_report_cache_key,
     get_report_from_redis,
     save_report_to_redis,
-    delete_report_from_redis
+    delete_report_from_redis,
 )
 from pathlib import Path
-from openai import OpenAI
+from google import genai
 import uuid
 
 # ==============================================
@@ -127,11 +127,11 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("bot")
 log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
 
-# Thiết lập OpenRouter API (MiniMax M2)
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
+# Thiết lập Gemini API cho báo cáo danh mục
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
     log.warning(
-        "⚠️ OPENROUTER_API_KEY chưa được cấu hình – chức năng báo cáo 16:00 và /report sẽ không hoạt động."
+        "⚠️ GEMINI_API_KEY chưa được cấu hình – chức năng báo cáo tuần và /report sẽ không hoạt động."
     )
 
 BOT_ACTIVE = None  # Sẽ được load từ DB trong main()
@@ -1147,12 +1147,12 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
         return "Không có dữ liệu giá để tạo báo cáo."
 
     data_block = "\n".join(lines)
-
+    dateStock = datetime.datetime.now().strftime('%d/%m/%Y')
     prompt = f"""
 Bạn là một nhà đầu tư chứng khoán chuyên nghiệp theo chiến lược đầu tư tăng trưởng ở Việt Nam. 
 Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây, dùng giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
 
-Dữ liệu danh mục ngày {datetime.datetime.now()} là:
+Dữ liệu danh mục ngày {dateStock} là:
 {data_block}
 
 Với MỖI cổ phiếu, trình bày theo mẫu:
@@ -1174,71 +1174,106 @@ Yêu cầu:
 - Giọng phân tích chuyên nghiệp, tránh câu khẳng định tuyệt đối.
 - Hãy cho thông tin, không cho lời khuyên.
 - Hãy truyền đạt trung thực, thẳng thắng, tối đa khoảng 3000 ký tự.
+- Không sử dụng markdown dấu: *, _
 """
     return prompt.strip()
 
+# HELPER: PHÂN LOẠI LỖI VÀ NOTIFY ADMIN
+def classify_error_quota(e: Exception) -> bool:
+    """
+    Thử đoán xem lỗi có liên quan đến quota / rate limit hay không.
+    Dùng best-effort dựa trên nội dung message.
+    """
+    msg = (str(e) or "").lower()
+    quota_keywords = [
+        "quota",
+        "rate limit",
+        "resourceexhausted",
+        "429",
+        "too many requests",
+        "exceeded",
+    ]
+    return any(kw in msg for kw in quota_keywords)
+
+
+# Lưu các cache_key đã gửi lỗi cho Admin để tránh spam
+REPORTED_REPORT_ERROR_KEYS: set[str] = set()
+async def notify_admin_report_error_once(
+    bot,
+    cache_key: str,
+    error: Exception,
+) -> None:
+    """
+    Gửi thông báo lỗi tạo báo cáo danh mục cho Admin, mỗi cache_key chỉ gửi 1 lần.
+    """
+    global REPORTED_REPORT_ERROR_KEYS
+
+    if ADMIN_ID is None:
+        return
+
+    key = cache_key or "UNKNOWN"
+    if key in REPORTED_REPORT_ERROR_KEYS:
+        return
+
+    REPORTED_REPORT_ERROR_KEYS.add(key)
+
+    # Giới hạn chi tiết lỗi để tránh message admin cũng quá dài
+    err_detail = str(error)
+    if len(err_detail) > 1500:
+        err_detail = err_detail[:1500] + " ...[truncated]"
+
+    msg = (
+        f"⚠️ Lỗi khi gọi Gemini tạo báo cáo danh mục cho key `{key}`:\n"
+        f"- Loại lỗi: {type(error).__name__}\n"
+        f"- Chi tiết: {err_detail}"
+    )
+
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=msg)
+    except Exception as e2:
+        log.warning(
+            f"[{INSTANCE_ID}] Lỗi khi gửi thông báo báo cáo lỗi cho Admin: {e2}"
+        )
+
+
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
-    """Gọi OpenRouter (MiniMax M2) để sinh bản tin báo cáo danh mục."""
+    """
+    Gọi Gemini để sinh bản tin báo cáo danh mục.
 
-    if not OPENROUTER_API_KEY:
-        return (
-            "⚠️ Hệ thống chưa cấu hình OPENROUTER_API_KEY nên chưa tạo được báo cáo tự động."
+    - Dùng build_prompt_for_symbols() như hiện tại.
+    - Gọi đúng 1 lần, KHÔNG retry trong hàm này.
+    - Nếu lỗi -> raise Exception để caller (/report, weekly_report_loop) xử lý.
+    """
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY chưa được cấu hình nên chưa tạo được báo cáo tự động."
         )
 
     prompt = build_prompt_for_symbols(symbols)
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini cho báo cáo danh mục, symbols={symbols}")
 
-    print("Prompt: ", prompt)
+    # Khởi tạo client Gemini (theo SDK mới)
+    # https://ai.google.dev/gemini-api/docs/quickstart
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
-    # Tạo client OpenRouter (sử dụng SDK openai)
+    model_id = "gemini-2.5-flash"
+
     try:
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
+        resp = client.models.generate_content(
+            model=model_id,
+            contents=prompt,
         )
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][LLM INIT ERROR] {e}")
-        return "⚠️ Không khởi tạo được OpenRouter client."
-    
-    models = [
-        "google/gemini-2.0-flash-exp:free",
-        "qwen/qwen3-coder:free",
-        "tngtech/deepseek-r1t2-chimera:free",
-        "kwaipilot/kat-coder-pro:free",
-        "z-ai/glm-4.5-air:free",
-    ]
+        # đẩy lỗi ra ngoài để /report & weekly_report_loop lo
+        raise e
 
-     # Prompt messages
-    messages = [
-        {
-            "role": "user",
-            "content": f"Bạn là chuyên gia chứng khoán Việt Nam, trả lời ngắn gọn, rõ ràng, phù hợp gửi qua Telegram. {prompt}",
-        },
-    ]
-    
-    for model in models:
-            for attempt in range(3):
-                try:
-                    completion = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                    )
-                    text = completion.choices[0].message.content.strip()
-                    log.info(f"[{INSTANCE_ID}][LLM OK] Model={model} round={attempt+1}")
-                    return text
+    text = getattr(resp, "text", None)
+    if not text:
+        raise RuntimeError("Gemini trả về response nhưng không có .text")
 
-                except Exception as e:
-                    last_error = e
-                    log.warning(
-                        f"[{INSTANCE_ID}][LLM ERROR] Model={model} round={attempt+1}: {e}"
-                    )
-                    log.info(f"[{INSTANCE_ID}][LLM ERROR] Sleep 30s for the next request")
-                    time.sleep(30)  # exponential backoff
-                    continue
-            return (
-                f"⚠️ Hiện tại không tạo được báo cáo danh mục (LLM lỗi: {type(last_error).__name__}). "
-                "Bạn thử lại sau nhé."
-            )
+    return text.strip()
+
 
 #--------------------------------------------
 
@@ -2219,52 +2254,105 @@ async def execute_weekly_report(admin_update: Update | None = None):
                 f"{instance_label} Xử lý Pro user: chat_id={chat_id}, cache_key={cache_key}"
             )
 
-            cached = get_report_from_redis(cache_key)
+            # Với Weekly: dùng max_age_days ~6.9 để:
+            # - BỎ QUA nếu user đã có báo cáo OK trong ~7 ngày gần nhất (thường là do dùng /report).
+            # - BỎ QUA cache weekly cũ (>= 7 ngày) để Chủ Nhật nào cũng sinh report mới cho user không dùng /report.
+            cached = get_report_from_redis(cache_key, max_age_days=6.9)
+
             if cached is not None:
-                cached_text, generated_at = cached
+                cached_text, generated_at, is_error, wait_sec = cached
+
+                if not is_error:
+                    # Có báo cáo OK trong tuần -> bỏ qua weekly cho user này
+                    log.info(
+                        f"{instance_label} Bỏ qua Weekly cho chat_id={chat_id} "
+                        f"vì đã có report gần đây (generated_at={generated_at})."
+                    )
+                    skipped_count += 1
+                    await asyncio.sleep(1)
+                    continue
+                else:
+                    # Cache là lỗi (thường TTL ngắn 60s) -> coi như không có báo cáo dùng được,
+                    # để phía dưới gọi LLM tạo lại.
+                    log.info(
+                        f"{instance_label} Cache hiện tại là LỖI cho chat_id={chat_id}, "
+                        "sẽ gọi LLM tạo report mới."
+                    )
+
+
+            # 2) Không có cache OK -> gọi Gemini 1 lần
+            try:
+                start = time.time()
+                text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                duration = time.time() - start
                 log.info(
-                    f"{instance_label} Cache hit (Redis) cho {chat_id} ({cache_key}), generated_at={generated_at}"
+                    f"{instance_label} Gemini weekly done in {duration:.1f}s cho chat_id={chat_id}"
                 )
-                await asyncio.to_thread(send_msg_to, chat_id, cached_text)
+
+                # Lưu báo cáo OK vào Redis
+                save_report_to_redis(
+                    cache_key,
+                    text,
+                    source="weekly_loop" if not admin_chat_id else "admin_trigger",
+                )
+
+                now_footer = datetime.datetime.now(vn_tz)
+                footer = (
+                    f"\n\n🕓 _Báo cáo được tạo vào "
+                    f"{now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
+                )
+                final_text = text.strip() + footer
+                await asyncio.to_thread(send_msg_to, chat_id, final_text)
+                log.info(f"{instance_label} Đã gửi báo cáo tuần cho {chat_id}")
                 sent_count += 1
+
+            except Exception as e:
+                # Weekly report lỗi: gửi message nhắc user dùng /report, + cache lỗi cho /report
+                is_quota = classify_error_quota(e)
+
+                if is_quota:
+                    user_msg = (
+                        "⚠️ Weekly report tuần này chưa tạo được do dịch vụ AI (Gemini) "
+                        "đang quá tải hoặc tạm thời hết quota.\n"
+                        "Bạn có thể dùng lệnh /report sau khoảng 2 phút để lấy báo cáo mới."
+                    )
+                    notify_admin_flag = False
+                else:
+                    user_msg = (
+                        "⚠️ Weekly report tuần này tạm thời gặp lỗi kỹ thuật.\n"
+                        "Hệ thống đã ghi nhận lỗi này và thông báo cho Admin.\n"
+                        "Bạn vui lòng đợi khoảng 2 phút rồi dùng lệnh /report để lấy báo cáo danh mục."
+                    )
+                    notify_admin_flag = True
+
+                # Cache lỗi để /report biết mà không spam API
+                save_report_to_redis(
+                    cache_key,
+                    user_msg,
+                    source="weekly_error",
+                    is_error=True,
+                    wait_sec=120,
+                    error_type=type(e).__name__,
+                    error_detail=str(e),
+                )
+
+                await asyncio.to_thread(send_msg_to, chat_id, user_msg)
+
+                if notify_admin_flag and tg_app and tg_app.bot:
+                    try:
+                        await notify_admin_report_error_once(
+                            tg_app.bot,
+                            cache_key,
+                            e,
+                        )
+                    except Exception as e2:
+                        log.warning(
+                            f"{instance_label} notify_admin_report_error_once lỗi: {e2}"
+                        )
+
+                # Weekly vẫn continue với user tiếp theo
                 await asyncio.sleep(3)
                 continue
-
-            # (Hàm lồng bên trong được giữ nguyên)
-            async def fetch_report_with_retry():
-                retry = 0
-                last_text = "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau."
-                while retry < 3:
-                    start = time.time()
-                    text = await asyncio.to_thread(
-                        call_chatgpt_for_report, symbols
-                    )
-                    duration = time.time() - start
-                    log.info(
-                        f"{instance_label} Round {retry+1} cho {chat_id} ({duration:.1f}s)"
-                    )
-                    last_text = text
-
-                    if "⚠️" not in text and "429" not in text:
-                        return text
-                    retry += 1
-                    await asyncio.sleep(10 * retry)
-                return last_text
-            
-            try:
-                text = await fetch_report_with_retry()
-                if "⚠️" not in text and "429" not in text:
-                    save_report_to_redis(cache_key, text, source="weekly_loop" if not admin_chat_id else "admin_trigger")
-                    now_footer = datetime.datetime.now(vn_tz)
-                    footer = f"\n\n🕓 _Báo cáo được tạo vào {now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
-                    final_text = text.strip() + footer
-                    await asyncio.to_thread(send_msg_to, chat_id, final_text)
-                    log.info(
-                        f"{instance_label} Đã gửi báo cáo tuần cho {chat_id}"
-                    )
-                    sent_count += 1
-                else:
-                    await asyncio.to_thread(send_msg_to, chat_id, "⚠️ Hiện tại không tạo được báo cáo. Vui lòng liên hệ Admin để được hỗ trợ: https://t.me/KhoiTran99")
             except Exception as e:
                 log.warning(
                     f"{instance_label} Lỗi gửi cho {chat_id}: {e}"
@@ -2304,9 +2392,9 @@ async def weekly_report_loop():
             await asyncio.sleep(60)
             continue
 
-        if not OPENROUTER_API_KEY:
+        if not GEMINI_API_KEY:
             log.warning(
-                f"{instance_label} Chưa có OPENROUTER_API_KEY, bỏ qua báo cáo tuần."
+                f"{instance_label} Chưa có GEMINI_API_KEY, bỏ qua báo cáo tuần."
             )
             await asyncio.sleep(3600)
             continue
@@ -3800,22 +3888,63 @@ async def reply_md(update: Update, text: str, **kwargs):
     """
     Gửi tin nhắn Markdown an toàn:
     - Lần 1: gửi nguyên văn (giữ format bạn viết).
-    - Nếu lỗi 'Can't parse entities': escape toàn bộ rồi gửi lại.
+    - Nếu lỗi parse (Can't parse entities) -> escape toàn bộ rồi gửi lại.
+    - Nếu lỗi 'Message is too long' -> tự động chia nhỏ thành nhiều đoạn và gửi lần lượt.
     """
+    from telegram.error import BadRequest
+
+    async def _send(raw_text: str):
+        return await update.message.reply_text(
+            raw_text,
+            parse_mode="Markdown",
+            **kwargs,
+        )
+
     try:
-        return await update.message.reply_text(
-            text,
-            parse_mode="Markdown",
-            **kwargs,
-        )
+        return await _send(text)
     except BadRequest as e:
-        logging.warning(f"[Markdown error] {e} | text={text!r}")
+        msg = str(e)
+        logging.warning(f"[Markdown error] {e} | text_len={len(text)}")
+
+        # 1) Nếu lỗi do quá dài -> chia nhỏ
+        if "Message is too long" in msg:
+            MAX_LEN = 4000  # dưới ngưỡng 4096 cho an toàn
+
+            chunks = []
+            remaining = text
+            while remaining:
+                if len(remaining) <= MAX_LEN:
+                    chunks.append(remaining)
+                    break
+
+                # Cố gắng cắt ở chỗ xuống dòng để đỡ vỡ format
+                split_pos = remaining.rfind("\n\n", 0, MAX_LEN)
+                if split_pos == -1:
+                    split_pos = remaining.rfind("\n", 0, MAX_LEN)
+                if split_pos == -1:
+                    split_pos = MAX_LEN
+
+                chunks.append(remaining[:split_pos])
+                remaining = remaining[split_pos:]
+
+            last_msg = None
+            for idx, chunk in enumerate(chunks, start=1):
+                try:
+                    last_msg = await _send(chunk)
+                except BadRequest as e2:
+                    # Nếu vẫn lỗi parse -> escape riêng từng chunk
+                    logging.warning(
+                        f"[Markdown chunk error] {e2} | chunk_len={len(chunk)}"
+                    )
+                    safe_chunk = escape_markdown_v2(chunk)
+                    last_msg = await _send(safe_chunk)
+
+            return last_msg
+
+        # 2) Các lỗi parse khác (Can't parse entities, ...) -> escape toàn bộ rồi gửi lại
         safe_text = escape_markdown_v2(text)
-        return await update.message.reply_text(
-            safe_text,
-            parse_mode="Markdown",
-            **kwargs,
-        )
+        return await _send(safe_text)
+
 
 def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False):
     """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1) với fallback an toàn.
@@ -5181,8 +5310,11 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Gửi báo cáo danh mục hiện tại cho user.
 
     - Không cooldown: user có thể gọi bất cứ lúc nào.
-    - Ưu tiên đọc cache từ Redis (theo danh mục chuẩn hoá).
-    - Nếu chưa có cache hoặc cache quá cũ -> gọi LLM tạo mới & lưu lại Redis.
+    - Ưu tiên đọc cache từ Redis (theo danh mục chuẩn hoá multiset).
+    - Nếu chưa có cache hoặc cache quá cũ -> gọi Gemini tạo mới & lưu lại Redis.
+    - Nếu lỗi:
+        + Lỗi quota: bảo user thử lại sau 2 phút, cache lỗi 60s.
+        + Lỗi kỹ thuật: bảo user đợi, đã báo Admin, cache lỗi 60s, notify Admin 1 lần.
     """
 
     if not BOT_ACTIVE:
@@ -5198,10 +5330,9 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # === KIỂM TRA PAYWALL ===
     if not await check_pro_access(update, context):
-        return # Dừng lại, vì check_pro_access đã gửi tin nhắn paywall rồi
-    # -----------------------
+        return  # Hàm check_pro_access đã gửi tin nhắn paywall rồi
 
-    # Nhắc nhẹ trước để user biết bot đang xử lý
+    # Nhắc nhẹ để user biết bot đang xử lý
     await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp báo cáo danh mục...")
 
     # Ghi log sử dụng lệnh (chạy trong thread để tránh block)
@@ -5212,70 +5343,152 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
 
     if not symbols:
-        await reply_md(update, "📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!")
+        await reply_md(
+            update,
+            "📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!",
+        )
         return
-
+    
     cache_key = make_report_cache_key(symbols)
     log.info(f"[{INSTANCE_ID}] /report cache_key={cache_key} for chat_id={chat_id}")
 
-    # 1️⃣ Thử lấy báo cáo từ Redis trước
+    # 1️⃣ Thử lấy báo cáo (hoặc lỗi) từ Redis trước
     cached = get_report_from_redis(cache_key)
-
     if cached is not None:
-        text, generated_at = cached
-        log.info(...)
-        footer = f"\n\n🕓 Báo cáo được tạo vào {generated_at.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian."
-        final_text = text.strip() + footer
-        await reply_md(update, final_text)
-        return
-
-
-    # 2️⃣ Nếu không có cache -> gọi LLM với cơ chế retry
-    async def fetch_report_with_retry():
-        retry = 0
-        last_text = "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau."
-        while retry < 3:
-            start = time.time()
-            text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-            duration = time.time() - start
-            log.info(
-                f"[{INSTANCE_ID}] /report round {retry+1} done in {duration:.2f}s (chat_id={chat_id})"
-            )
-            last_text = text
-
-            if "⚠️ Hiện tại không tạo được" not in text and "429" not in text:
-                return text
-            retry += 1
-            await asyncio.sleep(10 * retry)
-        return last_text
-
-    text = await fetch_report_with_retry()
-
-    if "⚠️ Hiện tại không tạo được" not in text and "429" not in text:
-        # 3️⃣ Lưu vào Redis để lần sau /report hoặc weekly_report_loop dùng lại
-        save_report_to_redis(cache_key, text, source="on_demand")
-    else:
-        reply_md(update, "⚠️ Hiện tại không tạo được báo cáo, vui lòng thử lại sau.")
-
-    now = datetime.datetime.now(vn_tz)
-    footer = f"\n\n🕓 Báo cáo được tạo vào {now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian."
-    final_text = text.strip() + footer
-
-    try:
-        await reply_md(update, text)
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] Lỗi gửi báo cáo /report cho {chat_id}: {e}")
-        await reply_md(
-            update,
-            "📋 Báo cáo đã được tạo xong nhưng gặp lỗi định dạng. Vui lòng thử lại sau nhé.",
+        text, generated_at, is_error, wait_sec = cached
+        log.info(
+            f"[{INSTANCE_ID}] /report cache HIT cho chat_id={chat_id}, "
+            f"key={cache_key}, is_error={is_error}, generated_at={generated_at}"
         )
 
-# (Dán sau hàm cmd_report)
+        # Nếu đây là cache lỗi -> kiểm tra còn phải đợi bao lâu
+        if is_error:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+
+            remain_sec = None
+            if wait_sec is not None:
+                elapsed = (now_utc - generated_at).total_seconds()
+                remain_sec = max(0, wait_sec - elapsed)
+
+            if remain_sec is not None and remain_sec > 0:
+                remain_min = math.ceil(remain_sec / 60)
+                await reply_md(
+                    update,
+                    (
+                        "⚠️ Hệ thống đang bận xử lý báo cáo cho danh mục này.\n"
+                        f"Vui lòng thử lại sau khoảng ~{remain_min} phút nữa."
+                    ),
+                )
+                return
+            # Nếu không còn phải chờ nữa -> cho phép rơi xuống dưới để gọi lại AI
+
+        else:
+            # Cache OK -> gửi lại ngay cho user, thêm footer thời gian
+            footer = (
+                f"\n\n🕓 Báo cáo được tạo vào "
+                f"{generated_at.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian."
+            )
+            final_text = text.strip() + footer
+
+            await reply_md(update, final_text)
+
+            # Đánh dấu lại đây là report do user CHỦ ĐỘNG gọi /report (on_demand)
+            await asyncio.to_thread(
+                save_report_to_redis,
+                cache_key,
+                text,
+                "on_demand",
+            )
+
+            # Thông báo behavior Weekly
+            note = (
+                "ℹ️ Vì bạn đã nhận báo cáo qua lệnh `/report`, báo cáo tự động vào "
+                "_Chủ Nhật tuần này_ sẽ được *bỏ qua*.\n"
+                "Nếu trong tuần tới bạn không dùng lại `/report`, bot sẽ tự động gửi "
+                "báo cáo vào _Chủ Nhật tuần sau_."
+            )
+            await reply_md(update, note)
+            return
+
+    # 2️⃣ Không có cache -> gọi Gemini 1 lần
+    try:
+        start = time.time()
+        text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+        duration = time.time() - start
+        log.info(
+            f"[{INSTANCE_ID}] /report Gemini done in {duration:.2f}s (chat_id={chat_id})"
+        )
+
+        # Lưu báo cáo OK vào Redis (TTL 10 ngày)
+        save_report_to_redis(cache_key, text, source="on_demand")
+
+        now = datetime.datetime.now(vn_tz)
+        footer = (
+            f"\n\n🕓 Báo cáo được tạo vào "
+            f"{now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian."
+        )
+        final_text = text.strip() + footer
+
+        await reply_md(update, final_text)
+
+    except Exception as e:
+        # Phân loại lỗi
+        is_quota = classify_error_quota(e)
+
+        if is_quota:
+            user_msg = (
+                "⚠️ Hiện tại hệ thống chưa tạo được báo cáo do dịch vụ AI (Gemini) "
+                "đang quá tải hoặc tạm thời hết quota.\n"
+                "Bạn vui lòng thử lại sau khoảng 2 phút nữa với lệnh /report nhé."
+            )
+            notify_admin_flag = False
+        else:
+            user_msg = (
+                "⚠️ Báo cáo danh mục tạm thời gặp lỗi kỹ thuật.\n"
+                "Hệ thống đã ghi nhận lỗi này và thông báo cho Admin.\n"
+                "Bạn vui lòng đợi khoảng 2 phút rồi thử lại với lệnh /report nhé."
+            )
+            notify_admin_flag = True
+
+        # Lưu cache lỗi vào Redis với TTL 60s, wait_sec=120
+        save_report_to_redis(
+            cache_key,
+            user_msg,
+            source="error",
+            is_error=True,
+            wait_sec=120,
+            error_type=type(e).__name__,
+            error_detail=str(e),
+        )
+
+        # Gửi message cho user
+        await reply_md(update, user_msg)
+
+        # Notify Admin (chỉ 1 lần cho mỗi cache_key)
+        if notify_admin_flag:
+            try:
+                await notify_admin_report_error_once(
+                    context.bot,
+                    cache_key,
+                    e,
+                )
+            except Exception as e2:
+                log.warning(
+                    f"[{INSTANCE_ID}] /report notify_admin_report_error_once lỗi: {e2}"
+                )
 
 async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (Admin) Xóa cache báo cáo AI trong Redis
+    (Admin) Xoá cache báo cáo AI trong Redis
     cho danh mục watchlist CỦA CHÍNH ADMIN.
+
+    - Xác định danh mục hiện tại của admin (từ DB).
+    - Chuẩn hoá danh mục -> cache_key (multiset, sort).
+    - Xoá key `report_cache:{cache_key}` trong Redis:
+        + Xoá cả báo cáo OK
+        + Xoá cả cache lỗi (nếu có)
     """
     if not update or not update.effective_chat:
         return
@@ -5289,39 +5502,54 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2. Ghi log
     await asyncio.to_thread(log_command_usage, chat_id, "/report_clear", ADMIN_ID)
-    await reply_md(update, "🔎 Đang tìm và xoá cache báo cáo (report cache) cho danh mục của bạn...")
+    await reply_md(
+        update,
+        "🔎 Đang tìm và xoá cache báo cáo (report cache) cho danh mục của bạn...",
+    )
 
     # 3. Lấy watchlist của Admin từ DB
     watch_list = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
-    
+
     if not watch_list:
-        await reply_md(update, "ℹ️ Danh mục của bạn trống, không có cache nào để xoá.")
+        await reply_md(
+            update,
+            "ℹ️ Danh mục của bạn trống, không có cache báo cáo nào để xoá.",
+        )
         return
 
-    # 4. Lọc bỏ các mã index (như VN30)
+    # 4. Lọc bỏ các mã index (như VNINDEX, VN30, VN30F1M, ...)
     symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
     if not symbols:
-        await reply_md(update, "ℹ️ Danh mục của bạn không chứa cổ phiếu, không có cache báo cáo để xoá.")
+        await reply_md(
+            update,
+            "ℹ️ Danh mục của bạn không chứa cổ phiếu, không có cache báo cáo để xoá.",
+        )
         return
 
-    # 5. Tạo cache_key (giống hệt logic của cmd_report)
+    # 5. Tạo cache_key (multiset + sort, giống hệt logic cmd_report & weekly)
     cache_key = make_report_cache_key(symbols)
 
     # 6. Gọi hàm xoá cache từ report_cache.py (chạy trong thread)
     deleted_count = await asyncio.to_thread(
-        delete_report_from_redis, cache_key
+        delete_report_from_redis,
+        cache_key,
     )
 
     # 7. Phản hồi
     if deleted_count > 0:
-        await reply_md(update, f"✅ Đã xoá thành công cache báo cáo cho key:\n`{cache_key}`")
+        await reply_md(
+            update,
+            f"✅ Đã xoá thành công cache báo cáo cho key:\n`{cache_key}`\n\n"
+            "Lần tiếp theo bạn dùng `/report` hoặc tới Weekly Report, bot sẽ gọi AI để tạo báo cáo mới.",
+        )
     else:
         await reply_md(
             update,
-            f"ℹ️ Không tìm thấy cache nào trong Redis cho key:\n`{cache_key}`\n(Có thể nó đã bị xoá hoặc chưa được tạo.)"
+            f"ℹ️ Không tìm thấy cache nào trong Redis cho key:\n`{cache_key}`\n"
+            "(Có thể nó đã bị xoá hoặc chưa được tạo.)",
         )
+
 #==========================================
-# Dán hàm này vào file alert_bot.py
 
 async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
