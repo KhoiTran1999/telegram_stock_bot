@@ -65,6 +65,7 @@ from db_utils import (
     deactivate_paid_user,
     remove_paid_user,
     get_all_pro_chat_ids,
+    cleanup_old_news_seen,
 )
 import psutil
 import time
@@ -217,25 +218,14 @@ RSS_FEEDS_SPECIALIZED = {
 
 # 2. Tin vĩ mô (Broadcast cho tất cả)
 RSS_FEEDS_MACRO = [
-
     "https://vneconomy.vn/tin-moi.rss",
     "https://vneconomy.vn/tieu-diem.rss",
     "https://vietstock.vn/3355/chung-khoan/cau-chuyen-dau-tu.rss",
     "https://vietstock.vn/143/chung-khoan/chinh-sach.rss",
-    "https://vietstock.vn/759/hang-hoa/vang-va-kim-loai-quy.rss",
-    "https://vietstock.vn/34/hang-hoa/nhien-lieu.rss",
-    "https://vietstock.vn/118/hang-hoa/nong-san-thuc-pham.rss",
     "https://vietstock.vn/757/tai-chinh/ngan-hang.rss",
-    "https://vietstock.vn/3113/tai-chinh/bao-hiem.rss",
     "https://vietstock.vn/16312/tai-chinh/tai-san-so.rss",
     "https://vietstock.vn/761/kinh-te/vi-mo.rss",
-    "https://vietstock.vn/768/kinh-te/kinh-te-dau-tu.rss",
-    "https://vietstock.vn/773/the-gioi/chung-khoan-the-gioi.rss",
-    "https://vietstock.vn/4309/the-gioi/tien-ky-thuat-so.rss",
     "https://vietstock.vn/772/the-gioi/tai-chinh-quoc-te.rss",
-    "https://vietstock.vn/775/the-gioi/kinh-te-nganh.rss",
-
-
 ]
 
 # Chu kỳ quét RSS (giây)
@@ -246,8 +236,44 @@ NEWS_MACRO_INTERVAL_SECONDS = 60 * 60        # 60 phút
 NEWS_MAX_ARTICLES_PER_CHAT = 3          # tin chuyên ngành
 NEWS_MACRO_MAX_ARTICLES_PER_RUN = 3     # tin vĩ mô (broadcast)
 
+# Số bài RSS tối đa xử lý mỗi vòng (sau khi gộp & sort theo published)
+NEWS_MAX_RSS_ENTRIES_PER_RUN = 80
+
 # Map symbol -> list keyword (mã + tên doanh nghiệp)
 COMPANY_KEYWORDS: dict[str, list[str]] = {}
+
+# Thời gian tối đa coi bài báo là "tươi" (theo pubDate)
+MAX_NEWS_AGE_DAYS = 14  # chỉ gửi bài trong 14 ngày gần nhất
+
+def is_fresh_news(
+    pub_dt: datetime.datetime | None,
+    now: datetime.datetime | None = None,
+) -> bool:
+    """
+    Trả về True nếu bài đủ "tươi" theo ngưỡng MAX_NEWS_AGE_DAYS.
+
+    - Nếu pub_dt = None -> cho qua (coi là tươi, vì không có thông tin ngày).
+    - Nếu pubDt cũ hơn MAX_NEWS_AGE_DAYS ngày -> False.
+    """
+    if pub_dt is None:
+        return True
+
+    vn_tz = pytz.timezone(TIMEZONE)
+
+    # Bổ sung timezone nếu thiếu
+    if pub_dt.tzinfo is None:
+        pub_dt = vn_tz.localize(pub_dt)
+
+    if now is None:
+        now = datetime.datetime.now(vn_tz)
+    else:
+        # nếu now không có tz thì cũng gắn VN TZ
+        if now.tzinfo is None:
+            now = vn_tz.localize(now)
+
+    age = now - pub_dt
+    return age.days <= MAX_NEWS_AGE_DAYS
+
 
 
 def load_company_keywords_from_csv(path: str = "ssi_master_list.csv") -> dict[str, list[str]]:
@@ -1158,7 +1184,9 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
         return "Không có dữ liệu giá để tạo báo cáo."
 
     data_block = "\n".join(lines)
-    dateStock = datetime.datetime.now().strftime('%d/%m/%Y')
+    vn_tz = pytz.timezone(TIMEZONE)
+
+    dateStock = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
     prompt = f"""
 Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng. 
 Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây.
@@ -2475,6 +2503,9 @@ async def news_specialized_loop():
     while True:
         loop_id += 1
 
+        # Thời điểm hiện tại (dùng cho filter bài tươi)
+        now = datetime.datetime.now(vn_tz)
+
         if not BOT_ACTIVE:
             log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
@@ -2485,6 +2516,10 @@ async def news_specialized_loop():
             entries = await asyncio.to_thread(
                 fetch_rss_entries_for_urls, all_specialized_urls
             )
+
+            # Giới hạn số bài xử lý mỗi vòng để tránh quá tải
+            if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
+                entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
             # 2. Warm-up
             if not warmed_up:
@@ -2518,13 +2553,25 @@ async def news_specialized_loop():
                 await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
                 continue
 
-            # 3. Lọc bài mới (Sửa list comprehension thành for loop)
+            # 3. Lọc bài mới + CHỈ giữ bài "tươi" (theo pubDate)
             # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
             new_entries = []
             for it in entries:
-                # (Sửa lỗi: dùng đúng hằng số TYPE)
+                link = (it.get("link") or "").strip()
+                if not link:
+                    continue
+
+                pub_dt = it.get("published")
+
+                # Bỏ qua các bài quá cũ (không "tươi" theo MAX_NEWS_AGE_DAYS)
+                if not is_fresh_news(pub_dt, now):
+                    continue
+
+                # Chỉ check trùng với những bài còn "tươi"
                 is_seen = await asyncio.to_thread(
-                    has_news_seen, NEWS_FEED_TYPE_SPECIALIZED, it["link"]
+                    has_news_seen,
+                    NEWS_FEED_TYPE_SPECIALIZED,
+                    link,
                 )
                 if not is_seen:
                     new_entries.append(it)
@@ -2746,16 +2793,23 @@ async def news_macro_loop():
     while True:
         loop_id += 1
 
+        # Thời điểm hiện tại cho filter bài tươi
+        now = datetime.datetime.now(vn_tz)
+
         if not BOT_ACTIVE:
             log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Bot đang TẮT, sleep 60s.")
             await asyncio.sleep(60)
             continue
 
         try:
-            # 1. Fetch RSS (OK, đã chạy non-blocking)
+            # 1. Fetch RSS (OK, non-blocking)
             entries = await asyncio.to_thread(
                 fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
             )
+
+            # Giới hạn số bài xử lý mỗi vòng
+            if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
+                entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
             # 2. Warm-up
             if not warmed_up:
@@ -2789,12 +2843,24 @@ async def news_macro_loop():
                 await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
                 continue
 
-            # 3. Lọc bài mới (Sửa list comprehension thành for loop)
+            # 3. Lọc bài mới + CHỈ giữ bài "tươi"
             # ⭐️ SỬA LỖI DB: Chạy CSDL trong thread
             new_entries = []
             for it in entries:
+                link = (it.get("link") or "").strip()
+                if not link:
+                    continue
+
+                pub_dt = it.get("published")
+
+                # Bỏ bài quá cũ (không "tươi" theo MAX_NEWS_AGE_DAYS)
+                if not is_fresh_news(pub_dt, now):
+                    continue
+
                 is_seen = await asyncio.to_thread(
-                    has_news_seen, NEWS_FEED_TYPE_MACRO, it["link"]
+                    has_news_seen,
+                    NEWS_FEED_TYPE_MACRO,
+                    link,
                 )
                 if not is_seen:
                     new_entries.append(it)
@@ -2933,11 +2999,29 @@ async def news_macro_loop():
 
 async def news_cleanup_loop():
     """
-    Loop dọn news_seen (giữ lại để tương thích, nhưng Redis đã tự xoá theo TTL).
+    Loop dọn bảng news_seen trong Postgres:
+
+    - Mỗi 24h xoá các bản ghi cũ hơn ~6 tháng (180 ngày).
+    - Redis vẫn tự xoá theo TTL riêng, không cần dọn ở đây.
     """
+    RETENTION_DAYS = 180
+    INTERVAL_SECONDS = 24 * 60 * 60  # 24 giờ
+
     while True:
-        log.info("[NEWS_CLEANUP] Redis tự xoá news_seen, không cần dọn thủ công.")
-        await asyncio.sleep(3600)  # chạy mỗi 1h chỉ để log nhắc nhẹ
+        try:
+            # Chạy cleanup trong thread riêng để không block event loop
+            deleted = await asyncio.to_thread(
+                cleanup_old_news_seen,
+                RETENTION_DAYS,
+            )
+            log.info(
+                f"[NEWS_CLEANUP] Đã xoá {deleted} bản ghi news_seen cũ hơn {RETENTION_DAYS} ngày."
+            )
+        except Exception as e:
+            log.warning(f"[NEWS_CLEANUP] Lỗi khi dọn news_seen: {e}")
+
+        await asyncio.sleep(INTERVAL_SECONDS)
+
 
 # ===== VN30F1M realtime alert (no Redis) =====================================
 # Yêu cầu: mốc di động ±5 điểm, 15s/lần, gửi có thông báo, chiều dùng mốc sáng,

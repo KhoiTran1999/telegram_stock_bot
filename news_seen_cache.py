@@ -1,59 +1,140 @@
 # news_seen_cache.py
 import hashlib
+import json
+import datetime
 from typing import Optional
 
 from redis_client import get_redis
 
-# TTL = 2 ngày như bạn muốn
-NEWS_SEEN_TTL_SECONDS = 2 * 24 * 60 * 60  # 2 days
+# TTL mặc định ~ 6 tháng (180 ngày)
+NEWS_SEEN_TTL_SECONDS = 180 * 24 * 60 * 60  # ~ 6 months
+
+
+def canonicalize_link(link: str) -> str:
+    """
+    Chuẩn hoá link để giảm trùng lặp do query tracking (utm_*, fbclid, ...).
+    Không cố gắng xử lý mọi trường hợp, chỉ làm gọn những case phổ biến.
+
+    Ví dụ:
+        https://example.com/a?utm_source=rss&fbclid=XYZ
+    ->     https://example.com/a
+
+    Nếu parse lỗi thì trả lại link strip().
+    """
+    if not link:
+        return ""
+
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+    raw = link.strip()
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return raw
+
+    scheme = (parts.scheme or "").lower()
+    netloc = (parts.netloc or "").lower()
+    path = parts.path or "/"
+
+    # Lọc bỏ một số query tracking phổ biến
+    filtered_query = []
+    if parts.query:
+        for k, v in parse_qsl(parts.query, keep_blank_values=True):
+            kl = (k or "").lower()
+            if kl.startswith("utm_") or kl in {"fbclid", "gclid", "ref"}:
+                continue
+            filtered_query.append((k, v))
+
+    query = urlencode(filtered_query, doseq=True) if filtered_query else ""
+    fragment = ""  # bỏ #... cho chắc
+
+    return urlunsplit((scheme, netloc, path, query, fragment))
 
 
 def _make_key(feed_type: str, link: str) -> Optional[str]:
     """
     Tạo key Redis dạng:
-    news_seen:MACRO:<hash link>
-    news_seen:SPECIALIZED:<hash link>
+        news_seen:MACRO:<hash canonical_link>
+        news_seen:SPECIALIZED:<hash canonical_link>
     """
-    if not feed_type or not link:
+    ft = (feed_type or "").strip().upper()
+    if not ft:
         return None
 
-    ft = feed_type.strip().upper()
-    lk = link.strip()
-    if not ft or not lk:
+    canonical = canonicalize_link(link)
+    if not canonical:
         return None
 
-    # Hash link để key gọn, không chứa ký tự lạ
-    h = hashlib.sha256(lk.encode("utf-8")).hexdigest()[:32]
+    # Hash canonical link để key gọn & đồng đều
+    h = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
     return f"news_seen:{ft}:{h}"
 
 
 def has_news_seen_redis(feed_type: str, link: str) -> bool:
     """
-    True nếu bài đã được đánh dấu trong Redis.
+    Kiểm tra xem bài (feed_type, link) đã được đánh dấu trong Redis chưa.
+    Chỉ dùng key tồn tại hay không, không quan tâm value.
     """
     key = _make_key(feed_type, link)
     if not key:
         return False
 
     r = get_redis()
-    return bool(r.exists(key))
+    try:
+        # decode_responses=True nên exists trả int 0/1
+        return bool(r.exists(key))
+    except Exception:
+        return False
 
 
 def mark_news_seen_redis(
     feed_type: str,
     link: str,
-    ttl: int = NEWS_SEEN_TTL_SECONDS,
+    ttl: Optional[int] = None,
+    title: Optional[str] = None,
+    published=None,
 ) -> None:
     """
-    Đánh dấu 1 bài đã xử lý trong Redis.
-    Value không quan trọng, chỉ cần tồn tại key là được.
+    Đánh dấu 1 bài đã được xử lý trong Redis.
+
+    - ttl: nếu truyền vào sẽ override TTL mặc định (dùng cho test).
+    - title/published: nếu có, sẽ lưu JSON để tiện debug / hiển thị:
+        {"title": "...", "published": "2025-11-16T00:00:00+07:00"}
+
+      published có thể là datetime hoặc string ISO.
     """
     key = _make_key(feed_type, link)
     if not key:
         return
 
     r = get_redis()
-    r.set(key, "1", ex=ttl)  # ex = TTL (seconds)
+    expire = int(ttl if ttl is not None else NEWS_SEEN_TTL_SECONDS)
+
+    # Chuẩn hoá published -> string ISO nếu có
+    pub_str: Optional[str]
+    if published is None or published == "":
+        pub_str = None
+    elif isinstance(published, datetime.datetime):
+        # Nếu datetime không có tz, để nguyên (Postgres TIMESTAMPTZ đã lo tz)
+        pub_str = published.isoformat()
+    else:
+        # các kiểu khác (str, ...) -> str
+        pub_str = str(published)
+
+    payload = {}
+    if title:
+        payload["title"] = title
+    if pub_str:
+        payload["published"] = pub_str
+
+    # Nếu không có title/published thì lưu "1" cho nhẹ
+    value = json.dumps(payload) if payload else "1"
+
+    try:
+        r.set(name=key, value=value, ex=expire)
+    except Exception:
+        # Không raise để tránh làm hỏng luồng chính nếu Redis lỗi
+        return
 
 
 def get_news_seen_count_redis(feed_type: str) -> int:
@@ -69,6 +150,9 @@ def get_news_seen_count_redis(feed_type: str) -> int:
     r = get_redis()
 
     count = 0
-    for _ in r.scan_iter(pattern, count=1000):
-        count += 1
+    try:
+        for _ in r.scan_iter(pattern, count=1000):
+            count += 1
+    except Exception:
+        return 0
     return count

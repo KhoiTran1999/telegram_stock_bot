@@ -12,6 +12,7 @@ from news_seen_cache import (
     has_news_seen_redis,
     mark_news_seen_redis,
     get_news_seen_count_redis,
+    canonicalize_link,
 )
 from redis_client import get_redis
 
@@ -541,13 +542,69 @@ def clear_stock_value_cache():
         conn.commit()
 
 # ==========================================
-# NEWS: RSS SEEN + PREFERENCES + REDIS
+# NEWS: RSS SEEN + PREFERENCES + REDIS + POSTGRES
+# ==========================================
+# ==========================================
+# NEWS: RSS SEEN + PREFERENCES + REDIS + POSTGRES
 # ==========================================
 def has_news_seen(feed_type: str, link: str) -> bool:
     """
-    Bọc lại hàm Redis để giữ API cũ cho alert_bot.py.
+    Kiểm tra xem bài RSS (feed_type, link) đã được xử lý chưa.
+
+    Ưu tiên:
+    1) Kiểm tra Redis (nhanh).
+    2) Nếu miss -> kiểm tra Postgres (bảng news_seen).
+       - Nếu tìm thấy -> warm lại Redis rồi trả True.
+       - Nếu không -> False.
+
+    Lưu ý:
+    - Không log "Redis HIT" nữa để tránh spam log trong các loop RSS.
+    - Chỉ log khi có lỗi Redis/DB.
     """
-    return has_news_seen_redis(feed_type, link)
+    ft = (feed_type or "").strip().upper()
+    if not ft or not link:
+        return False
+
+    # Chuẩn hoá link để giảm trùng lặp do query tracking
+    canonical_link = canonicalize_link(link)
+
+    # 1) Hỏi Redis trước
+    try:
+        if has_news_seen_redis(ft, canonical_link):
+            return True
+    except Exception as e:
+        redis_debug_log(f"[news_seen] Redis error in has_news_seen: {e}")
+
+    # 2) Nếu Redis miss -> hỏi Postgres
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM news_seen
+                    WHERE feed_type = %s
+                      AND link = %s
+                    LIMIT 1
+                    """,
+                    (ft, canonical_link),
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        # Nếu DB có vấn đề, fallback: coi như chưa seen để không chặn tin
+        redis_debug_log(f"[news_seen] DB error in has_news_seen: {e}")
+        return False
+
+    if row:
+        # Warm lại Redis để lần sau nhanh hơn
+        try:
+            mark_news_seen_redis(ft, canonical_link)
+        except Exception as e:
+            redis_debug_log(f"[news_seen] Redis warm error: {e}")
+        return True
+
+    return False
+
 
 def mark_news_seen(
     feed_type: str,
@@ -555,18 +612,95 @@ def mark_news_seen(
     guid: str | None = None,
     title: str | None = None,
     published=None,
-):
+) -> None:
     """
-    Bọc lại hàm Redis. guid/title/published hiện chưa dùng trong Redis,
-    nhưng giữ tham số để không phải sửa các chỗ gọi hàm.
+    Đánh dấu 1 bài RSS đã được xử lý.
+
+    - Ghi vào Postgres (bảng news_seen) với canonical_link.
+    - Set key tương ứng trong Redis (write-through cache).
+
+    published có thể là:
+    - datetime (tz-aware hoặc naive)
+    - string (Postgres tự cast nếu hợp lệ)
+    - None
     """
-    mark_news_seen_redis(feed_type, link)
+    ft = (feed_type or "").strip().upper()
+    if not ft or not link:
+        return
+
+    canonical_link = canonicalize_link(link)
+
+    # 1) Ghi vào Postgres
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO news_seen (feed_type, guid, link, title, published)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (feed_type, link) DO NOTHING
+                    """,
+                    (ft, guid, canonical_link, title, published),
+                )
+            conn.commit()
+    except Exception as e:
+        # Không raise để tránh làm hỏng luồng chính nếu DB lỗi
+        redis_debug_log(f"[news_seen] DB error in mark_news_seen: {e}")
+
+    # 2) Đánh dấu trong Redis
+    try:
+        mark_news_seen_redis(
+            ft,
+            canonical_link,
+            title=title,
+            published=published,
+        )
+    except Exception as e:
+        redis_debug_log(f"[news_seen] Redis error in mark_news_seen: {e}")
+
 
 def get_news_seen_count(feed_type: str) -> int:
     """
-    Dùng Redis để đếm số bài đã seen (cho logic warm-up).
+    Đếm số bài đã seen cho 1 feed_type dựa trên Redis.
+    (chỉ dùng cho logic warm-up / debug).
     """
     return get_news_seen_count_redis(feed_type)
+
+
+def cleanup_old_news_seen(retention_days: int = 180) -> int:
+    """
+    Xoá các bản ghi news_seen cũ hơn retention_days (mặc định ~ 6 tháng).
+
+    - Dùng COALESCE(published, created_at) để xử lý cả case thiếu published.
+    - Trả về số dòng đã xoá (rowcount).
+    """
+    try:
+        retention_days = int(retention_days)
+    except Exception:
+        retention_days = 180
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Ví dụ: retention_days = 180 -> '180 days'
+                interval_str = f"{retention_days} days"
+                cur.execute(
+                    """
+                    DELETE FROM news_seen
+                    WHERE COALESCE(published, created_at)
+                          < NOW() - (%s)::INTERVAL
+                    """,
+                    (interval_str,),
+                )
+                deleted = cur.rowcount or 0
+            conn.commit()
+    except Exception as e:
+        redis_debug_log(f"[news_seen] DB error in cleanup_old_news_seen: {e}")
+        return 0
+
+    return deleted
+
+
 def get_news_pref(chat_id: int) -> dict:
     """
     Lấy preference nhận tin tức của 1 user.
