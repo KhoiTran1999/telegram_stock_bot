@@ -2226,7 +2226,7 @@ async def execute_weekly_report(admin_update: Update | None = None):
     Hàm lõi: Chạy, tính toán và gửi báo cáo tuần (Pro + Admin).
     Nếu có admin_update, sẽ gửi phản hồi cho admin.
     """
-    global INSTANCE_ID, log, tg_app, BOT_ACTIVE, OPENROUTER_API_KEY, ADMIN_ID
+    global INSTANCE_ID, log, tg_app, BOT_ACTIVE, GEMINI_API_KEY, ADMIN_ID
 
     instance_label = f"[{INSTANCE_ID}][EXEC_WEEKLY]"
     admin_chat_id = admin_update.effective_chat.id if admin_update else None
@@ -2243,10 +2243,10 @@ async def execute_weekly_report(admin_update: Update | None = None):
                 await tg_app.bot.send_message(admin_chat_id, "⚠️ Bot đang TẮT, đã huỷ tác vụ.")
             return
 
-        if not OPENROUTER_API_KEY:
-            log.warning(f"{instance_label} Chưa có OPENROUTER_API_KEY, bỏ qua.")
+        if not GEMINI_API_KEY:
+            log.warning(f"{instance_label} Chưa có GEMINI_API_KEY, bỏ qua.")
             if admin_chat_id:
-                await tg_app.bot.send_message(admin_chat_id, "⚠️ Chưa có OPENROUTER_API_KEY, đã huỷ tác vụ.")
+                await tg_app.bot.send_message(admin_chat_id, "⚠️ Chưa có GEMINI_API_KEY, đã huỷ tác vụ.")
             return
 
         # === BÊ NGUYÊN LOGIC TỪ weekly_report_loop VÀO ĐÂY ===
