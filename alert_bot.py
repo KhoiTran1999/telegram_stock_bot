@@ -1534,148 +1534,183 @@ def build_value_df_from_screener(df_raw: pd.DataFrame) -> pd.DataFrame:
     ]]
 
 
-def run_value_screener_on_value_df(df: pd.DataFrame) -> Optional[dict]:
-    """Chạy logic screener value từ DataFrame đã chuẩn hoá."""
-    df = df.copy()
+def run_value_screener_on_value_df(df: pd.DataFrame, screener_type: str) -> Optional[dict]:
+    """
+    Hàm logic cốt lõi (đã test).
+    Chạy logic screener (pe, pb, roe, all) từ DataFrame đã chuẩn hoá.
+    """
+    df_clean = df.copy()
 
-    total_all = len(df)
+    # --- BƯỚC 1: BỘ LỌC CƠ SỞ (Áp dụng cho TẤT CẢ) ---
+    
+    # Lọc sàn
+    df_clean = df_clean[df_clean['floor'].isin(['HOSE', 'HNX'])]
+    
+    # Lọc thanh khoản và vốn hóa
+    df_clean = df_clean[df_clean['liquidity_proxy'] >= VALUE_SCREENER_MIN_LIQUIDITY]
+    df_clean = df_clean[df_clean['asset_proxy'] >= VALUE_SCREENER_MIN_ASSET]
+    
+    # Lọc logic (Thống nhất 1: Loại bỏ NaN và các giá trị <= 0)
+    df_clean = df_clean.dropna(subset=['pe', 'pb', 'roe'])
+    df_clean = df_clean[(df_clean['pe'] > 0) & (df_clean['pb'] > 0) & (df_clean['roe'] > 0)]
 
-    # Bộ lọc cơ bản
-    df = df.dropna(subset=["pe", "pb", "roe", "liquidity_proxy", "asset_proxy"])
-    df = df[
-        (df["pe"] > 0)
-        & (df["pb"] > 0)
-        & (df["roe"] > 0)
-        & (df["liquidity_proxy"] > 0)
-        & (df["asset_proxy"] > 0)
-    ]
-    after_strict = len(df)
+    total_all = len(df) # Tổng số mã nhận vào (trước khi lọc)
+    after_base_filter = len(df_clean) # Số mã còn lại sau lọc cơ sở
 
-    df = df[df["floor"].isin(["HOSE", "HNX"])]
-    after_floor = len(df)
+    if df_clean.empty:
+        log.warning("[VALUE_SCREENER_API] Không còn mã nào sau khi qua lọc cơ sở.")
+        return None # Trả về None nếu không có mã nào pass
 
-    df = df[df["liquidity_proxy"] >= VALUE_SCREENER_MIN_LIQUIDITY]
-    after_liquidity = len(df)
+    # Chuẩn hoá ROE về decimal (chỉ dùng cho 'all' và format)
+    df_clean['roe_decimal'] = df_clean['roe'] / 100.0
 
-    df = df[df["asset_proxy"] >= VALUE_SCREENER_MIN_ASSET]
-    after_asset = len(df)
+    # --- BƯỚC 2: LOGIC XẾP HẠNG (Tùy theo loại) ---
+    
+    industries_data = [] # List cuối cùng chứa kết quả
+    sort_column = ""
+    sort_ascending = True
 
-    if df.empty:
+    if screener_type == 'all':
+        # Logic 'all' cũ: Cần tính value_score
+        industry_stats = df_clean.groupby("industry").agg(
+            pe_industry=("pe", "mean"),
+            pb_industry=("pb", "mean"),
+            roe_industry=("roe_decimal", "mean"),
+        ).reset_index()
+
+        df_clean = df_clean.merge(industry_stats, on="industry", how="left")
+        
+        # Thống nhất 2: Nếu ngành không có ROE > 0 thì cũng bỏ
+        df_clean = df_clean[df_clean["roe_industry"] > 0]
+
+        if not df_clean.empty:
+            df_clean["pe_rel"] = df_clean["pe_industry"] / df_clean["pe"]
+            df_clean["pb_rel"] = df_clean["pb_industry"] / df_clean["pb"]
+            df_clean["roe_rel"] = df_clean["roe_decimal"] / df_clean["roe_industry"]
+
+            df_clean["value_score"] = (
+                df_clean["pe_rel"] * 0.4 +
+                df_clean["pb_rel"] * 0.3 +
+                df_clean["roe_rel"] * 0.3
+            ).round(2)
+        
+        sort_column = "value_score"
+        sort_ascending = False # Điểm cao tốt hơn
+
+    elif screener_type == 'pe':
+        sort_column = "pe"
+        sort_ascending = True # P/E thấp tốt hơn
+
+    elif screener_type == 'pb':
+        sort_column = "pb"
+        sort_ascending = True # P/B thấp tốt hơn
+
+    elif screener_type == 'roe':
+        sort_column = "roe" # Dùng cột % (22.0) thay vì decimal (0.22)
+        sort_ascending = False # ROE cao tốt hơn
+    
+    # --- BƯỚC 3: GROUP BY NGÀNH VÀ LẤY TOP 5 ---
+    
+    if sort_column not in df_clean.columns:
+        # Xảy ra khi 'all' không tính được value_score (ví dụ df_clean rỗng)
+        log.warning(f"[VALUE_SCREENER_API] Lỗi: Cột sắp xếp '{sort_column}' không tồn tại.")
         return None
 
-    df["roe_decimal"] = df["roe"] / 100.0
+    # Sắp xếp toàn bộ df trước
+    df_clean = df_clean.sort_values(by=sort_column, ascending=sort_ascending)
 
-    industry_stats = df.groupby("industry").agg(
-        pe_industry=("pe", "mean"),
-        pb_industry=("pb", "mean"),
-        roe_industry=("roe_decimal", "mean"),
-    ).reset_index()
-
-    df = df.merge(industry_stats, on="industry", how="left")
-
-    df = df[df["roe_industry"] > 0]
-    after_industry_roe = len(df)
-
-    if df.empty:
-        return None
-
-    df["pe_rel"] = df["pe_industry"] / df["pe"]
-    df["pb_rel"] = df["pb_industry"] / df["pb"]
-    df["roe_rel"] = df["roe_decimal"] / df["roe_industry"]
-
-    df["value_score"] = (
-        df["pe_rel"] * 0.4 +
-        df["pb_rel"] * 0.3 +
-        df["roe_rel"] * 0.3
-    ).round(2)
-
-    # Top ngành
-    industries_data = []
-    for industry, g in df.groupby("industry"):
-        rows = g.sort_values("value_score", ascending=False).head(5)
-        if rows.empty:
+    # Lặp qua các ngành
+    for industry, group in df_clean.groupby('industry'):
+        top_5_rows = group.head(5)
+        
+        if top_5_rows.empty:
             continue
-
+            
         rows_list = []
-        for _, r in rows.iterrows():
+        for _, r in top_5_rows.iterrows():
+            # Thêm tất cả data cần thiết cho 4 chế độ format
             rows_list.append({
                 "symbol": r["symbol"],
                 "pe": float(r["pe"]),
                 "pb": float(r["pb"]),
-                "roe": float(r["roe_decimal"]),     # decimal
-                "value_score": float(r["value_score"]),
-
-                # 3 FIELD BẮT BUỘC CHO FORMATTER CŨ
-                "pe_industry": float(r["pe_industry"]) if pd.notna(r["pe_industry"]) else None,
-                "pb_industry": float(r["pb_industry"]) if pd.notna(r["pb_industry"]) else None,
-                "roe_industry": float(r["roe_industry"]) if pd.notna(r["roe_industry"]) else None,
+                "roe": float(r["roe_decimal"]), # Luôn dùng decimal cho thống nhất
+                "value_score": float(r.get("value_score", 0.0)),
+                # 3 field cho format 'all'
+                "pe_industry": float(r.get("pe_industry", 0.0)),
+                "pb_industry": float(r.get("pb_industry", 0.0)),
+                "roe_industry": float(r.get("roe_industry", 0.0)),
             })
-
 
         industries_data.append({
             "industry": industry,
             "rows": rows_list,
-            "best_score": rows_list[0]["value_score"],
+            # Dùng best_score để sort các ngành (cho 'all')
+            "best_score": rows_list[0].get(sort_column, 0.0)
         })
 
-    industries_data.sort(key=lambda x: x["best_score"], reverse=True)
+    # Chỉ sort các ngành theo điểm khi là 'all' hoặc 'roe' (cao -> thấp)
+    if screener_type in ['all', 'roe']:
+        industries_data.sort(key=lambda x: x["best_score"], reverse=True)
+    else:
+        # PE, PB (thấp -> cao)
+        industries_data.sort(key=lambda x: x["best_score"], reverse=False)
+
+    # Giới hạn số ngành (giữ nguyên)
     industries_data = industries_data[:19]
 
-    # Top toàn thị trường
-    top_all = df.sort_values("value_score", ascending=False).head(5)
-    top_all_list = []
-    for _, r in top_all.iterrows():
-        top_all_list.append({
-            "symbol": r["symbol"],
-            "industry": r["industry"],
-            "pe": float(r["pe"]),
-            "pb": float(r["pb"]),
-            "roe": float(r["roe_decimal"]),
-            "value_score": float(r["value_score"]),
-        })
+    # (Phần Top 5 toàn thị trường của 'all' không còn cần thiết,
+    # vì 'all' giờ là một loại screener riêng)
 
     vn_tz = pytz.timezone(TIMEZONE)
     as_of = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M")
 
     return {
         "as_of": as_of,
+        "screener_type": screener_type, # Quan trọng: Thêm loại vào kết quả
         "stats": {
             "total_all": total_all,
-            "after_strict_filter": after_strict,
-            "after_floor_filter": after_floor,
-            "after_liquidity_filter": after_liquidity,
-            "after_asset_filter": after_asset,
-            "after_industry_roe_filter": after_industry_roe,
+            "after_base_filter": after_base_filter,
         },
         "industries": industries_data,
-        "top_all": top_all_list,
+        "top_all": [] # Tạm thời không dùng
     }
 
 
-def run_value_screener_from_api() -> Optional[dict]:
-    log.info("[VALUE_SCREENER_API] Gọi vnstock Screener()...")
+def run_value_screener_from_api(screener_type: str) -> Optional[dict]:
+    """
+    Hàm pipeline đầy đủ: Gọi API -> Chuẩn hóa -> Chạy Logic.
+    """
+    log.info(f"[VALUE_SCREENER_API] Gọi vnstock Screener() (loại: {screener_type})...")
     try:
         df_raw = Screener().stock(
             params={"exchangeName": "HOSE,HNX,UPCOM"},
             limit=1700,
         )
     except Exception as e:
-        log.exception("[VALUE_SCREENER_API] Lỗi gọi API: %s", e)
+        log.exception(f"[VALUE_SCREENER_API] Lỗi gọi API: {e}")
         return None
 
     if df_raw is None or len(df_raw) == 0:
         return None
 
+    # Chạy chuẩn hóa
     value_df = build_value_df_from_screener(df_raw)
-    return run_value_screener_on_value_df(value_df)
-
+    
+    # Chạy logic
+    return run_value_screener_on_value_df(value_df, screener_type)
 
 # -------------------------- Redis Helper --------------------------
 
-def _value_screener_key_today() -> str:
+def _value_screener_key_today(screener_type: str) -> str:
+    """
+    Tạo key Redis theo ngày VÀ theo loại.
+    Ví dụ: value_screener_api:2025-11-16:pe
+           value_screener_api:2025-11-16:all
+    """
     vn_tz = pytz.timezone(TIMEZONE)
     today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
-    return f"{VALUE_SCREENER_REDIS_KEY_PREFIX}:{today}"
+    stype = screener_type.strip().lower()
+    return f"{VALUE_SCREENER_REDIS_KEY_PREFIX}:{today}:{stype}"
 
 
 def _ttl_until_midnight() -> int:
@@ -1687,10 +1722,13 @@ def _ttl_until_midnight() -> int:
     return max(60, int((midnight - now).total_seconds()))
 
 
-def load_value_screener_from_redis() -> Optional[dict]:
+def load_value_screener_from_redis(screener_type: str) -> Optional[dict]:
+    """Lấy cache từ Redis (đã nhận screener_type)."""
     try:
         r = get_redis()
-        raw = r.get(_value_screener_key_today())
+        # Key mới đã bao gồm screener_type
+        key = _value_screener_key_today(screener_type)
+        raw = r.get(key)
         if not raw:
             return None
         if isinstance(raw, bytes):
@@ -1700,13 +1738,25 @@ def load_value_screener_from_redis() -> Optional[dict]:
         return None
 
 
-def save_value_screener_to_redis(result: dict):
+def save_value_screener_to_redis(result: dict, screener_type: str):
+    """Lưu cache vào Redis (đã nhận screener_type)."""
     try:
         r = get_redis()
-        r.set(_value_screener_key_today(), json.dumps(result, ensure_ascii=False), ex=_ttl_until_midnight())
-        log.info("[VALUE_SCREENER_API] Đã lưu cache screener trong ngày.")
+        # Key mới đã bao gồm screener_type
+        key = _value_screener_key_today(screener_type)
+        
+        # Thêm screener_type vào payload để hàm format tự nhận diện
+        result_to_save = result.copy()
+        result_to_save['screener_type'] = screener_type
+        
+        r.set(
+            key, 
+            json.dumps(result_to_save, ensure_ascii=False), 
+            ex=_ttl_until_midnight()
+        )
+        log.info(f"[VALUE_SCREENER_API] Đã lưu cache (loại: {screener_type}) trong ngày.")
     except Exception as e:
-        log.warning("[VALUE_SCREENER_API] Lỗi lưu Redis: %s", e)
+        log.warning(f"[VALUE_SCREENER_API] Lỗi lưu Redis (loại: {screener_type}): {e}")
 
 
 def compute_value_screener(
@@ -1883,126 +1933,159 @@ def seconds_until_next_weekday_screener():
 
 def format_screener_report_text(result: dict) -> str | None:
     """
-    Từ kết quả của compute_value_screener, format ra tin nhắn Markdown.
-    Trả về None nếu không có dữ liệu.
+    Từ kết quả (đã bao gồm screener_type), format ra tin nhắn Markdown.
+    (ĐÃ GỠ BỎ logic truncating/rút gọn. Sẽ trả về text đầy đủ)
     """
-    if (
-        not result
-        or not result.get("industries")
-        or all(not ind["rows"] for ind in result["industries"])
-    ):
+    if not result or not result.get("industries"):
         log.warning(f"[{INSTANCE_ID}][SCREENER] Không có dữ liệu để format báo cáo.")
         return None
 
     as_of = result.get("as_of")
-    industries = result["industries"]
+    industries = result.get("industries", [])
+    
+    screener_type = result.get("screener_type", "all")
 
     lines: list[str] = []
-    lines.append("💰 *Top 5 cổ phiếu Value theo từng ngành* (dữ liệu TCBS)")
+
+    # --- 1. Tùy chỉnh Tiêu đề và Mô tả ---
+    if screener_type == 'all':
+        lines.append("💰 *Top 5 cổ phiếu Value (Tổng hợp) theo ngành*")
+        lines.append("_Dựa trên điểm Value Score (P/E, P/B, ROE so với ngành)_")
+    elif screener_type == 'pe':
+        lines.append("💰 *Top 5 cổ phiếu P/E Thấp nhất (theo ngành)*")
+        lines.append("_Đã lọc P/E > 0_")
+    elif screener_type == 'pb':
+        lines.append("💰 *Top 5 cổ phiếu P/B Thấp nhất (theo ngành)*")
+        lines.append("_Đã lọc P/B > 0_")
+    elif screener_type == 'roe':
+        lines.append("💰 *Top 5 cổ phiếu ROE Cao nhất (theo ngành)*")
+        lines.append("_Đã lọc ROE > 0_")
+
     if as_of:
         lines.append(f"_Cập nhật đến: {as_of}_")
+    
     lines.append("")
-    lines.append("📊 *Tiêu chí chấm điểm:*")
-    lines.append("• P/E & P/B thấp hơn trung bình ngành → điểm cao hơn")
-    lines.append("• ROE cao hơn trung bình ngành → điểm cao hơn")
+    lines.append("📊 *Tiêu chí lọc cơ sở (áp dụng cho mọi loại):*")
     lines.append("• Chỉ lấy các cổ phiếu sàn HOSE/HNX")
-    lines.append("• Thanh khoảng trên 50 tỷ/ngày")
-    lines.append("• Tổng tài sản trên 5000 tỷ")
+    lines.append("• Thanh khoản TB > 50 tỷ/ngày")
+    lines.append("• Vốn hóa > 5,000 tỷ")
+    lines.append("• P/E > 0, P/B > 0, và ROE > 0")
     lines.append("")
 
+    # --- 2. Tùy chỉnh vòng lặp hiển thị ---
     for industry_block in industries:
         industry_name = industry_block["industry"] or "Khác"
-        display_industry = (
-            industry_name[:1].upper() + industry_name[1:]
-            if industry_name
-            else "Khác"
-        )
+        display_industry = industry_name
+        
+        first_row = industry_block["rows"][0]
 
-        first = industry_block["rows"][0]
-        pe_avg = first["pe_industry"]
-        pb_avg = first["pb_industry"]
-        roe_avg = first["roe_industry"]
-
-        lines.append(
-            f"🏷 *Ngành: {display_industry}* "
-            f"(P/E TB: {pe_avg:.1f} | P/B TB: {pb_avg:.1f} | ROE TB: {format_roe_pct(roe_avg)})"
-        )
-
-        for idx, r in enumerate(industry_block["rows"], start=1):
+        # A. Dòng tiêu đề Ngành
+        if screener_type == 'all':
+            pe_avg = first_row["pe_industry"]
+            pb_avg = first_row["pb_industry"]
+            roe_avg = first_row["roe_industry"]
             lines.append(
-                f"{idx}️⃣ *{r['symbol']}* – "
-                f"P/E {r['pe']:.1f} | "
-                f"P/B {r['pb']:.1f} | "
-                f"ROE {format_roe_pct(r['roe'])}"
+                f"🏷 *Ngành: {display_industry}* "
+                f"(P/E TB: {pe_avg:.1f} | P/B TB: {pb_avg:.1f} | ROE TB: {format_roe_pct(roe_avg)})"
             )
+        else:
+            lines.append(f"🏷 *Ngành: {display_industry}*")
 
-        lines.append("")  # dòng trống ngăn cách ngành
+        # B. Dòng chi tiết Cổ phiếu
+        for idx, r in enumerate(industry_block["rows"], start=1):
+            if screener_type == 'all':
+                lines.append(
+                    f"{idx}️⃣ *{r['symbol']}* – "
+                    f"Score {r['value_score']:.2f} | "
+                    f"P/E {r['pe']:.1f} | "
+                    f"P/B {r['pb']:.1f} | "
+                    f"ROE {format_roe_pct(r['roe'])}"
+                )
+            elif screener_type == 'pe':
+                lines.append(
+                    f"{idx}️⃣ *{r['symbol']}* – "
+                    f"P/E *{r['pe']:.1f}* | "
+                    f"P/B {r['pb']:.1f} | "
+                    f"ROE {format_roe_pct(r['roe'])}"
+                )
+            elif screener_type == 'pb':
+                lines.append(
+                    f"{idx}️⃣ *{r['symbol']}* – "
+                    f"P/B *{r['pb']:.1f}* | "
+                    f"P/E {r['pe']:.1f} | "
+                    f"ROE {format_roe_pct(r['roe'])}"
+                )
+            elif screener_type == 'roe':
+                 lines.append(
+                    f"{idx}️⃣ *{r['symbol']}* – "
+                    f"ROE *{format_roe_pct(r['roe'])}* | "
+                    f"P/E {r['pe']:.1f} | "
+                    f"P/B {r['pb']:.1f}"
+                )
+
+        lines.append("")
 
     lines.append(
         "_Lưu ý: Đây là bảng xếp hạng định lượng, nhà đầu tư nên kết hợp phân tích cơ bản & kỹ thuật để ra quyết định._"
     )
 
     text = "\n".join(lines)
-    if len(text) > 3900:
-        text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
+    
+    # === GỠ BỎ KHỐI TRUNCATE (if len(text) > 3900) TẠI ĐÂY ===
     
     return text
 
 async def daily_value_screener_loop():
     """
-    Gửi báo cáo Value Screener tự động vào 09:00 sáng T2–T6.
-    - Mỗi lần chạy sẽ cố gắng làm mới dữ liệu từ API.
-    - Nếu API lỗi -> fallback dùng snapshot Redis nếu có.
-    - Snapshot trong Redis được ghi đè mỗi lần làm mới thành công.
-    - Chỉ broadcast cho Pro users + Admin (target_audience='pro').
+    Gửi báo cáo Value Screener (loại 'ALL' - tổng hợp)
+    tự động vào 09:00 sáng T2–T6 cho Pro users.
     """
     loop_id = 0
+    # Chỉ định rõ loại báo cáo tự động là 'all'
+    screener_type = 'all'
 
     while True:
         loop_id += 1
         loop_label = f"[{INSTANCE_ID}][SCREENER_DAILY {loop_id}]"
 
-        # Nếu bot đang OFF thì đợi 60s rồi kiểm tra lại
         if not BOT_ACTIVE:
             log.info("%s Bot đang TẮT, sleep 60s.", loop_label)
             await asyncio.sleep(60)
             continue
 
-        # Chờ tới 09:00 ngày làm việc tiếp theo
         wait_seconds = seconds_until_next_weekday_screener()
-        log.info("%s Chờ %s giây tới lần chạy kế tiếp.", loop_label, int(wait_seconds))
+        log.info("%s Chờ %s giây tới lần chạy kế tiếp (loại: %s).", loop_label, int(wait_seconds), screener_type)
         await asyncio.sleep(wait_seconds)
 
-        # Sau khi sleep xong, check lại trạng thái bot
         if not BOT_ACTIVE:
             log.info("%s Bot đã tắt sau khi sleep, bỏ qua lượt này.", loop_label)
             continue
 
         try:
-            # 1) Cố gắng làm mới dữ liệu từ API
-            log.info("%s Bắt đầu làm mới Value Screener từ API (daily).", loop_label)
-            result = run_value_screener_from_api()
+            # 1) Cố gắng làm mới dữ liệu từ API (cho loại 'all')
+            log.info("%s Bắt đầu làm mới Value Screener (loại: %s) từ API.", loop_label, screener_type)
+            result = await asyncio.to_thread(run_value_screener_from_api, screener_type)
 
             if result is None:
-                # 2) API lỗi -> fallback dùng cache Redis trong ngày
-                log.warning("%s API Screener trả về None (daily). Thử dùng snapshot Redis.", loop_label)
-                cached = load_value_screener_from_redis()
+                # 2) API lỗi -> fallback dùng cache 'all' của ngày hôm đó (nếu có)
+                log.warning("%s API Screener trả về None (loại: %s). Thử dùng snapshot Redis.", loop_label, screener_type)
+                cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
                 if cached is None:
-                    log.warning("%s Không có snapshot Redis để fallback. Bỏ qua lượt này.", loop_label)
+                    log.warning("%s Không có snapshot Redis (loại: %s) để fallback. Bỏ qua.", loop_label, screener_type)
                     continue
                 result = cached
             else:
-                # 3) API OK -> Ghi đè snapshot Redis trong ngày
-                save_value_screener_to_redis(result)
+                # 3) API OK -> Ghi đè snapshot 'all' trong ngày
+                await asyncio.to_thread(save_value_screener_to_redis, result, screener_type)
 
-            # 4) Format text
-            text = format_screener_report_text(result)
+            # 4) Format text (hàm format mới sẽ tự nhận diện type)
+            text = await asyncio.to_thread(format_screener_report_text, result)
             if not text:
-                log.warning("%s Không format được báo cáo Value Screener (daily).", loop_label)
+                log.warning("%s Không format được báo cáo (loại: %s).", loop_label, screener_type)
                 continue
 
-            # 5) Broadcast cho Pro users + Admin
-            log.info("%s Đang broadcast Value Screener cho Pro users.", loop_label)
+            # 5) Broadcast (loại 'all') cho Pro users + Admin
+            log.info("%s Đang broadcast Value Screener (loại: %s) cho Pro users.", loop_label, screener_type)
             await broadcast_to_all_watchers(text, target_audience='pro')
 
         except asyncio.CancelledError:
@@ -2010,9 +2093,7 @@ async def daily_value_screener_loop():
             raise
         except Exception as e:
             log.exception("%s Lỗi trong daily_value_screener_loop: %s", loop_label, e)
-            # Đợi 60s rồi quay lại vòng lặp, tránh spam log nếu lỗi liên tục
             await asyncio.sleep(60)
-
 
 def format_roe_pct(roe_decimal: float | None) -> str:
     """
@@ -5268,47 +5349,94 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id if update.effective_chat else None
     log_id = str(uuid.uuid4())[:8]
-    log_prefix = f"[{log_id}][/screener_value]"
+    
+    # === 1. XÁC ĐỊNH LOẠI SCREENER ===
+    screener_type = ""
+    if context.args:
+        screener_type = context.args[0].strip().lower()
+
+    # Thống nhất 3: Gõ /screener_value (không có gì) -> Hiện hướng dẫn
+    if not screener_type:
+        await reply_md(
+            update,
+            (
+                "⚠️ Vui lòng chọn loại screener.\n"
+                "Cách dùng: `/screener_value <loại>`\n\n"
+                "Trong đó `<loại>` là một trong các từ khóa:\n"
+                "• `all`: Báo cáo tổng hợp (theo `value_score`).\n"
+                "• `pe`: Lọc theo P/E (thấp nhất).\n"
+                "• `pb`: Lọc theo P/B (thấp nhất).\n"
+                "• `roe`: Lọc theo ROE (cao nhất)."
+            )
+        )
+        return
+
+    # Nếu gõ từ khóa lạ, cũng coi như lỗi
+    if screener_type not in ['all', 'pe', 'pb', 'roe']:
+        await reply_md(
+            update,
+            (
+                f"⚠️ Loại screener `{screener_type}` không hợp lệ.\n"
+                "Vui lòng chỉ dùng một trong các từ khóa: `all`, `pe`, `pb`, `roe`."
+            )
+        )
+        return
+
+    log_prefix = f"[{log_id}][/screener_value {screener_type}]"
 
     # ===============================================
-    # 💎 CHECK PAYWALL
+    # 💎 CHECK PAYWALL (Giữ nguyên)
     # ===============================================
     if not await check_pro_access(update, context):
-        return # Dừng lại, vì check_pro_access đã gửi tin nhắn paywall rồi
+        return
     # -----------------------
+    
+    # Log command (đã có screener_type)
+    await asyncio.to_thread(log_command_usage, chat_id, f"/screener_value {screener_type}", ADMIN_ID)
 
-    # 1) Kiểm tra cache Redis trước
-    cached = load_value_screener_from_redis()
+    # === 2. KIỂM TRA CACHE (THEO LOẠI) ===
+    # Hàm load_value_screener_from_redis mới sẽ nhận screener_type
+    cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
+    
     if cached is not None:
-        log.info("%s Dùng data cached.", log_prefix)
-        text = format_screener_report_text(cached)
+        log.info("%s Dùng data cached (loại: %s).", log_prefix, screener_type)
+        # Hàm format mới sẽ tự nhận diện loại báo cáo
+        text = await asyncio.to_thread(format_screener_report_text, cached)
         await reply_md(update, text)
         return
 
-    # 2) Chưa có => gọi API mới
+    # === 3. CACHE MISS -> GỌI API MỚI (THEO LOẠI) ===
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except:
         pass
+    
+    # Gửi thông báo chờ
+    await reply_md(
+        update,
+        f"🔎 Đang lọc screener loại *{screener_type.upper()}* lần đầu trong ngày...\n"
+        "Việc này có thể mất 10-15 giây, vui lòng đợi."
+    )
 
-    result = run_value_screener_from_api()
+    # Hàm run_value_screener_from_api mới sẽ nhận screener_type
+    result = await asyncio.to_thread(run_value_screener_from_api, screener_type)
 
-    if result is None:
+    if not result or not result.get("industries"):
         msg = (
-            "⚠️ *Không tìm thấy mã nào thỏa tiêu chí value hôm nay.*\n"
-            "_Có thể do dữ liệu API thiếu hoặc điều kiện lọc quá chặt._"
+            f"⚠️ *Không tìm thấy mã nào thỏa tiêu chí (loại: {screener_type.upper()})*.\n"
+            "_Có thể do dữ liệu API thiếu, hoặc tất cả cổ phiếu đều vi phạm "
+            "lọc cơ sở (ví dụ: PE/PB/ROE âm, thanh khoản thấp...)."
         )
-        await reply_md(update, context, msg)
+        await reply_md(update, msg)
         return
 
-    # 3) Lưu Redis snapshot ngày
-    save_value_screener_to_redis(result)
+    # === 4. LƯU CACHE (THEO LOẠI) ===
+    # Hàm save mới sẽ nhận screener_type
+    await asyncio.to_thread(save_value_screener_to_redis, result, screener_type)
 
-    # 4) Trả kết quả
-    text = format_screener_report_text(result)
+    # === 5. TRẢ KẾT QUẢ ===
+    text = await asyncio.to_thread(format_screener_report_text, result)
     await reply_md(update, text)
-
-import uuid  # nếu chưa có
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
