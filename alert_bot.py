@@ -192,6 +192,8 @@ RSS_FEEDS_SPECIALIZED = {
         "https://vietstock.vn/3358/chung-khoan/etf-va-cac-quy.rss",
         "https://vietstock.vn/145/chung-khoan/y-kien-chuyen-gia.rss",
         "https://vietstock.vn/582/nhan-dinh-phan-tich/phan-tich-co-ban.rss",
+        "https://vneconomy.vn/tin-moi.rss",
+        "https://vneconomy.vn/tieu-diem.rss",
     ],
     "DOANH_NGHIEP": [
         "https://vneconomy.vn/nhip-cau-doanh-nghiep.rss",
