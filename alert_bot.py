@@ -87,6 +87,11 @@ from report_cache import (
     save_report_to_redis,
     delete_report_from_redis,
 )
+from profile_cache import (
+    make_profile_cache_key,
+    get_profile_from_redis,
+    save_profile_to_redis,
+)
 from pathlib import Path
 from google import genai
 import uuid
@@ -1322,6 +1327,81 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
 
     return text.strip()
 
+# ==============================================
+# HÀM GỌI GEMINI CHO HỒ SƠ DOANH NGHIỆP (/info)
+# ==============================================
+
+def build_prompt_for_profile(symbol: str) -> str:
+    """
+    Tạo prompt chuyên biệt để hỏi Gemini về hồ sơ doanh nghiệp.
+    """
+    sym = symbol.upper().strip()
+
+    prompt = f"""
+Bạn là chuyên gia phân tích doanh nghiệp tại thị trường chứng khoán Việt Nam.
+Hãy tạo một "Hồ sơ Doanh nghiệp" chi tiết, súc tích cho mã cổ phiếu: {sym}
+
+YÊU CẦU:
+- Giọng văn chuyên nghiệp, khách quan, trung lập.
+- KHÔNG đưa ra lời khuyên "mua/bán/nắm giữ".
+- KHÔNG dự đoán giá, KHÔNG phân tích kỹ thuật hay hiệu suất giá (như % thay đổi ngày/tuần/tháng).
+- Chỉ tập trung vào CƠ BẢN DOANH NGHIỆP.
+- Không dùng Markdown (*, _).
+
+Cấu trúc nội dung (giữ nguyên các tiêu đề này):
+
+🔹 Tổng quan: (Tên đầy đủ, ngành nghề chính, lịch sử tóm tắt nếu có)
+
+🔹 Sản phẩm & Dịch vụ: (Công ty làm gì? Sản phẩm/dịch vụ cốt lõi là gì?)
+
+🔹 Mô hình kinh doanh: (Cách tạo ra doanh thu và lợi nhuận? Khách hàng chính là ai - B2B/B2C?)
+
+🔹 Vị thế & Thị trường: (Quy mô thị trường? Công ty đang đứng ở đâu trong ngành, thị phần (nếu có)? Đối thủ cạnh tranh chính là ai?)
+
+🔹 Vị thế chuỗi giá trị: (Công ty tự sản xuất, gia công OEM, hay chỉ phân phối? Mức độ tự chủ nguyên liệu?)
+
+🔹 Lợi thế cạnh tranh: (Điều gì làm công ty nổi bật? Ví dụ: thương hiệu mạnh, chi phí thấp, mạng lưới phân phối, công nghệ độc quyền...)
+
+🔹 Rủi ro chính: (Các rủi ro cốt lõi đặc thù của ngành hoặc doanh nghiệp. Ví dụ: phụ thuộc nguyên liệu, pháp lý, cạnh tranh gay gắt, rủi ro tỷ giá...)
+
+🔹 Ban lãnh đạo & Cổ đông: (Chỉ nêu 1-2 nhân vật chủ chốt nếu họ có tầm ảnh hưởng lớn. Cơ cấu cổ đông cô đặc hay pha loãng?)
+
+Chỉ trả về nội dung hồ sơ, không có lời chào hay câu meta.
+"""
+    return prompt.strip()
+
+
+def call_gemini_for_profile(symbol: str) -> str:
+    """
+    Gọi Gemini để sinh hồ sơ doanh nghiệp cho /info.
+    - Dùng build_prompt_for_profile().
+    - Nếu lỗi -> raise Exception để cmd_info xử lý.
+    """
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY chưa được cấu hình."
+        )
+
+    prompt = build_prompt_for_profile(symbol)
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini cho hồ sơ doanh nghiệp, symbol={symbol}")
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model_id = "gemini-2.5-flash" # Bạn có thể đổi sang model mạnh hơn nếu cần
+
+    try:
+        resp = client.models.generate_content(
+            model=model_id,
+            contents=prompt,
+        )
+    except Exception as e:
+        # đẩy lỗi ra ngoài để /info lo
+        raise e
+
+    text = getattr(resp, "text", None)
+    if not text:
+        raise RuntimeError("Gemini trả về response nhưng không có .text")
+
+    return text.strip()
 
 #--------------------------------------------
 
@@ -4375,6 +4455,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/list` - Xem các mã đang theo dõi\n"
         "• `/news_on`/`/news_off` - Bật tắt nhận tin tức theo danh mục\n"
         "• `/report` - Xin báo cáo phân tích danh mục (PRO)\n"
+        "• `/info <MÃ>` - Tra cứu hồ sơ chi tiết doanh nghiệp (PRO)\n"
         "• `/screener_value` - Xem danh sách cổ phiếu giá trị trong ngày (PRO)\n"
         "• `/vn30f1m_on` - `/vn30f1m_off` - Bật tắt cảnh báo chỉ số VN30F1M (PRO)\n"
         "• `/help` - Xem đầy đủ tính năng và toàn bộ lệnh\n\n"
@@ -4402,42 +4483,48 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Những tính năng có ghi (PRO) chỉ dành cho người dùng Pro.\n\n"
 
         "────────────────────\n"
-        "*1. LỆNH CƠ BẢN*\n"
+        "⌨️ *1. LỆNH CƠ BẢN*\n"
         "• `/add <MÃ>` – Thêm mã vào danh sách theo dõi\n"
         "• `/list` – Xem danh sách đang theo dõi\n"
-        "• `/remove <MÃ>` – Xoá mã khỏi danh sách\n\n"
+        "• `/remove <MÃ>` – Xoá mã khỏi danh sách\n"
 
         "────────────────────\n"
-        "*2. TÍNH NĂNG TỰ ĐỘNG*\n"
+        "⚡*2. TÍNH NĂNG TỰ ĐỘNG*\n"
         "• Cảnh báo giá realtime trong giờ giao dịch\n"
         "• Nhắc mở/đóng phiên & gửi tổng kết cuối phiên\n"
-        "• Cảnh báo khi có báo cáo tài chính mới (PRO)\n\n"
+        "• Cảnh báo khi có báo cáo tài chính mới (PRO)\n"
 
         "────────────────────\n"
-        "*3. BÁO CÁO DANH MỤC (PRO)*\n"
+        "🏢 *3. HỒ SƠ DOANH NGHIỆP (PRO)*\n"
+        "• `/info <MÃ>` – Tra cứu hồ sơ cơ bản của doanh nghiệp bằng AI\n"
+
+        "────────────────────\n"
+        "📊 *4. BÁO CÁO DANH MỤC (PRO)*\n"
         "• `/report` – Tạo báo cáo phân tích danh mục bằng AI\n"
-        "• Nhận báo cáo tuần tự động vào Chủ Nhật nếu chưa chạy `report`\n\n"
+        "• Nhận báo cáo tuần tự động vào Chủ Nhật nếu chưa chạy `report`\n"
 
         "────────────────────\n"
-        "*4. SCREENER GIÁ TRỊ (PRO)*\n"
-        "• `/screener_value` – Lọc danh sách cổ phiếu giá trị trong ngày\n\n"
-
+        "💎 *5. SCREENER GIÁ TRỊ (PRO)*\n"
+        "• `/screener_value` – Lọc danh sách cổ phiếu giá trị trong ngày\n"
+        "• Nhận báo cáo tuần tự động vào 09:00am hằng ngày trong tuần\n"
         "────────────────────\n"
-        "*5. TIN TỨC THEO DANH MỤC*\n"
+        "📰 *6. TIN TỨC THEO DANH MỤC*\n"
         "• Bot tự quét tin chuyên ngành và vĩ mô, lọc theo các mã bạn đang theo dõi\n"
         "• `/news_on` – Bật nhận tin tức\n"
         "• `/news_off` – Tắt nhận tin tức\n"
-        "• `/news_status` – Kiểm tra trạng thái tin tức\n\n"
+        "• `/news_status` – Kiểm tra trạng thái tin tức\n"
 
         "────────────────────\n"
-        "*6. CẢNH BÁO VN30F1M (PRO)*\n"
+        "📈 *7. CẢNH BÁO VN30F1M (PRO)*\n"
         "• Bot theo dõi VN30F1M realtime và cảnh báo khi biến động ±5 điểm\n"
         "• `/vn30f1m_on` – Bật cảnh báo phái sinh\n"
         "• `/vn30f1m_off` – Tắt\n"
-        "• `/vn30f1m_status` – Xem trạng thái\n\n"
+        "• `/vn30f1m_status` – Xem trạng thái\n"
 
         "────────────────────\n"
-        "*7. TIỆN ÍCH KHÁC*\n"
+        "⚙️ *8. TIỆN ÍCH KHÁC*\n"
+        # 🔼 KẾT THÚC THÊM MỚI / SỬA ĐỔI 🔼
+        
         "• `/start` – Giới thiệu bot\n"
         "• `/help` – Xem danh sách đầy đủ tính năng\n\n"
 
@@ -5874,6 +5961,198 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
         )
 
+# ==============================================
+# COMMAND: /info <MÃ> (HỒ SƠ DOANH NGHIỆP)
+# ==============================================
+async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Gửi hồ sơ doanh nghiệp cơ bản cho 1 mã cổ phiếu.
+    - Workflow dựa trên cmd_report.
+    - Chỉ dành cho Pro (check_pro_access).
+    - Cache 30 ngày trên Redis (profile_cache.py).
+    """
+
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    vn_tz = pytz.timezone(TIMEZONE)
+
+    if not update or not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
+
+    # === 1. KIỂM TRA PAYWALL (PRO-ONLY) ===
+    if not await check_pro_access(update, context):
+        return  # Hàm check_pro_access đã gửi tin nhắn paywall rồi
+
+    # === 2. LẤY MÃ CỔ PHIẾU ===
+    if not context.args:
+        await reply_md(update,
+            "⚠️ Cách dùng: /info <MÃ>\n"
+            "Ví dụ: /info FPT"
+        )
+        return
+        
+    symbol = context.args[0].strip().upper()
+
+    if len(symbol) < 3 or len(symbol) > 10: # Cho phép mã dài hơn (như VN30F1M)
+        await reply_md(update, "⚠️ Mã cổ phiếu không hợp lệ.")
+        return
+
+    # Ghi log sử dụng lệnh
+    await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
+
+    # Nhắc nhẹ để user biết bot đang xử lý
+    await reply_md(update, f"🔎 Vui lòng đợi, bot đang tra cứu hồ sơ doanh nghiệp *{symbol}*...")
+
+    cache_key = make_profile_cache_key(symbol)
+    log.info(f"[{INSTANCE_ID}] /info cache_key={cache_key} for chat_id={chat_id}")
+
+    # === 3. KIỂM TRA CACHE (REDIS) ===
+    cached = get_profile_from_redis(cache_key) # max_age_days mặc định là 30
+    if cached is not None:
+        text, generated_at, is_error, wait_sec = cached
+        log.info(
+            f"[{INSTANCE_ID}] /info cache HIT cho chat_id={chat_id}, "
+            f"key={cache_key}, is_error={is_error}, generated_at={generated_at}"
+        )
+
+        # A. Cache là lỗi (ví dụ: lần trước gọi bị quota)
+        if is_error:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+
+            remain_sec = None
+            if wait_sec is not None:
+                elapsed = (now_utc - generated_at).total_seconds()
+                remain_sec = max(0, wait_sec - elapsed)
+
+            if remain_sec is not None and remain_sec > 0:
+                remain_min = math.ceil(remain_sec / 60)
+                await reply_md(
+                    update,
+                    (
+                        f"⚠️ Hệ thống đang bận xử lý hồ sơ cho *{symbol}*.\n"
+                        f"Vui lòng thử lại sau khoảng ~{remain_min} phút nữa."
+                    ),
+                )
+                return
+            # Nếu hết thời gian chờ -> cho phép rơi xuống dưới để gọi lại AI
+
+        # B. Cache OK
+        else:
+            footer = (
+                f"\n\n🕓 _Hồ sơ được tạo vào "
+                f"{generated_at.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')}. "
+                f"Sử dụng cache 30 ngày._"
+            )
+            final_text = text.strip() + footer
+            await reply_md(update, final_text)
+            return
+
+    # === 4. CACHE MISS -> GỌI GEMINI ===
+    # (Thêm reminder: sau 10s nếu chưa xong thì gửi thêm 1 tin nhắn "đợi xíu")
+    done_flag = {"done": False}
+    async def send_slow_notice():
+        try:
+            await asyncio.sleep(10)
+            if not done_flag["done"]:
+                await send_md(
+                    context.bot,
+                    chat_id,
+                    f"⏳ Hồ sơ của *{symbol}* hơi chi tiết nên bot cần thêm chút thời gian...\n"
+                    "Cảm ơn bạn đã kiên nhẫn chờ ạ 🙏",
+                )
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] /info reminder error: {e}")
+
+    asyncio.create_task(send_slow_notice())
+
+    try:
+        start = time.time()
+        # Gọi hàm gọi Gemini (blocking) trong thread
+        output_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
+        duration = time.time() - start
+        done_flag["done"] = True  # báo với reminder là đã xong
+
+        log.info(
+            f"[{INSTANCE_ID}] /info Gemini done in {duration:.2f}s (chat_id={chat_id})"
+        )
+
+        # Tiêu đề cần in đậm (lấy từ prompt)
+        PROFILE_HEADINGS = [
+            "Tổng quan:",
+            "Sản phẩm & Dịch vụ:",
+            "Mô hình kinh doanh:",
+            "Vị thế & Thị trường:",
+            "Vị thế chuỗi giá trị:",
+            "Lợi thế cạnh tranh:",
+            "Rủi ro chính:",
+            "Ban lãnh đạo & Cổ đông:",
+        ]
+        
+        # Dùng lại hàm clean_and_highlight_report của /report
+        text = clean_and_highlight_report(output_text, PROFILE_HEADINGS)
+
+        # Lưu cache OK vào Redis (TTL 30 ngày)
+        save_profile_to_redis(cache_key, text, source="on_demand")
+
+        now = datetime.datetime.now(vn_tz)
+        footer = (
+            f"\n\n🕓 _Hồ sơ được tạo vào "
+            f"{now.strftime('%d/%m/%Y %H:%M')}._"
+        )
+        final_text = text.strip() + footer
+        await reply_md(update, final_text)
+
+    # === 5. XỬ LÝ LỖI KHI GỌI GEMINI ===
+    except Exception as e:
+        done_flag["done"] = True
+        is_quota = classify_error_quota(e) # Dùng lại hàm của /report
+
+        if is_quota:
+            user_msg = (
+                f"⚠️ Hiện tại hệ thống chưa tạo được hồ sơ *{symbol}* do dịch vụ AI (Gemini) "
+                "đang quá tải hoặc tạm thời hết quota.\n"
+                "Bạn vui lòng thử lại sau khoảng 2 phút nữa."
+            )
+            notify_admin_flag = False
+        else:
+            user_msg = (
+                f"⚠️ Hồ sơ của *{symbol}* tạm thời gặp lỗi kỹ thuật.\n"
+                "Hệ thống đã ghi nhận lỗi này và thông báo cho Admin.\n"
+                "Bạn vui lòng đợi khoảng 2 phút rồi thử lại."
+            )
+            notify_admin_flag = True
+
+        # Lưu cache lỗi vào Redis với TTL 120s
+        save_profile_to_redis(
+            cache_key,
+            user_msg,
+            source="error",
+            is_error=True,
+            wait_sec=120, # User phải đợi 120s
+            error_type=type(e).__name__,
+            error_detail=str(e),
+        )
+
+        await reply_md(update, user_msg)
+
+        if notify_admin_flag and tg_app and tg_app.bot:
+            try:
+                # Dùng lại hàm của /report, chỉ notify Admin 1 lần
+                await notify_admin_report_error_once(
+                    tg_app.bot,
+                    f"profile_cache:{cache_key}", # Thêm prefix để phân biệt
+                    e,
+                )
+            except Exception as e2:
+                log.warning(
+                    f"[{INSTANCE_ID}] notify_admin_report_error_once lỗi: {e2}"
+                )
 
 #==========================================
 
@@ -6229,6 +6508,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
             ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
             ("report", "Phân tích danh mục bằng AI"),
+            ("info", "Tra cứu thông tin doanh nghiệp"),
             ("screener_value", "Lọc cổ phiếu value theo dữ liệu thực"),
             ("news_on", "Bật nhận tin tức (vĩ mô + chuyên ngành)"),
             ("news_off", "Tắt nhận tin tức"),
@@ -6381,6 +6661,7 @@ async def main():
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
+    tg_app.add_handler(CommandHandler("info", cmd_info))
     tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
     tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
     tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
