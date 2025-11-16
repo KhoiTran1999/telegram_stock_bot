@@ -4586,8 +4586,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "────────────────────\n"
         "💎 *5. SCREENER GIÁ TRỊ (PRO)*\n"
-        "• `/screener_value` – Lọc danh sách cổ phiếu giá trị trong ngày\n"
-        "• Nhận báo cáo tuần tự động vào 09:00am hằng ngày trong tuần\n"
+        "• `/screener_value <loại>` – Lọc cổ phiếu theo tiêu chí.\n"
+        "   Trong đó `<loại>` là: `all`, `pe`, `pb`, hoặc `roe`.\n"
+        "• Nhận báo cáo tổng hợp (`all`) tự động mỗi 09:00 sáng T2-T6.\n"
         "────────────────────\n"
         "📰 *6. TIN TỨC THEO DANH MỤC*\n"
         "• Bot tự quét tin chuyên ngành và vĩ mô, lọc theo các mã bạn đang theo dõi\n"
