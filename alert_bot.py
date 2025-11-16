@@ -1375,7 +1375,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.warning(f"Lỗi khi auto-save chat_id {chat_id} trong unknown_message: {e}")
     # === KẾT THÚC LOGIC GỘP ===
     
-    user_text = update.message.text
+    # user_text = update.message.text
     
     # try:
     #     # ⭐️ SỬA: Chạy CSDL trong thread
@@ -1388,7 +1388,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_text = (
         f"Gõ bậy bạ gì vậy...😒 \n"
-        f"Nhấn `/start` để xem hướng dẫn sử dụng đi bạn."
+        f"Nhấn `/help` để xem hướng dẫn sử dụng đi bạn."
     )
     
     await reply_md(update, reply_text)
@@ -1510,7 +1510,7 @@ def run_value_screener_on_value_df(df: pd.DataFrame) -> Optional[dict]:
     # Top ngành
     industries_data = []
     for industry, g in df.groupby("industry"):
-        rows = g.sort_values("value_score", ascending=False).head(3)
+        rows = g.sort_values("value_score", ascending=False).head(5)
         if rows.empty:
             continue
 
@@ -1628,7 +1628,7 @@ def save_value_screener_to_redis(result: dict):
 
 
 def compute_value_screener(
-    top_per_industry: int = 3,
+    top_per_industry: int = 5,
     max_industries: int = 19,
 ):
     """
@@ -1816,7 +1816,7 @@ def format_screener_report_text(result: dict) -> str | None:
     industries = result["industries"]
 
     lines: list[str] = []
-    lines.append("💰 *Top 3 cổ phiếu Value theo từng ngành* (dữ liệu TCBS)")
+    lines.append("💰 *Top 5 cổ phiếu Value theo từng ngành* (dữ liệu TCBS)")
     if as_of:
         lines.append(f"_Cập nhật đến: {as_of}_")
     lines.append("")
@@ -1865,6 +1865,72 @@ def format_screener_report_text(result: dict) -> str | None:
         text = text[:3800] + "\n\n_(Đã rút gọn do giới hạn độ dài tin nhắn Telegram.)_"
     
     return text
+
+async def daily_value_screener_loop():
+    """
+    Gửi báo cáo Value Screener tự động vào 09:00 sáng T2–T6.
+    - Mỗi lần chạy sẽ cố gắng làm mới dữ liệu từ API.
+    - Nếu API lỗi -> fallback dùng snapshot Redis nếu có.
+    - Snapshot trong Redis được ghi đè mỗi lần làm mới thành công.
+    - Chỉ broadcast cho Pro users + Admin (target_audience='pro').
+    """
+    loop_id = 0
+
+    while True:
+        loop_id += 1
+        loop_label = f"[{INSTANCE_ID}][SCREENER_DAILY {loop_id}]"
+
+        # Nếu bot đang OFF thì đợi 60s rồi kiểm tra lại
+        if not BOT_ACTIVE:
+            log.info("%s Bot đang TẮT, sleep 60s.", loop_label)
+            await asyncio.sleep(60)
+            continue
+
+        # Chờ tới 09:00 ngày làm việc tiếp theo
+        wait_seconds = seconds_until_next_weekday_screener()
+        log.info("%s Chờ %s giây tới lần chạy kế tiếp.", loop_label, int(wait_seconds))
+        await asyncio.sleep(wait_seconds)
+
+        # Sau khi sleep xong, check lại trạng thái bot
+        if not BOT_ACTIVE:
+            log.info("%s Bot đã tắt sau khi sleep, bỏ qua lượt này.", loop_label)
+            continue
+
+        try:
+            # 1) Cố gắng làm mới dữ liệu từ API
+            log.info("%s Bắt đầu làm mới Value Screener từ API (daily).", loop_label)
+            result = run_value_screener_from_api()
+
+            if result is None:
+                # 2) API lỗi -> fallback dùng cache Redis trong ngày
+                log.warning("%s API Screener trả về None (daily). Thử dùng snapshot Redis.", loop_label)
+                cached = load_value_screener_from_redis()
+                if cached is None:
+                    log.warning("%s Không có snapshot Redis để fallback. Bỏ qua lượt này.", loop_label)
+                    continue
+                result = cached
+            else:
+                # 3) API OK -> Ghi đè snapshot Redis trong ngày
+                save_value_screener_to_redis(result)
+
+            # 4) Format text
+            text = format_screener_report_text(result)
+            if not text:
+                log.warning("%s Không format được báo cáo Value Screener (daily).", loop_label)
+                continue
+
+            # 5) Broadcast cho Pro users + Admin
+            log.info("%s Đang broadcast Value Screener cho Pro users.", loop_label)
+            await broadcast_to_all_watchers(text, target_audience='pro')
+
+        except asyncio.CancelledError:
+            log.info("%s Task daily_value_screener_loop bị cancel, thoát loop.", loop_label)
+            raise
+        except Exception as e:
+            log.exception("%s Lỗi trong daily_value_screener_loop: %s", loop_label, e)
+            # Đợi 60s rồi quay lại vòng lặp, tránh spam log nếu lỗi liên tục
+            await asyncio.sleep(60)
+
 
 def format_roe_pct(roe_decimal: float | None) -> str:
     """
@@ -4247,51 +4313,95 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await reply_md(
     update,
-    "🎯 *Chào mừng Quý Nhà Đầu Tư đến với StockBot!* 🤖💹\n\n"
-    "StockBot là *trợ lý chứng khoán realtime* – giúp bạn theo dõi biến động giá, tin tức và dữ liệu doanh nghiệp một cách nhanh chóng, chính xác,... 💩💩💩\n\n"
-    "*--- (Gói Dùng Thử Miễn Phí 😏) ---*\n\n"
-    "🎁 *Gói Miễn Phí (Free Plan)*\n\n"
-    "Bot cung cấp các tính năng cơ bản để bạn trải nghiệm:\n"
-    "• Theo dõi **tối đa 1 mã cổ phiếu** (dùng `/add <MÃ>`).\n"
-    "• Xem danh sách (`/list`) và xoá (`/remove <MÃ>`).\n"
-    "• Nhận thông báo tự động 4 mốc giờ giao dịch (sắp mở/đóng phiên sáng/chiều).\n"
-    "• 📰 *Tin tức Theo Watchlist:* Bật/tắt nhận tin tức vĩ mô và tin chuyên ngành được lọc tự động theo danh mục của bạn (`/news_on`)."
-    " Nhận diện bài viết liên quan đến mã trong danh mục và gửi những tin đáng chú ý nhất.\n"
-    "• ⚡ *Cảnh báo Giá Realtime:* Nhận cảnh báo tức thì (kèm nhận xét vui vẻ) khi mã trong watchlist của bạn biến động ±1%...±6% (quét 15 giây/lần).\n\n"
-    "*--- (Gói Chuyên Nghiệp 😎) ---*\n\n"
-    "👑 *Gói Nâng Cấp (Pro Plan) - 99k/tháng*\n"
-    "Mở khoá toàn bộ sức mạnh của bot trợ lý AI:\n\n"
-    "• 📈 *Theo dõi Không giới hạn:* Thêm không giới hạn số mã cổ phiếu vào watchlist.\n"
-    "• 🧠 *Báo cáo AI Chuyên sâu:*\n"
-    "- Xem phân tích AI cho từng cổ phiếu (`/info <MÃ>`).\n"
-    "– Nhận *báo cáo danh mục đầu tư* qua AI bằng lệnh `/report`.\n"
-    "– Nếu trong tuần bạn không dùng `/report`, bot sẽ tự gửi *báo cáo tuần* vào 09:00 Chủ Nhật.\n"
-    "• 💰 *Bộ lọc Cổ phiếu Value:* Dùng lệnh `/screener_value` để lấy báo cáo Top cổ phiếu value trong ngày "
-    "(lọc theo P/E, P/B, ROE, vốn hoá & thanh khoản).\n"
-    "• 🧾 *Cảnh báo Báo cáo Tài chính:* Tự động báo cho bạn ngay khi công ty bạn theo dõi ra BCTC mới trong các tháng 1, 4, 5, 10.\n"
-    "• 📊 *Cảnh báo Phái sinh:* Nhận alert realtime cho VN30F1M (`/vn30f1m_on`).\n\n"
-    "--- (Cách Nâng Cấp) ---\n\n"
-    f"🚀 *Cách Nâng Cấp Gói Pro:*\n"
-    f"1. Liên hệ Admin qua Telegram: `https://t.me/KhoiTran99`\n"
-    f"2. Chuyển khoản 99.000 VNĐ với nội dung: `PRO {chat_id}`\n"
-    f"   *(Chat ID của bạn là: `{chat_id}`)*\n"
-    f"Bot sẽ được kích hoạt tự động sau khi Admin xác nhận.\n\n"
-    "📊 *Các lệnh dành cho nhà đầu tư:*\n"
-    "• `/start` – Xem lại phần giới thiệu và danh sách tính năng\n"
-    "• `/add <MÃ>` – Thêm mã cổ phiếu vào danh sách theo dõi\n"
-    "• `/remove <MÃ>` – Xóa mã cổ phiếu khỏi danh sách\n"
-    "• `/list` – Xem danh sách cổ phiếu bạn đang theo dõi\n"
-    "• `/report` – Nhận báo cáo phân tích AI về danh mục của bạn 🧠\n"
-    "• `/screen_value` – Lọc cổ phiếu value trong ngày (dùng dữ liệu mới nhất từ vnstock)\n"
-    "• `/news_on` – Bật nhận tin tức (vĩ mô + chuyên ngành)\n"
-    "• `/news_off` – Tắt nhận tin tức\n"
-    "• `/news_status` – Xem trạng thái nhận tin tức hiện tại\n"
-    "• `/vn30f1m_off` – Tắt nhận cập nhật VN30F1M\n"
-    "• `/vn30f1m_on` – Bật nhận cập nhật VN30F1M\n"
-    "• `/vn30f1m_status` – Xem trạng thái nhận cập nhật VN30F1M\n\n"
-    "💬 Với *KT StockBot 🚀*, mọi biến động đều được cập nhật tức thì – để bạn không bỏ lỡ bất kỳ cơ hội nào.\n\n"
-    "🔥 Bắt đầu theo dõi ngay hôm nay bằng lệnh `/add <MÃ>`!"
+    "🎯 *Chào mừng bạn đến với KT StockBot* - trợ lý chứng khoán ngay trong Telegram! 🤖📈\n\n"
+        "*Bot giúp bạn làm gì?*\n"
+        "• Theo dõi danh sách cổ phiếu bạn quan tâm\n"
+        "• Nhận cảnh báo giá trong giờ giao dịch\n"
+        "• Nhận tổng kết cuối phiên và tin tức liên quan đến danh mục\n"
+        "• Với gói Pro: có thêm báo cáo AI, tổng hợp top cổ phiếu ngành và cảnh báo VN30F1M\n\n"
+        "*Bắt đầu trong 3 bước đơn giản:*\n"
+        "1. Thêm mã bạn đang theo dõi bằng lệnh `/add <MÃ>`\n"
+        "2. Dùng `/list` để xem lại danh sách hiện tại\n"
+        "3. Giữ Telegram, bot sẽ tự gửi cảnh báo và tổng kết cho bạn\n\n"
+        "*Một vài lệnh nên thử ngay:*\n"
+        "• `/add <MÃ>` - Thêm mã vào danh sách\n"
+        "• `/remove <MÃ>` - Xoá mã khỏi danh sách\n"
+        "• `/list` - Xem các mã đang theo dõi\n"
+        "• `/news_on`/`/news_off` - Bật tắt nhận tin tức theo danh mục\n"
+        "• `/report` - Xin báo cáo phân tích danh mục (PRO)\n"
+        "• `/screener_value` - Xem danh sách cổ phiếu giá trị trong ngày (PRO)\n"
+        "• `/vn30f1m_on` - `/vn30f1m_off` - Bật tắt cảnh báo chỉ số VN30F1M (PRO)\n"
+        "• `/help` - Xem đầy đủ tính năng và toàn bộ lệnh\n\n"
+        "😎 Có vấn đề gì thì liên hệ với admin @KhoiTran99 nhé.\n"
+        "Chúc bạn đầu tư hiệu quả cùng KT StockBot! 🚀"
 )
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Hiển thị danh sách lệnh & tính năng cho người dùng.
+    (Không liệt kê các lệnh admin.)
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+
+    # Log thống kê lệnh /help vào CSDL trong thread
+    await asyncio.to_thread(log_command_usage, chat_id, "/help", ADMIN_ID)
+
+    help_text = (
+        "📘 *HƯỚNG DẪN SỬ DỤNG STOCKBOT*\n\n"
+        "Dưới đây là toàn bộ các tính năng và lệnh bạn có thể dùng. "
+        "Những tính năng có ghi (PRO) chỉ dành cho người dùng Pro.\n\n"
+
+        "────────────────────\n"
+        "*1. LỆNH CƠ BẢN*\n"
+        "• `/add <MÃ>` – Thêm mã vào danh sách theo dõi\n"
+        "• `/list` – Xem danh sách đang theo dõi\n"
+        "• `/remove <MÃ>` – Xoá mã khỏi danh sách\n\n"
+
+        "────────────────────\n"
+        "*2. TÍNH NĂNG TỰ ĐỘNG*\n"
+        "• Cảnh báo giá realtime trong giờ giao dịch\n"
+        "• Nhắc mở/đóng phiên & gửi tổng kết cuối phiên\n"
+        "• Cảnh báo khi có báo cáo tài chính mới (PRO)\n\n"
+
+        "────────────────────\n"
+        "*3. BÁO CÁO DANH MỤC (PRO)*\n"
+        "• `/report` – Tạo báo cáo phân tích danh mục bằng AI\n"
+        "• Nhận báo cáo tuần tự động vào Chủ Nhật nếu chưa chạy `report`\n\n"
+
+        "────────────────────\n"
+        "*4. SCREENER GIÁ TRỊ (PRO)*\n"
+        "• `/screener_value` – Lọc danh sách cổ phiếu giá trị trong ngày\n\n"
+
+        "────────────────────\n"
+        "*5. TIN TỨC THEO DANH MỤC*\n"
+        "• Bot tự quét tin chuyên ngành và vĩ mô, lọc theo các mã bạn đang theo dõi\n"
+        "• `/news_on` – Bật nhận tin tức\n"
+        "• `/news_off` – Tắt nhận tin tức\n"
+        "• `/news_status` – Kiểm tra trạng thái tin tức\n\n"
+
+        "────────────────────\n"
+        "*6. CẢNH BÁO VN30F1M (PRO)*\n"
+        "• Bot theo dõi VN30F1M realtime và cảnh báo khi biến động ±5 điểm\n"
+        "• `/vn30f1m_on` – Bật cảnh báo phái sinh\n"
+        "• `/vn30f1m_off` – Tắt\n"
+        "• `/vn30f1m_status` – Xem trạng thái\n\n"
+
+        "────────────────────\n"
+        "*7. TIỆN ÍCH KHÁC*\n"
+        "• `/start` – Giới thiệu bot\n"
+        "• `/help` – Xem danh sách đầy đủ tính năng\n\n"
+
+        "Nếu bạn mới dùng lần đầu, hãy bắt đầu với: `/add <MÃ>`.\n"
+        "😎 Có vấn đề gì thì liên hệ với admin @KhoiTran99 nhé.\n"
+        "Chúc bạn đầu tư hiệu quả cùng StockBot! 🚀"
+    )
+
+    await reply_md(update, help_text)
+
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
@@ -6029,6 +6139,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     #--------------------------------------
                     MAIN_LOOP.create_task(session_notice_loop()),
                     MAIN_LOOP.create_task(weekly_report_loop()),
+                    MAIN_LOOP.create_task(daily_value_screener_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
                     MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
@@ -6067,6 +6178,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
         # Tác vụ 1: Đăng ký lệnh bot (network call) - Thêm (admin) để phân loại commands của users và admin
         commands = [
             ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
+            ("help", "Danh sách lệnh & tính năng"),
             ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
             ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
@@ -6217,6 +6329,7 @@ async def main():
 
     # User commands
     tg_app.add_handler(CommandHandler("start", cmd_start))
+    tg_app.add_handler(CommandHandler("help", cmd_help))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
