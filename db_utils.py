@@ -2,6 +2,7 @@
 import os
 import json
 import datetime
+import time
 
 from psycopg import rows
 from psycopg_pool import ConnectionPool
@@ -164,36 +165,57 @@ def init_db():
 # ==========================================
 def get_all_watch():
     """
-    Trả về dict {str(chat_id): {'list': [...]}}.
-    Ưu tiên đọc từ Redis, nếu miss / lỗi thì fallback DB và warm lại Redis.
+    (ĐÃ SỬA) Trả về dict {str(chat_id): {'list': [...]}}.
+    Ưu tiên đọc từ Redis, nếu miss cache của user nào thì
+    gọi get_watch_list_for_chat() để fallback DB cho user đó.
     """
     data: dict[str, dict] = {}
+    chat_ids_from_redis = set()
 
     # 1) Thử đọc từ Redis trước
     try:
         r = get_redis()
-        chat_ids = r.smembers("watch_chat_ids") or set()
-        if chat_ids:
-            for cid in chat_ids:
+        chat_ids_from_redis = r.smembers("watch_chat_ids") or set()
+        
+        if chat_ids_from_redis:
+            for cid_str in chat_ids_from_redis:
+                try:
+                    cid = int(cid_str)
+                except Exception:
+                    continue
+                
+                # Cố gắng lấy cache của user này
                 raw = r.get(f"watch:{cid}")
-                if raw:
+                
+                if raw is not None:
+                    # === CACHE HIT ===
                     try:
                         wl = json.loads(raw)
                     except Exception:
-                        wl = []
+                        wl = [] # Cache lỗi thì coi như rỗng
+                    data[str(cid)] = {"list": wl}
                 else:
-                    wl = []
-                # Redis trả cid là str, nhưng để chắc ăn convert int->str luôn
-                data[str(int(cid))] = {"list": wl}
-            return data
-        else:
-            redis_debug_log("Redis empty → fallback DB (watch_chat_ids = 0)")
-    except Exception as e:
-        # Nếu có lỗi Redis, thì bỏ qua và fallback DB
-        redis_debug_log(f"Redis error in get_all_watch(): {e}")
-        pass
+                    # === CACHE MISS (Do bị Invalidate hoặc hết hạn) ===
+                    # Gọi hàm "get" đơn lẻ (hàm này đã có logic fallback DB
+                    # và tự động warm-up lại cache)
+                    redis_debug_log(f"get_all_watch: Cache miss cho {cid}, gọi fallback...")
+                    wl_fallback = get_watch_list_for_chat(cid) # Đã bao gồm DB + warm-up
+                    if wl_fallback is not None:
+                         data[str(cid)] = {"list": wl_fallback}
+                    # (Nếu wl_fallback là None, tức là user không có trong DB)
+            
+            # Nếu data có nội dung thì trả về, không cần fallback toàn bộ
+            if data:
+                return data
 
-    # 2) Fallback: đọc toàn bộ từ DB
+    except Exception as e:
+        redis_debug_log(f"Redis error in get_all_watch(): {e}")
+        # Bỏ qua và fallback DB toàn bộ bên dưới
+
+    # 2) Fallback: đọc toàn bộ từ DB (giữ nguyên logic của bạn)
+    # (Trường hợp Redis sập, hoặc set "watch_chat_ids" rỗng)
+    
+    redis_debug_log("Redis empty/error → fallback DB (get_all_watch)")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id, watch_list FROM bot_watch")
@@ -202,27 +224,19 @@ def get_all_watch():
     for chat_id, watch_list in rows:
         data[str(chat_id)] = {"list": watch_list or []}
 
-    # 3) Warm lại Redis từ DB (best-effort)
+    # 3) Warm lại Redis từ DB (best-effort, giữ nguyên)
     try:
         r = get_redis()
-        # Xóa set cũ
         r.delete("watch_chat_ids")
-        
-        # Dùng vòng lặp thay vì pipeline (an toàn hơn trong một số môi trường)
         for chat_id, watch_list in rows:
             key = f"watch:{chat_id}"
-            wl = watch_list or [] # wl sẽ là [] (rỗng) hoặc ['HPG']
-
-            # SỬA LỖI: Luôn set (kể cả list rỗng)
+            wl = watch_list or []
             r.set(key, json.dumps(wl))
-            r.sadd("watch_chat_ids", chat_id) # Luôn thêm user vào set
-            
+            r.sadd("watch_chat_ids", chat_id)
     except Exception:
         pass
 
     return data
-
-
 
 def get_watch_list_for_chat(chat_id: int):
     """
@@ -273,9 +287,11 @@ def get_watch_list_for_chat(chat_id: int):
             pass
     return watch_list
 
+# TRONG DB_UTILS.PY
+
 def save_watch_list_for_chat(chat_id: int, watch_list):
     """
-    Lưu watchlist vào DB và đồng thời cập nhật cache Redis.
+    Lưu watchlist vào DB và đồng thời LÀM MẤT HIỆU LỰC (Invalidate) cache Redis.
     """
     # 1) Ghi vào DB (nguồn sự thật)
     with get_conn() as conn:
@@ -291,23 +307,30 @@ def save_watch_list_for_chat(chat_id: int, watch_list):
             )
         conn.commit()
 
-    # 2) Cập nhật Redis cache (best-effort, không để lỗi Redis làm chết hàm)
+    # 2) Xóa cache của user này khỏi Redis (Invalidate)
     try:
         r = get_redis()
         key = f"watch:{chat_id}"
         
-        # SỬA LỖI: Kiểm tra 'is not None' thay vì 'if list:'
-        # List rỗng [] vẫn là một giá trị hợp lệ cần cache
-        if watch_list is not None: 
-            r.set(key, json.dumps(watch_list))
-            r.sadd("watch_chat_ids", chat_id) # Luôn thêm user vào set
+        # Xóa cache chi tiết của user
+        r.delete(key) 
+        
+        # Vẫn quản lý set "watch_chat_ids"
+        if watch_list is not None and len(watch_list) > 0:
+            # Nếu user có watchlist, đảm bảo họ có trong set
+            r.sadd("watch_chat_ids", chat_id)
         else:
-            # Trường hợp này ít xảy ra, nhưng để an toàn
-            r.delete(key)
-            r.srem("watch_chat_ids", chat_id)
-    except Exception:
+            # Nếu user xóa hết (list rỗng), xóa họ khỏi set (tùy chọn)
+            # Hoặc cứ để trong set cũng không sao, vì get_all_watch sẽ xử lý
+            pass 
+            # Nếu muốn chặt chẽ:
+            # if not watch_list:
+            #     r.srem("watch_chat_ids", chat_id)
+            
+    except Exception as e:
+        # Ghi log lỗi Redis nhưng không làm sập tiến trình
+        redis_debug_log(f"Redis invalidate error watch:{chat_id}: {e}")
         pass
-
 
 # ==========================================
 # BOT ACTIVE (BẢO TRÌ)
@@ -544,9 +567,6 @@ def clear_stock_value_cache():
 # ==========================================
 # NEWS: RSS SEEN + PREFERENCES + REDIS + POSTGRES
 # ==========================================
-# ==========================================
-# NEWS: RSS SEEN + PREFERENCES + REDIS + POSTGRES
-# ==========================================
 def has_news_seen(feed_type: str, link: str) -> bool:
     """
     Kiểm tra xem bài RSS (feed_type, link) đã được xử lý chưa.
@@ -758,8 +778,6 @@ def get_news_pref(chat_id: int) -> dict:
 
     return pref
 
-
-
 def set_news_pref(
     chat_id: int,
     enable_specialized: bool | None = None,
@@ -811,6 +829,49 @@ def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
         return pref["enable_macro"]
     return True
 
+# Cache RAM (in-memory) cho các setting không đổi thường xuyên
+_news_pref_cache: dict[int, dict] = {}
+_news_pref_cache_time: float = 0.0
+
+def get_all_news_pref(max_cache_age_sec: int = 60) -> dict[int, dict]:
+    """
+    (HÀM MỚI - TỐI ƯU N+1)
+    Lấy toàn bộ setting tin tức của user, cache 60 giây trong RAM.
+    Trả về dict: {chat_id: {"enable_specialized": bool, "enable_macro": bool}}
+    """
+    global _news_pref_cache, _news_pref_cache_time
+    now = time.time()
+
+    # 1. Dùng cache RAM (siêu nhanh) nếu còn hạn
+    if (now - _news_pref_cache_time) < max_cache_age_sec and _news_pref_cache:
+        return _news_pref_cache
+
+    # 2. Cache cũ/rỗng -> Lấy từ DB (CHỈ 1 QUERY)
+    redis_debug_log("[get_all_news_pref] Cache RAM rỗng/hết hạn. Đang lấy từ DB...")
+    data = {}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id, enable_specialized, enable_macro FROM news_pref")
+                rows = cur.fetchall()
+        
+        for chat_id, enable_specialized, enable_macro in rows:
+            data[int(chat_id)] = {
+                "enable_specialized": bool(enable_specialized),
+                "enable_macro": bool(enable_macro),
+            }
+    except Exception as e:
+        redis_debug_log(f"Lỗi get_all_news_pref: {e}")
+        # Nếu lỗi, trả về cache cũ (nếu có) để bot tiếp tục chạy
+        if _news_pref_cache:
+            return _news_pref_cache
+        return {} # Hoặc trả rỗng nếu chưa có cache
+
+    # 3. Cập nhật cache RAM
+    _news_pref_cache = data
+    _news_pref_cache_time = now
+    redis_debug_log(f"[get_all_news_pref] Đã cache {len(data)} user vào RAM.")
+    return data
 # ==========================================
 # BÁO CÁO TÀI CHÍNH (BCTC)
 # ==========================================
