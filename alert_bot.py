@@ -5802,17 +5802,13 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"[{INSTANCE_ID}] notify_admin_report_error_once lỗi: {e2}"
                 )
 
-
 async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (Admin) Xoá cache báo cáo AI trong Redis
-    cho danh mục watchlist CỦA CHÍNH ADMIN.
+    (Admin) Xoá TOÀN BỘ cache báo cáo AI trong Redis cho tất cả danh mục.
 
-    - Xác định danh mục hiện tại của admin (từ DB).
-    - Chuẩn hoá danh mục -> cache_key (multiset, sort).
-    - Xoá key `report_cache:{cache_key}` trong Redis:
-        + Xoá cả báo cáo OK
-        + Xoá cả cache lỗi (nếu có)
+    - Quét toàn bộ key `report_cache:*` trong Redis.
+    - Xoá cả cache báo cáo OK lẫn cache lỗi.
+    - Chỉ dùng khi muốn force tạo lại toàn bộ báo cáo (/report + Weekly Report).
     """
     if not update or not update.effective_chat:
         return
@@ -5824,54 +5820,58 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
         return
 
-    # 2. Ghi log
+    # 2. Ghi log usage
     await asyncio.to_thread(log_command_usage, chat_id, "/report_clear", ADMIN_ID)
+
     await reply_md(
         update,
-        "🔎 Đang tìm và xoá cache báo cáo (report cache) cho danh mục của bạn...",
+        "🔎 Đang quét và xoá *toàn bộ cache báo cáo AI* trong Redis...\n"
+        "_(Lệnh này ảnh hưởng tới mọi danh mục /report & Weekly Report.)_",
     )
 
-    # 3. Lấy watchlist của Admin từ DB
-    watch_list = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
+    # 3. Hàm sync: clear tất cả key report_cache:*
+    def _clear_all_report_cache() -> int:
+        r = get_redis()  # dùng chung Redis (đã import từ news_seen_cache)
+        deleted = 0
+        # SCAN để tránh block Redis nếu số key lớn
+        for key in r.scan_iter(match="report_cache:*"):
+            try:
+                r.delete(key)
+                deleted += 1
+            except Exception:
+                # best-effort, lỗi 1 key thì bỏ qua, tiếp tục
+                continue
+        return deleted
 
-    if not watch_list:
+    try:
+        deleted_count = await asyncio.to_thread(_clear_all_report_cache)
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][REPORT_CLEAR] Lỗi khi xoá report_cache:*: {e}")
         await reply_md(
             update,
-            "ℹ️ Danh mục của bạn trống, không có cache báo cáo nào để xoá.",
+            f"⚠️ Lỗi khi xoá cache báo cáo AI trong Redis: `{e}`",
         )
         return
 
-    # 4. Lọc bỏ các mã index (như VNINDEX, VN30, VN30F1M, ...)
-    symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
-    if not symbols:
-        await reply_md(
-            update,
-            "ℹ️ Danh mục của bạn không chứa cổ phiếu, không có cache báo cáo để xoá.",
-        )
-        return
-
-    # 5. Tạo cache_key (multiset + sort, giống hệt logic cmd_report & weekly)
-    cache_key = make_report_cache_key(symbols)
-
-    # 6. Gọi hàm xoá cache từ report_cache.py (chạy trong thread)
-    deleted_count = await asyncio.to_thread(
-        delete_report_from_redis,
-        cache_key,
-    )
-
-    # 7. Phản hồi
+    # 4. Phản hồi kết quả
     if deleted_count > 0:
         await reply_md(
             update,
-            f"✅ Đã xoá thành công cache báo cáo cho key:\n`{cache_key}`\n\n"
-            "Lần tiếp theo bạn dùng `/report` hoặc tới Weekly Report, bot sẽ gọi AI để tạo báo cáo mới.",
+            (
+                f"✅ Đã xoá *{deleted_count}* key cache báo cáo AI trong Redis.\n"
+                "Lần tiếp theo bạn dùng `/report` hoặc khi Weekly Report chạy, "
+                "bot sẽ gọi AI để tạo báo cáo *mới hoàn toàn*."
+            ),
         )
     else:
         await reply_md(
             update,
-            f"ℹ️ Không tìm thấy cache nào trong Redis cho key:\n`{cache_key}`\n"
-            "(Có thể nó đã bị xoá hoặc chưa được tạo.)",
+            (
+                "ℹ️ Không tìm thấy key nào dạng `report_cache:*` trong Redis.\n"
+                "Có thể cache đã hết hạn / chưa được tạo."
+            ),
         )
+
 
 #==========================================
 
