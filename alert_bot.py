@@ -66,7 +66,8 @@ from db_utils import (
     remove_paid_user,
     get_all_pro_chat_ids,
     cleanup_old_news_seen,
-    get_all_news_pref
+    get_all_news_pref,
+    get_user_pro_expiry,
 )
 import psutil
 import time
@@ -4981,6 +4982,104 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await reply_md(update, msg)
 
+async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Hiển thị bảng cài đặt cá nhân (trạng thái Pro, news, vn30f1m)
+    và hướng dẫn bật/tắt, nâng cấp.
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update,"⚙️ Bot đang bảo trì.")
+        return
+
+    if not update or not update.effective_chat:
+        return
+        
+    chat_id = update.effective_chat.id
+    await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
+    
+    try:
+        await context.bot.send_chat_action(
+            chat_id=chat_id, action=ChatAction.TYPING
+        )
+    except Exception:
+        pass # Bỏ qua nếu lỗi
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+
+    # --- Lấy dữ liệu song song ---
+    try:
+        tasks = [
+            asyncio.to_thread(get_user_pro_expiry, chat_id),
+            asyncio.to_thread(get_news_pref, chat_id),
+            asyncio.to_thread(get_vn30f1m_enabled_map), 
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Kiểm tra nếu có lỗi trong lúc gather
+        if any(isinstance(r, Exception) for r in results):
+            raise Exception(f"Lỗi khi gather: {results}")
+
+        expiry_date: datetime.datetime | None = results[0]
+        news_pref: dict = results[1]
+        vn30f1m_map: dict = results[2]
+        
+        vn30f1m_enabled = vn30f1m_map.get(chat_id, False)
+        # Kiểm tra cả hai, nếu 1 trong 2 bật là coi như Bật
+        is_news_on = news_pref.get("enable_specialized", True) or news_pref.get("enable_macro", True)
+
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] Lỗi khi lấy settings cho {chat_id}: {e}")
+        await reply_md(update, "⚠️ Lỗi khi lấy dữ liệu cài đặt. Vui lòng thử lại sau.")
+        return
+
+    lines = ["⚙️ *Cài đặt cá nhân của bạn* ⚙️"]
+
+    # === 1. Trạng thái tài khoản ===
+    lines.append("\n👤 *Tài khoản*")
+    is_pro_active = False
+    
+    if chat_id == ADMIN_ID:
+        lines.append("Trạng thái: 😎 *Admin* (Full tính năng)")
+        is_pro_active = True # Admin luôn là Pro
+        
+    elif expiry_date and expiry_date.astimezone(vn_tz) > now:
+        is_pro_active = True
+        lines.append("Trạng thái: 👑 *Pro*")
+        lines.append(f"Ngày hết hạn: *{expiry_date.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')}*")
+        
+    elif expiry_date and expiry_date.astimezone(vn_tz) <= now:
+        lines.append("Trạng thái: 🆓 *Pro (Đã hết hạn)*")
+        lines.append("\n*Gia hạn:* Liên hệ Admin `@KhoiTran99` để gia hạn.")
+        
+    else:
+        lines.append("Trạng thái: 🆓 *Miễn phí*")
+        lines.append("\n*Nâng cấp:* Liên hệ Admin @KhoiTran99 để lên gói Pro không giới hạn tính năng.")
+
+    # === 2. Cài đặt Tin tức ===
+    lines.append("\n*📰 Tin tức (Vĩ mô & Chuyên ngành)*")
+    if is_news_on:
+        lines.append("Trạng thái: *Bật*")
+        lines.append("(Dùng `/news_off` để tắt)")
+    else:
+        lines.append("Trạng thái: *Tắt*")
+        lines.append("(Dùng `/news_on` để bật lại)")
+
+    # === 3. Cảnh báo VN30F1M ===
+    lines.append("\n📈 *Cảnh báo VN30F1M (Pro)*")
+    if vn30f1m_enabled:
+        lines.append("Trạng thái: *Bật*")
+        lines.append("(Dùng `/vn30f1m_off` để tắt)")
+    else:
+        lines.append("Trạng thái: *Tắt*")
+        # Chỉ hiển thị hướng dẫn bật nếu họ là Pro
+        if is_pro_active:
+             lines.append("(Dùng `/vn30f1m_on` để bật)")
+        else:
+            lines.append("(Tính năng này yêu cầu gói Pro để bật)")
+
+    await reply_md(update, "\n".join(lines))
+
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
 
@@ -6523,8 +6622,8 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
     try:
         # Tác vụ 1: Đăng ký lệnh bot (network call) - Thêm (admin) để phân loại commands của users và admin
         commands = [
-            ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
             ("help", "Danh sách lệnh & tính năng"),
+            ("setting", "Xem cài đặt cá nhân & trạng thái Pro"),
             ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
             ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
@@ -6536,6 +6635,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("news_status", "Xem trạng thái nhận tin tức"),
             ("vn30f1m_off", "Tắt nhận cập nhật VN30F1M"),
             ("vn30f1m_on", "Bật nhận cập nhật VN30F1M"),
+            ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
             ("vn30f1m_status", "Xem trạng thái nhận cập nhật VN30F1M"),
             ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
             ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
@@ -6675,8 +6775,8 @@ async def main():
     )
 
     # User commands
-    tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("help", cmd_help))
+    tg_app.add_handler(CommandHandler("setting", cmd_setting))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
@@ -6690,6 +6790,7 @@ async def main():
     tg_app.add_handler(CommandHandler("vn30f1m_status", cmd_vn30f1m_status))
     tg_app.add_handler(CommandHandler("vn30f1m_on", cmd_vn30f1m_on))
     tg_app.add_handler(CommandHandler("vn30f1m_off", cmd_vn30f1m_off))
+    tg_app.add_handler(CommandHandler("start", cmd_start))
 
     # Admin commands
     tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))

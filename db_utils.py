@@ -1220,7 +1220,6 @@ def add_paid_user(chat_id: int, days_to_add: int):
             )
         conn.commit()
 
-
 def is_user_pro(chat_id: int) -> bool:
     """
     Trả về True nếu user có trong bảng paid_users VÀ ngày hết hạn > NOW()
@@ -1241,6 +1240,28 @@ def is_user_pro(chat_id: int) -> bool:
     # Nếu row không phải là None (tức là tìm thấy 1 dòng) -> True
     # Nếu row là None (không tìm thấy) -> False
     return bool(row)
+
+def get_user_pro_expiry(chat_id: int) -> datetime.datetime | None:
+    """
+    Lấy ngày hết hạn Pro (expiry_date) của user.
+    Trả về datetime object (TIMESTAMPTZ) nếu có, ngược lại trả về None.
+    Hàm này lấy cả user đã hết hạn.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT expiry_date 
+                FROM paid_users
+                WHERE chat_id = %s
+                LIMIT 1;
+                """,
+                (chat_id,),
+            )
+            row = cur.fetchone()
+    
+    # row[0] sẽ là expiry_date (datetime object) hoặc None
+    return row[0] if row else None
 
 def deactivate_paid_user(chat_id: int) -> int:
     """
