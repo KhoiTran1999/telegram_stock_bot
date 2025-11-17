@@ -16,6 +16,7 @@ from news_seen_cache import (
     canonicalize_link,
 )
 from redis_client import get_redis
+import hashlib
 
 REDIS_DEBUG = os.getenv("REDIS_DEBUG", "False").lower() in ("1", "true", "yes")
 
@@ -156,7 +157,21 @@ def init_db():
                 plan_name   TEXT DEFAULT 'pro'
                 )
             """)
-
+            
+            # Bảng lưu báo cáo phân tích đã gửi (tránh trùng)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS analysis_report_seen (
+                    id           SERIAL PRIMARY KEY,
+                    symbol       TEXT, -- Chỉ để tham khảo
+                    link         TEXT NOT NULL,
+                    title        TEXT,
+                    published_at TIMESTAMPTZ, -- Lấy từ cột 'date' của vnstock
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    
+                    -- Dùng (link, published_at) làm khóa duy nhất như bạn yêu cầu
+                    UNIQUE(link, published_at) 
+                )
+            """)
 
         conn.commit()
 
@@ -1349,3 +1364,96 @@ def get_all_paid_users_expiry() -> dict[int, datetime.datetime]:
             pass # Bỏ qua nếu parse lỗi
             
     return mapping
+#-----------------------------------
+# ==========================================
+# ANALYSIS REPORT SEEN (TÍNH NĂNG MỚI)
+# ==========================================
+
+# TTL 180 ngày, giống news_seen
+REPORT_SEEN_TTL_SECONDS = 180 * 24 * 60 * 60
+
+def _make_report_seen_key(link: str, pub_date_str: str) -> str:
+    """
+    Tạo key cache Redis.
+    Dùng canonical_link (từ news_seen_cache) và pub_date_str 
+    (theo yêu cầu của bạn) để đảm bảo tính duy nhất.
+    """
+    canonical_link = canonicalize_link(link)
+    h = hashlib.sha256(f"{canonical_link}::{pub_date_str}".encode("utf-8")).hexdigest()[:32]
+    return f"report_seen:{h}"
+
+def has_report_seen(link: str, pub_date_str: str) -> bool:
+    """
+    Kiểm tra xem báo cáo (link + date) đã được xử lý chưa.
+    1. Kiểm tra Redis
+    2. Nếu miss -> Kiểm tra Postgres
+    3. Nếu có -> Warm lại Redis
+    """
+    key = _make_report_seen_key(link, pub_date_str)
+    
+    # 1. Hỏi Redis trước
+    try:
+        r = get_redis()
+        if r.exists(key):
+            return True
+    except Exception as e:
+        redis_debug_log(f"[report_seen] Redis error in has_report_seen: {e}")
+
+    # 2. Nếu Redis miss -> hỏi Postgres
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM analysis_report_seen
+                    WHERE link = %s
+                      AND published_at = %s
+                    LIMIT 1
+                    """,
+                    (link, pub_date_str), # pub_date_str là 'YYYY-MM-DDTHH:MM:SSZ'
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        redis_debug_log(f"[report_seen] DB error in has_report_seen: {e}")
+        return False
+
+    if row:
+        # 3. Warm lại Redis
+        try:
+            r = get_redis()
+            r.set(key, "1", ex=REPORT_SEEN_TTL_SECONDS)
+        except Exception as e:
+            redis_debug_log(f"[report_seen] Redis warm error: {e}")
+        return True
+
+    return False
+
+def mark_report_seen(symbol: str, link: str, title: str, pub_date_str: str):
+    """
+    Đánh dấu 1 báo cáo đã được xử lý (Ghi vào DB và Redis).
+    """
+    key = _make_report_seen_key(link, pub_date_str)
+
+    # 1. Ghi vào Postgres
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO analysis_report_seen (symbol, link, title, published_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (link, published_at) DO NOTHING
+                    """,
+                    (symbol, link, title, pub_date_str),
+                )
+            conn.commit()
+    except Exception as e:
+        redis_debug_log(f"[report_seen] DB error in mark_report_seen: {e}")
+
+    # 2. Đánh dấu trong Redis
+    try:
+        r = get_redis()
+        r.set(key, "1", ex=REPORT_SEEN_TTL_SECONDS)
+    except Exception as e:
+        redis_debug_log(f"[report_seen] Redis error in mark_report_seen: {e}")

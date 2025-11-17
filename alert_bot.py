@@ -68,6 +68,8 @@ from db_utils import (
     cleanup_old_news_seen,
     get_all_news_pref,
     get_user_pro_expiry,
+    has_report_seen,
+    mark_report_seen
 )
 import psutil
 import time
@@ -3897,6 +3899,212 @@ async def financial_Statements_notice_loop():
             )
             await sleep_until(target, vn_tz)
 
+#-------------------------------------------
+def get_next_7am(now: datetime.datetime, vn_tz) -> datetime.datetime:
+    """
+    Tính mốc 07:00 sáng tiếp theo (cho vòng lặp quét báo cáo).
+    - Nếu hôm nay < 07:00 -> 07:00 hôm nay.
+    - Nếu hôm nay >= 07:00 -> 07:00 ngày mai.
+    """
+    # 1. Xác định 07:00 hôm nay
+    target_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
+    
+    # 2. Nếu đã qua 07:00 hôm nay, mục tiêu là 07:00 ngày mai
+    if now >= target_today:
+        target_tomorrow = target_today + datetime.timedelta(days=1)
+        return target_tomorrow
+    
+    # 3. Nếu chưa tới 07:00 hôm nay, mục tiêu là hôm nay
+    else:
+        return target_today
+
+async def analysis_report_loop():
+    """
+    (TÍNH NĂNG MỚI - ĐÃ SỬA)
+    Quét báo cáo phân tích 1 LẦN/NGÀY lúc 07:00 SÁNG.
+    - Chỉ quét các mã trong watchlist của Pro user.
+    - Dùng (link + date) để kiểm tra trùng lặp trong DB/Redis.
+    - Gửi thông báo cho user (Pro) có liên quan.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+    
+    # Giống logic news_seen, chúng ta cần warm-up lần đầu
+    # để tránh spam user bằng 10 báo cáo cũ.
+    warmed_up = False 
+
+    while True:
+        loop_id += 1
+        loop_label = f"[{INSTANCE_ID}][REPORT_SCAN {loop_id}]"
+        now = datetime.datetime.now(vn_tz)
+
+        if not BOT_ACTIVE:
+            log.info(f"{loop_label} Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+            
+        try:
+            # ------------------------------------------------
+            # ⭐️ PHẦN LOGIC CHỜ (ĐÃ THAY ĐỔI) ⭐️
+            # ------------------------------------------------
+            
+            # 1. Tính toán mốc 07:00 tiếp theo
+            target_7am = get_next_7am(now, vn_tz)
+            log.info(f"{loop_label} Đang chờ cho đến {target_7am.strftime('%Y-%m-%d %H:%M')}.")
+            
+            # 2. Ngủ cho đến 07:00 (dùng hàm sleep_until đã có)
+            await sleep_until(target_7am, vn_tz)
+            
+            # 3. Kiểm tra lại sau khi ngủ dậy (quan trọng!)
+            if not BOT_ACTIVE:
+                log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
+                continue # Vòng lặp while True sẽ chạy lại, tính toán sleep tiếp
+            
+            log.info(f"{loop_label} 07:00! Bắt đầu quét báo cáo...")
+
+            # ------------------------------------------------
+            # ⭐️ PHẦN LOGIC QUÉT (Giữ nguyên) ⭐️
+            # ------------------------------------------------
+
+            # 1. GATHER: Lấy danh sách Pro user và watchlist
+            pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
+            all_watch = await asyncio.to_thread(get_all_watch)
+
+            # 2. MAP: Tạo set mã Pro và bản đồ user
+            pro_symbol_set: set[str] = set()
+            symbol_to_chats_map: dict[str, list[int]] = {}
+
+            for chat_key, user_block in all_watch.items():
+                try:
+                    chat_id = int(chat_key)
+                except Exception:
+                    continue
+                
+                # Chỉ xử lý nếu là Admin hoặc Pro user
+                if chat_id == ADMIN_ID or chat_id in pro_chat_ids:
+                    watch_list = user_block.get("list", []) or []
+                    for sym in watch_list:
+                        s = str(sym).upper().strip()
+                        if s and len(s) == 3: # Chỉ quét mã 3 chữ
+                            pro_symbol_set.add(s)
+                            symbol_to_chats_map.setdefault(s, []).append(chat_id)
+
+            if not pro_symbol_set:
+                log.info(f"{loop_label} Không có mã Pro nào, bỏ qua lần quét này.")
+                continue # Vòng lặp sẽ ngủ đến 7h sáng mai
+
+            log.info(f"{loop_label} Bắt đầu quét báo cáo cho {len(pro_symbol_set)} mã Pro.")
+            
+            # Nơi lưu kết quả: {chat_id: [list_of_messages]}
+            reports_to_send_map: dict[int, list[str]] = {}
+
+            # 3. FETCH & PROCESS: Lặp qua từng mã (thay vì từng user)
+            for symbol in sorted(pro_symbol_set):
+                if not BOT_ACTIVE: # Kiểm tra lại nếu vòng lặp quá dài
+                    log.info(f"{loop_label} Bot TẮT giữa chừng, dừng quét.")
+                    break
+                
+                try:
+                    # Dùng cú pháp v1.x (sync) của bạn
+                    company = Company(symbol=symbol)
+                    df = await asyncio.to_thread(company.reports)
+                    
+                    if df is None or df.empty:
+                        log.info(f"{loop_label} Không có báo cáo cho {symbol}.")
+                        await asyncio.sleep(3) # Nghỉ 3s giữa các mã
+                        continue
+                    
+                    log.info(f"{loop_label} Tìm thấy {len(df)} báo cáo cho {symbol}. Đang lọc...")
+
+                    # 4. CHECK & MARK: Lặp qua các báo cáo của mã này
+                    for row in df.itertuples():
+                        title = getattr(row, "name", "")
+                        link = getattr(row, "link", "")
+                        date_str = getattr(row, "date", "") # Đây là '2025-11-04T00:00:00Z'
+                        
+                        if not link or not date_str:
+                            continue # Bỏ qua nếu thiếu dữ liệu
+
+                        # Kiểm tra xem đã gửi chưa (dùng hàm mới)
+                        is_seen = await asyncio.to_thread(has_report_seen, link, date_str)
+                        
+                        if not is_seen:
+                            # BÁO CÁO MỚI!
+                            
+                            # A. Đánh dấu đã thấy (DB + Redis)
+                            await asyncio.to_thread(
+                                mark_report_seen, symbol, link, title, date_str
+                            )
+                            
+                            # B. Kiểm tra logic "Warm-up"
+                            if not warmed_up:
+                                log.info(f"{loop_label} (Warm-up) Đã đánh dấu: {symbol} - {title}")
+                            else:
+                                log.info(f"{loop_label} (MỚI) Phát hiện: {symbol} - {title}")
+                                
+                                # Format tin nhắn
+                                msg = (
+                                    f"📑 *Báo cáo phân tích mới cho {symbol}:*\n\n"
+                                    f"*{title}*\n\n"
+                                    f"🔗 Link chi tiết: {link}"
+                                )
+                                
+                                # Tìm các Pro user theo dõi mã này
+                                chat_ids_to_notify = symbol_to_chats_map.get(symbol, [])
+                                for cid in chat_ids_to_notify:
+                                    reports_to_send_map.setdefault(cid, []).append(msg)
+                            
+                            await asyncio.sleep(0.2) # Nghỉ giữa các báo cáo
+
+                except Exception as e:
+                    log.warning(f"{loop_label} Lỗi khi xử lý mã {symbol}: {e}")
+
+                await asyncio.sleep(3) # Nghỉ 3s giữa các mã
+            
+            # Hết vòng lặp mã, đánh dấu đã warm-up
+            warmed_up = True
+            
+            # 5. BROADCAST: Gửi tin nhắn đã gom
+            if reports_to_send_map:
+                log.info(f"{loop_label} Bắt đầu gửi {len(reports_to_send_map)} tin nhắn đã gom...")
+                for chat_id, messages in reports_to_send_map.items():
+                    try:
+                        # Gửi header
+                        await send_md(
+                            tg_app.bot, 
+                            chat_id, 
+                            f"🔔 Bạn có *{len(messages)}* báo cáo phân tích mới liên quan đến danh mục Pro:"
+                        )
+                        await asyncio.sleep(0.5)
+                        
+                        # Gửi từng tin (im lặng)
+                        for msg_text in messages:
+                            await send_md(
+                                tg_app.bot, 
+                                chat_id, 
+                                msg_text,
+                                disable_notification=True # Gửi im lặng
+                            )
+                            await asyncio.sleep(0.5)
+                            
+                    except Exception as e:
+                        log.warning(f"{loop_label} Lỗi gửi tin cho {chat_id}: {e}")
+            else:
+                log.info(f"{loop_label} Không có báo cáo mới nào để gửi.")
+
+        except Exception as e:
+            log.error(f"{loop_label} Lỗi nghiêm trọng: {e}")
+            # Nếu lỗi, ngủ 10 phút rồi thử lại (tránh sập loop)
+            await asyncio.sleep(600)
+        
+        # 6. KẾT THÚC VÒNG LẶP
+        # (Không cần sleep, vòng lặp while True sẽ quay lại 
+        # và gọi get_next_7am, tự động ngủ ~24 giờ)
+        log.info(f"{loop_label} Hoàn tất lần quét 07:00.")
+
+# (Hàm restore_reminder_loop() của bạn bắt đầu từ đây)
+
+#-------------------------------------------
 async def restore_reminder_loop():
     """
     Nhắc admin vào ngày 7 hằng tháng về việc backup/restore DB.
@@ -4441,21 +4649,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Theo dõi danh sách cổ phiếu bạn quan tâm\n"
         "• Nhận cảnh báo giá trong giờ giao dịch\n"
         "• Nhận tổng kết cuối phiên và tin tức liên quan đến danh mục\n"
-        "• Với gói Pro: có thêm báo cáo AI, tổng hợp top cổ phiếu ngành và cảnh báo VN30F1M\n\n"
+        "• *Với gói Pro:* có thêm báo cáo AI, tổng hợp top cổ phiếu ngành và cảnh báo VN30F1M và quét báo cáo phân tích mới (07:00)\n\n"
         "*Bắt đầu trong 3 bước đơn giản:*\n"
         "1. Thêm mã bạn đang theo dõi bằng lệnh `/add <MÃ>`\n"
-        "2. Dùng `/list` để xem lại danh sách hiện tại\n"
+        "2. Dùng /list để xem lại danh sách hiện tại\n"
         "3. Giữ Telegram, bot sẽ tự gửi cảnh báo và tổng kết cho bạn\n\n"
         "*Một vài lệnh nên thử ngay:*\n"
         "• `/add <MÃ>` - Thêm mã vào danh sách\n"
         "• `/remove <MÃ>` - Xoá mã khỏi danh sách\n"
-        "• `/list` - Xem các mã đang theo dõi\n"
+        "• /list - Xem các mã đang theo dõi\n"
         "• `/news_on`/`/news_off` - Bật tắt nhận tin tức theo danh mục\n"
-        "• `/report` - Xin báo cáo phân tích danh mục (PRO)\n"
+        "• /report - Xin báo cáo phân tích danh mục (PRO)\n"
         "• `/info <MÃ>` - Tra cứu hồ sơ chi tiết doanh nghiệp (PRO)\n"
         "• `/screener_value` - Xem danh sách cổ phiếu giá trị trong ngày (PRO)\n"
         "• `/vn30f1m_on` - `/vn30f1m_off` - Bật tắt cảnh báo chỉ số VN30F1M (PRO)\n"
-        "• `/help` - Xem đầy đủ tính năng và toàn bộ lệnh\n\n"
+        "• /help - Xem đầy đủ tính năng và toàn bộ lệnh\n\n"
         "😎 Có vấn đề gì thì liên hệ với admin @KhoiTran99 nhé.\n"
         "Chúc bạn đầu tư hiệu quả cùng KT StockBot! 🚀"
 )
@@ -4482,7 +4690,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "────────────────────\n"
         "⌨️ *1. LỆNH CƠ BẢN*\n"
         "• `/add <MÃ>` – Thêm mã vào danh sách theo dõi\n"
-        "• `/list` – Xem danh sách đang theo dõi\n"
+        "• /list – Xem danh sách đang theo dõi\n"
         "• `/remove <MÃ>` – Xoá mã khỏi danh sách\n"
 
         "────────────────────\n"
@@ -4490,14 +4698,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Cảnh báo giá realtime trong giờ giao dịch\n"
         "• Nhắc mở/đóng phiên & gửi tổng kết cuối phiên\n"
         "• Cảnh báo khi có báo cáo tài chính mới (PRO)\n"
-
+        "• *Quét báo cáo phân tích mới* lúc 07:00 sáng (PRO)\n"
         "────────────────────\n"
         "🏢 *3. HỒ SƠ DOANH NGHIỆP (PRO)*\n"
         "• `/info <MÃ>` – Tra cứu hồ sơ cơ bản của doanh nghiệp bằng AI\n"
 
         "────────────────────\n"
         "📊 *4. BÁO CÁO DANH MỤC (PRO)*\n"
-        "• `/report` – Tạo báo cáo phân tích danh mục bằng AI\n"
+        "• /report – Tạo báo cáo phân tích danh mục bằng AI\n"
         "• Nhận báo cáo tuần tự động vào Chủ Nhật nếu chưa chạy `report`\n"
 
         "────────────────────\n"
@@ -4523,8 +4731,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ *8. TIỆN ÍCH KHÁC*\n"
         # 🔼 KẾT THÚC THÊM MỚI / SỬA ĐỔI 🔼
         
-        "• `/start` – Giới thiệu bot\n"
-        "• `/help` – Xem danh sách đầy đủ tính năng\n\n"
+        "• /start – Giới thiệu bot\n"
+        "• /help – Xem danh sách đầy đủ tính năng\n\n"
 
         "Nếu bạn mới dùng lần đầu, hãy bắt đầu với: `/add <MÃ>`.\n"
         "😎 Có vấn đề gì thì liên hệ với admin @KhoiTran99 nhé.\n"
@@ -6581,6 +6789,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     #--------------------------------------
                     MAIN_LOOP.create_task(session_notice_loop()),
                     MAIN_LOOP.create_task(weekly_report_loop()),
+                    MAIN_LOOP.create_task(analysis_report_loop()),
                     MAIN_LOOP.create_task(daily_value_screener_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
                     MAIN_LOOP.create_task(restore_reminder_loop()),
