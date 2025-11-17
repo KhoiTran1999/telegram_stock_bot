@@ -69,7 +69,10 @@ from db_utils import (
     get_all_news_pref,
     get_user_pro_expiry,
     has_report_seen,
-    mark_report_seen
+    mark_report_seen,
+    get_recent_bctc_notified,
+    get_recent_analysis_reports,
+    get_recent_news_seen,
 )
 import psutil
 import time
@@ -4102,6 +4105,195 @@ async def analysis_report_loop():
         # và gọi get_next_7am, tự động ngủ ~24 giờ)
         log.info(f"{loop_label} Hoàn tất lần quét 07:00.")
 
+async def morning_digest_loop():
+    """
+    Gộp hoạt động của các loop:
+    - BCTC đã thông báo
+    - Báo cáo phân tích mới
+    - Tin vĩ mô
+    - Tin chuyên ngành
+
+    và gửi *một* bản tin tổng hợp cho ADMIN_ID lúc ~07:00 mỗi ngày.
+    (Không thay đổi hành vi gửi hiện tại tới user – đây là bản tin cho admin.)
+    """
+    if ADMIN_ID is None:
+        log.warning("[MORNING_DIGEST] ADMIN_ID chưa được cấu hình, dừng loop.")
+        return
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+
+    while True:
+        loop_id += 1
+        loop_label = f"[{INSTANCE_ID}][MORNING_DIGEST {loop_id}]"
+        now_local = datetime.datetime.now(vn_tz)
+
+        if not BOT_ACTIVE:
+            log.info(f"{loop_label} Bot đang TẮT, sleep 60s.")
+            await asyncio.sleep(60)
+            continue
+
+        # 1️⃣ Đợi tới 07:00 sáng gần nhất
+        target_7am = get_next_7am(now_local, vn_tz)
+        log.info(f"{loop_label} Đang chờ đến {target_7am.strftime('%Y-%m-%d %H:%M')} (VN).")
+        await sleep_until(target_7am, vn_tz)
+
+        if not BOT_ACTIVE:
+            log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
+            continue
+
+        # 2️⃣ Thu thập dữ liệu 24h gần nhất (tính theo UTC cho DB)
+        try:
+            now_local = datetime.datetime.now(vn_tz)
+            now_utc = now_local.astimezone(datetime.timezone.utc)
+            since_utc = now_utc - datetime.timedelta(hours=24)
+
+            (
+                bctc_rows,
+                report_rows,
+                macro_rows,
+                spec_rows,
+            ) = await asyncio.gather(
+                asyncio.to_thread(get_recent_bctc_notified, since_utc),
+                asyncio.to_thread(get_recent_analysis_reports, since_utc),
+                asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
+                asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
+            )
+
+            # 3️⃣ Build nội dung bản tin
+            lines: list[str] = []
+            lines.append("🌅 *Bản tin 7:00 sáng – StockBot Daily Digest*")
+            lines.append("")
+            lines.append(
+                f"_Thời gian tổng hợp: 24 giờ gần nhất đến {now_local.strftime('%Y-%m-%d %H:%M')} (giờ VN)_"
+            )
+            lines.append("")
+
+            # --- BCTC ---
+            if bctc_rows:
+                lines.append(f"*1. BCTC đã thông báo ({len(bctc_rows)} mã):*")
+                max_show = 10
+                for (symbol, year, quarter, notified_at) in bctc_rows[:max_show]:
+                    try:
+                        notified_local = notified_at.astimezone(vn_tz)
+                        ts = notified_local.strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        ts = ""
+                    if ts:
+                        lines.append(f"• *{symbol}* – Quý {quarter}/{year} _(gửi {ts})_")
+                    else:
+                        lines.append(f"• *{symbol}* – Quý {quarter}/{year}")
+                if len(bctc_rows) > max_show:
+                    lines.append(f"_… và {len(bctc_rows) - max_show} mã khác._")
+            else:
+                lines.append("*1. BCTC:* Không có BCTC mới trong 24h qua.")
+            lines.append("")
+
+            # --- Báo cáo phân tích ---
+            if report_rows:
+                lines.append(f"*2. Báo cáo phân tích mới ({len(report_rows)} báo cáo):*")
+                max_show = 8
+                for (symbol, title, link, published_at, created_at) in report_rows[:max_show]:
+                    symbol = (symbol or "").upper()
+                    title = title or ""
+                    link = link or ""
+                    if published_at:
+                        try:
+                            pub_local = published_at.astimezone(vn_tz)
+                            pub_str = pub_local.strftime("%Y-%m-%d")
+                        except Exception:
+                            pub_str = ""
+                    else:
+                        pub_str = ""
+                    bullet = f"• *{symbol}*: {title}"
+                    if pub_str:
+                        bullet += f" _(ngày {pub_str})_"
+                    if link:
+                        bullet += f"\n  🔗 {link}"
+                    lines.append(bullet)
+                if len(report_rows) > max_show:
+                    lines.append(f"_… và {len(report_rows) - max_show} báo cáo khác._")
+            else:
+                lines.append("*2. Báo cáo phân tích:* Không có báo cáo mới trong 24h.")
+            lines.append("")
+
+            # --- Tin vĩ mô ---
+            if macro_rows:
+                lines.append(f"*3. Tin vĩ mô nổi bật ({len(macro_rows)} bài):*")
+                max_show = 5
+                for (title, link, published, created_at) in macro_rows[:max_show]:
+                    title = title or ""
+                    link = link or ""
+                    if published:
+                        try:
+                            pub_local = published.astimezone(vn_tz)
+                            pub_str = pub_local.strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pub_str = ""
+                    else:
+                        pub_str = ""
+                    bullet = f"• {title}"
+                    if pub_str:
+                        bullet += f"\n  _({pub_str})_"
+                    if link:
+                        bullet += f"\n  🔗 {link}"
+                    lines.append(bullet)
+                if len(macro_rows) > max_show:
+                    lines.append(f"_… và {len(macro_rows) - max_show} tin vĩ mô khác._")
+            else:
+                lines.append("*3. Tin vĩ mô:* Không có tin mới được lưu trong 24h.")
+            lines.append("")
+
+            # --- Tin chuyên ngành ---
+            if spec_rows:
+                lines.append(f"*4. Tin chuyên ngành (chuyên mục RSS) – {len(spec_rows)} bài:*")
+                max_show = 5
+                for (title, link, published, created_at) in spec_rows[:max_show]:
+                    title = title or ""
+                    link = link or ""
+                    if published:
+                        try:
+                            pub_local = published.astimezone(vn_tz)
+                            pub_str = pub_local.strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pub_str = ""
+                    else:
+                        pub_str = ""
+                    bullet = f"• {title}"
+                    if pub_str:
+                        bullet += f"\n  _({pub_str})_"
+                    if link:
+                        bullet += f"\n  🔗 {link}"
+                    lines.append(bullet)
+                if len(spec_rows) > max_show:
+                    lines.append(f"_… và {len(spec_rows) - max_show} tin chuyên ngành khác._")
+            else:
+                lines.append("*4. Tin chuyên ngành:* Không có tin mới được lưu trong 24h.")
+            lines.append("")
+
+            lines.append(
+                "🤖 _Đây là bản tin tổng hợp nội bộ cho admin, dựa trên các loop BCTC / báo cáo phân tích / tin tức hiện có._"
+            )
+
+            text = "\n".join(lines)
+
+            # 4️⃣ Gửi cho ADMIN_ID
+            try:
+                await send_md(tg_app.bot, ADMIN_ID, text)
+                log.info(f"{loop_label} Đã gửi morning digest cho ADMIN_ID={ADMIN_ID}.")
+            except Exception as e:
+                log.warning(f"{loop_label} Lỗi khi gửi morning digest: {e}")
+
+        except Exception as e:
+            log.error(f"{loop_label} Lỗi khi build morning digest: {e}")
+            # Tránh sập loop, ngủ 10 phút rồi tiếp tục
+            await asyncio.sleep(600)
+
+        # Không cần sleep thêm: vòng while sẽ quay lại,
+        # tính lại get_next_7am() và tự ngủ cho lần 7:00 tiếp theo.
+        log.info(f"{loop_label} Hoàn tất một vòng morning digest.")
+
+
 # (Hàm restore_reminder_loop() của bạn bắt đầu từ đây)
 
 #-------------------------------------------
@@ -6792,6 +6984,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(analysis_report_loop()),
                     MAIN_LOOP.create_task(daily_value_screener_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
+                    MAIN_LOOP.create_task(morning_digest_loop()),
                     MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),

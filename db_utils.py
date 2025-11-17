@@ -1457,3 +1457,72 @@ def mark_report_seen(symbol: str, link: str, title: str, pub_date_str: str):
         r.set(key, "1", ex=REPORT_SEEN_TTL_SECONDS)
     except Exception as e:
         redis_debug_log(f"[report_seen] Redis error in mark_report_seen: {e}")
+
+#----------------------------------------------------------
+# ==========================================
+# MORNING DIGEST HELPERS (cho ADMIN)
+# ==========================================
+
+def get_recent_bctc_notified(since_dt):
+    """
+    Lấy danh sách BCTC đã thông báo từ since_dt tới nay
+    (dựa trên bảng bctc_notified).
+    Trả về list[ (symbol, year, quarter, notified_at) ].
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, year, quarter, notified_at
+                FROM bctc_notified
+                WHERE notified_at >= %s
+                ORDER BY notified_at DESC
+                """,
+                (since_dt,),
+            )
+            rows = cur.fetchall()
+    return rows
+
+
+def get_recent_analysis_reports(since_dt):
+    """
+    Lấy các báo cáo phân tích đã được đánh dấu (analysis_report_seen)
+    trong khoảng thời gian gần đây.
+    Trả về list[ (symbol, title, link, published_at, created_at) ].
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT symbol, title, link, published_at, created_at
+                FROM analysis_report_seen
+                WHERE created_at >= %s
+                ORDER BY published_at DESC NULLS LAST, created_at DESC
+                """,
+                (since_dt,),
+            )
+            rows = cur.fetchall()
+    return rows
+
+
+def get_recent_news_seen(feed_type, since_dt):
+    """
+    Lấy tin tức đã ghi trong bảng news_seen cho feed_type
+    ('MACRO' hoặc 'SPECIALIZED') từ since_dt đến nay.
+    Trả về list[ (title, link, published, created_at) ].
+    """
+    ft = (feed_type or "").upper()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT title, link, published, created_at
+                FROM news_seen
+                WHERE feed_type = %s
+                  AND created_at >= %s
+                ORDER BY published DESC NULLS LAST, created_at DESC
+                """,
+                (ft, since_dt),
+            )
+            rows = cur.fetchall()
+    return rows
