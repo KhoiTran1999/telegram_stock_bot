@@ -229,12 +229,9 @@ RSS_FEEDS_SPECIALIZED = {
 RSS_FEEDS_MACRO = [
     "https://vneconomy.vn/tin-moi.rss",
     "https://vneconomy.vn/tieu-diem.rss",
-    "https://vietstock.vn/3355/chung-khoan/cau-chuyen-dau-tu.rss",
     "https://vietstock.vn/143/chung-khoan/chinh-sach.rss",
-    "https://vietstock.vn/757/tai-chinh/ngan-hang.rss",
     "https://vietstock.vn/16312/tai-chinh/tai-san-so.rss",
     "https://vietstock.vn/761/kinh-te/vi-mo.rss",
-    "https://vietstock.vn/772/the-gioi/tai-chinh-quoc-te.rss",
 ]
 
 # Chu kỳ quét RSS (giây)
