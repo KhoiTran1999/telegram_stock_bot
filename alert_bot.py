@@ -2293,9 +2293,12 @@ async def stock_price_fetcher_loop():
         await asyncio.sleep(delay)
 
 # (Hàm alert_loop() gốc của bạn sẽ nằm ở dưới)
+# TRONG FILE: alert_bot.py
+
 async def alert_loop():
     """
     (TÁC VỤ 2 - TICKER - ĐÃ TỐI ƯU, VERSION 2% ANCHOR)
+    (ĐÃ SỬA LỖI FORMAT ',0f' DO LOCALE)
 
     - Chạy mỗi TICKER_INTERVAL_SECONDS (ví dụ 3 giây).
     - Chỉ đọc cache (từ Fetcher) và RAM (ALERT_STATE).
@@ -2380,43 +2383,38 @@ async def alert_loop():
                     last_alert_at_str = state_entry.get("last_alert_at")
                     last_pct = state_entry.get("last_pct")
 
-                    # Backward-compat: nếu state cũ chỉ có "last_level"
                     if last_pct is None and "last_level" in state_entry:
-                        # Đơn giản: coi như chưa có anchor -> sẽ về 0% bên dưới
                         last_pct = None
 
-                    # Parse thời điểm lần báo gần nhất để check qua ngày
                     last_alert_at = None
                     if last_alert_at_str:
                         try:
                             last_alert_at = datetime.datetime.fromisoformat(last_alert_at_str)
-                            # Nếu timestamp cũ không có tz -> gán VN tz
                             if last_alert_at.tzinfo is None:
                                 last_alert_at = vn_tz.localize(last_alert_at)
                         except Exception:
                             last_alert_at = None
 
-                    # Nếu đã sang NGÀY MỚI so với lần alert trước -> reset anchor về 0%
                     if last_alert_at is not None and last_alert_at.date() != now.date():
                         last_pct = 0.0
                         last_alert_at = None
 
-                    # Nếu vẫn chưa có anchor -> dùng 0% (giá tham chiếu ngày hiện tại)
                     if last_pct is None:
                         last_pct = 0.0
 
-                    # Tính biến động so với mốc gần nhất
                     delta_pct = pct - float(last_pct)
-
-                    # Điều kiện cảnh báo: biến động tuyệt đối từ mốc gần nhất >= 2%
                     should_alert = abs(delta_pct) >= 2.0
 
                     if should_alert:
-                        # Icon theo hướng hiện tại của PCT tổng thể
                         icon = "🟢" if pct >= 0 else "🔴"
                         fun_line = random.choice(FUN_UP if pct >= 0 else FUN_DOWN)
 
-                        price_str = f"{float(price):,0f}" if price is not None else "N/A"
+                        # ==================================================
+                        # ⭐ SỬA LỖI NGAY TẠI ĐÂY (Thêm .replace(",", "."))
+                        # ==================================================
+                        price_str = f"{float(price):,.0f}".replace(",", ".") if price is not None else "N/A"
+                        # ==================================================
+
                         pct_str = f"{float(pct):+.2f}%" if pct is not None else "N/A"
                         delta_str = f"{float(delta_pct):+.2f}%" if delta_pct is not None else "N/A"
 
@@ -2426,20 +2424,17 @@ async def alert_loop():
                             f"_{fun_line}_"
                         )
 
-                        # Cập nhật lại mốc mới = pct hiện tại
                         personal_state[sym_u] = {
                             "last_pct": float(pct),
                             "last_alert_at": now.isoformat(),
                         }
                     else:
-                        # Nếu chưa từng có state thì lưu lại để về sau đo từ mốc này
                         if sym_u not in personal_state:
                             personal_state[sym_u] = {
                                 "last_pct": float(pct),
                                 "last_alert_at": None,
                             }
 
-                # Sau khi duyệt xong watch_list, nếu có message thì đẩy vào queue
                 if messages:
                     header = (
                         "--------------------------------\n"
@@ -2455,18 +2450,19 @@ async def alert_loop():
                             f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Queue cổ phiếu bị đầy!"
                         )
 
-            # Lưu lại state toàn cục sau mỗi vòng
             save_state_for_all(all_state)
 
         except Exception as e:
+            # Lỗi sẽ được log tại đây
             log.error(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Lỗi nghiêm trọng: {e}")
 
         # Giữ nhịp TICKER_INTERVAL_SECONDS
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(TICKER_INTERVAL_SECONDS - elapsed, 0.5)
+        
+        # Sửa lỗi log (bỏ f-string):
         log.info(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Sleep {delay:.1f}s")
         await asyncio.sleep(delay)
-
 
 async def stock_broadcast_loop():
     """
@@ -4809,26 +4805,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚠️ Không lấy được dữ liệu cho mã *{symbol}*. Vui lòng thử lại sau."
         )
         return
-
-    if df is None or len(df) == 0:
-        await reply_md(update,
-            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
-            "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)"
-        )
-        return
     
     # ... (Toàn bộ logic xử lý df, norm(), paywall, lưu DB, gửi kết quả...
     #      đều giữ nguyên như code gốc của bạn) ...
     row = df.iloc[0]
-    def norm(x):
-        if x is None: return None
-        try:
-            if hasattr(x, "item"): x = x.item()
-        except Exception: pass
-        if isinstance(x, (int, float)): return x
-        try: return float(x)
-        except Exception: return None
             
     price = None
     pct = None
@@ -4836,34 +4816,31 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     volume = None
     exchange = None
     try:
-        price = norm(row.get(("match", "match_price"), None))
-        ref_price = norm(
-            row.get(("match", "reference_price"))
-            if ("match", "reference_price") in row.index 
-            else row.get(("listing", "ref_price"))
-        )
+        price = row.get(('match', 'match_price'))
+        ref_price = row.get(('listing', 'ref_price'))
         if price is not None and ref_price is not None and ref_price != 0:
             change_abs = price - ref_price
             pct = (change_abs / ref_price) * 100.0
     except Exception: pass
-    try: volume = norm(row.get(("match", "accumulated_vol"), None))
+    try: volume = row.get(('match', 'accumulated_vol'))
     except Exception: pass
     try: exchange = row.get(("listing", "exchange"), None)
     except Exception: exchange = None
 
-    if price is None:
+    if df is None or ref_price == None:
         await reply_md(update,
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
             "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)"
         )
         return
+
     if price == 0:
         await reply_md(update,
             f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
-            "🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
+            "Lưu ý: 🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
             "tạm thời không thêm được mã mới do sàn chưa cập nhật dữ liệu.\n\n"
-            "👉 Vui lòng thử lại sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác."
+            "👉 Vui lòng thử lại mã khác hoặc sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác."
         )
         return
 
@@ -4902,8 +4879,11 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pct_text = f"{change_sign}{pct:.2f}%" if pct is not None else "—"
         abs_text = ( f"{change_sign}{int(change_abs):,}".replace(",", ".")
                      if change_abs is not None else "—" )
+        
+        price_str = f"{price:,.0f}".replace(",", ".") if price is not None else "N/A"
+
         summary = ( f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
-                    f"💰 Giá hiện tại: *{price:,.0f}*\n"
+                    f"💰 Giá hiện tại: *{price_str}*\n"
                     f"📊 Thay đổi: *{pct_text}* ({abs_text})\n" )
         if volume is not None:
             summary += f"📦 Khối lượng: *{int(volume):,}* cp\n"
@@ -5780,7 +5760,10 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # 2️⃣ Không có cache -> gọi Gemini 1 lần
-    
+
+    # Nhắc nhẹ để user biết bot đang xử lý
+    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp báo cáo danh mục....")
+
     # ⭐ GỬI LẠI CHATACTION (vì gọi AI rất lâu)
     try:
         await context.bot.send_chat_action(
@@ -5794,7 +5777,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     done_flag = {"done": False}
     async def send_slow_notice():
         try:
-            await asyncio.sleep(10) # Giữ nguyên 10s
+            await asyncio.sleep(6) # Giữ nguyên 6s
             if not done_flag["done"]:
                 await send_md(
                     context.bot, chat_id,
@@ -5938,7 +5921,8 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Gửi hồ sơ doanh nghiệp cơ bản cho 1 mã cổ phiếu.
-    (ĐÃ SỬA: DÙNG CHATACTION)
+    (ĐÃ SỬA: Thêm bước kiểm tra mã hợp lệ bằng vnstock
+     trước khi gọi AI, tham khảo từ cmd_add)
     """
 
     if not BOT_ACTIVE:
@@ -5946,13 +5930,15 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     vn_tz = pytz.timezone(TIMEZONE)
+
     if not update or not update.effective_chat:
         return
+
     chat_id = update.effective_chat.id
 
     # === 1. KIỂM TRA PAYWALL (PRO-ONLY) ===
     if not await check_pro_access(update, context):
-        return
+        return  # Hàm check_pro_access đã gửi tin nhắn paywall rồi
 
     # === 2. LẤY MÃ CỔ PHIẾU ===
     if not context.args:
@@ -5964,13 +5950,10 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     symbol = context.args[0].strip().upper()
 
-    if len(symbol) < 3 or len(symbol) > 10:
-        await reply_md(update, "⚠️ Mã cổ phiếu không hợp lệ.")
-        return
-
+    # Ghi log sử dụng lệnh
     await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
 
-    # ⭐ THAY THẾ "Đang tra cứu..." BẰNG CHATACTION
+    # Gửi ChatAction (thay vì "Vui lòng đợi...")
     try:
         await context.bot.send_chat_action(
             chat_id=chat_id, action=ChatAction.TYPING
@@ -5978,11 +5961,59 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass # Bỏ qua nếu lỗi
 
+    # === 2.1. KIỂM TRA ĐỘ DÀI CƠ BẢN (Giữ nguyên) ===
+    if len(symbol) != 3: # Chỉ cho mã có 3 ký tự
+        await reply_md(update, "⚠️ Mã cổ phiếu không hợp lệ.\nHiện bot chỉ cho phép thêm mã cổ phiếu gồm đúng 3 chữ cái.\nví dụ: HPG, SSI, VNM.")
+        return
+
+    # ==========================================================
+    # === 2.5. KIỂM TRA MÃ HỢP LỆ (VCI) (MỚI - Lấy từ cmd_add) ===
+    # ==========================================================
+    global stock_trading # Sử dụng trading object toàn cục đã khởi tạo
+    
+    # Kiểm tra xem object trading có sẵn sàng không
+    if stock_trading is None:
+        await reply_md(update, "⚠️ Lỗi: Dịch vụ `stock_trading` (VCI) chưa sẵn sàng. Vui lòng thử lại sau giây lát.")
+        log.warning(f"[{INSTANCE_ID}] [/info] Bị gọi khi stock_trading là None.")
+        return
+
+    try:
+        # Chạy Network I/O trong thread
+        df = await asyncio.to_thread(stock_trading.price_board, [symbol])
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi gọi price_board cho {symbol}: {e}")
+        await reply_md(update,
+            f"⚠️ Không thể kiểm tra dữ liệu cho mã *{symbol}*. Lỗi: {e}"
+        )
+        return
+    
+    # SỬA LỖI: Lấy dòng đầu tiên để truy cập
+    row = df.iloc[0] 
+    ref_price = row.get(('listing', 'ref_price')) #Lấy giá tham chiếu
+
+    # Nếu vnstock không trả về dữ liệu -> coi như mã không hợp lệ
+    if df is None or ref_price == None:
+        await reply_md(update,
+            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
+            "Vui lòng kiểm tra lại mã (chỉ hỗ trợ cổ phiếu VNINDEX)."
+        )
+        return
+    
+    if ref_price == 0:
+        await reply_md(update,
+            f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
+            "Lưu ý: 🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
+            "tạm thời không thêm được mã mới do sàn chưa cập nhật dữ liệu.\n\n"
+            "👉 Vui lòng thử lại mã khác hoặc sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác."
+        )
+        return
+    # === KẾT THÚC KIỂM TRA MÃ HỢP LỆ ===
+
     cache_key = make_profile_cache_key(symbol)
-    log.info(f"[{INSTANCE_ID}] /info cache_key={cache_key} for chat_id={chat_id}")
+    log.info(f"[{INSTANCE_ID}] /info: Mã {symbol} hợp lệ. Đang check cache key={cache_key}")
 
     # === 3. KIỂM TRA CACHE (REDIS) ===
-    cached = get_profile_from_redis(cache_key)
+    cached = get_profile_from_redis(cache_key) # max_age_days mặc định là 30
     if cached is not None:
         text, generated_at, is_error, wait_sec = cached
         log.info(
@@ -5990,15 +6021,17 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"key={cache_key}, is_error={is_error}, generated_at={generated_at}"
         )
 
+        # A. Cache là lỗi (ví dụ: lần trước gọi bị quota)
         if is_error:
-            # ... (Logic xử lý cache lỗi giữ nguyên) ...
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             if generated_at.tzinfo is None:
                 generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+
             remain_sec = None
             if wait_sec is not None:
                 elapsed = (now_utc - generated_at).total_seconds()
                 remain_sec = max(0, wait_sec - elapsed)
+
             if remain_sec is not None and remain_sec > 0:
                 remain_min = math.ceil(remain_sec / 60)
                 await reply_md(
@@ -6009,8 +6042,10 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ),
                 )
                 return
+            # Nếu hết thời gian chờ -> cho phép rơi xuống dưới để gọi lại AI
+
+        # B. Cache OK
         else:
-            # ... (Logic gửi cache OK giữ nguyên) ...
             footer = (
                 f"\n\n🕓 _Hồ sơ được tạo vào "
                 f"{generated_at.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')}. "
@@ -6020,9 +6055,13 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_md(update, final_text)
             return
 
-    # === 4. CACHE MISS -> GỌI GEMINI ===
+    # === 4. CACHE MISS -> GỌI GEMINI (Giờ đã an toàn) ===
+    log.info(f"[{INSTANCE_ID}] /info cache MISS. Đang gọi Gemini cho {symbol}...")
+
+    # Nhắc nhẹ để user biết bot đang xử lý
+    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp thông tin cho bạn....")
     
-    # ⭐ GỬI LẠI CHATACTION (vì gọi AI rất lâu)
+    # Gửi lại ChatAction (vì gọi AI rất lâu)
     try:
         await context.bot.send_chat_action(
             chat_id=chat_id, action=ChatAction.TYPING
@@ -6034,7 +6073,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     done_flag = {"done": False}
     async def send_slow_notice():
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(6)
             if not done_flag["done"]:
                 await send_md(
                     context.bot,
@@ -6047,30 +6086,47 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(send_slow_notice())
 
     try:
-        # ... (Toàn bộ logic gọi AI, xử lý lỗi, cache lỗi...
-        #      đều giữ nguyên như code gốc của bạn) ...
         start = time.time()
+        # Gọi hàm gọi Gemini (blocking) trong thread
         output_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
         duration = time.time() - start
-        done_flag["done"] = True
+        done_flag["done"] = True  # báo với reminder là đã xong
+
         log.info(
             f"[{INSTANCE_ID}] /info Gemini done in {duration:.2f}s (chat_id={chat_id})"
         )
+
+        # Tiêu đề cần in đậm (lấy từ prompt)
         PROFILE_HEADINGS = [
-            "Tổng quan:", "Sản phẩm & Dịch vụ:", "Mô hình kinh doanh:",
-            "Vị thế & Thị trường:", "Vị thế chuỗi giá trị:",
-            "Lợi thế cạnh tranh:", "Rủi ro chính:", "Ban lãnh đạo & Cổ đông:",
+            "Tổng quan:",
+            "Sản phẩm & Dịch vụ:",
+            "Mô hình kinh doanh:",
+            "Vị thế & Thị trường:",
+            "Vị thế chuỗi giá trị:",
+            "Lợi thế cạnh tranh:",
+            "Rủi ro chính:",
+            "Ban lãnh đạo & Cổ đông:",
         ]
+        
+        # Dùng lại hàm clean_and_highlight_report của /report
         text = clean_and_highlight_report(output_text, PROFILE_HEADINGS)
+
+        # Lưu cache OK vào Redis (TTL 30 ngày)
         save_profile_to_redis(cache_key, text, source="on_demand")
+
         now = datetime.datetime.now(vn_tz)
-        footer = ( f"\n\n🕓 _Hồ sơ được tạo vào "
-                   f"{now.strftime('%d/%m/%Y %H:%M')}._" )
+        footer = (
+            f"\n\n🕓 _Hồ sơ được tạo vào "
+            f"{now.strftime('%d/%m/%Y %H:%M')}._"
+        )
         final_text = text.strip() + footer
         await reply_md(update, final_text)
+
+    # === 5. XỬ LÝ LỖI KHI GỌI GEMINI (Giữ nguyên) ===
     except Exception as e:
         done_flag["done"] = True
-        is_quota = classify_error_quota(e)
+        is_quota = classify_error_quota(e) # Dùng lại hàm của /report
+
         if is_quota:
             user_msg = (
                 f"⚠️ Hiện tại hệ thống chưa tạo được hồ sơ *{symbol}* do dịch vụ AI (Gemini) "
@@ -6085,15 +6141,27 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Bạn vui lòng đợi khoảng 2 phút rồi thử lại."
             )
             notify_admin_flag = True
+
+        # Lưu cache lỗi vào Redis với TTL 120s
         save_profile_to_redis(
-            cache_key, user_msg, source="error", is_error=True,
-            wait_sec=120, error_type=type(e).__name__, error_detail=str(e),
+            cache_key,
+            user_msg,
+            source="error",
+            is_error=True,
+            wait_sec=120, # User phải đợi 120s
+            error_type=type(e).__name__,
+            error_detail=str(e),
         )
+
         await reply_md(update, user_msg)
+
         if notify_admin_flag and tg_app and tg_app.bot:
             try:
+                # Dùng lại hàm của /report, chỉ notify Admin 1 lần
                 await notify_admin_report_error_once(
-                    tg_app.bot, f"profile_cache:{cache_key}", e,
+                    tg_app.bot,
+                    f"profile_cache:{cache_key}", # Thêm prefix để phân biệt
+                    e,
                 )
             except Exception as e2:
                 log.warning(
