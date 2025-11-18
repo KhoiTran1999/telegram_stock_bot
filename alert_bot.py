@@ -3026,18 +3026,17 @@ async def news_cleanup_loop():
 
 # --- Tham số riêng
 VN30F1M_SYMBOL = "VN30F1M"
-VN30F1M_DELTA_THRESHOLD = 5.0    # ±5 điểm
+VN30F1M_DELTA_THRESHOLD = 10    # ±5 điểm
 VN30F1M_TICK_SECONDS = 3        # chu kỳ quét
 
 # --- State trong RAM
-_vn30f1m_anchor: float | None = None      # mốc di động trong ngày
-_vn30f1m_day_start_anchor: float | None = None
+_vn30f1m_anchor: float | None = None      # ❗️ SỬA: Mốc di động (giá của lần alert cuối)
 _vn30f1m_date: datetime.date | None = None
 _vn30f1m_enabled_cache: set[int] = set()  # tập chat_id đang bật
 
 # --- [TỐI ƯU] Thêm các biến dùng chung cho 3 tác vụ ---
 _vn30f1m_broadcast_queue = asyncio.Queue()
-_vn30f1m_current_price_cache: float | None = None
+_vn30f1m_current_price_cache: float | None = None # ❗️ SỬA: Chỉ lưu giá live
 quote_vn30f1m = Quote(symbol=VN30F1M_SYMBOL, source="vci") # Khởi tạo 1 lần
 
 def ensure_bot_user_settings_table():
@@ -3085,21 +3084,19 @@ def reload_vn30f1m_enabled_cache():
     _vn30f1m_enabled_cache = {cid for cid, en in mp.items() if en}
 
 def _vn30f1m_reset_if_new_day(now: datetime.datetime):
-    """Đầu ngày mới: reset anchor (phiên chiều dùng mốc đã hình thành từ sáng)."""
-    global _vn30f1m_date, _vn30f1m_anchor, _vn30f1m_day_start_anchor # Thêm _vn30f1m_day_start_anchor
+    """Đầu ngày mới: reset anchor."""
+    global _vn30f1m_date, _vn30f1m_anchor
     if (_vn30f1m_date is None) or (now.date() != _vn30f1m_date):
         _vn30f1m_date = now.date()
-        _vn30f1m_anchor = None
-        _vn30f1m_day_start_anchor = None # (MỚI) Reset cả mốc tham chiếu
-        log.info(f"[VN30F1M] New trading day: {_vn30f1m_date}. Reset all anchors.")
+        _vn30f1m_anchor = None # ❗️ SỬA: Reset mốc di động
+        log.info(f"[VN30F1M] New trading day: {_vn30f1m_date}. Reset moving anchor.")
 
 def _vn30f1m_clear_after_close():
     """Cuối ngày: xóa sạch state trong RAM (không dùng Redis)."""
-    global _vn30f1m_anchor, _vn30f1m_day_start_anchor # Thêm _vn30f1m_day_start_anchor
-    if _vn30f1m_anchor is not None or _vn30f1m_day_start_anchor is not None:
-        log.info("[VN30F1M] End of day → clear in-memory anchors.")
-    _vn30f1m_anchor = None
-    _vn30f1m_day_start_anchor = None # (MỚI) Xóa cả mốc tham chiếu
+    global _vn30f1m_anchor
+    if _vn30f1m_anchor is not None:
+        log.info("[VN30F1M] End of day → clear in-memory anchor.")
+    _vn30f1m_anchor = None # ❗️ SỬA
 
 def vn30f1m_day_healthcheck():
     """
@@ -3154,57 +3151,47 @@ async def _vn30f1m_get_current_price() -> float | None:
 
 async def _vn30f1m_process_tick(price: float):
     """
-    (Đã tối ưu + log + SỬA OUTPUT THEO YÊU CẦU)
-    - Logic trigger: Dùng mốc di động (anchor).
-    - Logic hiển thị: Dùng mốc cố định (day_start_anchor).
+    (ĐÃ SỬA LỖI LOGIC: Dùng mốc DI ĐỘNG +-5đ theo yêu cầu)
     """
-    global _vn30f1m_anchor, _vn30f1m_day_start_anchor # Thêm _vn30f1m_day_start_anchor
+    global _vn30f1m_anchor # Chỉ cần mốc di động
 
-    # --- 1. SET MỐC GIÁ (NẾU CHƯA CÓ) ---
-    
-    # (MỚI) Set mốc tham chiếu CỐ ĐỊNH (chỉ chạy 1 lần/ngày)
-    if _vn30f1m_day_start_anchor is None:
-        _vn30f1m_day_start_anchor = float(price)
-        log.info(f"[VN30F1M][PROCESS]     >>> ⛳ (FIXED) Tham chiếu ngày set = {_vn30f1m_day_start_anchor:.2f}")
-
-    # Set mốc kích hoạt DI ĐỘNG (chạy 1 lần/ngày, hoặc sau mỗi lần alert)
+    # --- 1. KIỂM TRA MỐC DI ĐỘNG ---
     if _vn30f1m_anchor is None:
-        _vn30f1m_anchor = float(price)
-        log.info(f"[VN30F1M][PROCESS]     >>> ⛳ (MOVING) Mốc kích hoạt set = {_vn30f1m_anchor:.2f}")
-        return # Thoát, vì không có gì để so sánh
+        # Trường hợp này gần như không xảy ra
+        # vì Fetcher (chạy 10s) sẽ set mốc TC trước Ticker (chạy 3s)
+        log.info("[VN30F1M][PROCESS]     >>> Đang chờ Fetcher set mốc Tham Chiếu (anchor)...")
+        return 
 
-    # --- 2. LOGIC KÍCH HOẠT (Vẫn dùng mốc di động) ---
+    # --- 2. LOGIC KÍCH HOẠT (Mốc di động) ---
     
-    # Delta so với mốc DI ĐỘNG (dùng để trigger)
+    # Delta so với mốc DI ĐỘNG (dùng cho cả trigger và display)
     delta_trigger = float(price) - _vn30f1m_anchor
     
     log.info(
-        f"[VN30F1M][PROCESS]     >>> Trigger Delta: {delta_trigger:.2f} "
-        f"(Hiện tại: {price:.2f} | Mốc Kích Hoạt: {_vn30f1m_anchor:.2f})"
+        f"[VN30F1M][PROCESS]     >>> Price: {price:.2f} | "
+        f"Moving Anchor: {_vn30f1m_anchor:.2f} | "
+        f"Delta: {delta_trigger:.2f}"
     )
     
-    # Điều kiện kích hoạt: Vẫn là ±5 điểm so với mốc di động
+    # Điều kiện kích hoạt: Vượt qua MỐC DI ĐỘNG 5 điểm
     if abs(delta_trigger) >= VN30F1M_DELTA_THRESHOLD:
         
-        # --- 3. TẠO OUTPUT (Dùng mốc cố định) ---
+        # --- 3. TẠO OUTPUT ---
         log.info(
             f"[VN30F1M][PROCESS]     >>> VƯỢT MỐC KÍCH HOẠT! "
             f"({abs(delta_trigger):.2f} >= {VN30F1M_DELTA_THRESHOLD})"
         )
         
-        # (MỚI) Delta so với mốc CỐ ĐỊNH (dùng để hiển thị)
-        total_delta = float(price) - _vn30f1m_day_start_anchor
-        direction = "tăng" if total_delta >= 0 else "giảm" # Sửa: >= 0 là tăng
-        pct = (total_delta / _vn30f1m_day_start_anchor) * 100 if _vn30f1m_day_start_anchor else 0.0
+        direction = "tăng" if delta_trigger >= 0 else "giảm"
         now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
 
-        icon = "🟢" if total_delta >= 0 else "🔴"
+        icon = "🟢" if delta_trigger >= 0 else "🔴"
 
-        # (MỚI) Nội dung tin nhắn theo format bạn yêu cầu
+        # ❗️ SỬA OUTPUT: Hiển thị delta_trigger và mốc di động
         text = (
-            f"{icon} *VN30F1M {direction} {abs(total_delta):.2f} điểm* "
-            f"so với tham chiếu {(_vn30f1m_day_start_anchor):.2f}\n"
-            f"Giá hiện tại: *{float(price):.2f}* ({pct:+.2f}%) — {now_str}"
+            f"{icon} *VN30F1M {direction} {abs(delta_trigger):.2f} điểm* "
+            f"(so với mốc {(_vn30f1m_anchor):.2f})\n"
+            f"Giá hiện tại: *{float(price):.2f}* — {now_str}"
         )
         
         try:
@@ -3213,10 +3200,9 @@ async def _vn30f1m_process_tick(price: float):
         except asyncio.QueueFull:
             log.warning("[VN30F1M][PROCESS]     >>> LỖI: Broadcast queue bị đầy, bỏ lỡ 1 tin nhắn.")
 
-        # --- 4. CẬP NHẬT MỐC (Chỉ cập nhật mốc di động) ---
+        # --- 4. CẬP NHẬT MỐC DI ĐỘNG ---
         _vn30f1m_anchor = float(price)
-        log.info(f"[VN30F1M][PROCESS]     >>> 🔁 (MOVING) Mốc kích hoạt dời lên {_vn30f1m_anchor:.2f}")
-        # (Mốc _vn30f1m_day_start_anchor KHÔNG thay đổi)
+        log.info(f"[VN30F1M][PROCESS]     >>> 🔁 (MOVING) Mốc di động dời lên {price:.2f}")
 
 async def vn30f1m_alert_loop():
     """
@@ -3280,56 +3266,74 @@ async def vn30f1m_alert_loop():
 
 async def vn30f1m_price_fetcher_loop():
     """
-    (Tác vụ 1: Fetcher - Yêu cầu 5 giây)
-    - Loop này CHỈ LẤY GIÁ từ API.
-    - Cập nhật _vn30f1m_current_price_cache.
+    (Tác vụ 1: Fetcher - Yêu cầu 10 giây)
+    (ĐÃ SỬA: Lấy Giá Tham Chiếu (TC) lúc đầu ngày và
+     cập nhật mốc di động _vn30f1m_anchor)
     """
-    global _vn30f1m_current_price_cache
+    global _vn30f1m_current_price_cache, _vn30f1m_anchor, stock_trading
     vn_tz = pytz.timezone(TIMEZONE)
-    FETCH_INTERVAL = 10 # Theo yêu cầu của bạn
-    last_healthcheck_date: datetime.date | None = None
+    FETCH_INTERVAL = 10 
     
     while True:
         loop_start = datetime.datetime.now(vn_tz)
         try:
             now = loop_start
             
-            if last_healthcheck_date != now.date():
-                log.info("[VN30F1M][FETCHER] Đầu ngày, chạy health-check 1D...")
-                vn30f1m_day_healthcheck()
-                last_healthcheck_date = now.date()
-
             if not BOT_ACTIVE:
                 log.info("[VN30F1M][FETCHER] Bot OFF, ngủ 30s.")
                 await asyncio.sleep(30)
                 continue
                 
             if not in_session_vietnam():
-                # Tính thời điểm mở cửa tiếp theo: 09:15 T2–T6
+                # ... (Logic ngủ ngoài giờ giữ nguyên) ...
                 now = datetime.datetime.now(vn_tz)
-
                 next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
                 if now >= next_open:
-                    # Nếu đã qua giờ mở cửa hôm nay → sang ngày mai
                     next_open += datetime.timedelta(days=1)
-
-                # Nếu ngày mai là T7/CN → nhảy tới thứ 2
                 while next_open.weekday() >= 5:
                     next_open += datetime.timedelta(days=1)
-
                 sleep_seconds = max(5, (next_open - now).total_seconds())
-
                 log.info(f"[VN30F1M][FETCHER] Ngoài giờ. Ngủ tới {next_open.strftime('%Y-%m-%d %H:%M:%S')} ({int(sleep_seconds)}s)")
                 await asyncio.sleep(sleep_seconds)
                 continue
-                
+            
+            # ❗️ LOGIC SỬA BẮT ĐẦU TỪ ĐÂY
+            
+            # 1. LẤY GIÁ THAM CHIẾU (TC) NẾU CHƯA CÓ
+            if _vn30f1m_anchor is None:
+                log.info("[VN30F1M][FETCHER] Mốc di động (anchor) chưa có. Đang lấy Giá Tham Chiếu...")
+                try:
+                    # Dùng trading object (giống cmd_add) để lấy TC
+                    df_tc = await asyncio.to_thread(stock_trading.price_board, [VN30F1M_SYMBOL])
+                    
+                    if df_tc is None or df_tc.empty:
+                         log.warning(f"[VN30F1M][FETCHER] Không lấy được price_board (TC) cho {VN30F1M_SYMBOL}.")
+                         await asyncio.sleep(FETCH_INTERVAL)
+                         continue
+                    
+                    # Lấy 'ref_price' (Giá tham chiếu)
+                    ref_price = df_tc.iloc[0].get(('listing', 'ref_price'))
+                    
+                    if ref_price is None:
+                        log.warning(f"[VN30F1M][FETCHER] price_board có data nhưng không có 'ref_price'.")
+                        await asyncio.sleep(FETCH_INTERVAL)
+                        continue
+
+                    _vn30f1m_anchor = float(ref_price)
+                    log.info(f"[VN30F1M][FETCHER] ⛳ ĐÃ SET MỐC DI ĐỘNG ĐẦU NGÀY = {ref_price}")
+
+                except Exception as e:
+                    log.error(f"[VN30F1M][FETCHER] Lỗi nghiêm trọng khi lấy TC: {e}")
+                    await asyncio.sleep(FETCH_INTERVAL)
+                    continue
+
+            # 2. LẤY GIÁ LIVE (1m) (Luôn chạy)
             price = await _vn30f1m_get_current_price()
 
             if price is not None:
-                log.info(f"[VN30F1M][FETCHER] _vn30f1m_anchor = {_vn30f1m_anchor}")
                 _vn30f1m_current_price_cache = float(price)
             else:
-                log.warning("[VN30F1M][FETCHER] API trả về None.")
+                log.warning("[VN30F1M][FETCHER] API (1m) trả về None.")
 
         except asyncio.CancelledError:
             log.info("[VN30F1M][FETCHER] Bị huỷ (Cancelled).")
@@ -3337,7 +3341,7 @@ async def vn30f1m_price_fetcher_loop():
         except Exception as e:
             log.warning(f"[VN30F1M][FETCHER] Lỗi: {e}")
         
-        # Giữ nhịp 5 giây
+        # Giữ nhịp 10 giây
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(0.1, FETCH_INTERVAL - elapsed)
         await asyncio.sleep(delay)
