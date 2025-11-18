@@ -6563,6 +6563,27 @@ def health_check():
     return "", 200 # Trả về chuỗi rỗng và mã 200 OK
 #--------------------------------
 @flask_app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    global tg_app, MAIN_LOOP
+
+    log.info(f"[{INSTANCE_ID}] 🔔 Received webhook call")
+
+    if tg_app is None or MAIN_LOOP is None:
+        return "Bot not ready", 503
+
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return "Bad Request", 400
+
+    update = Update.de_json(data, tg_app.bot)
+
+    asyncio.run_coroutine_threadsafe(
+        tg_app.process_update(update),
+        MAIN_LOOP,
+    )
+
+    return "OK", 200
 #--------------------------------
 # (Trong file alert_bot.py)
 # HÃY XÓA TOÀN BỘ HÀM sepay_webhook CŨ VÀ THAY BẰNG HÀM NÀY:
@@ -6680,27 +6701,6 @@ def sepay_webhook():
     return jsonify({"message": "Success"}), 200
 
 #----------------------------------
-def telegram_webhook():
-    global tg_app, MAIN_LOOP
-
-    log.info(f"[{INSTANCE_ID}] 🔔 Received webhook call")
-
-    if tg_app is None or MAIN_LOOP is None:
-        return "Bot not ready", 503
-
-    try:
-        data = request.get_json(force=True)
-    except Exception:
-        return "Bad Request", 400
-
-    update = Update.de_json(data, tg_app.bot)
-
-    asyncio.run_coroutine_threadsafe(
-        tg_app.process_update(update),
-        MAIN_LOOP,
-    )
-
-    return "OK", 200
     
 
 # ==============================================
