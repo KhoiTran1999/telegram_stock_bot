@@ -17,6 +17,7 @@ from news_seen_cache import (
 )
 from redis_client import get_redis
 import hashlib
+import uuid
 
 REDIS_DEBUG = os.getenv("REDIS_DEBUG", "False").lower() in ("1", "true", "yes")
 
@@ -170,6 +171,19 @@ def init_db():
                     
                     -- Dùng (link, published_at) làm khóa duy nhất như bạn yêu cầu
                     UNIQUE(link, published_at) 
+                )
+            """)
+
+            # Bảng lưu các đơn hàng thanh toán Pro (SePay)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_orders (
+                    order_id    TEXT PRIMARY KEY,         -- Nội dung chuyển khoản (VD: PAY_12345_ABC)
+                    chat_id     BIGINT NOT NULL,          -- User nào đã yêu cầu
+                    amount      INTEGER NOT NULL,         -- Số tiền (VND)
+                    days_to_add INTEGER NOT NULL,         -- Số ngày Pro sẽ được cộng
+                    status      TEXT NOT NULL DEFAULT 'PENDING', -- PENDING | PAID | FAILED
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
 
@@ -1526,3 +1540,88 @@ def get_recent_news_seen(feed_type, since_dt):
             )
             rows = cur.fetchall()
     return rows
+
+# ==========================================
+# SEPAPAY ORDERS (GÓI PRO)
+# ==========================================
+
+def create_pending_order(chat_id: int, amount: int, days_to_add: int) -> str:
+    """
+    Tạo một đơn hàng mới ở trạng thái PENDING.
+    Trả về order_id (nội dung chuyển khoản) duy nhất.
+    """
+    # Tạo Order ID: PAY_[chat_id]_[random_5_chars]
+    random_part = str(uuid.uuid4()).split('-')[0][:5].upper()
+    order_id = f"PAY{chat_id}{random_part}"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bot_orders (order_id, chat_id, amount, days_to_add, status)
+                VALUES (%s, %s, %s, %s, 'PENDING')
+                RETURNING order_id;
+                """,
+                (order_id, chat_id, amount, days_to_add),
+            )
+        conn.commit()
+    
+    return order_id
+
+def get_order_by_id(order_id: str) -> dict | None:
+    """
+    Tìm một đơn hàng. Trả về dict chứa (chat_id, amount, status, days_to_add)
+    """
+    with get_conn() as conn:
+        # Dùng row_factory để trả về dict (bạn đã import 'rows' rồi)
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute(
+                """
+                SELECT chat_id, amount, status, days_to_add
+                FROM bot_orders
+                WHERE order_id = %s
+                LIMIT 1;
+                """,
+                (order_id,),
+            )
+            row = cur.fetchone()
+    
+    return row # Sẽ là dict hoặc None
+
+def mark_order_as_paid(order_id: str):
+    """
+    Cập nhật trạng thái đơn hàng sang PAID và thời gian updated_at.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE bot_orders
+                SET status = 'PAID', updated_at = NOW()
+                WHERE order_id = %s;
+                """,
+                (order_id,),
+            )
+        conn.commit()
+
+def cleanup_old_pending_orders(days_old: int = 3):
+    """
+    Xóa các đơn hàng PENDING cũ hơn 'days_old' ngày.
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM bot_orders
+                    WHERE status = 'PENDING'
+                      AND created_at < NOW() - (%s || ' days')::INTERVAL;
+                    """,
+                    (str(days_old),)
+                )
+                deleted_count = cur.rowcount
+            conn.commit()
+        return deleted_count
+    except Exception as e:
+        print(f"[DB_UTILS] Lỗi khi dọn dẹp bot_orders: {e}")
+        return 0

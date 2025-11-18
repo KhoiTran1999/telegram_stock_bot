@@ -27,7 +27,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
@@ -73,6 +73,9 @@ from db_utils import (
     get_recent_bctc_notified,
     get_recent_analysis_reports,
     get_recent_news_seen,
+    create_pending_order,
+    get_order_by_id,
+    mark_order_as_paid
 )
 import psutil
 import time
@@ -102,6 +105,8 @@ from profile_cache import (
 from pathlib import Path
 from google import genai
 import uuid
+import hmac
+
 
 # ==============================================
 # CẤU HÌNH CƠ BẢN
@@ -146,6 +151,17 @@ if not GEMINI_API_KEY:
     log.warning(
         "⚠️ GEMINI_API_KEY chưa được cấu hình – chức năng báo cáo tuần và /report sẽ không hoạt động."
     )
+
+# Lấy Token bảo mật của SePay từ .env
+SEPAY_TOKEN = os.getenv("SEPAY_TOKEN")
+if not SEPAY_TOKEN:
+    log.warning("⚠️ SEPAY_TOKEN chưa được cấu hình. Webhook sẽ KHÔNG an toàn.")
+
+# Cấu hình gói Pro (ví dụ)
+PRO_PACKAGE_AMOUNT = 99000  # 99.000 VNĐ
+PRO_PACKAGE_DAYS = 30      # Cho 30 ngày
+SEPAY_QR_BANK = os.getenv("SEPAY_QR_BANK")
+SEPAY_QR_ACC = os.getenv("SEPAY_QR_ACC")
 
 BOT_ACTIVE = None  # Sẽ được load từ DB trong main()
 
@@ -6794,6 +6810,101 @@ async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAUL
     # Gọi hàm lõi (truyền update vào để nhận phản hồi)
     asyncio.create_task(execute_weekly_report(admin_update=update))
 
+# (Trong file alert_bot.py)
+
+async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Xử lý khi user muốn nâng cấp Pro.
+    (ĐÃ SỬA: Gửi ảnh VietQR động)
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+    await asyncio.to_thread(log_command_usage, chat_id, "/upgrade", ADMIN_ID)
+    
+    # 1. Kiểm tra xem admin đã cấu hình QR chưa
+    if not SEPAY_QR_BANK or not SEPAY_QR_ACC:
+        log.error(f"[SEPAPAY] Lỗi: Admin chưa set SEPAY_QR_BANK/SEPAY_QR_ACC trong .env")
+        await reply_md(update, "⚠️ Hệ thống thanh toán đang bảo trì (thiếu cấu hình QR). Vui lòng liên hệ Admin.")
+        return
+
+    # 2. Tạo đơn hàng PENDING trong DB (Giữ nguyên)
+    try:
+        order_id = await asyncio.to_thread(
+            create_pending_order,
+            chat_id,
+            PRO_PACKAGE_AMOUNT,
+            PRO_PACKAGE_DAYS
+        )
+    except Exception as e:
+        log.error(f"Lỗi khi tạo đơn hàng SePay cho {chat_id}: {e}")
+        await reply_md(update, "⚠️ Đã xảy ra lỗi khi tạo đơn hàng. Vui lòng thử lại sau.")
+        return
+
+    # 3. Tạo URL ảnh VietQR (Dựa theo file order.php)
+    # Dùng quote_plus để mã hóa nội dung (ví dụ: PAY1088...)
+    qr_url = (
+        f"https://qr.sepay.vn/img?"
+        f"bank={SEPAY_QR_BANK}"
+        f"&acc={SEPAY_QR_ACC}"
+        f"&template=compact"
+        f"&amount={PRO_PACKAGE_AMOUNT}"
+        f"&des={quote_plus(order_id)}"
+    )
+
+    # 4. Gửi ảnh QR và Hướng dẫn
+    amount_str = f"{PRO_PACKAGE_AMOUNT:,}".replace(",", ".")
+    
+    # Tạo nội dung caption
+    caption_lines = [
+        f"🌟 *Nâng cấp Gói Pro ({PRO_PACKAGE_DAYS} ngày)*",
+        "",
+        f"Giá: *{amount_str} VNĐ*",
+        "",
+        "**Cách 1 (Khuyến nghị):**",
+        "Mở App ngân hàng và quét mã QR dưới đây. Mọi thông tin (số tiền, nội dung) sẽ được tự động điền.",
+        "",
+        "**Cách 2 (Thủ công):**",
+        "Nếu không thể quét, vui lòng chuyển khoản thủ công:",
+        f"• Số tiền: `{PRO_PACKAGE_AMOUNT}`",
+        f"• Nội dung: `{order_id}`",
+        "",
+        "Sau khi chuyển khoản, Gói Pro sẽ được tự động kích hoạt."
+    ]
+
+    try:
+        # Dùng send_photo để gửi ảnh trực tiếp
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=qr_url, # Telegram tự động tải URL ảnh này
+            caption="\n".join(caption_lines),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        log.error(f"Lỗi khi gửi ảnh QR cho {chat_id}: {e}")
+        await reply_md(update, "⚠️ Lỗi khi tạo mã QR. Vui lòng thử lại.")
+
+def _send_telegram_message_safe(chat_id_to_send, text):
+    """
+    Hàm helper (Sync) để gọi từ Flask route (Thread khác)
+    gửi tin nhắn qua Main Loop của bot một cách an toàn.
+    """
+    try:
+        if not tg_app or not MAIN_LOOP:
+            log.error("[SEPAPAY] Lỗi: Không tìm thấy tg_app hoặc MAIN_LOOP.")
+            return
+            
+        # Gửi tin nhắn từ Flask route (thread khác) qua Main Loop của bot
+        future = asyncio.run_coroutine_threadsafe(
+            send_md(tg_app.bot, chat_id_to_send, text),
+            MAIN_LOOP
+        )
+        future.result(timeout=5) # Chờ 5s
+    except Exception as e:
+        log.error(f"[SEPAPAY] Lỗi khi gửi tin nhắn cho {chat_id_to_send}: {e}")
+
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
@@ -6803,11 +6914,130 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return f"✅ Bot is alive. Instance {INSTANCE_ID}"
+#------------------------------
 @flask_app.route("/health")
 def health_check():
     # Phản hồi nhanh nhất có thể, chỉ để xác nhận máy chủ đang chạy
     return "", 200 # Trả về chuỗi rỗng và mã 200 OK
+#--------------------------------
 @flask_app.route("/webhook", methods=["POST"])
+#--------------------------------
+# (Trong file alert_bot.py)
+# HÃY XÓA TOÀN BỘ HÀM sepay_webhook CŨ VÀ THAY BẰNG HÀM NÀY:
+
+@flask_app.route("/sepay-webhook", methods=["POST"])
+def sepay_webhook():
+    """
+    Endpoint nhận thông báo thanh toán (Webhook) từ SePay.
+    (ĐÃ SỬA: Đọc Token từ Header 'Authorization: Apikey ...')
+    """
+    
+    # === 1. LẤY DỮ LIỆU VÀ XÁC THỰC TOKEN (QUY TẮC 3 - ĐÃ SỬA) ===
+    try:
+        # Lấy Header 'Authorization'
+        auth_header = request.headers.get("Authorization")
+        
+        # Lấy JSON payload
+        data = request.get_json()
+
+        token_from_request = None
+        if auth_header and auth_header.startswith("Apikey "):
+            # Tách token ra, bỏ "Apikey " (7 ký tự)
+            token_from_request = auth_header[7:] 
+
+        if not SEPAY_TOKEN:
+             log.warning("[SEPAPAY] Bỏ qua xác thực vì SEPAY_TOKEN chưa được set.")
+        elif not hmac.compare_digest(str(token_from_request), SEPAY_TOKEN):
+            log.warning(f"[SEPAPAY] WEBHOOK BỊ TỪ CHỐI - SAI TOKEN!")
+            log.warning(f"[SEPAPAY] Header 'Authorization' nhận được: {auth_header}")
+            return jsonify({"message": "Invalid Token"}), 403
+
+    except Exception as e:
+        log.error(f"[SEPAPAY] Lỗi khi parse JSON hoặc xác thực Header: {e}")
+        return jsonify({"message": "Invalid Request Body"}), 400
+
+    # === 2. PHÂN TÍCH PAYLOAD (Giữ nguyên) ===
+    try:
+        order_id = data.get("content")
+        received_amount_str = data.get("transferAmount")
+        transfer_type = data.get("transferType")
+
+        if transfer_type != "in":
+            log.info(f"[SEPAPAY] Bỏ qua giao dịch (type: {transfer_type}) cho {order_id}.")
+            return jsonify({"message": "Not an 'in' transaction"}), 200
+
+        if not order_id or received_amount_str is None:
+            log.warning("[SEPAPAY] Webhook thiếu 'content' hoặc 'transferAmount'.")
+            return jsonify({"message": "Missing fields"}), 400
+        
+        received_amount = int(float(received_amount_str))
+            
+    except Exception as e:
+        log.error(f"[SEPAPAY] Lỗi khi đọc các trường: {e}")
+        return jsonify({"message": "Invalid fields"}), 400
+    
+    # === 3. XỬ LÝ LOGIC THANH TOÁN (Giữ nguyên) ===
+    try:
+        order = get_order_by_id(order_id)
+    except Exception as e:
+        log.error(f"[SEPAPAY] Lỗi DB khi gọi get_order_by_id({order_id}): {e}")
+        return jsonify({"message": "Database error"}), 500
+
+    # 3.1. Không tìm thấy đơn hàng
+    if not order:
+        log.warning(f"[SEPAPAY] Không tìm thấy đơn hàng cho order_id: {order_id}")
+        return jsonify({"message": "Order not found"}), 200
+
+    # 3.2. Đơn hàng đã được xử lý (Quy tắc 1: Chống lặp)
+    if order['status'] == 'PAID':
+        log.info(f"[SEPAPAY] Đơn hàng {order_id} đã được xử lý trước đó. Bỏ qua.")
+        return jsonify({"message": "Already processed"}), 200
+
+    # 3.3. Đơn hàng PENDING -> Kiểm tra tiền (Quy tắc 2)
+    chat_id = order['chat_id']
+    expected_amount = int(order['amount']) 
+    days_to_add = order['days_to_add']
+    
+    # 3.4. XỬ LÝ SAI TIỀN (Phải khớp chính xác)
+    if received_amount != expected_amount:
+        log.warning(f"[SEPAPAY] THANH TOÁN SAI SỐ TIỀN: User {chat_id} | Order {order_id}. "
+                    f"Yêu cầu {expected_amount}, nhận {received_amount}.")
+        
+        msg_fail = (
+            f"⚠️ **Thanh toán thất bại!**\n\n"
+            f"Đơn hàng `{order_id}` của bạn yêu cầu *{expected_amount:,} VNĐ*, "
+            f"*nhưng hệ thống ghi nhận bạn đã chuyển *"
+            f"*{received_amount:,} VNĐ*.\n\n"
+            "Giao dịch này **không** được ghi nhận. "
+            "Vui lòng liên hệ Admin để xử lý hoặc tạo đơn hàng mới."
+        )
+        
+        _send_telegram_message_safe(chat_id, msg_fail)
+        return jsonify({"message": "Incorrect amount"}), 200
+
+    # 3.5. XỬ LÝ THÀNH CÔNG (Nội dung ĐÚNG, Số tiền ĐÚNG)
+    try:
+        log.info(f"[SEPAPAY] THÀNH CÔNG: User {chat_id} | Order {order_id}. "
+                 f"Kích hoạt {days_to_add} ngày Pro.")
+        
+        add_paid_user(chat_id, days_to_add)
+        mark_order_as_paid(order_id)
+        
+        msg_success = (
+            f"🚀 **Kích hoạt Gói Pro thành công!**\n\n"
+            f"Tài khoản của bạn đã được cộng thêm *{days_to_add} ngày* sử dụng Gói Pro.\n\n"
+            "Cảm ơn bạn đã sử dụng dịch vụ!"
+        )
+        _send_telegram_message_safe(chat_id, msg_success)
+        
+    except Exception as e:
+        log.error(f"[SEPAPAY] Lỗi nghiêm trọng khi kích hoạt Pro cho {chat_id}: {e}")
+        return jsonify({"message": "Error activating Pro"}), 500
+
+    # Trả 200 OK cuối cùng
+    return jsonify({"message": "Success"}), 200
+
+#----------------------------------
 def telegram_webhook():
     global tg_app, MAIN_LOOP
 
@@ -6829,6 +7059,7 @@ def telegram_webhook():
     )
 
     return "OK", 200
+    
 
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
@@ -7023,6 +7254,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
         commands = [
             ("help", "Danh sách lệnh & tính năng"),
             ("setting", "Xem cài đặt cá nhân & trạng thái Pro"),
+            ("upgrade", "Mua gói tài khoản Pro"),
             ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
             ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
             ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
@@ -7176,6 +7408,7 @@ async def main():
     # User commands
     tg_app.add_handler(CommandHandler("help", cmd_help))
     tg_app.add_handler(CommandHandler("setting", cmd_setting))
+    tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
