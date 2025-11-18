@@ -12,7 +12,11 @@ import logging
 import tempfile
 from dotenv import load_dotenv
 load_dotenv(override=True)
-from telegram import Update
+from telegram import (
+    Update, WebAppInfo, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup)
+from digest_template import DIGEST_HTML_TEMPLATE, DIGEST_404_TEMPLATE
 from telegram import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
@@ -27,7 +31,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
@@ -2055,66 +2059,6 @@ def format_screener_report_text(result: dict) -> str | None:
     
     return text
 
-async def daily_value_screener_loop():
-    """
-    Gửi báo cáo Value Screener (loại 'ALL' - tổng hợp)
-    tự động vào 09:00 sáng T2–T6 cho Pro users.
-    """
-    loop_id = 0
-    # Chỉ định rõ loại báo cáo tự động là 'all'
-    screener_type = 'all'
-
-    while True:
-        loop_id += 1
-        loop_label = f"[{INSTANCE_ID}][SCREENER_DAILY {loop_id}]"
-
-        if not BOT_ACTIVE:
-            log.info("%s Bot đang TẮT, sleep 60s.", loop_label)
-            await asyncio.sleep(60)
-            continue
-
-        wait_seconds = seconds_until_next_weekday_screener()
-        log.info("%s Chờ %s giây tới lần chạy kế tiếp (loại: %s).", loop_label, int(wait_seconds), screener_type)
-        await asyncio.sleep(wait_seconds)
-
-        if not BOT_ACTIVE:
-            log.info("%s Bot đã tắt sau khi sleep, bỏ qua lượt này.", loop_label)
-            continue
-
-        try:
-            # 1) Cố gắng làm mới dữ liệu từ API (cho loại 'all')
-            log.info("%s Bắt đầu làm mới Value Screener (loại: %s) từ API.", loop_label, screener_type)
-            result = await asyncio.to_thread(run_value_screener_from_api, screener_type)
-
-            if result is None:
-                # 2) API lỗi -> fallback dùng cache 'all' của ngày hôm đó (nếu có)
-                log.warning("%s API Screener trả về None (loại: %s). Thử dùng snapshot Redis.", loop_label, screener_type)
-                cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
-                if cached is None:
-                    log.warning("%s Không có snapshot Redis (loại: %s) để fallback. Bỏ qua.", loop_label, screener_type)
-                    continue
-                result = cached
-            else:
-                # 3) API OK -> Ghi đè snapshot 'all' trong ngày
-                await asyncio.to_thread(save_value_screener_to_redis, result, screener_type)
-
-            # 4) Format text (hàm format mới sẽ tự nhận diện type)
-            text = await asyncio.to_thread(format_screener_report_text, result)
-            if not text:
-                log.warning("%s Không format được báo cáo (loại: %s).", loop_label, screener_type)
-                continue
-
-            # 5) Broadcast (loại 'all') cho Pro users + Admin
-            log.info("%s Đang broadcast Value Screener (loại: %s) cho Pro users.", loop_label, screener_type)
-            await broadcast_to_all_watchers(text, target_audience='pro')
-
-        except asyncio.CancelledError:
-            log.info("%s Task daily_value_screener_loop bị cancel, thoát loop.", loop_label)
-            raise
-        except Exception as e:
-            log.exception("%s Lỗi trong daily_value_screener_loop: %s", loop_label, e)
-            await asyncio.sleep(60)
-
 def format_roe_pct(roe_decimal: float | None) -> str:
     """
     ROE trong DB là dạng thập phân (0.111 = 11.1%).
@@ -3782,16 +3726,11 @@ async def analysis_report_loop():
         
         log.info(f"{loop_label} Hoàn tất lần quét 07:00 (chỉ thu thập).")
 
+#-------------------------------------------
 async def daily_user_digest_loop():
     """
-    (HÀM MỚI) Gửi bản tin tổng hợp (digest) 7:00 sáng cho TẤT CẢ user.
-    (SỬA LẦN 2: THÊM PAYWALL VÀO SENDER)
-
-    Tổng hợp từ 4 nguồn (lấy trong 24h qua):
-    1. BCTC mới (Pro/Admin only)
-    2. Báo cáo phân tích mới (Pro/Admin only)
-    3. Tin chuyên ngành (Lọc theo watchlist user - Gửi cho tất cả)
-    4. Tin vĩ mô (Chung - Gửi cho tất cả)
+    Gửi bản tin tổng hợp (Digest) 7:00 sáng.
+    Đã tích hợp: Value Screener (Pro), BCTC (Pro), Báo cáo (Pro), Tin tức (All).
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -3806,38 +3745,39 @@ async def daily_user_digest_loop():
             await asyncio.sleep(60)
             continue
 
-        # 1️⃣ Đợi tới 07:00 sáng gần nhất (Giữ nguyên)
+        # 1️⃣ Đợi tới 07:00 sáng
         target_7am = get_next_7am(now_local, vn_tz)
         log.info(f"{loop_label} Đang chờ đến {target_7am.strftime('%Y-%m-%d %H:%M')} (VN).")
         await sleep_until(target_7am, vn_tz)
 
         if not BOT_ACTIVE:
-            log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
             continue
         
-        log.info(f"{loop_label} 07:00! Bắt đầu build digest cho TẤT CẢ user...")
+        log.info(f"{loop_label} 07:00! Bắt đầu build digest...")
 
-        # 2️⃣ Thu thập dữ liệu 24h gần nhất (1 LẦN GỌI)
+        # 2️⃣ Thu thập dữ liệu (Song song)
         try:
-            now_local = datetime.datetime.now(vn_tz)
-            now_utc = now_local.astimezone(datetime.timezone.utc)
-            since_utc = now_utc - datetime.timedelta(hours=24) # Lấy tin trong 24h qua
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            since_utc = now_utc - datetime.timedelta(hours=24)
 
-            # ❗️ SỬA: Thêm get_all_pro_chat_ids() vào gather
+            # Gọi song song tất cả các nguồn dữ liệu
             (
                 bctc_rows,
                 report_rows,
                 macro_rows,
                 spec_rows,
                 all_watch,
-                pro_chat_ids, # 👈 THÊM DÒNG NÀY
+                pro_chat_ids,
+                screener_data,  # <-- Dữ liệu Value Screener mới
             ) = await asyncio.gather(
                 asyncio.to_thread(get_recent_bctc_notified, since_utc),
                 asyncio.to_thread(get_recent_analysis_reports, since_utc),
                 asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
                 asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
                 asyncio.to_thread(get_all_watch),
-                asyncio.to_thread(get_all_pro_chat_ids), # 👈 THÊM DÒNG NÀY
+                asyncio.to_thread(get_all_pro_chat_ids),
+                # Lấy Top Value (All) cho ngày hôm nay
+                asyncio.to_thread(run_value_screener_from_api, 'all'), 
             )
             
             all_keywords = COMPANY_KEYWORDS
@@ -3847,171 +3787,163 @@ async def daily_user_digest_loop():
             await asyncio.sleep(600) 
             continue
 
-        # 3️⃣ Tiền xử lý dữ liệu (Giữ nguyên)
-        
-        # Map BCTC: {Symbol -> (year, quarter, notified_at)}
+        # 3️⃣ Xử lý dữ liệu Value Screener (Lấy Top 5-7 mã điểm cao nhất)
+        top_value_stocks = []
+        if screener_data and "industries" in screener_data:
+            # Flatten: Gom tất cả mã từ tất cả ngành vào 1 list
+            all_candidates = []
+            for ind in screener_data["industries"]:
+                for row in ind.get("rows", []):
+                    # Thêm tên ngành vào row để hiển thị
+                    row_copy = row.copy()
+                    row_copy["industry"] = ind["industry"]
+                    all_candidates.append(row_copy)
+            
+            # Sắp xếp theo Value Score giảm dần
+            all_candidates.sort(key=lambda x: x.get("value_score", 0), reverse=True)
+            
+            # Lấy Top 5
+            for item in all_candidates[:5]:
+                top_value_stocks.append({
+                    "symbol": item["symbol"],
+                    "industry": item["industry"],
+                    "pe": f"{item.get('pe', 0):.1f}",
+                    "roe": f"{item.get('roe', 0) * 100:.1f}", # roe decimal -> %
+                    "score": f"{item.get('value_score', 0):.2f}"
+                })
+
+        # 4️⃣ Xử lý các dữ liệu khác (Giữ nguyên logic cũ)
         bctc_by_sym: dict[str, tuple] = {}
         for (symbol, year, quarter, notified_at) in bctc_rows:
             bctc_by_sym[str(symbol).upper()] = (year, quarter, notified_at)
 
-        # Map Báo cáo: {Symbol -> [list of reports]}
         reports_by_sym: dict[str, list] = {}
         for (symbol, title, link, published_at, created_at) in report_rows:
             sym_u = str(symbol).upper()
             reports_by_sym.setdefault(sym_u, []).append((title, link, published_at))
 
-        # Map Watchlist: {Symbol -> [list of chat_ids]}
         watch_to_chats: dict[str, list[int]] = {}
-        
-        # Map User (để gửi tin vĩ mô): {chat_id -> watch_list_set}
         users_map: dict[int, set[str]] = {}
 
         for chat_key, user_block in all_watch.items():
             try:
                 chat_id = int(chat_key)
-            except Exception:
-                continue
-                
+            except: continue
             watch_list = user_block.get("list", []) or []
-            user_symbols_set = set()
-            
+            users_map[chat_id] = set()
             for sym in watch_list:
                 s = str(sym).upper().strip()
                 if s:
-                    user_symbols_set.add(s)
+                    users_map[chat_id].add(s)
                     watch_to_chats.setdefault(s, []).append(chat_id)
-            
-            users_map[chat_id] = user_symbols_set
 
-        # Map tin chuyên ngành (Giữ nguyên)
         spec_patterns: dict[str, re.Pattern] = {}
         for sym in watch_to_chats.keys():
             keywords = all_keywords.get(sym, [sym])
             combined = "|".join(re.escape(k) for k in keywords if k)
-            if not combined: continue
-            spec_patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
+            if combined:
+                spec_patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
 
-        # 4️⃣ Tạo Payload tin nhắn (messages_to_send = {chat_id: [list of lines]})
-        messages_to_send: dict[int, list[str]] = {}
+        # 5️⃣ Tạo Payload riêng cho từng User
+        digest_payloads: dict[int, dict] = {}
 
-        # --- Helper format (Giữ nguyên) ---
-        def _get_or_init(chat_id: int) -> list[str]:
-            if chat_id not in messages_to_send:
-                messages_to_send[chat_id] = [
-                    f"🌅 *Bản tin 7:00 sáng – StockBot Daily Digest*",
-                    f"_Tổng hợp tin tức 24h qua đến {now_local.strftime('%d/%m %H:%M')}_",
-                ]
-            return messages_to_send[chat_id]
-        
-        def _format_time(dt):
-            if not dt: return ""
-            try:
-                return dt.astimezone(vn_tz).strftime("%d/%m %H:%M")
-            except Exception:
-                return ""
+        def _get_payload(cid):
+            if cid not in digest_payloads:
+                is_pro = (cid in pro_chat_ids or cid == ADMIN_ID)
+                digest_payloads[cid] = {
+                    "is_pro": is_pro, # Flag quan trọng để hiển thị Badge Pro / Upsell Card
+                    "value_stocks": [], 
+                    "bctc": [],
+                    "reports": [],
+                    "specialized": [],
+                    "macro": []
+                }
+            return digest_payloads[cid]
 
-        # --- A. Xử lý BCTC (Gửi cho user theo dõi mã đó) ---
+        # --- A. Value Screener (CHỈ CHO PRO & ADMIN) ---
+        if top_value_stocks:
+            for cid in users_map.keys():
+                if cid in pro_chat_ids or cid == ADMIN_ID:
+                    _get_payload(cid)["value_stocks"] = top_value_stocks
+
+        # --- B. BCTC (Pro) ---
         if bctc_rows:
             for sym, (year, quarter, notified_at) in bctc_by_sym.items():
                 chat_ids_impacted = watch_to_chats.get(sym, [])
-                if not chat_ids_impacted:
-                    continue
-                
-                line = f"📑 *BCTC Quý {quarter}/{year}* của *{sym}* đã được công bố."
-                
                 for cid in chat_ids_impacted:
-                    
-                    # ❗️ SỬA: THÊM PAYWALL CHECK (A)
-                    if cid not in pro_chat_ids and cid != ADMIN_ID:
-                        continue # Bỏ qua User Free
-                        
-                    lines = _get_or_init(cid)
-                    if "1. BÁO CÁO TÀI CHÍNH (PRO)" not in lines:
-                        lines.append("\n*1. BÁO CÁO TÀI CHÍNH (PRO)*")
-                    lines.append(f"• {line}")
+                    if cid in pro_chat_ids or cid == ADMIN_ID:
+                        t_str = notified_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                        _get_payload(cid)["bctc"].append({
+                            "symbol": sym, "year": year, "quarter": quarter, "time": t_str
+                        })
 
-        # --- B. Xử lý Báo cáo Phân tích (Gửi cho user theo dõi mã đó) ---
+        # --- C. Reports (Pro) ---
         if report_rows:
             for sym, reports_list in reports_by_sym.items():
                 chat_ids_impacted = watch_to_chats.get(sym, [])
-                if not chat_ids_impacted:
-                    continue
-                    
-                for (title, link, published_at) in reports_list:
-                    line = f"*{sym}* – {title} [Link]({link})"
-                    
-                    for cid in chat_ids_impacted:
-                        
-                        # ❗️ SỬA: THÊM PAYWALL CHECK (B)
-                        if cid not in pro_chat_ids and cid != ADMIN_ID:
-                            continue # Bỏ qua User Free
-                            
-                        lines = _get_or_init(cid)
-                        if "2. BÁO CÁO PHÂN TÍCH (PRO)" not in lines:
-                            lines.append("\n*2. BÁO CÁO PHÂN TÍCH (PRO)*")
-                        lines.append(f"• {line}")
+                for cid in chat_ids_impacted:
+                    if cid in pro_chat_ids or cid == ADMIN_ID:
+                        for (title, link, pub_at) in reports_list:
+                            _get_payload(cid)["reports"].append({
+                                "symbol": sym, "title": title, "link": link
+                            })
 
-        # --- C. Xử lý Tin Chuyên ngành (Logic giữ nguyên - Gửi cho tất cả) ---
+        # --- D. Tin Chuyên Ngành (All) ---
         if spec_rows and spec_patterns:
-            for (title, link, published, created_at) in spec_rows:
+            for (title, link, pub, created_at) in spec_rows:
                 text_for_match = title or ""
-                if not text_for_match:
-                    continue
-                
                 matched_symbols = set()
                 for sym, pat in spec_patterns.items():
-                    if pat.search(text_for_match):
-                        matched_symbols.add(sym)
+                    if pat.search(text_for_match): matched_symbols.add(sym)
                 
-                if not matched_symbols:
-                    continue
-                    
-                line = f"{title} [Link]({link})"
-                
-                chat_ids_impacted = set()
-                for sym in matched_symbols:
-                    chat_ids_impacted.update(watch_to_chats.get(sym, []))
-                
-                for cid in chat_ids_impacted:
-                    lines = _get_or_init(cid)
-                    if "3. TIN TỨC CHUYÊN NGÀNH" not in lines:
-                        lines.append("\n*3. TIN TỨC CHUYÊN NGÀNH*")
-                    lines.append(f"• {line}\n")
+                if matched_symbols:
+                    item = {"title": title, "link": link} # Đã bỏ thời gian
+                    chat_ids_impacted = set()
+                    for sym in matched_symbols:
+                        chat_ids_impacted.update(watch_to_chats.get(sym, []))
+                    for cid in chat_ids_impacted:
+                        _get_payload(cid)["specialized"].append(item)
 
-        # --- D. Xử lý Tin Vĩ mô (Logic giữ nguyên - Gửi cho tất cả) ---
+        # --- E. Tin Vĩ Mô (All) ---
         if macro_rows:
-            for (title, link, published, created_at) in macro_rows:
-                line = f"{title} [Link]({link})"
-                
+            for (title, link, pub, created_at) in macro_rows:
+                item = {"title": title, "link": link}
                 for cid in users_map.keys():
-                    lines = _get_or_init(cid)
-                    if "4. TIN TỨC VĨ MÔ" not in lines:
-                        lines.append("\n*4. TIN TỨC VĨ MÔ*")
-                    lines.append(f"• {line}\n")
+                    _get_payload(cid)["macro"].append(item)
 
-        # 5️⃣ Gửi tin nhắn (Logic giữ nguyên)
-        if not messages_to_send:
-            log.info(f"{loop_label} Không có tin tức tổng hợp nào để gửi cho user.")
+        # 6️⃣ Gửi tin
+        if not digest_payloads:
+            log.info(f"{loop_label} Không có dữ liệu.")
             continue
 
-        log.info(f"{loop_label} Bắt đầu gửi digest cho {len(messages_to_send)} user...")
-        
-        sent_count = 0
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
         tasks = []
-        for chat_id, lines in messages_to_send.items():
-            if len(lines) <= 2:
-                continue
-                
-            final_text = "\n".join(lines)
-            tasks.append(
-                send_md(tg_app.bot, chat_id, final_text, disable_notification=True)
-            )
-            sent_count += 1
+        sent_count = 0
 
-        await asyncio.gather(*tasks, return_exceptions=True)
-        log.info(f"{loop_label} Đã gửi digest 7:00 cho {sent_count} user.")
+        for chat_id, data in digest_payloads.items():
+            # Dù rỗng cũng gửi nếu là Pro, hoặc ít nhất có Macro
+            # Nhưng để an toàn, chỉ gửi nếu có ít nhất 1 mục
+            has_content = (
+                data["value_stocks"] or data["bctc"] or data["reports"] or 
+                data["specialized"] or data["macro"]
+            )
+            
+            if not has_content: continue
+
+            digest_id = uuid.uuid4().hex
+            await asyncio.to_thread(save_digest_to_redis, digest_id, data)
+            web_app_url = f"{base_url}/digest/{digest_id}"
+            
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Bản Tin Sáng 🌅", web_app=WebAppInfo(url=web_app_url))]])
+            text = f"🌅 *Bản tin sáng {now_local.strftime('%d/%m')}*\nTổng hợp thị trường và danh mục của bạn.\n👉 Nhấn nút bên dưới để xem chi tiết."
+            
+            tasks.append(send_md(tg_app.bot, chat_id, text, reply_markup=kb))
+            sent_count += 1
         
-        log.info(f"{loop_label} Hoàn tất một vòng user digest.")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+        log.info(f"{loop_label} Hoàn tất gửi cho {sent_count} user.")
 
 #-------------------------------------------
 async def restore_reminder_loop():
@@ -6452,7 +6384,85 @@ async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAUL
     # Gọi hàm lõi (truyền update vào để nhận phản hồi)
     asyncio.create_task(execute_weekly_report(admin_update=update))
 
-# (Trong file alert_bot.py)
+async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    (Admin) Test nhanh tính năng Web App Digest.
+    Cách dùng: 
+    - /test_digest (mặc định xem bản Pro)
+    - /test_digest free (xem bản Free)
+    """
+    
+    # 1. Check Admin
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    # 2. Xác định chế độ test (Pro hay Free)
+    mode = "pro"
+    if context.args and context.args[0].lower() == "free":
+        mode = "free"
+
+    is_pro_flag = (mode == "pro")
+
+    # 3. Tạo dữ liệu giả (Mock Data)
+    mock_data = {
+        "is_pro": is_pro_flag,  # <--- QUAN TRỌNG: Cờ này quyết định giao diện
+        
+        # Dữ liệu Value Stocks (Chỉ hiện nếu là Pro)
+        "value_stocks": [
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+            {"symbol": "FPT", "industry": "Công nghệ", "pe": "21.0", "roe": "26.0", "score": "9.2"}
+        ] if is_pro_flag else [],
+
+        # Dữ liệu BCTC (Chỉ hiện nếu là Pro)
+        "bctc": [
+            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
+        ] if is_pro_flag else [],
+
+        # Dữ liệu Reports (Chỉ hiện nếu là Pro)
+        "reports": [
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com"}
+        ] if is_pro_flag else [],
+
+        # Tin tức (Hiện cho cả 2)
+        "specialized": [
+            {"title": "Tin test: Doanh nghiệp X đạt lợi nhuận kỷ lục", "link": "https://google.com", "time": "09:00"},
+             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"}
+        ],
+        "macro": [
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"}
+        ]
+    }
+
+    # 4. Lưu vào Redis & Tạo Link
+    try:
+        digest_id = uuid.uuid4().hex
+        
+        # Lưu Redis (chạy trong thread để không block)
+        await asyncio.to_thread(save_digest_to_redis, digest_id, mock_data)
+        
+        # Lấy URL (Render hoặc fallback google)
+        base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
+        web_app_url = f"{base_url}/digest/{digest_id}"
+
+        # 5. Gửi nút Web App
+        btn_text = "👑 Xem Bản Tin Pro (Test)" if is_pro_flag else "🆓 Xem Bản Tin Free (Test)"
+        
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                text=btn_text, 
+                web_app=WebAppInfo(url=web_app_url)
+            )]
+        ])
+        
+        msg_text = (
+            f"👇 Đây là bản tin test chế độ: *{mode.upper()}*\n"
+            f"_Gõ `/test_digest free` để xem giao diện người dùng miễn phí._"
+        )
+        
+        await reply_md(update, msg_text, reply_markup=kb)
+        
+    except Exception as e:
+        await reply_md(update, f"❌ Lỗi test digest: {e}")
 
 async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -6546,7 +6556,25 @@ def _send_telegram_message_safe(chat_id_to_send, text):
         future.result(timeout=5) # Chờ 5s
     except Exception as e:
         log.error(f"[SEPAPAY] Lỗi khi gửi tin nhắn cho {chat_id_to_send}: {e}")
+#------------------------------------------------------
+# --- HELPER REDIS CHO DIGEST ---
+def save_digest_to_redis(digest_id: str, data: dict):
+    """Lưu digest data vào Redis với TTL 24h (86400s)"""
+    try:
+        r = get_redis()
+        r.set(f"digest_web:{digest_id}", json.dumps(data, ensure_ascii=False), ex=86400)
+    except Exception as e:
+        log.error(f"[DIGEST] Lỗi lưu Redis: {e}")
 
+def get_digest_from_redis(digest_id: str):
+    """Đọc digest data từ Redis"""
+    try:
+        r = get_redis()
+        raw = r.get(f"digest_web:{digest_id}")
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        log.error(f"[DIGEST] Lỗi đọc Redis: {e}")
+        return None
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
@@ -6585,9 +6613,6 @@ def telegram_webhook():
 
     return "OK", 200
 #--------------------------------
-# (Trong file alert_bot.py)
-# HÃY XÓA TOÀN BỘ HÀM sepay_webhook CŨ VÀ THAY BẰNG HÀM NÀY:
-
 @flask_app.route("/sepay-webhook", methods=["POST"])
 def sepay_webhook():
     """
@@ -6710,10 +6735,22 @@ def sepay_webhook():
 
     # Trả 200 OK cuối cùng
     return jsonify({"message": "Success"}), 200
-
-
-#----------------------------------
+# --- FLASK ROUTE CHO WEB APP ---
+@flask_app.route("/digest/<digest_id>")
+def view_digest(digest_id):
+    """Route hiển thị Web App Digest"""
+    data = get_digest_from_redis(digest_id)
     
+    # Nếu không tìm thấy data (hết hạn hoặc ID sai) -> Render trang 404 đẹp
+    if not data:
+        return render_template_string(DIGEST_404_TEMPLATE), 404
+    
+    # Lấy ngày giờ hiện tại (VN Timezone) để hiển thị trên Header
+    vn_tz = datetime.timezone(datetime.timedelta(hours=7))
+    date_str = datetime.datetime.now(vn_tz).strftime("Ngày %d/%m/%Y")
+    
+    # Render trang chính
+    return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
 
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
@@ -6867,7 +6904,6 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(session_notice_loop()),
                     MAIN_LOOP.create_task(weekly_report_loop()),
                     MAIN_LOOP.create_task(analysis_report_loop()),
-                    MAIN_LOOP.create_task(daily_value_screener_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
                     MAIN_LOOP.create_task(daily_user_digest_loop()),
                     MAIN_LOOP.create_task(restore_reminder_loop()),
@@ -6935,6 +6971,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("admin_add_user", "(admin) (admin) Thêm/gia hạn Gói Pro cho user"),
             ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
+            ("test_digest", "(admin) Gửi bản tin test Web App ngay lập tức"),
         ]
         tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
 
@@ -7088,6 +7125,7 @@ async def main():
     tg_app.add_handler(CommandHandler("admin_deactivate", cmd_admin_deactivate))
     tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
     tg_app.add_handler(CommandHandler("cmd_run_weekly_report_now", cmd_run_weekly_report_now))
+    tg_app.add_handler(CommandHandler("test_digest", cmd_admin_test_digest))
 
     # 🆕 Bắt case gửi file JSON + caption /restore_core
     tg_app.add_handler(
