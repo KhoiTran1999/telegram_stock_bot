@@ -6593,19 +6593,15 @@ def sepay_webhook():
     """
     Endpoint nhận thông báo thanh toán (Webhook) từ SePay.
     (ĐÃ SỬA: Đọc Token từ Header 'Authorization: Apikey ...')
+    (ĐÃ SỬA: Dùng Regex để tìm Order ID)
     """
     
-    # === 1. LẤY DỮ LIỆU VÀ XÁC THỰC TOKEN (QUY TẮC 3 - ĐÃ SỬA) ===
+    # === 1. LẤY DỮ LIỆU VÀ XÁC THỰC TOKEN (Giữ nguyên) ===
     try:
-        # Lấy Header 'Authorization'
         auth_header = request.headers.get("Authorization")
-        
-        # Lấy JSON payload
         data = request.get_json()
-
         token_from_request = None
         if auth_header and auth_header.startswith("Apikey "):
-            # Tách token ra, bỏ "Apikey " (7 ký tự)
             token_from_request = auth_header[7:] 
 
         if not SEPAY_TOKEN:
@@ -6614,32 +6610,47 @@ def sepay_webhook():
             log.warning(f"[SEPAPAY] WEBHOOK BỊ TỪ CHỐI - SAI TOKEN!")
             log.warning(f"[SEPAPAY] Header 'Authorization' nhận được: {auth_header}")
             return jsonify({"message": "Invalid Token"}), 403
-
     except Exception as e:
         log.error(f"[SEPAPAY] Lỗi khi parse JSON hoặc xác thực Header: {e}")
         return jsonify({"message": "Invalid Request Body"}), 400
 
-    # === 2. PHÂN TÍCH PAYLOAD (Giữ nguyên) ===
+    # === 2. PHÂN TÍCH PAYLOAD (SỬA LỖI REGEX) ===
     try:
-        order_id = data.get("content")
+        # 1. Lấy nội dung gốc
+        raw_content = data.get("content")
         received_amount_str = data.get("transferAmount")
         transfer_type = data.get("transferType")
 
         if transfer_type != "in":
-            log.info(f"[SEPAPAY] Bỏ qua giao dịch (type: {transfer_type}) cho {order_id}.")
+            log.info(f"[SEPAPAY] Bỏ qua giao dịch (type: {transfer_type}).")
             return jsonify({"message": "Not an 'in' transaction"}), 200
 
-        if not order_id or received_amount_str is None:
+        if not raw_content or received_amount_str is None:
             log.warning("[SEPAPAY] Webhook thiếu 'content' hoặc 'transferAmount'.")
             return jsonify({"message": "Missing fields"}), 400
+        
+        # 2. Dùng REGEX để tìm mã PAY... bên trong nội dung
+        # (Regex: Tìm chữ "PAY", theo sau là 9-15 chữ số, và 5 chữ/số)
+        # (Bạn đã import 're' ở dòng 98 rồi)
+        match = re.search(r'(PAY\d{9,15}\w{5})', raw_content.upper())
+        
+        order_id = None
+        if match:
+            order_id = match.group(1) # Lấy mã PAY... đã tìm được
+        
+        # 3. Nếu không tìm thấy mã PAY... -> Bỏ qua
+        if not order_id:
+            log.info(f"[SEPAPAY] Không tìm thấy Order ID (PAY...) trong nội dung: '{raw_content}'. Bỏ qua.")
+            return jsonify({"message": "Order ID pattern not found"}), 200
         
         received_amount = int(float(received_amount_str))
             
     except Exception as e:
-        log.error(f"[SEPAPAY] Lỗi khi đọc các trường: {e}")
+        log.error(f"[SEPAPAY] Lỗi khi đọc các trường hoặc Regex: {e}")
         return jsonify({"message": "Invalid fields"}), 400
     
     # === 3. XỬ LÝ LOGIC THANH TOÁN (Giữ nguyên) ===
+    # (Từ đây trở đi, 'order_id' đã là mã PAY... chuẩn, code sẽ chạy đúng)
     try:
         order = get_order_by_id(order_id)
     except Exception as e:
@@ -6651,17 +6662,17 @@ def sepay_webhook():
         log.warning(f"[SEPAPAY] Không tìm thấy đơn hàng cho order_id: {order_id}")
         return jsonify({"message": "Order not found"}), 200
 
-    # 3.2. Đơn hàng đã được xử lý (Quy tắc 1: Chống lặp)
+    # 3.2. Đơn hàng đã được xử lý
     if order['status'] == 'PAID':
         log.info(f"[SEPAPAY] Đơn hàng {order_id} đã được xử lý trước đó. Bỏ qua.")
         return jsonify({"message": "Already processed"}), 200
 
-    # 3.3. Đơn hàng PENDING -> Kiểm tra tiền (Quy tắc 2)
+    # 3.3. Đơn hàng PENDING -> Kiểm tra tiền
     chat_id = order['chat_id']
     expected_amount = int(order['amount']) 
     days_to_add = order['days_to_add']
     
-    # 3.4. XỬ LÝ SAI TIỀN (Phải khớp chính xác)
+    # 3.4. XỬ LÝ SAI TIỀN
     if received_amount != expected_amount:
         log.warning(f"[SEPAPAY] THANH TOÁN SAI SỐ TIỀN: User {chat_id} | Order {order_id}. "
                     f"Yêu cầu {expected_amount}, nhận {received_amount}.")
@@ -6678,7 +6689,7 @@ def sepay_webhook():
         _send_telegram_message_safe(chat_id, msg_fail)
         return jsonify({"message": "Incorrect amount"}), 200
 
-    # 3.5. XỬ LÝ THÀNH CÔNG (Nội dung ĐÚNG, Số tiền ĐÚNG)
+    # 3.5. XỬ LÝ THÀNH CÔNG
     try:
         log.info(f"[SEPAPAY] THÀNH CÔNG: User {chat_id} | Order {order_id}. "
                  f"Kích hoạt {days_to_add} ngày Pro.")
@@ -6699,6 +6710,7 @@ def sepay_webhook():
 
     # Trả 200 OK cuối cùng
     return jsonify({"message": "Success"}), 200
+
 
 #----------------------------------
     
