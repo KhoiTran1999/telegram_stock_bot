@@ -2784,15 +2784,13 @@ async def weekly_report_loop():
 async def news_specialized_loop():
     """
     Quét RSS chuyên ngành, tìm bài có chứa mã cổ phiếu HOẶC tên doanh nghiệp
-    trong danh mục của user. Gửi tin nhắn riêng cho từng user có bài liên quan.
-    
-    (ĐÃ SỬA LỖI N+1 QUERY)
+    trong danh mục của user.
+    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
     warmed_up = False
 
-    # Gộp toàn bộ URL chuyên ngành
     all_specialized_urls: list[str] = []
     for urls in RSS_FEEDS_SPECIALIZED.values():
         all_specialized_urls.extend(urls)
@@ -2807,11 +2805,12 @@ async def news_specialized_loop():
             continue
 
         try:
-            # 1. Fetch RSS (OK, đã chạy non-blocking)
+            # 1. Fetch RSS (Giữ nguyên)
             entries = await asyncio.to_thread(
                 fetch_rss_entries_for_urls, all_specialized_urls
             )
-            # ... (Phần 1, 2, 3 - Lọc bài mới - giữ nguyên) ...
+            
+            # 2. Warm-up (Giữ nguyên)
             if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
                 entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
@@ -2843,6 +2842,7 @@ async def news_specialized_loop():
                 await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
                 continue
 
+            # 3. Lọc bài mới (Giữ nguyên)
             new_entries = []
             for it in entries:
                 link = (it.get("link") or "").strip()
@@ -2872,133 +2872,22 @@ async def news_specialized_loop():
                 unique_by_link[link] = it
             new_entries = list(unique_by_link.values())
 
-            # ==============================================================
-            # BƯỚC 4: Lấy danh sách user VÀ CÀI ĐẶT (ĐÃ TỐI ƯU N+1)
-            # ==============================================================
-            all_watch = await asyncio.to_thread(get_all_watch)
-            # GỌI HÀM MỚI (chỉ 1 query, cache RAM 60s)
-            all_pref = await asyncio.to_thread(get_all_news_pref)
-
-            symbol_to_chats: dict[str, list[int]] = {}
-            default_pref = {"enable_specialized": True, "enable_macro": True}
+            # ❗️ SỬA: XÓA TOÀN BỘ KHỐI 4, 5, 6, 7 (LẤY USER, COMPILE, XỬ LÝ, GỬI BÀI)
+            # Chỉ giữ lại logic "Đánh dấu đã xem"
             
-            for chat_key, block in all_watch.items():
-                try:
-                    cid = int(chat_key)
-                except Exception:
-                    continue
+            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Phát hiện {len(new_entries)} bài chuyên ngành mới. Đang đánh dấu đã xem...")
 
-                # ⭐ SỬA: Lấy pref từ dict (cache RAM, siêu nhanh)
-                pref = all_pref.get(cid, default_pref)
-                if not pref["enable_specialized"]:
-                    continue
-
-                lst = block.get("list", []) or []
-                if not lst:
-                    continue
-
-                for sym in lst:
-                    s = sym.upper()
-                    symbol_to_chats.setdefault(s, []).append(cid)
-            # ==============================================================
-            
-            if not symbol_to_chats:
-                # Không có ai quan tâm, chỉ đánh dấu đã xem
-                for it in new_entries:
-                    await asyncio.to_thread(
-                        mark_news_seen,
-                        NEWS_FEED_TYPE_SPECIALIZED,
-                        link=it["link"],
-                        guid=None,
-                        title=it["title"],
-                        published=it["published"],
-                    )
-                await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
-                continue
-
-            # ... (Phần 5, 6, 7 - Compile pattern, Xử lý bài mới, Gửi bài - giữ nguyên) ...
-            patterns: dict[str, re.Pattern] = {}
-            for sym in symbol_to_chats.keys():
-                keywords = COMPANY_KEYWORDS.get(sym, [sym])
-                combined = "|".join(re.escape(k) for k in keywords if k)
-                if not combined: continue
-                patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
-
-            news_by_chat: dict[int, list[str]] = {}
             for it in new_entries:
-                title = it["title"] or ""
-                raw_summary = it.get("summary") or ""
-                link = it["link"] or ""
-                source = it.get("source") or ""
-                pub_dt = it.get("published")
-                decoded_summary = clean_html_text(raw_summary)
-                text_for_match = (title + " " + decoded_summary)
-
-                if not text_for_match.strip():
-                    await asyncio.to_thread(
-                        mark_news_seen, NEWS_FEED_TYPE_SPECIALIZED, link=link, guid=None, title=title, published=pub_dt,
-                    )
-                    continue
-
-                affected: dict[int, list[str]] = {}
-                for sym, pat in patterns.items():
-                    if pat.search(text_for_match):
-                        for cid in symbol_to_chats.get(sym, []):
-                            affected.setdefault(cid, []).append(sym)
-
-                if not affected:
-                    await asyncio.to_thread(
-                        mark_news_seen, NEWS_FEED_TYPE_SPECIALIZED, link=link, guid=None, title=title, published=pub_dt,
-                    )
-                    continue
-                
-                if isinstance(pub_dt, datetime.datetime):
-                    pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
-                else:
-                    pub_str = ""
-                short_sum = decoded_summary
-                if len(short_sum) > 300:
-                    short_sum = short_sum[:280].rstrip() + "..."
-
-                for chat_id, syms in affected.items():
-                    uniq_syms = sorted(set(syms))
-                    lines = [ "📰 *Tin tức mới liên quan tới danh mục của bạn:*", title, "", "*Liên quan tới:* " + ", ".join(uniq_syms), ]
-                    if short_sum: lines.extend(["", f"{short_sum}"])
-                    if source or pub_str:
-                        lines.append("")
-                        meta = []
-                        if source: meta.append(f"_Nguồn: {source}_")
-                        if pub_str: meta.append(f"_Thời gian: {pub_str}_")
-                        lines.append(" | ".join(meta))
-                    if link: lines.append(""), lines.append(f"🔗 {link}")
-                    text = "\n".join(lines)
-                    news_by_chat.setdefault(chat_id, []).append(text)
-
                 await asyncio.to_thread(
-                    mark_news_seen, NEWS_FEED_TYPE_SPECIALIZED, link=link, guid=None, title=title, published=pub_dt,
+                    mark_news_seen,
+                    NEWS_FEED_TYPE_SPECIALIZED,
+                    link=it["link"],
+                    guid=None,
+                    title=it["title"],
+                    published=it["published"],
                 )
 
-            for chat_id, articles in news_by_chat.items():
-                total = len(articles)
-                max_per_chat = NEWS_MAX_ARTICLES_PER_CHAT
-                to_send = articles[:max_per_chat]
-                if total == 1:
-                    await asyncio.to_thread(send_msg_to, chat_id, to_send[0])
-                    await asyncio.sleep(0.2)
-                    continue
-                header_lines = [ f"📰 Hiện tại có {total} bài báo *chuyên ngành* mới liên quan tới danh mục của bạn.", ]
-                if total > max_per_chat:
-                    header_lines.append( f"Mình sẽ gửi *{max_per_chat} bài tiêu biểu* ở chế độ im lặng để tránh làm phiền bạn." )
-                else:
-                    header_lines.append( "Mình sẽ gửi từng bài ngay sau đây ở chế độ *im lặng* để tránh làm phiền bạn." )
-                header_text = "\n".join(header_lines)
-                await asyncio.to_thread(send_msg_to, chat_id, header_text)
-                await asyncio.sleep(0.2)
-                for text in to_send:
-                    await asyncio.to_thread(
-                        send_msg_to, chat_id, text, "Markdown", True
-                    )
-                    await asyncio.sleep(0.2)
+            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Đã đánh dấu xong (chỉ thu thập).")
 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Lỗi tổng quát: {e}")
@@ -3008,9 +2897,7 @@ async def news_specialized_loop():
 async def news_macro_loop():
     """
     Quét RSS vĩ mô, nếu có bài mới thì broadcast cho tất cả user
-    (nhưng CHỈ những user chưa tắt tin vĩ mô).
-    
-    (ĐÃ SỬA LỖI N+1 QUERY)
+    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -3026,11 +2913,12 @@ async def news_macro_loop():
             continue
 
         try:
-            # 1. Fetch RSS (OK, non-blocking)
+            # 1. Fetch RSS (Giữ nguyên)
             entries = await asyncio.to_thread(
                 fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
             )
-            # ... (Phần 1, 2, 3 - Lọc bài mới - giữ nguyên) ...
+            
+            # 2. Warm-up (Giữ nguyên)
             if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
                 entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
@@ -3062,6 +2950,7 @@ async def news_macro_loop():
                 await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
                 continue
 
+            # 3. Lọc bài mới (Giữ nguyên)
             new_entries = []
             for it in entries:
                 link = (it.get("link") or "").strip()
@@ -3083,94 +2972,22 @@ async def news_macro_loop():
                 await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
                 continue
 
-            # ==============================================================
-            # BƯỚC 4: Lấy danh sách user VÀ CÀI ĐẶT (ĐÃ TỐI ƯU N+1)
-            # ==============================================================
-            all_watch = await asyncio.to_thread(get_all_watch)
-            # GỌI HÀM MỚI (chỉ 1 query, cache RAM 60s)
-            all_pref = await asyncio.to_thread(get_all_news_pref)
-            default_pref = {"enable_specialized": True, "enable_macro": True}
-            # ==============================================================
-
-            # 5. Format toàn bộ bài vĩ mô mới vào list (chưa gửi vội)
-            macro_texts: list[str] = []
-            total_articles = 0
+            # ❗️ SỬA: XÓA TOÀN BỘ KHỐI 4, 5, 6, 7 (LẤY USER, FORMAT, GỬI BÀI)
+            # Chỉ giữ lại logic "Đánh dấu đã xem"
+            
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Phát hiện {len(new_entries)} bài vĩ mô mới. Đang đánh dấu đã xem...")
 
             for it in new_entries:
-                # ... (Phần 5, 6 - Format, Đánh dấu seen - giữ nguyên) ...
-                title = it["title"] or ""
-                link = it["link"] or ""
-                source = it.get("source") or ""
-                pub_dt = it.get("published")
-                if isinstance(pub_dt, datetime.datetime):
-                    pub_str = pub_dt.strftime("%Y-%m-%d %H:%M")
-                else:
-                    pub_str = ""
-                raw_summary = it.get("summary") or ""
-                clean_summary = clean_html_text(raw_summary)
-                short_sum = clean_summary
-                if len(short_sum) > 400:
-                    short_sum = short_sum[:380].rstrip() + "..."
-                lines = [ f"🌏 *Tin vĩ mô mới:*\n", f"*{title}*", ]
-                if short_sum: lines.extend(["", short_sum])
-                meta = []
-                if source: meta.append(f"_Nguồn:_ {source}")
-                if pub_str: meta.append(f"_Thời gian: {pub_str}_")
-                if meta: lines.append(""), lines.append(" | ".join(meta))
-                if link: lines.append(""), lines.append(f"🔗 {link}")
-                text = "\n".join(lines)
-                macro_texts.append(text)
-                total_articles += 1
                 await asyncio.to_thread(
-                    mark_news_seen, NEWS_FEED_TYPE_MACRO, link=link, guid=None, title=title, published=pub_dt,
+                    mark_news_seen,
+                    NEWS_FEED_TYPE_MACRO,
+                    link=it["link"],
+                    guid=None,
+                    title=it["title"],
+                    published=it["published"],
                 )
-
-            if not macro_texts:
-                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài vĩ mô mới sau khi lọc.")
-            else:
-                max_macro = NEWS_MACRO_MAX_ARTICLES_PER_RUN
-                to_send_global = macro_texts[:max_macro]
-
-                # 7. Gửi tới từng user (header + silent)
-                total_sent_users = 0
-                for chat_key in all_watch.keys():
-                    try:
-                        chat_id = int(chat_key)
-                    except Exception:
-                        continue
-
-                    # ⭐ SỬA: Lấy pref từ dict (cache RAM, siêu nhanh)
-                    pref = all_pref.get(chat_id, default_pref)
-                    if not pref["enable_macro"]:
-                        continue
-
-                    # ... (Phần còn lại của logic gửi - giữ nguyên) ...
-                    if total_articles == 1:
-                        await asyncio.to_thread(send_msg_to, chat_id, macro_texts[0])
-                        await asyncio.sleep(0.2)
-                        total_sent_users += 1
-                        continue
-
-                    header_lines = [ f"🌏 Hiện tại có {total_articles} bài báo *vĩ mô* mới đáng chú ý.", ]
-                    if total_articles > max_macro:
-                        header_lines.append( f"Mình sẽ gửi *{max_macro} bài tiêu biểu* ở chế độ im lặng để tránh làm phiền bạn." )
-                    else:
-                        header_lines.append( "Mình sẽ gửi từng bài ngay sau đây ở chế độ *im lặng* để tránh làm phiền bạn." )
-                    header_text = "\n".join(header_lines)
-
-                    await asyncio.to_thread(send_msg_to, chat_id, header_text)
-                    await asyncio.sleep(0.2)
-                    for text in to_send_global:
-                        await asyncio.to_thread(
-                            send_msg_to, chat_id, text, "Markdown", True
-                        )
-                        await asyncio.sleep(0.2)
-                    total_sent_users += 1
-
-                log.info(
-                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đã gửi tin vĩ mô tới {total_sent_users} user "
-                    f"(tối đa {max_macro} bài / user, tổng {total_articles} bài trong vòng quét này)."
-                )
+            
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đã đánh dấu xong (chỉ thu thập).")
 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
@@ -3642,17 +3459,19 @@ async def sleep_until(dt_target: datetime.datetime, vn_tz):
         # ngủ tối đa 1 giờ mỗi lần cho an toàn
         await asyncio.sleep(min(seconds, 3600))
 
-# Thay thế hàm này trong alert_bot.py
-
 async def financial_Statements_notice_loop():
     """
     (ĐÃ SỬA) Quét BCTC và chỉ thông báo cho user Pro + Admin.
+    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN 8:00)
     """
 
     vn_tz = pytz.timezone(TIMEZONE)
 
     while True:
 
+        # ... (Toàn bộ logic kiểm tra BOT_ACTIVE, tính toán kỳ BCTC,
+        #      ngủ đến 02:00 sáng giữ nguyên) ...
+        
         now = datetime.datetime.now(pytz.timezone(TIMEZONE))
         period = get_bctc_period_for_date(now)
         period_label = f"Quý {period[1]}/{period[0]}" if period else "N/A"
@@ -3702,9 +3521,11 @@ async def financial_Statements_notice_loop():
         two_am_today = vn_tz.localize(
             datetime.datetime(today.year, today.month, today.day, 2, 0, 0)
         )
-        eight_am_today = vn_tz.localize(
-            datetime.datetime(today.year, today.month, today.day, 8, 0, 0)
-        )
+
+        # ❗️ SỬA: XÓA BIẾN eight_am_today VÌ KHÔNG CẦN NỮA
+        # eight_am_today = vn_tz.localize(
+        #     datetime.datetime(today.year, today.month, today.day, 8, 0, 0)
+        # )
 
         now = datetime.datetime.now(vn_tz)
         if now < two_am_today:
@@ -3713,17 +3534,12 @@ async def financial_Statements_notice_loop():
             )
             await sleep_until(two_am_today, vn_tz)
 
-        # 1.1️⃣ 02:00 -> CRAWL BCTC
+        # 1.1️⃣ 02:00 -> CRAWL BCTC (Giữ nguyên logic crawl)
         log.info(f"[{INSTANCE_ID}][BCTC] 02:00 – bắt đầu crawl BCTC {period_label} cho hôm nay.")
 
         try:
             all_watch = await asyncio.to_thread(get_all_watch)
-            
-            # === LOGIC PAYWALL (1) ===
-            # Lấy danh sách Pro user để lọc
             pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-            # ========================
-
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][BCTC] Lỗi get_all_watch: {e}")
             tomorrow = today + datetime.timedelta(days=1)
@@ -3735,16 +3551,12 @@ async def financial_Statements_notice_loop():
 
         symbol_set: set[str] = set()
         for chat_key, info in all_watch.items():
-            
-            # === LOGIC PAYWALL (2) ===
-            # Chỉ quét BCTC cho các mã nằm trong watchlist của Pro user (hoặc Admin)
             try:
                 chat_id = int(chat_key)
                 if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
-                    continue # Bỏ qua user thường
+                    continue
             except Exception:
                 continue
-            # ========================
 
             syms = info.get("list") if isinstance(info, dict) else info
             if not syms:
@@ -3755,8 +3567,6 @@ async def financial_Statements_notice_loop():
                     symbol_set.add(s)
 
         pending_after = 0
-
-        # (Phần code crawl BCTC bên dưới giữ nguyên y hệt)
         for sym in sorted(symbol_set):
             try:
                 already = await asyncio.to_thread(
@@ -3767,7 +3577,6 @@ async def financial_Statements_notice_loop():
                     f"[{INSTANCE_ID}][BCTC] Lỗi has_bctc_notified({sym}): {e}"
                 )
                 continue
-
             if already:
                 continue
 
@@ -3781,17 +3590,20 @@ async def financial_Statements_notice_loop():
                 )
                 pending_after += 1
                 continue
-
             if not available:
                 pending_after += 1
                 continue
 
             try:
+                # Chỉ đánh dấu, KHÔNG add vào queue gửi 8:00 nữa
                 await asyncio.to_thread(mark_bctc_notified, sym, year, quarter)
-                await asyncio.to_thread(add_bctc_queue, sym, year, quarter, today)
+                
+                # ❗️ SỬA: XÓA DÒNG NÀY
+                # await asyncio.to_thread(add_bctc_queue, sym, year, quarter, today)
+                
             except Exception as e:
                 log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi mark/add_queue({sym}, Q{quarter}/{year}): {e}"
+                    f"[{INSTANCE_ID}][BCTC] Lỗi mark_bctc_notified({sym}, Q{quarter}/{year}): {e}"
                 )
 
             await asyncio.sleep(0.2)
@@ -3802,101 +3614,10 @@ async def financial_Statements_notice_loop():
             f"still_pending = {still_pending}."
         )
 
-        # 2️⃣ Đợi tới 08:00 để GỬI THÔNG BÁO
-        now = datetime.datetime.now(vn_tz)
-        if now < eight_am_today:
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Đợi tới 08:00 ({eight_am_today}) để gửi thông báo BCTC."
-            )
-            await sleep_until(eight_am_today, vn_tz)
-
-        # 2.1️⃣ 08:00 -> GỬI THÔNG BÁO
-        log.info(
-            f"[{INSTANCE_ID}][BCTC] 08:00 – bắt đầu gửi thông báo BCTC {period_label}."
-        )
-
-        try:
-            queue_rows = await asyncio.to_thread(get_bctc_queue_by_date, today)
-        except Exception as e:
-            log.warning(
-                f"[{INSTANCE_ID}][BCTC] Lỗi get_bctc_queue_by_date({today}): {e}"
-            )
-            queue_rows = []
-
-        if queue_rows:
-            # (Phần code gửi BCTC này đã tự động đúng,
-            # vì ở bước crawl (2h sáng) chúng ta đã CHỈ crawl
-            # các mã của Pro user.
-            # Giờ chúng ta chỉ cần gửi cho những ai theo dõi các mã này)
-            
-            try:
-                all_watch_for_send = await asyncio.to_thread(get_all_watch)
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi get_all_watch (notify): {e}"
-                )
-                all_watch_for_send = {}
-
-            symbol_to_chats: dict[str, list[int]] = {}
-            for chat_key, info in all_watch_for_send.items():
-                syms = info.get("list") if isinstance(info, dict) else info
-                if not syms:
-                    continue
-                try:
-                    chat_id = int(chat_key)
-                except Exception:
-                    continue
-                for sym in syms:
-                    s = str(sym).upper().strip()
-                    if not s:
-                        continue
-                    symbol_to_chats.setdefault(s, []).append(chat_id)
-
-            for sym, y, q in queue_rows:
-                chats = symbol_to_chats.get(sym, [])
-                if not chats:
-                    await asyncio.to_thread(
-                        clear_bctc_queue_entry, sym, y, q, today
-                    )
-                    continue
-
-                query_text = f"{sym} báo cáo tài chính"
-                google_url = f"https://www.google.com/search?q={quote_plus(query_text)}"
-
-                lines = [
-                    "📑 *Báo cáo tài chính mới*",
-                    "",
-                    f"• Mã: *{sym}*",
-                    f"• Kỳ: *Quý {q}/{y}*",
-                    "",
-                    "👉 Mã cổ phiếu trong danh sách theo dõi của bạn đã có báo cáo tài chính.",
-                    "",
-                    "Bạn có thể tra cứu nhanh trên Google với từ khóa:",
-                    f"{query_text}",
-                    google_url,
-                ]
-                text = "\n".join(lines)
-
-                for chat_id in chats:
-                    # (Không cần check Pro ở đây nữa, vì đã check lúc crawl)
-                    try:
-                        await send_md(tg_app.bot, chat_id, text)
-                        await asyncio.sleep(0.2)
-                    except Exception as e:
-                        log.warning(
-                            f"[{INSTANCE_ID}][BCTC] Lỗi gửi BCTC cho {chat_id} – {sym}: {e}"
-                        )
-
-                await asyncio.to_thread(
-                    clear_bctc_queue_entry, sym, y, q, today
-                )
-
-        else:
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Hôm nay không có mã nào trong hàng đợi BCTC."
-            )
-
-        # 3️⃣ Quyết định ngủ tới khi nào
+        # ❗️ SỬA: XÓA TOÀN BỘ KHỐI LOGIC GỬI TIN LÚC 8:00
+        # (Xóa từ "Đợi tới 08:00" đến hết "clear_bctc_queue_entry")
+        
+        # 3️⃣ Quyết định ngủ tới khi nào (Giữ nguyên)
         now = datetime.datetime.now(vn_tz)
         if still_pending:
             tomorrow = today + datetime.timedelta(days=1)
@@ -3941,15 +3662,11 @@ async def analysis_report_loop():
     """
     (TÍNH NĂNG MỚI - ĐÃ SỬA)
     Quét báo cáo phân tích 1 LẦN/NGÀY lúc 07:00 SÁNG.
-    - Chỉ quét các mã trong watchlist của Pro user.
-    - Dùng (link + date) để kiểm tra trùng lặp trong DB/Redis.
-    - Gửi thông báo cho user (Pro) có liên quan.
+    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
+    (SỬA LẦN 3: GỠ PAYWALL - THU THẬP CHO TẤT CẢ USER)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
-    
-    # Giống logic news_seen, chúng ta cần warm-up lần đầu
-    # để tránh spam user bằng 10 báo cáo cũ.
     warmed_up = False 
 
     while True:
@@ -3963,35 +3680,25 @@ async def analysis_report_loop():
             continue
             
         try:
-            # ------------------------------------------------
-            # ⭐️ PHẦN LOGIC CHỜ (ĐÃ THAY ĐỔI) ⭐️
-            # ------------------------------------------------
-            
-            # 1. Tính toán mốc 07:00 tiếp theo
+            # ... (Logic chờ 7:00 sáng giữ nguyên) ...
             target_7am = get_next_7am(now, vn_tz)
             log.info(f"{loop_label} Đang chờ cho đến {target_7am.strftime('%Y-%m-%d %H:%M')}.")
-            
-            # 2. Ngủ cho đến 07:00 (dùng hàm sleep_until đã có)
             await sleep_until(target_7am, vn_tz)
             
-            # 3. Kiểm tra lại sau khi ngủ dậy (quan trọng!)
             if not BOT_ACTIVE:
                 log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
-                continue # Vòng lặp while True sẽ chạy lại, tính toán sleep tiếp
+                continue
             
             log.info(f"{loop_label} 07:00! Bắt đầu quét báo cáo...")
 
-            # ------------------------------------------------
-            # ⭐️ PHẦN LOGIC QUÉT (Giữ nguyên) ⭐️
-            # ------------------------------------------------
-
-            # 1. GATHER: Lấy danh sách Pro user và watchlist
-            pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
+            # 1. GATHER
+            # ❗️ SỬA: GỠ BỎ PAYWALL (1)
+            # pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
             all_watch = await asyncio.to_thread(get_all_watch)
 
-            # 2. MAP: Tạo set mã Pro và bản đồ user
-            pro_symbol_set: set[str] = set()
-            symbol_to_chats_map: dict[str, list[int]] = {}
+            # 2. MAP
+            # ❗️ SỬA: Đổi tên biến (không còn là "pro" nữa)
+            all_symbol_set: set[str] = set()
 
             for chat_key, user_block in all_watch.items():
                 try:
@@ -3999,149 +3706,95 @@ async def analysis_report_loop():
                 except Exception:
                     continue
                 
-                # Chỉ xử lý nếu là Admin hoặc Pro user
-                if chat_id == ADMIN_ID or chat_id in pro_chat_ids:
-                    watch_list = user_block.get("list", []) or []
-                    for sym in watch_list:
-                        s = str(sym).upper().strip()
-                        if s and len(s) == 3: # Chỉ quét mã 3 chữ
-                            pro_symbol_set.add(s)
-                            symbol_to_chats_map.setdefault(s, []).append(chat_id)
+                # ❗️ SỬA: GỠ BỎ PAYWALL (2)
+                # (Không cần check if chat_id == ADMIN_ID or chat_id in pro_chat_ids)
+                watch_list = user_block.get("list", []) or []
+                for sym in watch_list:
+                    s = str(sym).upper().strip()
+                    if s and len(s) == 3:
+                        all_symbol_set.add(s)
 
-            if not pro_symbol_set:
-                log.info(f"{loop_label} Không có mã Pro nào, bỏ qua lần quét này.")
-                continue # Vòng lặp sẽ ngủ đến 7h sáng mai
+            # ❗️ SỬA: Cập nhật log
+            if not all_symbol_set:
+                log.info(f"{loop_label} Không có mã nào trong watchlist, bỏ qua lần quét này.")
+                continue 
 
-            log.info(f"{loop_label} Bắt đầu quét báo cáo cho {len(pro_symbol_set)} mã Pro.")
+            log.info(f"{loop_label} Bắt đầu quét báo cáo cho {len(all_symbol_set)} mã (tất cả user).")
             
-            # Nơi lưu kết quả: {chat_id: [list_of_messages]}
-            reports_to_send_map: dict[int, list[str]] = {}
-
-            # 3. FETCH & PROCESS: Lặp qua từng mã (thay vì từng user)
-            for symbol in sorted(pro_symbol_set):
-                if not BOT_ACTIVE: # Kiểm tra lại nếu vòng lặp quá dài
+            # 3. FETCH & PROCESS
+            # ❗️ SỬA: Lặp qua all_symbol_set
+            for symbol in sorted(all_symbol_set):
+                if not BOT_ACTIVE: 
                     log.info(f"{loop_label} Bot TẮT giữa chừng, dừng quét.")
                     break
                 
+                # ... (Logic bên trong (company.reports, mark_report_seen) giữ nguyên) ...
                 try:
-                    # Dùng cú pháp v1.x (sync) của bạn
                     company = Company(symbol=symbol)
                     df = await asyncio.to_thread(company.reports)
                     
                     if df is None or df.empty:
                         log.info(f"{loop_label} Không có báo cáo cho {symbol}.")
-                        await asyncio.sleep(3) # Nghỉ 3s giữa các mã
+                        await asyncio.sleep(3) 
                         continue
                     
                     log.info(f"{loop_label} Tìm thấy {len(df)} báo cáo cho {symbol}. Đang lọc...")
 
-                    # 4. CHECK & MARK: Lặp qua các báo cáo của mã này
+                    # 4. CHECK & MARK
                     for row in df.itertuples():
                         title = getattr(row, "name", "")
                         link = getattr(row, "link", "")
-                        date_str = getattr(row, "date", "") # Đây là '2025-11-04T00:00:00Z'
+                        date_str = getattr(row, "date", "")
                         
                         if not link or not date_str:
-                            continue # Bỏ qua nếu thiếu dữ liệu
+                            continue 
 
-                        # Kiểm tra xem đã gửi chưa (dùng hàm mới)
                         is_seen = await asyncio.to_thread(has_report_seen, link, date_str)
                         
                         if not is_seen:
-                            # BÁO CÁO MỚI!
-                            
-                            # A. Đánh dấu đã thấy (DB + Redis)
                             await asyncio.to_thread(
                                 mark_report_seen, symbol, link, title, date_str
                             )
                             
-                            # B. Kiểm tra logic "Warm-up"
                             if not warmed_up:
                                 log.info(f"{loop_label} (Warm-up) Đã đánh dấu: {symbol} - {title}")
                             else:
                                 log.info(f"{loop_label} (MỚI) Phát hiện: {symbol} - {title}")
-                                
-                                # Format tin nhắn
-                                msg = (
-                                    f"📑 *Báo cáo phân tích mới cho {symbol}:*\n\n"
-                                    f"*{title}*\n\n"
-                                    f"🔗 Link chi tiết: {link}"
-                                )
-                                
-                                # Tìm các Pro user theo dõi mã này
-                                chat_ids_to_notify = symbol_to_chats_map.get(symbol, [])
-                                for cid in chat_ids_to_notify:
-                                    reports_to_send_map.setdefault(cid, []).append(msg)
                             
-                            await asyncio.sleep(0.2) # Nghỉ giữa các báo cáo
+                            await asyncio.sleep(0.2) 
 
                 except Exception as e:
                     log.warning(f"{loop_label} Lỗi khi xử lý mã {symbol}: {e}")
 
-                await asyncio.sleep(3) # Nghỉ 3s giữa các mã
+                await asyncio.sleep(3) 
             
-            # Hết vòng lặp mã, đánh dấu đã warm-up
             warmed_up = True
             
-            # 5. BROADCAST: Gửi tin nhắn đã gom
-            if reports_to_send_map:
-                log.info(f"{loop_label} Bắt đầu gửi {len(reports_to_send_map)} tin nhắn đã gom...")
-                for chat_id, messages in reports_to_send_map.items():
-                    try:
-                        # Gửi header
-                        await send_md(
-                            tg_app.bot, 
-                            chat_id, 
-                            f"🔔 Bạn có *{len(messages)}* báo cáo phân tích mới liên quan đến danh mục Pro:"
-                        )
-                        await asyncio.sleep(0.5)
-                        
-                        # Gửi từng tin (im lặng)
-                        for msg_text in messages:
-                            await send_md(
-                                tg_app.bot, 
-                                chat_id, 
-                                msg_text,
-                                disable_notification=True # Gửi im lặng
-                            )
-                            await asyncio.sleep(0.5)
-                            
-                    except Exception as e:
-                        log.warning(f"{loop_label} Lỗi gửi tin cho {chat_id}: {e}")
-            else:
-                log.info(f"{loop_label} Không có báo cáo mới nào để gửi.")
+            log.info(f"{loop_label} Đã quét xong báo cáo phân tích (chỉ thu thập).")
 
         except Exception as e:
             log.error(f"{loop_label} Lỗi nghiêm trọng: {e}")
-            # Nếu lỗi, ngủ 10 phút rồi thử lại (tránh sập loop)
             await asyncio.sleep(600)
         
-        # 6. KẾT THÚC VÒNG LẶP
-        # (Không cần sleep, vòng lặp while True sẽ quay lại 
-        # và gọi get_next_7am, tự động ngủ ~24 giờ)
-        log.info(f"{loop_label} Hoàn tất lần quét 07:00.")
+        log.info(f"{loop_label} Hoàn tất lần quét 07:00 (chỉ thu thập).")
 
-async def morning_digest_loop():
+async def daily_user_digest_loop():
     """
-    Gộp hoạt động của các loop:
-    - BCTC đã thông báo
-    - Báo cáo phân tích mới
-    - Tin vĩ mô
-    - Tin chuyên ngành
+    (HÀM MỚI) Gửi bản tin tổng hợp (digest) 7:00 sáng cho TẤT CẢ user.
+    (SỬA LẦN 2: THÊM PAYWALL VÀO SENDER)
 
-    và gửi *một* bản tin tổng hợp cho ADMIN_ID lúc ~07:00 mỗi ngày.
-    (Không thay đổi hành vi gửi hiện tại tới user – đây là bản tin cho admin.)
+    Tổng hợp từ 4 nguồn (lấy trong 24h qua):
+    1. BCTC mới (Pro/Admin only)
+    2. Báo cáo phân tích mới (Pro/Admin only)
+    3. Tin chuyên ngành (Lọc theo watchlist user - Gửi cho tất cả)
+    4. Tin vĩ mô (Chung - Gửi cho tất cả)
     """
-    if ADMIN_ID is None:
-        log.warning("[MORNING_DIGEST] ADMIN_ID chưa được cấu hình, dừng loop.")
-        return
-
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
 
     while True:
         loop_id += 1
-        loop_label = f"[{INSTANCE_ID}][MORNING_DIGEST {loop_id}]"
+        loop_label = f"[{INSTANCE_ID}][USER_DIGEST {loop_id}]"
         now_local = datetime.datetime.now(vn_tz)
 
         if not BOT_ACTIVE:
@@ -4149,7 +3802,7 @@ async def morning_digest_loop():
             await asyncio.sleep(60)
             continue
 
-        # 1️⃣ Đợi tới 07:00 sáng gần nhất
+        # 1️⃣ Đợi tới 07:00 sáng gần nhất (Giữ nguyên)
         target_7am = get_next_7am(now_local, vn_tz)
         log.info(f"{loop_label} Đang chờ đến {target_7am.strftime('%Y-%m-%d %H:%M')} (VN).")
         await sleep_until(target_7am, vn_tz)
@@ -4157,160 +3810,204 @@ async def morning_digest_loop():
         if not BOT_ACTIVE:
             log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
             continue
+        
+        log.info(f"{loop_label} 07:00! Bắt đầu build digest cho TẤT CẢ user...")
 
-        # 2️⃣ Thu thập dữ liệu 24h gần nhất (tính theo UTC cho DB)
+        # 2️⃣ Thu thập dữ liệu 24h gần nhất (1 LẦN GỌI)
         try:
             now_local = datetime.datetime.now(vn_tz)
             now_utc = now_local.astimezone(datetime.timezone.utc)
-            since_utc = now_utc - datetime.timedelta(hours=24)
+            since_utc = now_utc - datetime.timedelta(hours=24) # Lấy tin trong 24h qua
 
+            # ❗️ SỬA: Thêm get_all_pro_chat_ids() vào gather
             (
                 bctc_rows,
                 report_rows,
                 macro_rows,
                 spec_rows,
+                all_watch,
+                pro_chat_ids, # 👈 THÊM DÒNG NÀY
             ) = await asyncio.gather(
                 asyncio.to_thread(get_recent_bctc_notified, since_utc),
                 asyncio.to_thread(get_recent_analysis_reports, since_utc),
                 asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
                 asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
+                asyncio.to_thread(get_all_watch),
+                asyncio.to_thread(get_all_pro_chat_ids), # 👈 THÊM DÒNG NÀY
             )
-
-            # 3️⃣ Build nội dung bản tin
-            lines: list[str] = []
-            lines.append("🌅 *Bản tin 7:00 sáng – StockBot Daily Digest*")
-            lines.append("")
-            lines.append(
-                f"_Thời gian tổng hợp: 24 giờ gần nhất đến {now_local.strftime('%Y-%m-%d %H:%M')} (giờ VN)_"
-            )
-            lines.append("")
-
-            # --- BCTC ---
-            if bctc_rows:
-                lines.append(f"*1. BCTC đã thông báo ({len(bctc_rows)} mã):*")
-                max_show = 10
-                for (symbol, year, quarter, notified_at) in bctc_rows[:max_show]:
-                    try:
-                        notified_local = notified_at.astimezone(vn_tz)
-                        ts = notified_local.strftime("%Y-%m-%d %H:%M")
-                    except Exception:
-                        ts = ""
-                    if ts:
-                        lines.append(f"• *{symbol}* – Quý {quarter}/{year} _(gửi {ts})_")
-                    else:
-                        lines.append(f"• *{symbol}* – Quý {quarter}/{year}")
-                if len(bctc_rows) > max_show:
-                    lines.append(f"_… và {len(bctc_rows) - max_show} mã khác._")
-            else:
-                lines.append("*1. BCTC:* Không có BCTC mới trong 24h qua.")
-            lines.append("")
-
-            # --- Báo cáo phân tích ---
-            if report_rows:
-                lines.append(f"*2. Báo cáo phân tích mới ({len(report_rows)} báo cáo):*")
-                max_show = 8
-                for (symbol, title, link, published_at, created_at) in report_rows[:max_show]:
-                    symbol = (symbol or "").upper()
-                    title = title or ""
-                    link = link or ""
-                    if published_at:
-                        try:
-                            pub_local = published_at.astimezone(vn_tz)
-                            pub_str = pub_local.strftime("%Y-%m-%d")
-                        except Exception:
-                            pub_str = ""
-                    else:
-                        pub_str = ""
-                    bullet = f"• *{symbol}*: {title}"
-                    if pub_str:
-                        bullet += f" _(ngày {pub_str})_"
-                    if link:
-                        bullet += f"\n  🔗 {link}"
-                    lines.append(bullet)
-                if len(report_rows) > max_show:
-                    lines.append(f"_… và {len(report_rows) - max_show} báo cáo khác._")
-            else:
-                lines.append("*2. Báo cáo phân tích:* Không có báo cáo mới trong 24h.")
-            lines.append("")
-
-            # --- Tin vĩ mô ---
-            if macro_rows:
-                lines.append(f"*3. Tin vĩ mô nổi bật ({len(macro_rows)} bài):*")
-                max_show = 5
-                for (title, link, published, created_at) in macro_rows[:max_show]:
-                    title = title or ""
-                    link = link or ""
-                    if published:
-                        try:
-                            pub_local = published.astimezone(vn_tz)
-                            pub_str = pub_local.strftime("%Y-%m-%d %H:%M")
-                        except Exception:
-                            pub_str = ""
-                    else:
-                        pub_str = ""
-                    bullet = f"• {title}"
-                    if pub_str:
-                        bullet += f"\n  _({pub_str})_"
-                    if link:
-                        bullet += f"\n  🔗 {link}"
-                    lines.append(bullet)
-                if len(macro_rows) > max_show:
-                    lines.append(f"_… và {len(macro_rows) - max_show} tin vĩ mô khác._")
-            else:
-                lines.append("*3. Tin vĩ mô:* Không có tin mới được lưu trong 24h.")
-            lines.append("")
-
-            # --- Tin chuyên ngành ---
-            if spec_rows:
-                lines.append(f"*4. Tin chuyên ngành (chuyên mục RSS) – {len(spec_rows)} bài:*")
-                max_show = 5
-                for (title, link, published, created_at) in spec_rows[:max_show]:
-                    title = title or ""
-                    link = link or ""
-                    if published:
-                        try:
-                            pub_local = published.astimezone(vn_tz)
-                            pub_str = pub_local.strftime("%Y-%m-%d %H:%M")
-                        except Exception:
-                            pub_str = ""
-                    else:
-                        pub_str = ""
-                    bullet = f"• {title}"
-                    if pub_str:
-                        bullet += f"\n  _({pub_str})_"
-                    if link:
-                        bullet += f"\n  🔗 {link}"
-                    lines.append(bullet)
-                if len(spec_rows) > max_show:
-                    lines.append(f"_… và {len(spec_rows) - max_show} tin chuyên ngành khác._")
-            else:
-                lines.append("*4. Tin chuyên ngành:* Không có tin mới được lưu trong 24h.")
-            lines.append("")
-
-            lines.append(
-                "🤖 _Đây là bản tin tổng hợp nội bộ cho admin, dựa trên các loop BCTC / báo cáo phân tích / tin tức hiện có._"
-            )
-
-            text = "\n".join(lines)
-
-            # 4️⃣ Gửi cho ADMIN_ID
-            try:
-                await send_md(tg_app.bot, ADMIN_ID, text)
-                log.info(f"{loop_label} Đã gửi morning digest cho ADMIN_ID={ADMIN_ID}.")
-            except Exception as e:
-                log.warning(f"{loop_label} Lỗi khi gửi morning digest: {e}")
+            
+            all_keywords = COMPANY_KEYWORDS
 
         except Exception as e:
-            log.error(f"{loop_label} Lỗi khi build morning digest: {e}")
-            # Tránh sập loop, ngủ 10 phút rồi tiếp tục
-            await asyncio.sleep(600)
+            log.error(f"{loop_label} Lỗi nghiêm trọng khi gather data: {e}")
+            await asyncio.sleep(600) 
+            continue
 
-        # Không cần sleep thêm: vòng while sẽ quay lại,
-        # tính lại get_next_7am() và tự ngủ cho lần 7:00 tiếp theo.
-        log.info(f"{loop_label} Hoàn tất một vòng morning digest.")
+        # 3️⃣ Tiền xử lý dữ liệu (Giữ nguyên)
+        
+        # Map BCTC: {Symbol -> (year, quarter, notified_at)}
+        bctc_by_sym: dict[str, tuple] = {}
+        for (symbol, year, quarter, notified_at) in bctc_rows:
+            bctc_by_sym[str(symbol).upper()] = (year, quarter, notified_at)
 
+        # Map Báo cáo: {Symbol -> [list of reports]}
+        reports_by_sym: dict[str, list] = {}
+        for (symbol, title, link, published_at, created_at) in report_rows:
+            sym_u = str(symbol).upper()
+            reports_by_sym.setdefault(sym_u, []).append((title, link, published_at))
 
-# (Hàm restore_reminder_loop() của bạn bắt đầu từ đây)
+        # Map Watchlist: {Symbol -> [list of chat_ids]}
+        watch_to_chats: dict[str, list[int]] = {}
+        
+        # Map User (để gửi tin vĩ mô): {chat_id -> watch_list_set}
+        users_map: dict[int, set[str]] = {}
+
+        for chat_key, user_block in all_watch.items():
+            try:
+                chat_id = int(chat_key)
+            except Exception:
+                continue
+                
+            watch_list = user_block.get("list", []) or []
+            user_symbols_set = set()
+            
+            for sym in watch_list:
+                s = str(sym).upper().strip()
+                if s:
+                    user_symbols_set.add(s)
+                    watch_to_chats.setdefault(s, []).append(chat_id)
+            
+            users_map[chat_id] = user_symbols_set
+
+        # Map tin chuyên ngành (Giữ nguyên)
+        spec_patterns: dict[str, re.Pattern] = {}
+        for sym in watch_to_chats.keys():
+            keywords = all_keywords.get(sym, [sym])
+            combined = "|".join(re.escape(k) for k in keywords if k)
+            if not combined: continue
+            spec_patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
+
+        # 4️⃣ Tạo Payload tin nhắn (messages_to_send = {chat_id: [list of lines]})
+        messages_to_send: dict[int, list[str]] = {}
+
+        # --- Helper format (Giữ nguyên) ---
+        def _get_or_init(chat_id: int) -> list[str]:
+            if chat_id not in messages_to_send:
+                messages_to_send[chat_id] = [
+                    f"🌅 *Bản tin 7:00 sáng – StockBot Daily Digest*",
+                    f"_Tổng hợp tin tức 24h qua đến {now_local.strftime('%d/%m %H:%M')}_",
+                ]
+            return messages_to_send[chat_id]
+        
+        def _format_time(dt):
+            if not dt: return ""
+            try:
+                return dt.astimezone(vn_tz).strftime("%d/%m %H:%M")
+            except Exception:
+                return ""
+
+        # --- A. Xử lý BCTC (Gửi cho user theo dõi mã đó) ---
+        if bctc_rows:
+            for sym, (year, quarter, notified_at) in bctc_by_sym.items():
+                chat_ids_impacted = watch_to_chats.get(sym, [])
+                if not chat_ids_impacted:
+                    continue
+                
+                line = f"📑 *BCTC Quý {quarter}/{year}* của *{sym}* đã được công bố."
+                
+                for cid in chat_ids_impacted:
+                    
+                    # ❗️ SỬA: THÊM PAYWALL CHECK (A)
+                    if cid not in pro_chat_ids and cid != ADMIN_ID:
+                        continue # Bỏ qua User Free
+                        
+                    lines = _get_or_init(cid)
+                    if "1. BÁO CÁO TÀI CHÍNH (PRO)" not in lines:
+                        lines.append("\n*1. BÁO CÁO TÀI CHÍNH (PRO)*")
+                    lines.append(f"• {line}")
+
+        # --- B. Xử lý Báo cáo Phân tích (Gửi cho user theo dõi mã đó) ---
+        if report_rows:
+            for sym, reports_list in reports_by_sym.items():
+                chat_ids_impacted = watch_to_chats.get(sym, [])
+                if not chat_ids_impacted:
+                    continue
+                    
+                for (title, link, published_at) in reports_list:
+                    line = f"*{sym}* – {title} [Link]({link})"
+                    
+                    for cid in chat_ids_impacted:
+                        
+                        # ❗️ SỬA: THÊM PAYWALL CHECK (B)
+                        if cid not in pro_chat_ids and cid != ADMIN_ID:
+                            continue # Bỏ qua User Free
+                            
+                        lines = _get_or_init(cid)
+                        if "2. BÁO CÁO PHÂN TÍCH (PRO)" not in lines:
+                            lines.append("\n*2. BÁO CÁO PHÂN TÍCH (PRO)*")
+                        lines.append(f"• {line}")
+
+        # --- C. Xử lý Tin Chuyên ngành (Logic giữ nguyên - Gửi cho tất cả) ---
+        if spec_rows and spec_patterns:
+            for (title, link, published, created_at) in spec_rows:
+                text_for_match = title or ""
+                if not text_for_match:
+                    continue
+                
+                matched_symbols = set()
+                for sym, pat in spec_patterns.items():
+                    if pat.search(text_for_match):
+                        matched_symbols.add(sym)
+                
+                if not matched_symbols:
+                    continue
+                    
+                line = f"{title} [Link]({link})"
+                
+                chat_ids_impacted = set()
+                for sym in matched_symbols:
+                    chat_ids_impacted.update(watch_to_chats.get(sym, []))
+                
+                for cid in chat_ids_impacted:
+                    lines = _get_or_init(cid)
+                    if "3. TIN TỨC CHUYÊN NGÀNH" not in lines:
+                        lines.append("\n*3. TIN TỨC CHUYÊN NGÀNH*")
+                    lines.append(f"• {line}\n")
+
+        # --- D. Xử lý Tin Vĩ mô (Logic giữ nguyên - Gửi cho tất cả) ---
+        if macro_rows:
+            for (title, link, published, created_at) in macro_rows:
+                line = f"{title} [Link]({link})"
+                
+                for cid in users_map.keys():
+                    lines = _get_or_init(cid)
+                    if "4. TIN TỨC VĨ MÔ" not in lines:
+                        lines.append("\n*4. TIN TỨC VĨ MÔ*")
+                    lines.append(f"• {line}\n")
+
+        # 5️⃣ Gửi tin nhắn (Logic giữ nguyên)
+        if not messages_to_send:
+            log.info(f"{loop_label} Không có tin tức tổng hợp nào để gửi cho user.")
+            continue
+
+        log.info(f"{loop_label} Bắt đầu gửi digest cho {len(messages_to_send)} user...")
+        
+        sent_count = 0
+        tasks = []
+        for chat_id, lines in messages_to_send.items():
+            if len(lines) <= 2:
+                continue
+                
+            final_text = "\n".join(lines)
+            tasks.append(
+                send_md(tg_app.bot, chat_id, final_text, disable_notification=True)
+            )
+            sent_count += 1
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+        log.info(f"{loop_label} Đã gửi digest 7:00 cho {sent_count} user.")
+        
+        log.info(f"{loop_label} Hoàn tất một vòng user digest.")
 
 #-------------------------------------------
 async def restore_reminder_loop():
@@ -4885,66 +4582,67 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
+    if not update or not update.effective_chat:
+        return
+
     chat_id = update.effective_chat.id
 
-    # Log thống kê lệnh /help vào CSDL trong thread
+    # Log thống kê lệnh /help
     await asyncio.to_thread(log_command_usage, chat_id, "/help", ADMIN_ID)
 
     help_text = (
         "📘 *HƯỚNG DẪN SỬ DỤNG STOCKBOT*\n\n"
-        "Dưới đây là toàn bộ các tính năng và lệnh bạn có thể dùng. "
-        "Những tính năng có ghi (PRO) chỉ dành cho người dùng Pro.\n\n"
+        "StockBot là *trợ lý chứng khoán realtime* – tập trung vào chiến lược đầu tư tăng trưởng, "
+        "theo dõi danh mục, tin tức và phân tích doanh nghiệp cho nhà đầu tư cá nhân.\n\n"
 
         "────────────────────\n"
-        "⌨️ *1. LỆNH CƠ BẢN*\n"
-        "• `/add <MÃ>` – Thêm mã vào danh sách theo dõi\n"
-        "• /list – Xem danh sách đang theo dõi\n"
-        "• `/remove <MÃ>` – Xoá mã khỏi danh sách\n"
+        "📂 *1. QUẢN LÝ DANH MỤC THEO DÕI*\n"
+        "• `/add <MÃ>` – Thêm cổ phiếu vào danh sách theo dõi\n"
+        "• `/remove <MÃ>` – Xóa mã khỏi danh sách\n"
+        "• `/list` – Xem toàn bộ danh sách đang theo dõi\n\n"
+        "Danh sách này được dùng cho:\n"
+        "• Cảnh báo giá realtime\n"
+        "• Lọc tin tức chuyên ngành theo danh mục\n"
+        "• Báo cáo phân tích danh mục bằng AI\n\n"
 
         "────────────────────\n"
-        "⚡*2. TÍNH NĂNG TỰ ĐỘNG*\n"
-        "• Cảnh báo giá realtime trong giờ giao dịch\n"
-        "• Nhắc mở/đóng phiên & gửi tổng kết cuối phiên\n"
-        "• Cảnh báo khi có báo cáo tài chính mới (PRO)\n"
-        "• *Quét báo cáo phân tích mới* lúc 07:00 sáng (PRO)\n"
+        "⏰ *2. CẢNH BÁO GIÁ REALTIME*\n"
+        "• Bot tự động quét giá trong giờ giao dịch (T2–T6)\n"
+        "• Khi giá biến động qua các mốc quan trọng, bot sẽ gửi cảnh báo\n"
+        "• Không cần gõ lệnh – chỉ cần thêm mã bằng `/add`\n\n"
+
         "────────────────────\n"
-        "🏢 *3. HỒ SƠ DOANH NGHIỆP (PRO)*\n"
-        "• `/info <MÃ>` – Tra cứu hồ sơ cơ bản của doanh nghiệp bằng AI\n"
+        "ℹ️ *3. TRA CỨU THÔNG TIN DOANH NGHIỆP*\n"
+        "• `/info <MÃ>` – Xem hồ sơ tóm tắt doanh nghiệp (ngành, quy mô, điểm nhanh)\n\n"
 
         "────────────────────\n"
         "📊 *4. BÁO CÁO DANH MỤC (PRO)*\n"
-        "• /report – Tạo báo cáo phân tích danh mục bằng AI\n"
-        "• Nhận báo cáo tuần tự động vào Chủ Nhật nếu chưa chạy `report`\n"
+        "• `/report` – Tạo báo cáo phân tích danh mục bằng AI\n"
+        "• Nhận báo cáo tuần tự động nếu đến cuối tuần bạn chưa chạy `/report`\n\n"
 
         "────────────────────\n"
         "💎 *5. SCREENER GIÁ TRỊ (PRO)*\n"
-        "• `/screener_value <loại>` – Lọc cổ phiếu theo tiêu chí.\n"
-        "   Trong đó `<loại>` là: `all`, `pe`, `pb`, hoặc `roe`.\n"
-        "• Nhận báo cáo tổng hợp (`all`) tự động mỗi 09:00 sáng T2-T6.\n"
+        "• `/screener_value <loại>` – Lọc cổ phiếu theo tiêu chí value\n"
+        "   `<loại>`: `all`, `pe`, `pb`, hoặc `roe`.\n\n"
+
         "────────────────────\n"
-        "📰 *6. TIN TỨC THEO DANH MỤC*\n"
-        "• Bot tự quét tin chuyên ngành và vĩ mô, lọc theo các mã bạn đang theo dõi\n"
-        "• `/news_on` – Bật nhận tin tức\n"
-        "• `/news_off` – Tắt nhận tin tức\n"
-        "• `/news_status` – Kiểm tra trạng thái tin tức\n"
+        "📰 *6. TIN TỨC THEO DANH MỤC (DIGEST)*\n"
+        "• Bot quét tin vĩ mô & tin chuyên ngành cả ngày\n"
+        "• Tin được lọc theo các mã bạn đang theo dõi\n"
+        "• *Không còn bắn lẻ từng tin* – thay vào đó bot gửi *Bản tin 7:00 sáng* "
+        "tổng hợp tin vĩ mô, chuyên ngành, BCTC và báo cáo phân tích nổi bật.\n\n"
 
         "────────────────────\n"
         "📈 *7. CẢNH BÁO VN30F1M (PRO)*\n"
         "• Bot theo dõi VN30F1M realtime và cảnh báo khi biến động ±5 điểm\n"
         "• `/vn30f1m_on` – Bật cảnh báo phái sinh\n"
         "• `/vn30f1m_off` – Tắt\n"
-        "• `/vn30f1m_status` – Xem trạng thái\n"
+        "• `/vn30f1m_status` – Xem trạng thái\n\n"
 
         "────────────────────\n"
         "⚙️ *8. TIỆN ÍCH KHÁC*\n"
-        # 🔼 KẾT THÚC THÊM MỚI / SỬA ĐỔI 🔼
-        
-        "• /start – Giới thiệu bot\n"
-        "• /help – Xem danh sách đầy đủ tính năng\n\n"
-
-        "Nếu bạn mới dùng lần đầu, hãy bắt đầu với: `/add <MÃ>`.\n"
-        "😎 Có vấn đề gì thì liên hệ với admin @KhoiTran99 nhé.\n"
-        "Chúc bạn đầu tư hiệu quả cùng StockBot! 🚀"
+        "• `/start` – Giới thiệu bot & hướng dẫn nhanh\n"
+        "• `/setting` – Xem cài đặt cá nhân (Pro, VN30F1M, digest…)\n"
     )
 
     await reply_md(update, help_text)
@@ -5064,66 +4762,6 @@ async def cmd_vn30f1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_vn30f1m_enabled(chat_id, False)
     reload_vn30f1m_enabled_cache()
     await reply_md(update, "Đã *tắt* nhận cảnh báo VN30F1M cho bạn.")
-
-async def cmd_news_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
-
-    chat_id = update.effective_chat.id
-    
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/news_on", ADMIN_ID)
-    await asyncio.to_thread(set_news_pref, chat_id, enable_specialized=True, enable_macro=True)
-    
-    await reply_md(
-        update,
-        "🔔 Bạn đã BẬT nhận tin tức:\n"
-        "👉 Tin vĩ mô: Bật\n"
-        "👉 Tin chuyên ngành theo danh mục: Bật\n\n"
-        "💡 Có thể dùng `/news_off` nếu sau này muốn tạm tắt.",
-    )
-
-async def cmd_news_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
-
-    chat_id = update.effective_chat.id
-    
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/news_off", ADMIN_ID)
-    await asyncio.to_thread(set_news_pref, chat_id, enable_specialized=False, enable_macro=False)
-
-    await reply_md(
-        update,
-        "🔕 Bạn đã TẮT nhận mọi loại tin tức (vĩ mô & chuyên ngành).\n\n"
-        "Có thể bật lại bất cứ lúc nào bằng lệnh `/news_on.`",
-    )
-
-
-async def cmd_news_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
-
-    chat_id = update.effective_chat.id
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    pref = await asyncio.to_thread(get_news_pref, chat_id)
-
-    macro = "Bật" if pref["enable_macro"] else "Tắt"
-    spec = "Bật" if pref["enable_specialized"] else "Tắt"
-
-    await reply_md(
-        update,
-        "⚙️ *Trạng thái nhận tin tức của bạn:*\n"
-        f"- Tin vĩ mô: *{macro}*\n"
-        f"- Tin chuyên ngành: *{spec}*\n\n"
-        "Dùng `/news_on` hoặc `/news_off` để thay đổi.",
-    )
 
 async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xem danh sách bài vĩ mô đã seen gần nhất trong Redis."""
@@ -5397,25 +5035,29 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Hiển thị bảng cài đặt cá nhân (trạng thái Pro, news, vn30f1m)
-    và hướng dẫn bật/tắt, nâng cấp.
+    Hiển thị bảng cài đặt cá nhân:
+    - Trạng thái Pro
+    - Tin tức (digest 7:00 – luôn bật)
+    - Cảnh báo VN30F1M
     """
     if not BOT_ACTIVE:
-        await reply_md(update,"⚙️ Bot đang bảo trì.")
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     if not update or not update.effective_chat:
         return
-        
+
     chat_id = update.effective_chat.id
     await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
-    
+
+    # Gửi hiệu ứng "đang gõ" cho đẹp
     try:
         await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
+            chat_id=chat_id,
+            action=ChatAction.TYPING,
         )
     except Exception:
-        pass # Bỏ qua nếu lỗi
+        pass
 
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -5424,74 +5066,70 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         tasks = [
             asyncio.to_thread(get_user_pro_expiry, chat_id),
-            asyncio.to_thread(get_news_pref, chat_id),
-            asyncio.to_thread(get_vn30f1m_enabled_map), 
+            asyncio.to_thread(get_vn30f1m_enabled_map),
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Kiểm tra nếu có lỗi trong lúc gather
+
         if any(isinstance(r, Exception) for r in results):
             raise Exception(f"Lỗi khi gather: {results}")
 
         expiry_date: datetime.datetime | None = results[0]
-        news_pref: dict = results[1]
-        vn30f1m_map: dict = results[2]
-        
-        vn30f1m_enabled = vn30f1m_map.get(chat_id, False)
-        # Kiểm tra cả hai, nếu 1 trong 2 bật là coi như Bật
-        is_news_on = news_pref.get("enable_specialized", True) or news_pref.get("enable_macro", True)
+        vn30f1m_map: dict[int, bool] = results[1] or {}
+
+        vn30f1m_enabled = bool(vn30f1m_map.get(chat_id, False))
 
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] Lỗi khi lấy settings cho {chat_id}: {e}")
         await reply_md(update, "⚠️ Lỗi khi lấy dữ liệu cài đặt. Vui lòng thử lại sau.")
         return
 
-    lines = ["⚙️ *Cài đặt cá nhân của bạn* ⚙️"]
+    lines: list[str] = []
+    lines.append("⚙️ *Cài đặt cá nhân của bạn* ⚙️")
 
-    # === 1. Trạng thái tài khoản ===
+    # === 1. Tài khoản / Pro ===
     lines.append("\n👤 *Tài khoản*")
     is_pro_active = False
-    
+
     if chat_id == ADMIN_ID:
         lines.append("Trạng thái: 😎 *Admin* (Full tính năng)")
-        is_pro_active = True # Admin luôn là Pro
-        
+        is_pro_active = True
     elif expiry_date and expiry_date.astimezone(vn_tz) > now:
         is_pro_active = True
+        exp_str = expiry_date.astimezone(vn_tz).strftime("%d/%m/%Y %H:%M")
         lines.append("Trạng thái: 👑 *Pro*")
-        lines.append(f"Ngày hết hạn: *{expiry_date.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')}*")
-        
+        lines.append(f"Ngày hết hạn: *{exp_str}*")
     elif expiry_date and expiry_date.astimezone(vn_tz) <= now:
         lines.append("Trạng thái: 🆓 *Pro (Đã hết hạn)*")
         lines.append("\n*Gia hạn:* Liên hệ Admin `@KhoiTran99` để gia hạn.")
-        
     else:
         lines.append("Trạng thái: 🆓 *Miễn phí*")
         lines.append("\n*Nâng cấp:* Liên hệ Admin @KhoiTran99 để lên gói Pro không giới hạn tính năng.")
 
-    # === 2. Cài đặt Tin tức ===
-    lines.append("\n*📰 Tin tức (Vĩ mô & Chuyên ngành)*")
-    if is_news_on:
-        lines.append("Trạng thái: *Bật*")
-        lines.append("(Dùng `/news_off` để tắt)")
-    else:
-        lines.append("Trạng thái: *Tắt*")
-        lines.append("(Dùng `/news_on` để bật lại)")
+    # === 2. Tin tức ===
+    lines.append("\n📰 *Tin tức (Vĩ mô & Chuyên ngành)*")
+    lines.append("Chế độ: *Digest buổi sáng 7:00*")
+    lines.append(
+        "_Bot tự động quét tin vĩ mô & chuyên ngành, BCTC và báo cáo phân tích "
+        "liên quan tới danh mục của bạn, rồi gộp vào bản tin gửi lúc 07:00 sáng mỗi ngày._"
+    )
+    lines.append(
+        "_Hiện tại không còn bật/tắt nhận tin thủ công bằng `/news_on` hoặc `/news_off` nữa._"
+    )
 
-    # === 3. Cảnh báo VN30F1M ===
+    # === 3. VN30F1M ===
     lines.append("\n📈 *Cảnh báo VN30F1M (Pro)*")
     if vn30f1m_enabled:
         lines.append("Trạng thái: *Bật*")
         lines.append("(Dùng `/vn30f1m_off` để tắt)")
     else:
         lines.append("Trạng thái: *Tắt*")
-        # Chỉ hiển thị hướng dẫn bật nếu họ là Pro
         if is_pro_active:
-             lines.append("(Dùng `/vn30f1m_on` để bật)")
+            lines.append("(Dùng `/vn30f1m_on` để bật)")
         else:
             lines.append("(Tính năng này yêu cầu gói Pro để bật)")
 
     await reply_md(update, "\n".join(lines))
+
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -7215,7 +6853,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(analysis_report_loop()),
                     MAIN_LOOP.create_task(daily_value_screener_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
-                    MAIN_LOOP.create_task(morning_digest_loop()),
+                    MAIN_LOOP.create_task(daily_user_digest_loop()),
                     MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
@@ -7261,9 +6899,6 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("report", "Phân tích danh mục bằng AI"),
             ("info", "Tra cứu thông tin doanh nghiệp"),
             ("screener_value", "Lọc cổ phiếu value theo dữ liệu thực"),
-            ("news_on", "Bật nhận tin tức (vĩ mô + chuyên ngành)"),
-            ("news_off", "Tắt nhận tin tức"),
-            ("news_status", "Xem trạng thái nhận tin tức"),
             ("vn30f1m_off", "Tắt nhận cập nhật VN30F1M"),
             ("vn30f1m_on", "Bật nhận cập nhật VN30F1M"),
             ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
@@ -7416,9 +7051,6 @@ async def main():
     tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
     tg_app.add_handler(CommandHandler("info", cmd_info))
     tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
-    tg_app.add_handler(CommandHandler("news_on", cmd_news_on))
-    tg_app.add_handler(CommandHandler("news_off", cmd_news_off))
-    tg_app.add_handler(CommandHandler("news_status", cmd_news_status))
     tg_app.add_handler(CommandHandler("vn30f1m_status", cmd_vn30f1m_status))
     tg_app.add_handler(CommandHandler("vn30f1m_on", cmd_vn30f1m_on))
     tg_app.add_handler(CommandHandler("vn30f1m_off", cmd_vn30f1m_off))
