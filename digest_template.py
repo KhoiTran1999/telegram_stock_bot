@@ -1,5 +1,5 @@
 
-DIGEST_HTML_TEMPLATE = """
+DIGEST_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -265,7 +265,7 @@ DIGEST_HTML_TEMPLATE = """
 </html>
 """
 
-DIGEST_404_TEMPLATE = """
+DIGEST_404_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -329,7 +329,7 @@ DIGEST_404_TEMPLATE = """
 """
 
 #--------------------------------
-PROFILE_HTML_TEMPLATE = """
+PROFILE_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -541,7 +541,7 @@ PROFILE_HTML_TEMPLATE = """
 </html>
 """
 
-PROFILE_404_TEMPLATE = """
+PROFILE_404_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -622,7 +622,7 @@ PROFILE_404_TEMPLATE = """
 #--------------------------------
 
 
-REPORT_HTML_TEMPLATE = """
+REPORT_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -911,3 +911,299 @@ REPORT_404_TEMPLATE = """
 </body>
 </html>
 """
+
+#--------------------------------
+
+SCREENER_HTML_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bộ Lọc Cổ Phiếu</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* COPY TỪ DIGEST TEMPLATE */
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+            --button-color: var(--tg-theme-button-color, #007aff);
+            
+            /* Brand Colors */
+            --brand-gradient: linear-gradient(135deg, #007aff 0%, #af52de 100%);
+            --pro-gradient: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+            
+            /* Status Colors */
+            --color-success: #34c759; --color-success-bg: rgba(52, 199, 89, 0.1);
+            --color-danger: #ff3b30;
+            
+            --border-radius: 16px;
+            --shadow-sm: 0 2px 8px rgba(0,0,0,0.04);
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: var(--bg-color); 
+            color: var(--text-color); 
+            margin: 0; padding: 16px 16px 40px 16px;
+            -webkit-font-smoothing: antialiased; 
+        }
+        
+        /* HEADER */
+        .header { text-align: center; margin-bottom: 24px; }
+        
+        .header-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; }
+        
+        .header-title { 
+            font-size: 28px; font-weight: 800; margin: 0; letter-spacing: -1px; line-height: 1.2;
+            background: var(--brand-gradient); 
+            -webkit-background-clip: text; 
+            -webkit-text-fill-color: transparent; 
+            background-clip: text; color: var(--button-color);
+        }
+        
+        .pro-badge { 
+            background: var(--pro-gradient); 
+            color: white; font-size: 11px; font-weight: 800; 
+            padding: 4px 8px; border-radius: 8px; 
+            letter-spacing: 0.5px; 
+            box-shadow: 0 4px 10px rgba(255, 165, 0, 0.3); 
+            text-shadow: 0 1px 2px rgba(0,0,0,0.1); 
+            display: inline-flex; align-items: center; 
+            transform: translateY(-2px); 
+        }
+
+        .header-desc { font-size: 13px; color: var(--hint-color); margin-top: 6px; font-weight: 500; }
+        
+        /* [MỚI] STYLE CHO GIỜ CẬP NHẬT */
+        .header-time { 
+            font-size: 11px; color: var(--hint-color); 
+            margin-top: 4px; font-weight: 500; opacity: 0.8;
+        }
+
+        /* TABS */
+        .tabs-wrapper { overflow-x: auto; scrollbar-width: none; margin: 0 -8px 20px -8px; padding: 0 8px; text-align: center; }
+        .tabs-wrapper::-webkit-scrollbar { display: none; }
+        
+        .tabs { display: inline-flex; gap: 8px; background: rgba(118, 118, 128, 0.12); padding: 4px; border-radius: 12px; }
+        
+        .tab { 
+            padding: 6px 16px; border-radius: 8px; 
+            font-size: 13px; font-weight: 600; 
+            color: var(--text-color); text-decoration: none; 
+            transition: all 0.2s; border: none;
+            white-space: nowrap;
+        }
+        .tab.active { 
+            background: var(--card-bg); 
+            color: var(--button-color); 
+            box-shadow: 0 3px 8px rgba(0,0,0,0.12);
+        }
+
+        /* CARDS */
+        .section-card { 
+            background-color: var(--card-bg); 
+            border-radius: var(--border-radius); 
+            margin-bottom: 16px; 
+            box-shadow: var(--shadow-sm); 
+            overflow: hidden; 
+            animation: fadeInUp 0.4s ease;
+        }
+
+        .card-header { 
+            padding: 14px 16px; 
+            border-bottom: 1px solid rgba(0,0,0,0.05); 
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .industry-title { font-size: 15px; font-weight: 700; color: var(--text-color); }
+        .industry-stat { font-size: 11px; color: var(--hint-color); font-weight: 500; background: var(--bg-color); padding: 4px 8px; border-radius: 6px; }
+
+        /* TABLE */
+        .stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .stock-table th { 
+            text-align: right; color: var(--hint-color); 
+            font-weight: 600; font-size: 11px; 
+            padding: 10px 12px 8px 4px; 
+            text-transform: uppercase;
+        }
+        .stock-table th:first-child { text-align: left; padding-left: 16px; }
+        .stock-table th:last-child { padding-right: 16px; }
+
+        .stock-table td { 
+            padding: 12px 12px 12px 4px; 
+            border-bottom: 1px solid rgba(0,0,0,0.05); 
+            vertical-align: middle; color: var(--text-color);
+        }
+        .stock-table tr:last-child td { border-bottom: none; }
+        .stock-table td:first-child { padding-left: 16px; }
+        .stock-table td:last-child { padding-right: 16px; }
+
+        .sym-box { font-weight: 700; font-size: 14px; color: var(--button-color); }
+        
+        /* VALUES */
+        .val-good { color: var(--color-success); font-weight: 600; }
+        .val-bad { color: var(--color-danger); }
+        
+        .score-badge { 
+            background: var(--color-success-bg); color: var(--color-success); 
+            padding: 4px 8px; border-radius: 6px; 
+            font-weight: 700; font-size: 12px; 
+            min-width: 32px; display: inline-block; text-align: center;
+        }
+
+        /* EXPAND BUTTON */
+        .row-hidden { display: none; }
+        .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
+        .btn-toggle {
+            background: none; border: none;
+            color: var(--hint-color); font-size: 12px; font-weight: 600;
+            cursor: pointer; padding: 6px 12px;
+            display: inline-flex; align-items: center; gap: 4px;
+        }
+        .btn-toggle:active { opacity: 0.7; }
+
+        /* FOOTER */
+        .footer-btn {
+            display: block; width: 100%; padding: 14px; 
+            background: var(--brand-gradient); color: #fff; 
+            text-align: center; border-radius: 16px; border: none; 
+            font-size: 15px; font-weight: 700; margin-top: 24px; 
+            cursor: pointer; box-shadow: 0 8px 20px rgba(0,122,255, 0.25);
+        }
+
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-title-row">
+            <h1 class="header-title">Bộ Lọc Cổ Phiếu</h1>
+            <span class="pro-badge">PRO 👑</span>
+        </div>
+        <div class="header-desc">Dữ liệu realtime từ thị trường</div>
+        {% if data.as_of %}
+        <div class="header-time">🕒 Cập nhật: {{ data.as_of }}</div>
+        {% endif %}
+    </div>
+
+    <div class="tabs-wrapper">
+        <div class="tabs">
+            <a href="?type=all&chat_id={{ chat_id }}" class="tab {% if current_type == 'all' %}active{% endif %}">Tổng hợp</a>
+            <a href="?type=pe&chat_id={{ chat_id }}" class="tab {% if current_type == 'pe' %}active{% endif %}">P/E Thấp</a>
+            <a href="?type=pb&chat_id={{ chat_id }}" class="tab {% if current_type == 'pb' %}active{% endif %}">P/B Thấp</a>
+            <a href="?type=roe&chat_id={{ chat_id }}" class="tab {% if current_type == 'roe' %}active{% endif %}">ROE Cao</a>
+        </div>
+    </div>
+
+    {% if error %}
+        <div style="text-align:center; color: var(--hint-color); margin-top: 60px;">
+            <div style="font-size: 48px; margin-bottom: 10px; opacity: 0.5;">📉</div>
+            <b>{{ error }}</b>
+        </div>
+    {% else %}
+        {% for industry in data.industries %}
+        <div class="section-card" id="card-{{ loop.index }}">
+            <div class="card-header">
+                <div class="industry-title">{{ industry.industry }}</div>
+                {% if current_type == 'all' %}
+                    <div class="industry-stat">P/E Ngành: {{ "%.1f"|format(industry.rows[0].pe_industry) }}</div>
+                {% endif %}
+            </div>
+            
+            <table class="stock-table">
+                <thead>
+                    <tr>
+                        <th>Mã</th>
+                        <th>P/E</th>
+                        <th>P/B</th>
+                        <th>ROE</th>
+                        {% if current_type == 'all' %}<th>Điểm</th>{% endif %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in industry.rows %}
+                    <tr class="stock-row-expandable {% if loop.index > 5 %}row-hidden{% endif %}">
+                        <td><div class="sym-box">{{ stock.symbol }}</div></td>
+                        
+                        <td style="text-align:right">
+                            {% if stock.pe < 10 %}<span class="val-good">{{ "%.1f"|format(stock.pe) }}</span>
+                            {% else %}{{ "%.1f"|format(stock.pe) }}{% endif %}
+                        </td>
+                        
+                        <td style="text-align:right">
+                            {% if stock.pb < 1.5 %}<span class="val-good">{{ "%.1f"|format(stock.pb) }}</span>
+                            {% else %}{{ "%.1f"|format(stock.pb) }}{% endif %}
+                        </td>
+
+                        <td style="text-align:right">
+                            {% if stock.roe > 0.15 %}<span class="val-good">{{ "%.0f"|format(stock.roe * 100) }}%</span>
+                            {% else %}{{ "%.0f"|format(stock.roe * 100) }}%{% endif %}
+                        </td>
+
+                        {% if current_type == 'all' %}
+                        <td style="text-align:right">
+                            <span class="score-badge">{{ "%.1f"|format(stock.value_score) }}</span>
+                        </td>
+                        {% endif %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            
+            {% if industry.rows|length > 5 %}
+            <div class="action-area">
+                <button class="btn-toggle" 
+                        data-expanded="false" 
+                        data-total="{{ industry.rows|length }}"
+                        onclick="toggleRows('card-{{ loop.index }}', this)">
+                    Xem thêm {{ industry.rows|length - 5 }} mã ↓
+                </button>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    {% endif %}
+
+    <div style="padding: 0 16px;">
+        <button class="footer-btn" onclick="Telegram.WebApp.close()">Đóng</button>
+    </div>
+
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        function toggleRows(cardId, btn) {
+            const card = document.getElementById(cardId);
+            const hiddenRows = card.querySelectorAll('.stock-row-expandable');
+            const isExpanded = btn.getAttribute('data-expanded') === 'true';
+            const total = btn.getAttribute('data-total');
+            const hiddenCount = parseInt(total) - 5;
+
+            if (!isExpanded) {
+                // Mở ra
+                hiddenRows.forEach((row, index) => {
+                    row.classList.remove('row-hidden');
+                    if (index >= 5) row.style.animation = 'fadeInUp 0.3s ease';
+                });
+                btn.innerHTML = 'Thu gọn ↑';
+                btn.setAttribute('data-expanded', 'true');
+            } else {
+                // Thu vào
+                hiddenRows.forEach((row, index) => {
+                    if (index >= 5) row.classList.add('row-hidden');
+                });
+                btn.innerHTML = 'Xem thêm ' + hiddenCount + ' mã ↓';
+                btn.setAttribute('data-expanded', 'false');
+                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
+
+

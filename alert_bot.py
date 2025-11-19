@@ -19,6 +19,7 @@ from digest_template import (
     PROFILE_404_TEMPLATE,
     REPORT_HTML_TEMPLATE,
     REPORT_404_TEMPLATE,
+    SCREENER_HTML_TEMPLATE,
 )
 from telegram import (
     BotCommand,
@@ -1425,7 +1426,8 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton(f"➕ Theo dõi {user_text}", callback_data=f"btn_add_{user_text}"),
                 InlineKeyboardButton(f"📄 Soi hồ sơ", callback_data=f"btn_info_{user_text}")
-            ]
+            ],
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
         ]
         
         # Gửi tin nhắn gợi ý
@@ -1447,12 +1449,23 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.warning(f"Lỗi khi auto-save chat_id {chat_id}: {e}")
 
+    # --- 2. FALLBACK (GÕ BẬY BẠ / KHÔNG HIỂU) ---
+    # Thay vì chỉ báo lỗi, hãy cung cấp lối thoát (Nút Dashboard & Help)
+    kb_fallback = [
+        [
+            InlineKeyboardButton("🏠 Mở Dashboard", callback_data="back_to_start"),
+            InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")
+        ]
+    ]
+
     # Phản hồi mặc định
     reply_text = (
-        f"Để thêm hoặc xem thông tin mã cổ phiếu, hãy gõ 3 chữ cái: HPG \n"
-        f"Hoặc nhấn /help để xem hướng dẫn sử dụng."
+        "😅 **Xin lỗi, mình chưa hiểu ý bạn.**\n\n"
+        "💡 **Gợi ý:**\n"
+        "• Gõ mã cổ phiếu 3 chữ cái (VD: `HPG`, `FPT`) để tra cứu.\n"
+        "• Hoặc chọn tính năng nhanh bên dưới:"
     )
-    await reply_md(update, reply_text)
+    await reply_md(update, reply_text, reply_markup=InlineKeyboardMarkup(kb_fallback))
 
 async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1466,16 +1479,26 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     data = query.data
 
+    # --- XỬ LÝ CHUNG CHO NÚT ĐÓNG ---
+    if data == "close_msg":
+        # Xóa tin nhắn hiện tại
+        await query.delete_message()
+        return
+
     # --- XỬ LÝ MENU DASHBOARD ---
-    if data == "menu_list":
+    elif data == "menu_list":
         await cmd_list(update, context)
     
     elif data == "menu_add":
+        # Tạo nút Đóng
+        kb = [[InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+
         # Hướng dẫn user cách thêm vì /add cần tham số
         await query.message.reply_text(
             "➕ Để thêm mã, bạn hãy gõ trực tiếp mã 3 chữ cái (VD: `HPG`, `FPT`) vào ô chat.\n"
             "Hoặc gõ lệnh: `/add <MÃ>`",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
         )
     
     elif data == "menu_screener":
@@ -1542,8 +1565,34 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         # hoặc bạn viết logic xóa thẳng tại đây cho gọn)
         
     elif data == "back_to_list":
-        # Gọi lại cmd_list để hiện lại danh sách tổng
-        await cmd_list(update, context)
+        # 1. Lấy lại danh sách từ DB
+        chat_id = update.effective_chat.id
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+
+        if not lst:
+             await query.edit_message_text("📭 Danh mục trống. Dùng `/add <MÃ>` để thêm.")
+             return
+
+        # 2. Xây dựng lại bàn phím danh sách (Giống hệt logic trong cmd_list)
+        keyboard = []
+        row = []
+        for sym in lst:
+            row.append(InlineKeyboardButton(f"{sym}", callback_data=f"mgr_{sym}"))
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        
+        keyboard.append([InlineKeyboardButton("❌ Đóng danh sách", callback_data="close_list")])
+
+        # 3. [QUAN TRỌNG] Dùng edit_message_text để ghi đè lên tin nhắn cũ
+        # Thay vì gọi await cmd_list(update, context)
+        await query.edit_message_text(
+            text="📋 **Quản lý danh mục**\nBấm vào mã để xem tùy chọn:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         
     elif data == "close_list":
         await query.delete_message()
@@ -1556,16 +1605,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     elif data == "v30_off":
         await cmd_vn30f1m_off(update, context)
-
-    elif data.startswith("scr_"):
-        # data dạng: "scr_pe", "scr_roe"...
-        sType = data.split("_")[1] # Lấy phần sau dấu gạch dưới
-        
-        # Giả lập tham số args để tái sử dụng hàm cmd_screener_value
-        context.args = [sType]
-        
-        # Gọi lại hàm xử lý chính
-        await cmd_screener_value(update, context)
 
     # [MỚI] XỬ LÝ CÀI ĐẶT
     elif data == "btn_upgrade":
@@ -1591,6 +1630,47 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         await cmd_start(update, context)
         # Tùy chọn: Xóa tin nhắn Help cũ cho gọn
         # await query.delete_message()
+
+    # [MỚI] XỬ LÝ NÚT SOI HỒ SƠ TỪ DASHBOARD
+    elif data == "menu_info":
+        chat_id = update.effective_chat.id
+        
+        # 1. Lấy danh sách watchlist từ DB
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        
+        keyboard = []
+        
+        # 2. Nếu có mã, tạo nút bấm cho từng mã
+        if lst:
+            row = []
+            for sym in lst:
+                # Dùng callback btn_info_ để gọi hàm Soi hồ sơ
+                row.append(InlineKeyboardButton(sym, callback_data=f"btn_info_{sym}"))
+                if len(row) == 3: # 3 nút trên 1 hàng
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+        
+        # 3. Thêm nút Đóng ở cuối
+        keyboard.append([InlineKeyboardButton("❌ Đóng", callback_data="close_msg")])
+        
+        # 4. Soạn nội dung tin nhắn
+        msg_text = "📄 **Tra cứu Hồ sơ Doanh nghiệp**\n\n"
+        
+        if lst:
+            msg_text += "👇 **Chọn nhanh mã trong danh mục của bạn:**\n"
+        else:
+            msg_text += "📭 Danh mục của bạn đang trống.\n"
+            
+        msg_text += "\n👉 Hoặc gõ trực tiếp mã bất kỳ (VD: `MWG`, `VCB`) vào ô chat để xem."
+
+        # 5. Gửi tin nhắn
+        await query.message.reply_text(
+            msg_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
@@ -1738,13 +1818,13 @@ def run_value_screener_on_value_df(df: pd.DataFrame, screener_type: str) -> Opti
 
     # Lặp qua các ngành
     for industry, group in df_clean.groupby('industry'):
-        top_5_rows = group.head(5)
+        top_20_rows = group.head(20) # Lấy top 20 để có nhiều lựa chọn hơn
         
-        if top_5_rows.empty:
+        if top_20_rows.empty:
             continue
             
         rows_list = []
-        for _, r in top_5_rows.iterrows():
+        for _, r in top_20_rows.iterrows():
             # Thêm tất cả data cần thiết cho 4 chế độ format
             rows_list.append({
                 "symbol": r["symbol"],
@@ -4499,6 +4579,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    # Lấy Base URL
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    
+    # Tạo Link WebApp kèm chat_id
+    screener_url = f"{base_url}/screener?chat_id={chat_id}"
+
     # --- TẠO DASHBOARD MENU ---
     # Layout:
     # [ 📋 Danh mục ] [ ➕ Thêm mã ]
@@ -4511,11 +4597,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")
         ],
         [
-            InlineKeyboardButton("💎 Lọc mã cổ phiếu", callback_data="menu_screener"),
-            InlineKeyboardButton("📊 AI Report", callback_data="menu_report")
+            InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
+            InlineKeyboardButton("💎 Lọc Cổ Phiếu", web_app=WebAppInfo(url=screener_url))
         ],
         [
-            InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting"),
+            InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
+            InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
+        ],
+        [
             InlineKeyboardButton("❓ Help", callback_data="menu_help")
         ]
     ]
@@ -4567,7 +4656,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("💬 Liên hệ Admin", url="https://t.me/KhoiTran99")
-        ]
+        ],
+        [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
     ]
 
     await reply_md(update, help_text, reply_markup=InlineKeyboardMarkup(kb))
@@ -5279,9 +5369,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Lọc cổ phiếu giá trị.
-    Nếu không có tham số -> Hiện menu chọn.
-    Nếu có tham số (VD: 'pe') -> Thực hiện lọc.
+    (ĐÃ RÚT GỌN) Mở WebApp Bộ lọc Giá trị.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
@@ -5289,83 +5377,38 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     chat_id = update.effective_chat.id
     
-    # === 1. XÁC ĐỊNH LOẠI SCREENER ===
-    screener_type = ""
-    if context.args:
-        screener_type = context.args[0].strip().lower()
+    # 💎 CHECK PAYWALL (Giữ nguyên)
+    if not await check_pro_access(update, context): return
 
-    # [THAY ĐỔI QUAN TRỌNG]: Nếu chưa chọn loại -> Hiện nút bấm
-    if not screener_type:
-        kb = [
-            [
-                InlineKeyboardButton("📊 Tổng hợp (All)", callback_data="scr_all"),
-                InlineKeyboardButton("💰 ROE Cao", callback_data="scr_roe")
-            ],
-            [
-                InlineKeyboardButton("📉 P/E Thấp", callback_data="scr_pe"),
-                InlineKeyboardButton("📉 P/B Thấp", callback_data="scr_pb")
-            ]
-        ]
-        
-        await reply_md(
-            update,
-            "🔍 **Bộ lọc Cổ phiếu Giá trị (Realtime)**\n\n"
-            "Dữ liệu được lọc trực tiếp từ thị trường. Vui lòng chọn tiêu chí:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
-
-    # === 2. XỬ LÝ KHI ĐÃ CHỌN LOẠI ===
-    
-    # Kiểm tra từ khóa hợp lệ
-    if screener_type not in ['all', 'pe', 'pb', 'roe']:
-        await reply_md(update, "⚠️ Loại không hợp lệ. Vui lòng chọn từ menu.")
-        return
-
-    # Log command
-    await asyncio.to_thread(log_command_usage, chat_id, f"/screener_value {screener_type}", ADMIN_ID)
-
-    # 💎 CHECK PAYWALL (Giữ nguyên logic cũ của bạn)
-    if not await check_pro_access(update, context):
-        return
-    
-    # Gửi action Typing để user biết bot đang chạy
+    # Log
     try:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await asyncio.to_thread(log_command_usage, chat_id, "/screener_value", ADMIN_ID)
     except: pass
 
-    # --- CÁC BƯỚC LẤY DỮ LIỆU (GIỮ NGUYÊN LOGIC CŨ) ---
+    # --- GỬI NÚT MỞ WEBAPP TRỰC TIẾP ---
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
     
-    # A. Kiểm tra Cache Redis
-    cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
-    if cached is not None:
-        text = await asyncio.to_thread(format_screener_report_text, cached)
-        await reply_md(update, text)
-        return
+    # Mặc định mở tab 'all'
+    screener_url = f"{base_url}/screener?type=all&chat_id={chat_id}"
     
-    # B. Cache Miss -> Gọi API + Tính toán
-    await reply_md(update, f"⏳ Đang quét toàn thị trường theo tiêu chí **{screener_type.upper()}**... (mất ~10s)")
-    
-    result = await asyncio.to_thread(run_value_screener_from_api, screener_type)
+    kb = [
+        [InlineKeyboardButton("🚀 Mở Bộ Lọc (WebApp)", web_app=WebAppInfo(url=screener_url))],
+        [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+    ]
 
-    if not result or not result.get("industries"):
-        await reply_md(update, f"⚠️ Không tìm thấy mã nào thỏa tiêu chí {screener_type.upper()}.")
-        return
-
-    # C. Lưu Cache & Trả kết quả
-    await asyncio.to_thread(save_value_screener_to_redis, result, screener_type)
-    text = await asyncio.to_thread(format_screener_report_text, result)
-    
-    # Gửi kết quả cuối cùng
-    await reply_md(update, text)
+    await reply_md(
+        update,
+        "💎 **Bộ Lọc Cổ Phiếu Giá Trị**\n\n"
+        "Nhấn nút bên dưới để mở giao diện lọc cổ phiếu realtime (P/E, P/B, ROE...)",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     [NEW] Force refresh snapshot screener value từ vnstock và ghi đè cache Redis hôm nay.
-    Không còn đụng tới precompute_value_data hay PostgreSQL nữa.
     """
     chat_id = update.effective_chat.id if update.effective_chat else None
-    log_id = log_id = uuid.uuid4().hex[:8]
+    log_id = uuid.uuid4().hex[:8]
     log_prefix = f"[{log_id}][/screener_value_clear]"
 
     if chat_id != ADMIN_ID:
@@ -5381,15 +5424,12 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
         "_Lệnh này sẽ gọi lại API Screener, tính toán lại và ghi đè cache Redis trong ngày._"
     )
 
-    # Gọi API + tính toán lại
+    # Gọi API + tính toán lại (Mặc định làm mới loại 'all')
     try:
-        result = run_value_screener_from_api('all')
+        result = await asyncio.to_thread(run_value_screener_from_api, 'all')
     except Exception as e:
         log.exception("%s Lỗi khi gọi run_value_screener_from_api: %s", log_prefix, e)
-        await reply_md(
-            update,
-            f"⚠️ Lỗi khi gọi API Screener: `{e}`"
-        )
+        await reply_md(update, f"⚠️ Lỗi khi gọi API Screener: `{e}`")
         return
 
     if result is None:
@@ -5400,22 +5440,20 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
         )
         return
 
-    # Ghi đè cache Redis
-    save_value_screener_to_redis(result)
+    # [ĐÃ SỬA] Ghi đè cache Redis (Thêm tham số 'all')
+    await asyncio.to_thread(save_value_screener_to_redis, result, 'all')
+    
     stats = result.get("stats", {})
     total_all = stats.get("total_all", "N/A")
-    after_asset = stats.get("after_asset_filter", "N/A")
-    after_liq = stats.get("after_liquidity_filter", "N/A")
+    after_base = stats.get("after_base_filter", "N/A")
 
     await reply_md(
         update,
-        "✅ *Đã làm mới dữ liệu Value Screener từ vnstock và ghi đè cache Redis hôm nay.*\n\n"
+        "✅ *Đã làm mới dữ liệu Value Screener (ALL) từ vnstock và ghi đè cache Redis.*\n\n"
         f"📔 Tổng mã ban đầu: *{total_all}*\n"
-        f"📕 Sau lọc thanh khoản: *{after_liq}*\n"
-        f"📘 Sau lọc tài sản: *{after_asset}*\n\n"
+        f"📘 Sau lọc cơ sở: *{after_base}*\n\n"
         f"Bạn có thể dùng `/screener_value` để xem báo cáo mới nhất."
     )
-
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5809,9 +5847,10 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # === CACHE HIT OK -> GỬI NÚT WEB APP ===
             log.info(f"[{INSTANCE_ID}] /report CACHE HIT -> Gửi Web App.")
             
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))
-            ]])
+            kb = [
+                [InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
+                [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")] # <--- THÊM
+            ]
             
             # Lấy thời gian tạo từ cache để hiển thị
             time_str = "vừa xong"
@@ -5823,7 +5862,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await reply_md(
                 update, 
                 f"✅ Báo cáo danh mục *{', '.join(symbols)}* đã sẵn sàng (bản lưu lúc {time_str}).",
-                reply_markup=kb
+                reply_markup=InlineKeyboardMarkup(kb)
             )
             return
 
@@ -5861,14 +5900,15 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_report_to_redis(cache_key, json_text, source="on_demand")
         
         # Gửi nút Web App cho user
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))
-        ]])
+        kb = [
+            [InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")] # <--- THÊM
+        ]
         
         await reply_md(
             update, 
             f"🚀 Phân tích hoàn tất! Nhấn nút bên dưới để xem báo cáo chi tiết.",
-            reply_markup=kb
+            reply_markup=InlineKeyboardMarkup(kb)
         )
 
     except Exception as e:
@@ -6013,8 +6053,8 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
             web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
             
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))]])
-            await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=kb)
+            kb = [[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))], [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=InlineKeyboardMarkup(kb))
             return
 
     # 2. Cache Miss -> Gọi AI
@@ -6034,8 +6074,8 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
         web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
         
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))]])
-        await reply_md(update, f"🚀 Đã tạo xong hồ sơ *{symbol}*.", reply_markup=kb)
+        kb = [[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))], [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+        await reply_md(update, f"🚀 Đã tạo xong hồ sơ *{symbol}*.", reply_markup=InlineKeyboardMarkup(kb))
 
     except Exception as e:
         log.error(f"Lỗi /info: {e}")
@@ -6723,6 +6763,64 @@ def view_report(cache_key):
         data=data, 
         generated_at=time_str,
         is_pro=True  # <--- Luôn hiển thị badge Pro cho báo cáo này
+    )
+
+@flask_app.route("/screener")
+def view_screener():
+    """
+    Route hiển thị Web App Screener.
+    Query params: ?type=all&chat_id=123
+    """
+    # 1. Lấy tham số
+    screener_type = request.args.get("type", "all").lower()
+    chat_id_str = request.args.get("chat_id")
+    
+    if screener_type not in ['all', 'pe', 'pb', 'roe']:
+        screener_type = 'all'
+
+    # 2. Check quyền Pro (Optional - nhưng nên có để bảo vệ API)
+    # Vì đây là WebApp public link, việc check chat_id chỉ mang tính tương đối.
+    is_pro = False
+    if chat_id_str:
+        try:
+            cid = int(chat_id_str)
+            # Dùng hàm check DB của bạn
+            is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
+        except: pass
+    
+    # Nếu bạn muốn chặn user Free dùng WebApp này, uncomment dòng dưới:
+    # if not is_pro: return "Tính năng dành cho gói Pro", 403
+
+    # 3. Lấy dữ liệu (Logic giống hệt cmd_screener_value)
+    # A. Check Redis
+    cached = load_value_screener_from_redis(screener_type)
+    data = None
+    
+    if cached:
+        data = cached
+    else:
+        # B. Gọi API (nếu miss cache)
+        # Lưu ý: Gọi hàm sync run_value_screener_from_api trực tiếp vì Flask chạy trong thread
+        try:
+            # run_value_screener_from_api có thể chạy lâu, Flask có thể bị timeout nếu quá 30s
+            # Nhưng thường nó mất ~10s nên ổn.
+            data = run_value_screener_from_api(screener_type)
+            if data:
+                save_value_screener_to_redis(data, screener_type)
+        except Exception as e:
+            log.error(f"[WEBAPP SCREENER] Error fetching data: {e}")
+
+    # 4. Render Template
+    error_msg = None
+    if not data or not data.get("industries"):
+        error_msg = f"Không lấy được dữ liệu cho tiêu chí {screener_type.upper()}."
+
+    return render_template_string(
+        SCREENER_HTML_TEMPLATE,
+        data=data,
+        current_type=screener_type,
+        chat_id=chat_id_str,
+        error=error_msg
     )
 
 # ==============================================
