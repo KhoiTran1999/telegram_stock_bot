@@ -1,4 +1,4 @@
-# digest_template.py
+
 
 DIGEST_HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -322,6 +322,388 @@ DIGEST_404_TEMPLATE = """
     </p>
     <button onclick="Telegram.WebApp.close()">Đóng</button>
     <script>Telegram.WebApp.ready(); Telegram.WebApp.expand();</script>
+</body>
+</html>
+"""
+
+#--------------------------------
+
+PROFILE_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hồ sơ doanh nghiệp {{ symbol }}</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --card-bg: var(--tg-theme-secondary-bg-color, #fff);
+            --border-color: rgba(0, 0, 0, 0.06);
+            --accent: var(--tg-theme-button-color, #007aff);
+        }
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+        .page {
+            max-width: 720px;
+            margin: 0 auto;
+        }
+        .header {
+            margin-bottom: 8px;
+        }
+        .chip-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.04);
+            font-size: 11px;
+            color: var(--hint-color);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-weight: 600;
+        }
+        .pro-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #FFD700, #FFA500);
+            color: #4a2c00;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            box-shadow: 0 4px 10px rgba(255,165,0,0.35);
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .symbol {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .symbol-main {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+        }
+        .symbol-sub {
+            font-size: 13px;
+            color: var(--hint-color);
+            letter-spacing: 0.01em;
+        }
+        .meta {
+            margin-top: 6px;
+            font-size: 12px;
+            color: var(--hint-color);
+        }
+        .meta-footer {
+            margin-top: 18px;
+            font-size: 11px;
+            color: var(--hint-color);
+            line-height: 1.5;
+        }
+        .meta-footer .meta-line + .meta-line {
+            margin-top: 2px;
+        }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.04);
+            color: var(--hint-color);
+            margin-top: 6px;
+        }
+        .status-dot-ok {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: #12b886;
+        }
+        .toc {
+            margin-top: 12px;
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+            -webkit-overflow-scrolling: touch;
+        }
+        .toc-chip {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(0,0,0,0.06);
+            background: rgba(255,255,255,0.7);
+            font-size: 11px;
+            color: var(--hint-color);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+        }
+        .toc-chip:hover {
+            background: rgba(255,255,255,0.95);
+            border-color: rgba(0,0,0,0.12);
+            transform: translateY(-1px);
+        }
+        .toc-chip:active {
+            transform: translateY(0);
+            background: rgba(0,0,0,0.04);
+        }
+        .toc-chip-icon {
+            font-size: 13px;
+        }
+        .toc-chip-title {
+            font-weight: 500;
+        }
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+            padding: 18px 16px;
+            margin-top: 14px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.04);
+            transition: box-shadow 0.18s ease, transform 0.12s ease;
+        }
+        .card:active {
+            transform: scale(0.995);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.03);
+        }
+        .card-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .card-title-icon {
+            font-size: 16px;
+        }
+        .card-title {
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+        .profile-text {
+            font-size: 14px;
+            line-height: 1.55;
+            white-space: normal;
+        }
+        .profile-text p {
+            margin: 4px 0;
+        }
+        .profile-text ul {
+            margin: 6px 0 6px 18px;
+            padding-left: 0;
+        }
+        .profile-text li {
+            margin: 2px 0;
+        }
+        .footer {
+            margin-top: 18px;
+            display: flex;
+            justify-content: flex-end;
+        }
+        .close-btn {
+            padding: 10px 18px;
+            border-radius: 999px;
+            background: var(--accent);
+            border: none;
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="header">
+            <div class="chip-row">
+                <div class="chip">Hồ sơ doanh nghiệp</div>
+                {% if is_pro %}
+                <span class="pro-badge">PRO 👑</span>
+                {% endif %}
+            </div>
+            <div class="symbol">
+                <div class="symbol-main">{{ symbol }}</div>
+                <div class="symbol-sub">Bản tóm tắt cơ bản doanh nghiệp</div>
+            </div>
+            {% if generated_at %}
+            <div class="meta">
+                Hồ sơ được tạo lúc: {{ generated_at }}
+            </div>
+            {% endif %}
+            <div class="status-badge">
+                <div class="status-dot-ok"></div>
+                <span>Nội dung lấy từ cache /info</span>
+            </div>
+
+            {% if sections and sections|length > 0 %}
+            <div class="toc" id="toc">
+                {% for sec in sections %}
+                    {% if sec.id and sec.title %}
+                    <div class="toc-chip" data-target="{{ sec.id }}">
+                        <span class="toc-chip-icon">{{ sec.icon }}</span>
+                        <span class="toc-chip-title">{{ sec.title }}</span>
+                    </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+
+        {% if sections and sections|length > 0 %}
+            {% for sec in sections %}
+            <div class="card" {% if sec.id %}id="{{ sec.id }}"{% endif %}>
+                <div class="card-title-row">
+                    <div class="card-title-icon">{{ sec.icon }}</div>
+                    <div class="card-title">{{ sec.title }}</div>
+                </div>
+                <div class="profile-text">
+                    {{ sec.body_html | safe }}
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="card">
+                <div class="profile-text">
+                    {{ profile_html | safe }}
+                </div>
+            </div>
+        {% endif %}
+
+        <div class="meta-footer">
+            <div class="meta-line">{{ data_sources }}</div>
+            {% if report_code %}
+            <div class="meta-line">Mã hồ sơ: {{ report_code }}</div>
+            {% endif %}
+        </div>
+
+        <div class="footer">
+            <button class="close-btn" onclick="Telegram.WebApp.close()">Đóng</button>
+        </div>
+    </div>
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        // Smooth scroll khi bấm chip mục lục
+        document.querySelectorAll('.toc-chip').forEach(function(chip) {
+            chip.addEventListener('click', function() {
+                var targetId = this.getAttribute('data-target');
+                if (!targetId) return;
+                var el = document.getElementById(targetId);
+                if (!el) return;
+                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+        });
+    </script>
+</body>
+</html>
+"""
+
+PROFILE_404_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hồ sơ không tìm thấy</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #fff);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #999);
+            --button-color: var(--tg-theme-button-color, #007aff);
+            --button-text-color: var(--tg-theme-button-text-color, #fff);
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            padding: 16px;
+            text-align: center;
+        }
+        .icon {
+            font-size: 40px;
+            margin-bottom: 14px;
+        }
+        h2 {
+            font-size: 22px;
+            margin: 0 0 10px 0;
+            font-weight: 700;
+        }
+        p {
+            color: var(--hint-color);
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 24px;
+            max-width: 320px;
+        }
+        button {
+            padding: 10px 22px;
+            background-color: var(--button-color);
+            color: var(--button-text-color);
+            border: none;
+            border-radius: 999px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            max-width: 200px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="icon">📄</div>
+    <h2>Hồ sơ không tìm thấy</h2>
+    <p>
+        Hồ sơ cho mã <strong>{{ symbol }}</strong> đã hết hạn hoặc chưa được tạo.
+        <br><br>
+        Vui lòng quay lại Telegram và gõ lệnh <code>/info {{ symbol }}</code> để tạo mới hồ sơ.
+    </p>
+    <button onclick="Telegram.WebApp.close()">Đóng</button>
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+    </script>
 </body>
 </html>
 """

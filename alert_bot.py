@@ -15,8 +15,14 @@ load_dotenv(override=True)
 from telegram import (
     Update, WebAppInfo, 
     InlineKeyboardButton, 
-    InlineKeyboardMarkup)
-from digest_template import DIGEST_HTML_TEMPLATE, DIGEST_404_TEMPLATE
+    InlineKeyboardMarkup
+)
+from digest_template import (
+    DIGEST_HTML_TEMPLATE,
+    DIGEST_404_TEMPLATE,
+    PROFILE_HTML_TEMPLATE,
+    PROFILE_404_TEMPLATE,
+)
 from telegram import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
@@ -85,6 +91,7 @@ import psutil
 import time
 import subprocess
 import re
+import html
 import csv
 from telegram.error import BadRequest
 from typing import Any, Optional
@@ -1222,23 +1229,21 @@ def build_prompt_for_symbols(symbols: list[str]) -> str:
 Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng. 
 Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây.
 
-YÊU CẦU:
+YÊU CẦU CHUNG:
 - Giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
-- Không nói “hôm nay tăng/giảm”, không nêu giá mục tiêu.
-- Tránh câu khẳng định tuyệt đối. Không đưa lời khuyên, chỉ cung cấp thông tin và nhận định.
-- Truyền đạt trung thực, rõ ràng.
-- Mỗi mã cổ phiếu riêng sẽ có khoảng 1200 ký tự (không tính câu mở đầu và kết thúc).
-- Nếu danh mục có từ 1 đến 3 mã, có thể phân tích chi tiết hơn cho từng mã (trung bình khoản 1000-1300 ký tự); nếu có nhiều mã, vẫn giữ độ sâu hợp lý nhưng không cần kéo dài quá mức.
-- Không được dùng ký tự markdown: *, _
-- Không xuất hiện câu giải thích quy trình như: “dưới đây là”, “theo yêu cầu”, “tôi viết thế này vì”… 
-- Không đề cập đến bản thân hoặc người yêu cầu (không dùng: tôi, bạn, AI).
-- Không chèn lời tự giới thiệu, không có câu meta. Chỉ tạo nội dung báo cáo cuối cùng dành cho nhà đầu tư.
+- Không dùng ký tự markdown: *, _
+- Không nêu giá mục tiêu, không dùng từ ngữ khẳng định tuyệt đối.
+- Không đề cập đến bản thân, người yêu cầu hoặc quy trình tạo nội dung.
+- Không chèn câu meta như “dưới đây là”, “theo yêu cầu”, “tôi viết như sau”.
+- Không nói “hôm nay tăng/giảm”.
+- Truyền đạt trung thực, khách quan.
+- Mỗi mã phân tích khoảng 1000–1300 ký tự nếu danh mục từ 1–3 mã; nếu nhiều hơn, giữ độ sâu hợp lý.
 
 DANH MỤC NGÀY {dateStock}:
 {data_block}
 
 MỞ ĐẦU BẰNG ĐOẠN:
-🔥 Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam. 🚀
+🔥 Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3–12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam. 🚀
 
 Với mỗi cổ phiếu, trình bày theo cấu trúc:
 🔹 *MÃ*
@@ -1250,8 +1255,17 @@ Với mỗi cổ phiếu, trình bày theo cấu trúc:
 • Rủi ro: (pháp lý, nợ vay, giá nguyên liệu, chu kỳ…)
 • Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi)
 
-Cuối báo cáo:
-📊 Tổng quan danh mục: (nhận xét cơ cấu ngành, mức rủi ro chung và định hướng 3–12 tháng)
+3) Không gộp nhiều mã trong cùng một đoạn.
+4) Không được đưa phần tổng quan danh mục vào trong block của một mã.
+
+KẾT THÚC BẰNG MỘT HEADING:
+### TONG_QUAN_DANH_MUC
+
+Sau heading ### TONG_QUAN_DANH_MUC, PHẢI viết ít nhất một đoạn 3–5 câu
+về cơ cấu ngành, mức rủi ro chung, động lực tăng trưởng và định hướng danh mục.
+Không được kết thúc báo cáo ngay sau heading này.
+
+Lưu ý: heading phải viết đúng dạng “### TONG_QUAN_DANH_MUC” (không dấu, không khoảng trắng).
 """
     return prompt.strip()
 
@@ -1371,6 +1385,13 @@ YÊU CẦU:
 - KHÔNG dự đoán giá, KHÔNG phân tích kỹ thuật hay hiệu suất giá (như % thay đổi ngày/tuần/tháng).
 - Chỉ tập trung vào CƠ BẢN DOANH NGHIỆP.
 - Không dùng Markdown (*, _).
+- Khi liệt kê nhiều ý trong cùng một mục (ví dụ: các sản phẩm chính, các nhóm khách hàng, các loại rủi ro),
+hãy dùng danh sách gạch đầu dòng theo đúng format:
+    - Ý thứ nhất...
+    - Ý thứ hai...
+    - Ý thứ ba...
+Không dùng số thứ tự 1., 2., 3. cho các bullet này.
+Mỗi bullet phải bắt đầu bằng dấu "-" và một khoảng trắng.
 
 Cấu trúc nội dung (giữ nguyên các tiêu đề này):
 
@@ -6016,6 +6037,11 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Gửi hồ sơ doanh nghiệp cơ bản cho 1 mã cổ phiếu.
     (ĐÃ SỬA: Thêm bước kiểm tra mã hợp lệ bằng vnstock
      trước khi gọi AI, tham khảo từ cmd_add)
+
+    PHASE 1 WEBAPP:
+    - Nếu đã có cache: gửi WebApp /info/<symbol>?chat_id=...
+    - Nếu phải gọi Gemini: tạo xong -> lưu cache -> cũng gửi WebApp.
+    - Không gửi text rất dài trong chat nữa, chỉ gửi tin nhắn + nút WebApp.
     """
 
     if not BOT_ACTIVE:
@@ -6035,12 +6061,13 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # === 2. LẤY MÃ CỔ PHIẾU ===
     if not context.args:
-        await reply_md(update,
+        await reply_md(
+            update,
             "⚠️ Cách dùng: /info <MÃ>\n"
             "Ví dụ: /info FPT"
         )
         return
-        
+
     symbol = context.args[0].strip().upper()
 
     # Ghi log sử dụng lệnh
@@ -6052,21 +6079,29 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id, action=ChatAction.TYPING
         )
     except Exception:
-        pass # Bỏ qua nếu lỗi
+        pass  # Bỏ qua nếu lỗi
 
     # === 2.1. KIỂM TRA ĐỘ DÀI CƠ BẢN (Giữ nguyên) ===
-    if len(symbol) != 3: # Chỉ cho mã có 3 ký tự
-        await reply_md(update, "⚠️ Mã cổ phiếu không hợp lệ.\nHiện bot chỉ cho phép thêm mã cổ phiếu gồm đúng 3 chữ cái.\nví dụ: HPG, SSI, VNM.")
+    if len(symbol) != 3:  # Chỉ cho mã có 3 ký tự
+        await reply_md(
+            update,
+            "⚠️ Mã cổ phiếu không hợp lệ.\n"
+            "Hiện tại bot chỉ hỗ trợ mã cổ phiếu gồm đúng 3 chữ cái.\n"
+            "Ví dụ: HPG, SSI, VNM."
+        )
         return
 
     # ==========================================================
     # === 2.5. KIỂM TRA MÃ HỢP LỆ (VCI) (MỚI - Lấy từ cmd_add) ===
     # ==========================================================
-    global stock_trading # Sử dụng trading object toàn cục đã khởi tạo
-    
+    global stock_trading  # Sử dụng trading object toàn cục đã khởi tạo
+
     # Kiểm tra xem object trading có sẵn sàng không
     if stock_trading is None:
-        await reply_md(update, "⚠️ Lỗi: Dịch vụ `stock_trading` (VCI) chưa sẵn sàng. Vui lòng thử lại sau giây lát.")
+        await reply_md(
+            update,
+            "⚠️ Lỗi: Dịch vụ `stock_trading` (VCI) chưa sẵn sàng. Vui lòng thử lại sau giây lát."
+        )
         log.warning(f"[{INSTANCE_ID}] [/info] Bị gọi khi stock_trading là None.")
         return
 
@@ -6075,38 +6110,31 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df = await asyncio.to_thread(stock_trading.price_board, [symbol])
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi gọi price_board cho {symbol}: {e}")
-        await reply_md(update,
+        await reply_md(
+            update,
             f"⚠️ Không thể kiểm tra dữ liệu cho mã *{symbol}*. Lỗi: {e}"
         )
         return
-    
+
     # SỬA LỖI: Lấy dòng đầu tiên để truy cập
-    row = df.iloc[0] 
-    ref_price = row.get(('listing', 'ref_price')) #Lấy giá tham chiếu
+    row = df.iloc[0]
+    ref_price = row.get(("listing", "ref_price"))  # Lấy giá tham chiếu
 
     # Nếu vnstock không trả về dữ liệu -> coi như mã không hợp lệ
-    if df is None or ref_price == None:
-        await reply_md(update,
+    if df is None or ref_price is None:
+        await reply_md(
+            update,
             f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
             "Vui lòng kiểm tra lại mã (chỉ hỗ trợ cổ phiếu VNINDEX)."
         )
         return
-    
-    if ref_price == 0:
-        await reply_md(update,
-            f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
-            "Lưu ý: 🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
-            "tạm thời không thêm được mã mới do sàn chưa cập nhật dữ liệu.\n\n"
-            "👉 Vui lòng thử lại mã khác hoặc sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác."
-        )
-        return
-    # === KẾT THÚC KIỂM TRA MÃ HỢP LỆ ===
 
+    # Nếu đến đây thì mã là hợp lệ
     cache_key = make_profile_cache_key(symbol)
     log.info(f"[{INSTANCE_ID}] /info: Mã {symbol} hợp lệ. Đang check cache key={cache_key}")
 
     # === 3. KIỂM TRA CACHE (REDIS) ===
-    cached = get_profile_from_redis(cache_key) # max_age_days mặc định là 30
+    cached = get_profile_from_redis(cache_key)  # max_age_days mặc định là 30
     if cached is not None:
         text, generated_at, is_error, wait_sec = cached
         log.info(
@@ -6139,21 +6167,50 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # B. Cache OK
         else:
-            footer = (
-                f"\n\n🕓 _Hồ sơ được tạo vào "
-                f"{generated_at.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')}. "
-                f"Sử dụng cache 30 ngày._"
+            # Dùng cache đã có và gửi WebApp cho user
+            time_str = None
+            if generated_at is not None:
+                try:
+                    time_str = generated_at.astimezone(vn_tz).strftime("%d/%m/%Y %H:%M")
+                except Exception:
+                    time_str = None
+
+            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+            web_app_url = f"{base_url}/info/{symbol}"
+            try:
+                # Gửi kèm chat_id để sau này có thể cá nhân hoá nếu cần
+                web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
+            except Exception:
+                pass
+
+            lines = [f"ℹ️ Hồ sơ doanh nghiệp *{symbol}* đã sẵn sàng."]
+            if time_str:
+                lines.append(
+                    f"_Hồ sơ được tạo vào {time_str}. Sử dụng cache tối đa 30 ngày._"
+                )
+            lines.append("")
+            lines.append("Nhấn nút bên dưới để mở giao diện chi tiết.")
+            msg = "\n".join(lines)
+
+            kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(
+                    text=f"📄 Mở hồ sơ {symbol}",
+                    web_app=WebAppInfo(url=web_app_url)
+                )]]
             )
-            final_text = text.strip() + footer
-            await reply_md(update, final_text)
+
+            await reply_md(update, msg, reply_markup=kb)
             return
 
     # === 4. CACHE MISS -> GỌI GEMINI (Giờ đã an toàn) ===
     log.info(f"[{INSTANCE_ID}] /info cache MISS. Đang gọi Gemini cho {symbol}...")
 
     # Nhắc nhẹ để user biết bot đang xử lý
-    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp thông tin cho bạn....")
-    
+    await reply_md(
+        update,
+        "🔎 Vui lòng đợi, bot đang tổng hợp thông tin cho bạn...."
+    )
+
     # Gửi lại ChatAction (vì gọi AI rất lâu)
     try:
         await context.bot.send_chat_action(
@@ -6161,9 +6218,10 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         pass
-        
+
     # (Task "send_slow_notice" vẫn rất hữu ích)
     done_flag = {"done": False}
+
     async def send_slow_notice():
         try:
             await asyncio.sleep(6)
@@ -6176,6 +6234,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}] /info reminder error: {e}")
+
     asyncio.create_task(send_slow_notice())
 
     try:
@@ -6200,7 +6259,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Rủi ro chính:",
             "Ban lãnh đạo & Cổ đông:",
         ]
-        
+
         # Dùng lại hàm clean_and_highlight_report của /report
         text = clean_and_highlight_report(output_text, PROFILE_HEADINGS)
 
@@ -6208,17 +6267,34 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_profile_to_redis(cache_key, text, source="on_demand")
 
         now = datetime.datetime.now(vn_tz)
-        footer = (
-            f"\n\n🕓 _Hồ sơ được tạo vào "
-            f"{now.strftime('%d/%m/%Y %H:%M')}._"
+        time_str = now.strftime("%d/%m/%Y %H:%M")
+
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        web_app_url = f"{base_url}/info/{symbol}"
+        try:
+            web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
+        except Exception:
+            pass
+
+        lines = [f"ℹ️ Hồ sơ doanh nghiệp *{symbol}* đã được tạo xong."]
+        lines.append(f"_Hồ sơ được tạo vào {time_str}._")
+        lines.append("")
+        lines.append("Nhấn nút bên dưới để mở giao diện chi tiết.")
+        msg = "\n".join(lines)
+
+        kb = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(
+                text=f"📄 Mở hồ sơ {symbol}",
+                web_app=WebAppInfo(url=web_app_url)
+            )]]
         )
-        final_text = text.strip() + footer
-        await reply_md(update, final_text)
+
+        await reply_md(update, msg, reply_markup=kb)
 
     # === 5. XỬ LÝ LỖI KHI GỌI GEMINI (Giữ nguyên) ===
     except Exception as e:
         done_flag["done"] = True
-        is_quota = classify_error_quota(e) # Dùng lại hàm của /report
+        is_quota = classify_error_quota(e)  # Dùng lại hàm của /report
 
         if is_quota:
             user_msg = (
@@ -6235,25 +6311,31 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             notify_admin_flag = True
 
+        # Gửi thông báo lỗi cho user
+        try:
+            await reply_md(update, user_msg)
+        except Exception as e_md:
+            log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi gửi message lỗi cho user: {e_md}")
+
         # Lưu cache lỗi vào Redis với TTL 120s
-        save_profile_to_redis(
-            cache_key,
-            user_msg,
-            source="error",
-            is_error=True,
-            wait_sec=120, # User phải đợi 120s
-            error_type=type(e).__name__,
-            error_detail=str(e),
-        )
+        try:
+            save_profile_to_redis(
+                cache_key,
+                user_msg,
+                source="error",
+                is_error=True,
+                wait_sec=120,
+            )
+        except Exception as e_cache:
+            log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi lưu cache lỗi: {e_cache}")
 
-        await reply_md(update, user_msg)
-
+        # Notify Admin nếu cần
         if notify_admin_flag and tg_app and tg_app.bot:
             try:
                 # Dùng lại hàm của /report, chỉ notify Admin 1 lần
                 await notify_admin_report_error_once(
                     tg_app.bot,
-                    f"profile_cache:{cache_key}", # Thêm prefix để phân biệt
+                    f"profile_cache:{cache_key}",  # Thêm prefix để phân biệt
                     e,
                 )
             except Exception as e2:
@@ -6752,6 +6834,325 @@ def view_digest(digest_id):
     # Render trang chính
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
 
+@flask_app.route("/info/<symbol>")
+def view_profile(symbol: str):
+    """
+    Route hiển thị WebApp hồ sơ doanh nghiệp cho /info.
+    """
+    if not symbol:
+        return render_template_string(PROFILE_404_TEMPLATE, symbol=""), 404
+
+    sym = symbol.upper().strip()
+    cache_key = make_profile_cache_key(sym)
+
+    cached = get_profile_from_redis(cache_key)
+    if not cached:
+        return render_template_string(PROFILE_404_TEMPLATE, symbol=sym), 404
+
+    text, generated_at, is_error, wait_sec = cached
+
+    # --- Xác định user Pro từ query chat_id ---
+    is_pro = False
+    try:
+        chat_id_param = request.args.get("chat_id")
+        if chat_id_param:
+            chat_id_int = int(chat_id_param)
+            is_pro = is_user_pro(chat_id_int)
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] /info view_profile: lỗi khi check is_user_pro: {e}")
+
+    # Format thời gian tạo: YYYY-MM-DD HH:MM:SS (VN)
+    generated_str = None
+    report_code = None
+    local_dt = None
+    if generated_at is not None:
+        try:
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+            vn_tz = pytz.timezone(TIMEZONE)
+            local_dt = generated_at.astimezone(vn_tz)
+            generated_str = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+            code_time = local_dt.strftime("%Y%m%d%H%M")
+            report_code = f"INFO-{sym}-{code_time}"
+        except Exception:
+            generated_str = str(generated_at)
+
+    # Parse section & render HTML
+    sections_raw = build_profile_sections(text)
+    full_html = render_profile_text_to_html(text)
+
+    section_views = []
+    for idx, sec in enumerate(sections_raw):
+        title = sec["title"]
+        body = sec["body"]
+
+        body_html = render_profile_text_to_html(body)
+
+        sec_id = None
+        if title:
+            slug = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_").lower()
+            if not slug:
+                slug = f"sec_{idx}"
+            sec_id = f"sec_{slug}"
+
+        icon = get_profile_section_icon(title)
+
+        section_views.append(
+            {
+                "id": sec_id,
+                "title": title,
+                "icon": icon,
+                "body_html": body_html,
+            }
+        )
+
+    if len(section_views) == 1 and section_views[0]["title"] is None:
+        section_views = []
+
+    data_sources = (
+        "Nguồn dữ liệu: BCTC doanh nghiệp, công bố thông tin, dữ liệu thị trường (VCI), "
+        "tổng hợp & phân tích bởi AI (Gemini)."
+    )
+
+    return render_template_string(
+        PROFILE_HTML_TEMPLATE,
+        symbol=sym,
+        profile_html=full_html,
+        sections=section_views,
+        generated_at=generated_str,
+        report_code=report_code,
+        data_sources=data_sources,
+        is_error=is_error,
+        is_pro=is_pro,          # <<-- thêm dòng này
+    )
+
+def _apply_simple_markdown(text: str) -> str:
+    """
+    Escape HTML + convert *bold* -> <strong>bold</strong>.
+    """
+    escaped = html.escape(text)
+    escaped = re.sub(r"\*(.+?)\*", r"<strong>\1</strong>", escaped)
+    return escaped
+
+def render_profile_text_to_html(text: str | None) -> str:
+    """
+    Chuyển profile_text (Markdown Telegram đơn giản) sang HTML:
+
+    - Dòng bullet bắt đầu bằng: -, •, ▪, ●, 🔹 -> <ul><li>...</li></ul>
+    - Dòng thường -> <p>...</p>
+    - *bold* -> <strong>bold</strong>
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    out: list[str] = []
+    in_list = False
+
+    bullet_re = re.compile(r"^[-•▪▫●🔹]\s*(.*)$")
+
+    for raw in lines:
+        line = raw.rstrip()
+
+        if not line.strip():
+            # dòng trống
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append("<br>")
+            continue
+
+        stripped = line.lstrip()
+        m = bullet_re.match(stripped)
+
+        if m:
+            # bullet
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            content = m.group(1)
+            out.append(f"<li>{_apply_simple_markdown(content)}</li>")
+        else:
+            # dòng thường
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append(f"<p>{_apply_simple_markdown(line)}</p>")
+
+    if in_list:
+        out.append("</ul>")
+
+    return "\n".join(out)
+
+def normalize_headings(text: str) -> str:
+    """
+    Đưa các heading ### XYZ về đầu dòng để regex có thể bắt được.
+    Ví dụ:
+    '... 🚀 ### HPG Giá hiện tại: ...'
+    -> '\n### HPG\nGiá hiện tại: ...'
+    """
+    import re
+
+    # Thêm xuống dòng trước ### nếu đằng trước không phải đầu dòng
+    text = re.sub(r"\s*###\s+", r"\n### ", text)
+
+    # Tách heading ra thành 1 dòng riêng
+    # Ví dụ: "### HPG Giá hiện tại: ..." -> "### HPG\nGiá hiện tại: ..."
+    text = re.sub(r"(###\s+[A-Z0-9_]+)\s+", r"\1\n", text)
+
+    return text
+
+def split_weekly_report_by_symbols(text: str, symbols: list[str]):
+    """
+    Trả về:
+    - intro_text: đoạn mở đầu (không thuộc mã nào)
+    - sections: list từng mã {symbol, id, body}
+    - overview_text: phần ### TONG_QUAN_DANH_MUC
+    """
+    import re
+
+    # BẮT BUỘC: chuẩn hoá đầu vào do Gemini xuống dòng sai
+    text = normalize_headings(text)
+
+    lines = text.splitlines()
+
+    intro_lines = []
+    sections = []
+    overview_lines = []
+
+    current_symbol = None
+    current_body = []
+
+    def flush_section():
+        nonlocal current_symbol, current_body, sections
+        if current_symbol and current_body:
+            sections.append({
+                "symbol": current_symbol,
+                "id": f"ticker_{current_symbol}",
+                "body": "\n".join(current_body).strip(),
+            })
+        current_symbol = None
+        current_body = []
+
+    for raw_line in lines:
+        line = raw_line.strip()
+
+        # --- Detect heading ###
+        m = re.match(r"^###\s+([A-Z0-9_]+)", line)
+        if m:
+            flush_section()
+            key = m.group(1)
+
+            # Start ticker section
+            if key in symbols:
+                current_symbol = key
+                current_body = []
+                continue
+
+            # Start TONG_QUAN
+            if key.upper() == "TONG_QUAN_DANH_MUC":
+                current_symbol = "TONG_QUAN_DANH_MUC"
+                current_body = []
+                continue
+
+            # Heading khác → bỏ qua
+            current_symbol = None
+            current_body = []
+            continue
+
+        # Collect nội dung
+        if current_symbol:
+            current_body.append(raw_line)
+        else:
+            intro_lines.append(raw_line)
+
+    flush_section()
+
+    # Tách riêng TONG_QUAN_DANH_MUC
+    overview_text = None
+    ticker_sections = []
+    for sec in sections:
+        if sec["symbol"] == "TONG_QUAN_DANH_MUC":
+            overview_text = sec["body"]
+        else:
+            ticker_sections.append(sec)
+
+    return (
+        "\n".join(intro_lines).strip(),  # intro_text
+        ticker_sections,                 # sections
+        overview_text                    # overview_text
+    )
+
+
+def build_profile_sections(text: str | None) -> list[dict]:
+    """
+    Tách hồ sơ thành các section dựa vào dòng heading kiểu:
+
+    🔹 *Tổng quan:* Nội dung...
+    🔹 *Sản phẩm & Dịch vụ:* ...
+    """
+    if not text:
+        return []
+
+    lines = text.splitlines()
+    sections: list[dict] = []
+    current: dict | None = None
+
+    heading_re = re.compile(r"^[\s\-\u2022•●▪▫🔹]+(\*[^*]+?\*)(:?)(.*)$")
+
+    for raw in lines:
+        line = raw.rstrip()
+        m = heading_re.match(line)
+        if m:
+            # đóng section cũ
+            if current is not None:
+                sections.append(current)
+
+            title_md = m.group(1)  # "*Tổng quan:*"
+            body_start = m.group(3).lstrip() if m.group(3) else ""
+
+            title = title_md.strip("* ").rstrip(":").strip()
+
+            current = {"title": title, "body": body_start}
+        else:
+            if current is None:
+                current = {"title": None, "body": line}
+            else:
+                if current["body"]:
+                    current["body"] += "\n" + line
+                else:
+                    current["body"] = line
+
+    if current is not None:
+        sections.append(current)
+
+    return sections
+
+def get_profile_section_icon(title: str | None) -> str:
+    """
+    Gán icon cho từng section dựa trên tên.
+    """
+    if not title:
+        return "📌"
+
+    t = title.lower()
+    if "tổng quan" in t:
+        return "🧭"
+    if "sản phẩm" in t or "dịch vụ" in t:
+        return "🏭"
+    if "mô hình kinh doanh" in t:
+        return "🔧"
+    if "vị thế" in t and "thị trường" in t:
+        return "📍"
+    if "lợi thế" in t or "cạnh tranh" in t:
+        return "🛡️"
+    if "rủi ro" in t:
+        return "⚠️"
+    if "ban lãnh đạo" in t or "cổ đông" in t:
+        return "👔"
+    if "kqkd" in t or "kết quả kinh doanh" in t or "tài chính" in t:
+        return "📊"
+    return "📌"
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
 # Đây là phần code đã sửa lỗi hoàn toàn
