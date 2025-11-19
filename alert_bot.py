@@ -2832,6 +2832,7 @@ VN30F1M_TICK_SECONDS = 3        # chu kỳ quét
 
 # --- State trong RAM
 _vn30f1m_anchor: float | None = None      # ❗️ SỬA: Mốc di động (giá của lần alert cuối)
+_vn30f1m_ref_price: float | None = None   # Mốc cố định (Giá Tham Chiếu để hiển thị tin nhắn)
 _vn30f1m_date: datetime.date | None = None
 _vn30f1m_enabled_cache: set[int] = set()  # tập chat_id đang bật
 
@@ -2885,12 +2886,13 @@ def reload_vn30f1m_enabled_cache():
     _vn30f1m_enabled_cache = {cid for cid, en in mp.items() if en}
 
 def _vn30f1m_reset_if_new_day(now: datetime.datetime):
-    """Đầu ngày mới: reset anchor."""
-    global _vn30f1m_date, _vn30f1m_anchor
+    """Đầu ngày mới: reset anchor và ref_price."""
+    global _vn30f1m_date, _vn30f1m_anchor, _vn30f1m_ref_price
     if (_vn30f1m_date is None) or (now.date() != _vn30f1m_date):
         _vn30f1m_date = now.date()
-        _vn30f1m_anchor = None # ❗️ SỬA: Reset mốc di động
-        log.info(f"[VN30F1M] New trading day: {_vn30f1m_date}. Reset moving anchor.")
+        _vn30f1m_anchor = None 
+        _vn30f1m_ref_price = None
+        log.info(f"[VN30F1M] New trading day: {_vn30f1m_date}. Reset anchors.")
 
 def _vn30f1m_clear_after_close():
     """Cuối ngày: xóa sạch state trong RAM (không dùng Redis)."""
@@ -2951,49 +2953,42 @@ async def _vn30f1m_get_current_price() -> float | None:
         return None
 
 async def _vn30f1m_process_tick(price: float):
-    """
-    (ĐÃ SỬA NGƯỠNG VÀ LOGIC CẬP NHẬT MỐC)
-    Logic: 
-    - So sánh giá khớp (price) với mốc di động (_vn30f1m_anchor).
-    - Nếu chênh lệch >= 5 điểm -> Báo -> Cập nhật mốc mới bằng giá khớp.
-    """
-    global _vn30f1m_anchor
+    global _vn30f1m_anchor, _vn30f1m_ref_price
 
-    # 1. KIỂM TRA MỐC (ANCHOR)
-    if _vn30f1m_anchor is None:
-        # Chưa có mốc (Fetcher chưa kịp lấy Tham chiếu), bỏ qua chờ vòng sau
+    # 1. KIỂM TRA MỐC
+    if _vn30f1m_anchor is None or _vn30f1m_ref_price is None:
         return 
 
-    # 2. TÍNH TOÁN BIẾN ĐỘNG
-    delta = float(price) - float(_vn30f1m_anchor)
+    # 2. TÍNH TOÁN BIẾN ĐỘNG CHO TRIGGER (Dựa trên Anchor di động)
+    delta_trigger = float(price) - float(_vn30f1m_anchor)
     
-    # Log debug để bạn theo dõi (như bạn đã thấy)
-    # log.info(f"[VN30F1M] Price: {price:.1f} | Anchor: {_vn30f1m_anchor:.1f} | Delta: {delta:.1f}")
-    
-    # 3. KIỂM TRA ĐIỀU KIỆN (Dùng abs để bắt cả tăng và giảm)
-    if abs(delta) >= VN30F1M_DELTA_THRESHOLD: # Bây giờ là >= 5.0
+    # 3. KIỂM TRA ĐIỀU KIỆN TRIGGER (>= 5 điểm so với mốc gần nhất)
+    if abs(delta_trigger) >= VN30F1M_DELTA_THRESHOLD:
         
-        direction = "tăng" if delta > 0 else "giảm"
-        icon = "🟢" if delta > 0 else "🔴"
-        trend_icon = "🚀" if delta > 0 else "📉"
+        # 4. TÍNH TOÁN HIỂN THỊ (Dựa trên Giá Tham Chiếu cố định)
+        delta_display = float(price) - float(_vn30f1m_ref_price)
+        
+        direction = "tăng" if delta_display > 0 else "giảm"
+        icon = "🟢" if delta_display > 0 else "🔴"
+        trend_icon = "🚀" if delta_display > 0 else "📉"
         
         now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
 
-        # Nội dung tin nhắn
+        # Nội dung tin nhắn: Hiển thị số điểm so với Tham Chiếu
         text = (
-            f"{icon} *VN30F1M {direction} {abs(delta):.1f} điểm* "
-            f"(so với mốc {_vn30f1m_anchor:.1f})\n"
+            f"{icon} *VN30F1M {direction} {abs(delta_display):.1f} điểm*\n"
             f"Giá hiện tại: *{float(price):.1f}*\n"
+            f"(So với TC: {_vn30f1m_ref_price:.1f})\n"
             f"{trend_icon} _Cập nhật lúc {now_str}_"
         )
         
         try:
             _vn30f1m_broadcast_queue.put_nowait(text)
-            log.info(f"[VN30F1M] 🔔 ALERT: {abs(delta):.1f} điểm >= {VN30F1M_DELTA_THRESHOLD}. New Anchor: {price}")
+            log.info(f"[VN30F1M] 🔔 ALERT: Trigger {abs(delta_trigger):.1f}pts. Display {abs(delta_display):.1f}pts (TC). New Anchor: {price}")
         except asyncio.QueueFull:
-            log.warning("[VN30F1M] Queue đầy, bỏ lỡ tin nhắn.")
+            pass
 
-        # 4. CẬP NHẬT MỐC MỚI NGAY LẬP TỨC
+        # 5. CẬP NHẬT MỐC ANCHOR MỚI
         _vn30f1m_anchor = float(price)
 
 async def vn30f1m_alert_loop():
@@ -3091,28 +3086,34 @@ async def vn30f1m_price_fetcher_loop():
             
             # ❗️ LOGIC SỬA BẮT ĐẦU TỪ ĐÂY
             
-            # 1. LẤY GIÁ THAM CHIẾU (TC) NẾU CHƯA CÓ
-            if _vn30f1m_anchor is None:
-                log.info("[VN30F1M][FETCHER] Mốc di động (anchor) chưa có. Đang lấy Giá Tham Chiếu...")
+            # Sửa điều kiện: Check cả ref_price
+            if _vn30f1m_anchor is None or _vn30f1m_ref_price is None: 
+                log.info("[VN30F1M][FETCHER] Đang lấy Giá Tham Chiếu (TC)...")
                 try:
-                    # Dùng trading object (giống cmd_add) để lấy TC
+                    # ... (đoạn gọi stock_trading.price_board giữ nguyên) ...
                     df_tc = await asyncio.to_thread(stock_trading.price_board, [VN30F1M_SYMBOL])
                     
                     if df_tc is None or df_tc.empty:
-                         log.warning(f"[VN30F1M][FETCHER] Không lấy được price_board (TC) cho {VN30F1M_SYMBOL}.")
+                         # ... (giữ nguyên log warning) ...
                          await asyncio.sleep(FETCH_INTERVAL)
                          continue
                     
-                    # Lấy 'ref_price' (Giá tham chiếu)
                     ref_price = df_tc.iloc[0].get(('listing', 'ref_price'))
                     
                     if ref_price is None:
-                        log.warning(f"[VN30F1M][FETCHER] price_board có data nhưng không có 'ref_price'.")
+                        # ... (giữ nguyên log warning) ...
                         await asyncio.sleep(FETCH_INTERVAL)
                         continue
 
-                    _vn30f1m_anchor = float(ref_price)
-                    log.info(f"[VN30F1M][FETCHER] ⛳ ĐÃ SET MỐC DI ĐỘNG ĐẦU NGÀY = {ref_price}")
+                    # --- CẬP NHẬT CẢ 2 BIẾN ---
+                    current_ref = float(ref_price)
+                    if _vn30f1m_ref_price is None:
+                        _vn30f1m_ref_price = current_ref
+                    
+                    if _vn30f1m_anchor is None:
+                        _vn30f1m_anchor = current_ref
+                        
+                    log.info(f"[VN30F1M][FETCHER] ⛳ ĐÃ SET THAM CHIẾU = {current_ref}")
 
                 except Exception as e:
                     log.error(f"[VN30F1M][FETCHER] Lỗi nghiêm trọng khi lấy TC: {e}")
@@ -5281,7 +5282,7 @@ async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT
 
     # Gọi API + tính toán lại
     try:
-        result = run_value_screener_from_api()
+        result = run_value_screener_from_api('all')
     except Exception as e:
         log.exception("%s Lỗi khi gọi run_value_screener_from_api: %s", log_prefix, e)
         await reply_md(
