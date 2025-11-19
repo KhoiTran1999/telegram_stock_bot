@@ -2203,28 +2203,22 @@ async def stock_price_fetcher_loop():
         log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Sleep {delay:.1f}s")
         await asyncio.sleep(delay)
 
-# (Hàm alert_loop() gốc của bạn sẽ nằm ở dưới)
-# TRONG FILE: alert_bot.py
-# TRONG FILE: alert_bot.py
-# HÃY THAY THẾ TOÀN BỘ HÀM NÀY
-
 async def alert_loop():
     """
-    (TÁC VỤ 2 - TICKER - ĐÃ TỐI ƯU, VERSION 2% ANCHOR)
-    (ĐÃ SỬA OUTPUT: CÔ ĐỌNG THEO YÊU CẦU MỚI NHẤT)
-
-    - Logic trigger: Vẫn dùng mốc % di động (last_pct).
-    - Logic hiển thị: Cực kỳ cô đọng (Mã, %, Giá, Câu vui).
+    (TÁC VỤ 2 - TICKER - FIXED)
+    - Mốc so sánh ban đầu LUÔN LÀ 0.0 (Giá tham chiếu).
+    - Báo khi giá thay đổi >= 2% so với mốc gần nhất.
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
 
-    log.info(f"[{INSTANCE_ID}][TICKER_STOCK] Bắt đầu.")
+    log.info(f"[{INSTANCE_ID}][TICKER_STOCK] Bắt đầu. Mốc khởi tạo = GIÁ THAM CHIẾU (0%).")
 
     while True:
         loop_id += 1
-        now = datetime.datetime.now(vn_tz) # 'now' được định nghĩa ở đây
+        now = datetime.datetime.now(vn_tz)
 
+        # 1. Kiểm tra điều kiện chạy
         if not BOT_ACTIVE:
             await asyncio.sleep(30)
             continue
@@ -2239,7 +2233,6 @@ async def alert_loop():
             all_state = get_state_for_all()
 
             if not all_watch or not quote_cache:
-                log.info(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Cache rỗng, chờ Fetcher...")
                 await asyncio.sleep(TICKER_INTERVAL_SECONDS)
                 continue
 
@@ -2269,21 +2262,17 @@ async def alert_loop():
                         continue
 
                     price = quote.get("price")
-                    pct = quote.get("pct") # pct này là TỔNG % so với tham chiếu
+                    pct = quote.get("pct")  # pct = % so với Tham Chiếu
 
                     if price is None or pct is None:
                         continue
 
-                    # ==============================
-                    # LOGIC TRIGGER (Giữ nguyên)
-                    # ==============================
+                    # === QUẢN LÝ TRẠNG THÁI (STATE) ===
                     state_entry = personal_state.get(sym_u, {})
                     last_alert_at_str = state_entry.get("last_alert_at")
                     last_pct = state_entry.get("last_pct")
 
-                    if last_pct is None and "last_level" in state_entry:
-                        last_pct = None
-
+                    # Parse thời gian alert cuối
                     last_alert_at = None
                     if last_alert_at_str:
                         try:
@@ -2293,55 +2282,63 @@ async def alert_loop():
                         except Exception:
                             last_alert_at = None
 
-                    if last_alert_at is not None and last_alert_at.date() != now.date():
-                        last_pct = 0.0
-                        last_alert_at = None
+                    # ⚡ LOGIC QUAN TRỌNG NHẤT ĐÂY ⚡
+                    # 1. Nếu chưa có last_pct (mới thêm mã) -> Gán = 0.0 (Tham chiếu)
+                    # 2. Nếu qua ngày mới -> Reset về 0.0 (Tham chiếu)
+                    if last_pct is None or (last_alert_at and last_alert_at.date() != now.date()):
+                        last_pct = 0.0 
+                        last_alert_at = None # Coi như chưa báo hôm nay
 
-                    if last_pct is None:
-                        last_pct = 0.0
-
-                    delta_pct = pct - float(last_pct)
-                    should_alert = abs(delta_pct) >= 2.0 # Trigger vẫn là 2%
+                    # === TÍNH TOÁN BIẾN ĐỘNG ===
+                    # Delta = % Hiện tại - % Mốc cũ
+                    # Ví dụ: Mốc cũ (Tham chiếu) = 0.0. Hiện tại = -2.1%. Delta = 2.1 -> BÁO
+                    delta_pct = float(pct) - float(last_pct)
+                    
+                    should_alert = abs(delta_pct) >= 2.0
 
                     if should_alert:
-                        
-                        # ==================================================
-                        # ⭐ LOGIC TẠO OUTPUT MỚI (THEO YÊU CẦU MỚI NHẤT)
-                        # ==================================================
-                        
-                        # 1. Format các chuỗi
+                        # Format tin nhắn
                         icon = "🟢" if pct >= 0 else "🔴"
                         direction = "tăng" if pct >= 0 else "giảm"
+                        trend_icon = "🚀" if delta_pct > 0 else "📉"
+                        
+                        price_str = f"{float(price):,.0f}".replace(",", ".")
+                        pct_str = f"{float(pct):+.2f}%"
+                        
+                        # Dòng 2: Giải thích vì sao báo (so với mốc nào)
+                        # Nếu last_pct = 0.0 thì ghi là "so với Tham Chiếu" cho dễ hiểu
+                        if float(last_pct) == 0.0:
+                            ref_note = "so với Tham Chiếu"
+                        else:
+                            ref_note = "so với mốc trước"
+
                         fun_line = random.choice(FUN_UP if pct >= 0 else FUN_DOWN)
 
-                        # (Đã sửa lỗi format ,0f)
-                        price_str = f"{float(price):,.0f}".replace(",", ".") if price is not None else "N/A"
-                        pct_str = f"{float(pct):+.2f}%" if pct is not None else "N/A"
-
-                        # 2. Tạo tin nhắn mới (cô đọng)
-                        messages.append(
-                            f"{icon} *{sym_u} {direction} {pct_str}* Giá hiện tại: *{price_str}*.\n"
+                        msg = (
+                            f"{icon} *{sym_u} {direction} {pct_str}* — Giá: *{price_str}*\n"
+                            f"({trend_icon} Biến động {abs(delta_pct):.1f}% {ref_note})\n"
                             f"_{fun_line}_"
                         )
-                        # ==================================================
+                        messages.append(msg)
                         
-                        # Cập nhật mốc (giữ nguyên)
+                        # Cập nhật mốc mới để tính cho lần sau (bước nhảy 2% tiếp theo)
                         personal_state[sym_u] = {
                             "last_pct": float(pct),
                             "last_alert_at": now.isoformat(),
                         }
-                    else:
-                        if sym_u not in personal_state:
-                            personal_state[sym_u] = {
-                                "last_pct": float(pct),
-                                "last_alert_at": None,
-                            }
+                    
+                    # Nếu chưa đủ 2% để báo, nhưng là ngày mới/mã mới, ta vẫn phải lưu mốc 0.0 vào state
+                    # để vòng lặp sau có cái mà so sánh (tránh trường hợp nó cứ None mãi)
+                    elif sym_u not in personal_state or (last_alert_at is None and state_entry.get("last_pct") != 0.0):
+                         personal_state[sym_u] = {
+                            "last_pct": 0.0,
+                            "last_alert_at": state_entry.get("last_alert_at") # Giữ nguyên time cũ hoặc None
+                        }
 
-                # ... (Phần code đẩy queue giữ nguyên) ...
                 if messages:
                     header = (
                         "--------------------------------\n"
-                        f"⏰ *Cảnh báo {now.strftime('%H:%M:%S')}*"
+                        f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
                     )
                     messages_text = "\n".join(messages)
                     body = messages_text + "\n" + header
@@ -2349,19 +2346,15 @@ async def alert_loop():
                     try:
                         _stock_broadcast_queue.put_nowait({"chat_id": chat_id, "body": body})
                     except asyncio.QueueFull:
-                        log.warning(
-                            f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Queue cổ phiếu bị đầy!"
-                        )
+                        pass
 
             save_state_for_all(all_state)
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Lỗi nghiêm trọng: {e}")
+            log.error(f"[{INSTANCE_ID}][TICKER] Lỗi: {e}")
 
-        # ... (Phần code sleep giữ nguyên) ...
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(TICKER_INTERVAL_SECONDS - elapsed, 0.5)
-        log.info(f"[{INSTANCE_ID}][TICKER_STOCK {loop_id}] Sleep {delay:.1f}s")
         await asyncio.sleep(delay)
 
 async def stock_broadcast_loop():
@@ -2850,7 +2843,7 @@ async def news_cleanup_loop():
 
 # --- Tham số riêng
 VN30F1M_SYMBOL = "VN30F1M"
-VN30F1M_DELTA_THRESHOLD = 10    # ±5 điểm
+VN30F1M_DELTA_THRESHOLD = 5    # ±5 điểm
 VN30F1M_TICK_SECONDS = 3        # chu kỳ quét
 
 # --- State trong RAM
@@ -2975,58 +2968,49 @@ async def _vn30f1m_get_current_price() -> float | None:
 
 async def _vn30f1m_process_tick(price: float):
     """
-    (ĐÃ SỬA LỖI LOGIC: Dùng mốc DI ĐỘNG +-5đ theo yêu cầu)
+    (ĐÃ SỬA NGƯỠNG VÀ LOGIC CẬP NHẬT MỐC)
+    Logic: 
+    - So sánh giá khớp (price) với mốc di động (_vn30f1m_anchor).
+    - Nếu chênh lệch >= 5 điểm -> Báo -> Cập nhật mốc mới bằng giá khớp.
     """
-    global _vn30f1m_anchor # Chỉ cần mốc di động
+    global _vn30f1m_anchor
 
-    # --- 1. KIỂM TRA MỐC DI ĐỘNG ---
+    # 1. KIỂM TRA MỐC (ANCHOR)
     if _vn30f1m_anchor is None:
-        # Trường hợp này gần như không xảy ra
-        # vì Fetcher (chạy 10s) sẽ set mốc TC trước Ticker (chạy 3s)
-        log.info("[VN30F1M][PROCESS]     >>> Đang chờ Fetcher set mốc Tham Chiếu (anchor)...")
+        # Chưa có mốc (Fetcher chưa kịp lấy Tham chiếu), bỏ qua chờ vòng sau
         return 
 
-    # --- 2. LOGIC KÍCH HOẠT (Mốc di động) ---
+    # 2. TÍNH TOÁN BIẾN ĐỘNG
+    delta = float(price) - float(_vn30f1m_anchor)
     
-    # Delta so với mốc DI ĐỘNG (dùng cho cả trigger và display)
-    delta_trigger = float(price) - _vn30f1m_anchor
+    # Log debug để bạn theo dõi (như bạn đã thấy)
+    # log.info(f"[VN30F1M] Price: {price:.1f} | Anchor: {_vn30f1m_anchor:.1f} | Delta: {delta:.1f}")
     
-    log.info(
-        f"[VN30F1M][PROCESS]     >>> Price: {price:.2f} | "
-        f"Moving Anchor: {_vn30f1m_anchor:.2f} | "
-        f"Delta: {delta_trigger:.2f}"
-    )
-    
-    # Điều kiện kích hoạt: Vượt qua MỐC DI ĐỘNG 5 điểm
-    if abs(delta_trigger) >= VN30F1M_DELTA_THRESHOLD:
+    # 3. KIỂM TRA ĐIỀU KIỆN (Dùng abs để bắt cả tăng và giảm)
+    if abs(delta) >= VN30F1M_DELTA_THRESHOLD: # Bây giờ là >= 5.0
         
-        # --- 3. TẠO OUTPUT ---
-        log.info(
-            f"[VN30F1M][PROCESS]     >>> VƯỢT MỐC KÍCH HOẠT! "
-            f"({abs(delta_trigger):.2f} >= {VN30F1M_DELTA_THRESHOLD})"
-        )
+        direction = "tăng" if delta > 0 else "giảm"
+        icon = "🟢" if delta > 0 else "🔴"
+        trend_icon = "🚀" if delta > 0 else "📉"
         
-        direction = "tăng" if delta_trigger >= 0 else "giảm"
         now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
 
-        icon = "🟢" if delta_trigger >= 0 else "🔴"
-
-        # ❗️ SỬA OUTPUT: Hiển thị delta_trigger và mốc di động
+        # Nội dung tin nhắn
         text = (
-            f"{icon} *VN30F1M {direction} {abs(delta_trigger):.2f} điểm* "
-            f"(so với mốc {(_vn30f1m_anchor):.2f})\n"
-            f"Giá hiện tại: *{float(price):.2f}* — {now_str}"
+            f"{icon} *VN30F1M {direction} {abs(delta):.1f} điểm* "
+            f"(so với mốc {_vn30f1m_anchor:.1f})\n"
+            f"Giá hiện tại: *{float(price):.1f}*\n"
+            f"{trend_icon} _Cập nhật lúc {now_str}_"
         )
         
         try:
             _vn30f1m_broadcast_queue.put_nowait(text)
-            log.info("[VN30F1M][PROCESS]     >>> Đã đẩy tin nhắn vào Queue.")
+            log.info(f"[VN30F1M] 🔔 ALERT: {abs(delta):.1f} điểm >= {VN30F1M_DELTA_THRESHOLD}. New Anchor: {price}")
         except asyncio.QueueFull:
-            log.warning("[VN30F1M][PROCESS]     >>> LỖI: Broadcast queue bị đầy, bỏ lỡ 1 tin nhắn.")
+            log.warning("[VN30F1M] Queue đầy, bỏ lỡ tin nhắn.")
 
-        # --- 4. CẬP NHẬT MỐC DI ĐỘNG ---
+        # 4. CẬP NHẬT MỐC MỚI NGAY LẬP TỨC
         _vn30f1m_anchor = float(price)
-        log.info(f"[VN30F1M][PROCESS]     >>> 🔁 (MOVING) Mốc di động dời lên {price:.2f}")
 
 async def vn30f1m_alert_loop():
     """
@@ -3096,7 +3080,7 @@ async def vn30f1m_price_fetcher_loop():
     """
     global _vn30f1m_current_price_cache, _vn30f1m_anchor, stock_trading
     vn_tz = pytz.timezone(TIMEZONE)
-    FETCH_INTERVAL = 10 
+    FETCH_INTERVAL = 15
     
     while True:
         loop_start = datetime.datetime.now(vn_tz)
