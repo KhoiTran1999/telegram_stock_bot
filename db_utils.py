@@ -187,6 +187,15 @@ def init_db():
                 )
             """)
 
+            # Cài đặt riêng cho từng user (VD: VN30F1M)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_user_settings (
+                    chat_id     BIGINT PRIMARY KEY,
+                    settings    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+
         conn.commit()
 
 # ==========================================
@@ -1010,6 +1019,10 @@ CORE_TABLES = [
     "news_pref",       # bật/tắt tin tức
     "bot_config",      # cấu hình chung (BOT_ACTIVE, v.v.)
     "bctc_notified",   # đã notify BCTC quý nào
+    "paid_users",          # 💰 Dữ liệu Gói Pro (QUAN TRỌNG NHẤT)
+    "bot_orders",          # 🧾 Lịch sử đơn hàng
+    "bot_user_settings",   # ⚙️ Cài đặt VN30F1M
+    "analysis_report_seen" # 📊 Lịch sử báo cáo (tránh spam lại)
 ]
 
 
@@ -1044,110 +1057,114 @@ def export_core_data():
 
     return payload
 
-
 def import_core_data(payload: dict, mode: str = "replace"):
     """
-    Restore dữ liệu core từ dict đã export_core_data().
-    mode = "replace": truncate 4 bảng core trước rồi insert lại từ backup.
+    (ĐÃ CẬP NHẬT FULL) Restore dữ liệu core từ dict.
+    Hỗ trợ đầy đủ: Watchlist, News, Config, BCTC, Paid Users, Orders, Settings, Reports.
     """
     tables = payload.get("tables", {}) or {}
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # 1) Nếu replace thì xóa sạch dữ liệu cũ ở 4 bảng core
+            # 1) TRUNCATE (Xóa sạch cũ) nếu mode là replace
             if mode == "replace":
-                # Truncate theo thứ tự, tránh phụ thuộc FK (ở đây không có FK nên khá thoải mái)
+                # Tắt check ngoại khóa tạm thời nếu cần (Postgres thường ko cần nếu ko có FK cứng)
                 for tbl in CORE_TABLES:
-                    if tbl in tables:
-                        cur.execute(f"TRUNCATE {tbl}")
+                    # Chỉ truncate nếu trong file backup CÓ dữ liệu của bảng đó
+                    if tbl in tables: 
+                        try:
+                            cur.execute(f"TRUNCATE {tbl}")
+                        except Exception as e:
+                            print(f"Lỗi truncate {tbl}: {e}")
+
+            # --- NHÓM 1: CORE CŨ ---
 
             # 2) bot_watch
             for row in tables.get("bot_watch", []):
                 chat_id = row["chat_id"]
                 watch_list = row.get("watch_list", [])
-
-                # watch_list có thể là list/dict hoặc string JSON -> chuẩn hóa thành string JSON
-                if isinstance(watch_list, str):
-                    raw_json = watch_list
-                else:
-                    raw_json = json.dumps(watch_list)
-
+                raw_json = watch_list if isinstance(watch_list, str) else json.dumps(watch_list)
                 cur.execute(
-                    """
-                    INSERT INTO bot_watch (chat_id, watch_list)
-                    VALUES (%s, %s::jsonb)
-                    ON CONFLICT (chat_id)
-                    DO UPDATE SET watch_list = EXCLUDED.watch_list
-                    """,
+                    "INSERT INTO bot_watch (chat_id, watch_list) VALUES (%s, %s::jsonb) ON CONFLICT (chat_id) DO UPDATE SET watch_list = EXCLUDED.watch_list",
                     (chat_id, raw_json),
                 )
 
             # 3) news_pref
             for row in tables.get("news_pref", []):
                 cur.execute(
-                    """
-                    INSERT INTO news_pref (chat_id, enable_specialized, enable_macro)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (chat_id)
-                    DO UPDATE
-                    SET enable_specialized = EXCLUDED.enable_specialized,
-                        enable_macro       = EXCLUDED.enable_macro
-                    """,
-                    (
-                        row["chat_id"],
-                        row["enable_specialized"],
-                        row["enable_macro"],
-                    ),
+                    "INSERT INTO news_pref (chat_id, enable_specialized, enable_macro) VALUES (%s, %s, %s) ON CONFLICT (chat_id) DO UPDATE SET enable_specialized = EXCLUDED.enable_specialized, enable_macro = EXCLUDED.enable_macro",
+                    (row["chat_id"], row["enable_specialized"], row["enable_macro"]),
                 )
 
-            # 4) bot_config (value là JSONB)
+            # 4) bot_config
             for row in tables.get("bot_config", []):
-                key = row["key"]
-                value = row.get("value")
-
-                if value is None:
-                    # cho phép NULL
-                    cur.execute(
-                        """
-                        INSERT INTO bot_config (key, value)
-                        VALUES (%s, NULL)
-                        ON CONFLICT (key)
-                        DO UPDATE SET value = EXCLUDED.value
-                        """,
-                        (key,),
-                    )
-                else:
-                    # value có thể là dict/list/str -> convert thành JSON string cho chắc
-                    if isinstance(value, str):
-                        json_value = value
-                    else:
-                        json_value = json.dumps(value)
-
-                    cur.execute(
-                        """
-                        INSERT INTO bot_config (key, value)
-                        VALUES (%s, %s::jsonb)
-                        ON CONFLICT (key)
-                        DO UPDATE SET value = EXCLUDED.value
-                        """,
-                        (key, json_value),
-                    )
+                val = row.get("value")
+                json_val = val if isinstance(val, str) or val is None else json.dumps(val)
+                cur.execute(
+                    "INSERT INTO bot_config (key, value) VALUES (%s, %s::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                    (row["key"], json_val),
+                )
 
             # 5) bctc_notified
             for row in tables.get("bctc_notified", []):
-                sym = row["symbol"]
-                year = row["year"]
-                quarter = row["quarter"]
-                notified_at = row.get("notified_at")
+                cur.execute(
+                    "INSERT INTO bctc_notified (symbol, year, quarter, notified_at) VALUES (%s, %s, %s, %s) ON CONFLICT (symbol, year, quarter) DO NOTHING",
+                    (row["symbol"], row["year"], row["quarter"], row.get("notified_at")),
+                )
 
+            # --- NHÓM 2: CORE MỚI (TIỀN NONG & SETTINGS) ---
+
+            # 6) paid_users (QUAN TRỌNG)
+            for row in tables.get("paid_users", []):
                 cur.execute(
                     """
-                    INSERT INTO bctc_notified (symbol, year, quarter, notified_at)
-                    VALUES (%s, %s, %s, COALESCE(%s, NOW()))
-                    ON CONFLICT (symbol, year, quarter)
-                    DO UPDATE SET notified_at = EXCLUDED.notified_at
+                    INSERT INTO paid_users (chat_id, expiry_date, plan_name)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (chat_id) DO UPDATE 
+                    SET expiry_date = EXCLUDED.expiry_date, plan_name = EXCLUDED.plan_name
                     """,
-                    (sym, year, quarter, notified_at),
+                    (row["chat_id"], row["expiry_date"], row.get("plan_name", "pro")),
+                )
+
+            # 7) bot_orders (Lịch sử đơn hàng)
+            for row in tables.get("bot_orders", []):
+                cur.execute(
+                    """
+                    INSERT INTO bot_orders (order_id, chat_id, amount, days_to_add, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (order_id) DO NOTHING
+                    """,
+                    (
+                        row["order_id"], row["chat_id"], row["amount"], row["days_to_add"], 
+                        row["status"], row.get("created_at"), row.get("updated_at")
+                    ),
+                )
+
+            # 8) bot_user_settings (Cài đặt VN30F1M)
+            for row in tables.get("bot_user_settings", []):
+                s_val = row.get("settings")
+                s_json = s_val if isinstance(s_val, str) else json.dumps(s_val)
+                cur.execute(
+                    """
+                    INSERT INTO bot_user_settings (chat_id, settings, updated_at)
+                    VALUES (%s, %s::jsonb, %s)
+                    ON CONFLICT (chat_id) DO UPDATE SET settings = EXCLUDED.settings
+                    """,
+                    (row["chat_id"], s_json, row.get("updated_at")),
+                )
+
+            # 9) analysis_report_seen (Lịch sử báo cáo)
+            for row in tables.get("analysis_report_seen", []):
+                cur.execute(
+                    """
+                    INSERT INTO analysis_report_seen (symbol, link, title, published_at, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (link, published_at) DO NOTHING
+                    """,
+                    (
+                        row.get("symbol"), row["link"], row.get("title"), 
+                        row.get("published_at"), row.get("created_at")
+                    ),
                 )
 
         conn.commit()

@@ -5671,10 +5671,159 @@ async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await reply_md(update, f"⚠️ Lỗi xử lý: {e}")
 
+# ============================================================
+# ♻️ /restore_core – Khôi phục dữ liệu core + Clear Redis + Sync Redis từ DB
+# ============================================================
+
+async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Khôi phục dữ liệu core từ file JSON backup.
+    (ĐÃ SỬA: Thống kê chính xác số lượng bản ghi trước và sau restore)
+    """
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if ADMIN_ID is None or user_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
+        return
+    
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except: pass
+
+    # 1. Lấy file
+    document = update.message.document or (update.message.reply_to_message.document if update.message.reply_to_message else None)
+    if not document:
+        await reply_md(update, "📥 Vui lòng gửi file `.json` kèm caption `/restore_core`.")
+        return
+
+    # 2. Tải file
+    tmp_dir = Path(tempfile.gettempdir()) / "stockbot_restore"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", document.file_name or "backup.json")
+    tmp_path = tmp_dir / f"{int(time.time())}_{safe_name}"
+
+    try:
+        tg_file = await document.get_file()
+        await tg_file.download_to_drive(tmp_path)
+    except Exception as e:
+        await reply_md(update, f"⚠️ Lỗi tải file: `{e}`")
+        return
+
+    # 3. Clear Redis
+    try:
+        r = get_redis()
+        key_count = r.dbsize()
+        r.flushdb()
+        await reply_md(update, f"🧹 Đã xóa {key_count} keys Redis.")
+    except Exception: pass
+
+    # 4. Đọc JSON
+    try:
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as e:
+        await reply_md(update, f"⚠️ File JSON lỗi: `{e}`")
+        return
+
+    # --- HÀM ĐẾM SỐ LƯỢNG BẢN GHI (SYNC) ---
+    def _count_current_rows():
+        stats = {}
+        # Danh sách tất cả các bảng quan trọng
+        tables = [
+            "bot_watch", "news_pref", "bot_config", "bctc_notified", # Core cũ
+            "paid_users", "bot_orders", "bot_user_settings", "analysis_report_seen" # Core mới (Tiền nong)
+        ]
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for tbl in tables:
+                    try:
+                        cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                        res = cur.fetchone()
+                        stats[tbl] = res[0] if res else 0
+                    except Exception:
+                        # Nếu bảng chưa tồn tại (lần đầu chạy), coi như 0
+                        stats[tbl] = 0
+        return stats
+    # ---------------------------------------
+
+    # 5. Lấy thống kê TRƯỚC khi restore
+    try:
+        before_stats = await asyncio.to_thread(_count_current_rows)
+    except Exception as e:
+        log.warning(f"Lỗi đếm before: {e}")
+        before_stats = {}
+
+    # 6. Thực hiện IMPORT
+    try:
+        # Hàm import_core_data không cần trả về gì cả, nó chỉ cần chạy xong không lỗi
+        await asyncio.to_thread(import_core_data, payload, "replace")
+    except Exception as e:
+        await reply_md(update, f"⚠️ Lỗi Import DB: `{e}`")
+        return
+
+    # 7. Lấy thống kê SAU khi restore
+    try:
+        after_stats = await asyncio.to_thread(_count_current_rows)
+    except Exception:
+        after_stats = {}
+
+    # 8. Đồng bộ lại Redis (Watchlist)
+    sync_msg = ""
+    try:
+        synced_users = 0
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id, watch_list FROM bot_watch")
+                rows = cur.fetchall()
+        
+        r = get_redis()
+        r.delete("watch_chat_ids")
+        for cid, wl in rows:
+            r.set(f"watch:{cid}", json.dumps(wl))
+            r.sadd("watch_chat_ids", cid)
+            synced_users += 1
+        sync_msg = f"🔄 Đã đồng bộ Redis (Watchlist). Tổng user: *{synced_users}*"
+    except Exception as e:
+        sync_msg = f"⚠️ Lỗi đồng bộ Redis: {e}"
+
+    # 9. Tạo báo cáo kết quả
+    lines = ["✅ **Khôi phục dữ liệu core thành công!**\n"]
+    lines.append("**Biến động dữ liệu (Trước → Sau):**")
+    
+    # Danh sách hiển thị đẹp
+    display_map = {
+        "paid_users": "💰 User Pro",
+        "bot_orders": "🧾 Đơn hàng",
+        "bot_watch": "📋 Watchlist",
+        "bot_user_settings": "⚙️ Setting",
+        "bctc_notified": "🔔 Log BCTC",
+        "analysis_report_seen": "📊 Log Report",
+        "news_pref": "📰 News Pref",
+        "bot_config": "🔧 Config"
+    }
+
+    for tbl, name in display_map.items():
+        b = before_stats.get(tbl, 0)
+        a = after_stats.get(tbl, 0)
+        # Chỉ hiện những bảng có dữ liệu hoặc có sự thay đổi
+        if b > 0 or a > 0:
+            lines.append(f"- {name}: {b} → **{a}**")
+
+    lines.append("")
+    lines.append(sync_msg)
+
+    await reply_md(update, "\n".join(lines))
+
+    # Dọn dẹp file tạm
+    try:
+        if os.path.exists(tmp_path): os.remove(tmp_path)
+    except: pass
+
 async def cmd_backup_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Admin: backup dữ liệu core (watchlist + news_pref + bot_config + bctc_notified)
-    thành file JSON và gửi cho admin.
+    Admin: backup dữ liệu core thành file JSON.
+    (ĐÃ SỬA LỖI JSON SERIALIZABLE CHO DATETIME)
     """
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -5690,13 +5839,19 @@ async def cmd_backup_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Log command (chạy trong thread để không block)
-    await asyncio.to_thread(log_command_usage, chat_id, "/backup_core", ADMIN_ID)
+    # Log command
+    try: await asyncio.to_thread(log_command_usage, chat_id, "/backup_core", ADMIN_ID)
+    except: pass
 
     await reply_md(update, "⏳ Đang backup dữ liệu core, vui lòng đợi...")
 
     # Export dữ liệu core (DB I/O chạy trong thread)
-    payload = await asyncio.to_thread(export_core_data)
+    try:
+        payload = await asyncio.to_thread(export_core_data)
+    except Exception as e:
+        log.error(f"Lỗi export data: {e}")
+        await reply_md(update, f"⚠️ Lỗi khi lấy dữ liệu từ DB: {e}")
+        return
 
     # Tạo file tạm trong container
     vn_tz = pytz.timezone(TIMEZONE)
@@ -5706,186 +5861,44 @@ async def cmd_backup_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filename = f"stockbot_core_backup_{month_key}_{ts}.json"
     tmp_path = os.path.join(TMP_DIR, filename)
 
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    # --- HÀM CONVERTER ĐỂ XỬ LÝ DATETIME ---
+    def json_datetime_converter(o):
+        if isinstance(o, (datetime.date, datetime.datetime)):
+            return o.isoformat()
+        raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+    # ---------------------------------------
 
-    # Gửi file cho admin
-    await context.bot.send_document(
-        chat_id=chat_id,
-        document=open(tmp_path, "rb"),
-        filename=filename,
-        caption=(
-            f"📦 Backup dữ liệu core lúc {ts} (tháng {month_key}).\n"
-            "- Bao gồm: bot_watch, news_pref, bot_config, bctc_notified.\n"
-            "- Dùng file này cho lệnh /restore_core sau khi tạo DB mới trên Render."
-        ),
-    )
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            # Thêm tham số default=json_datetime_converter
+            json.dump(
+                payload, 
+                f, 
+                ensure_ascii=False, 
+                indent=2, 
+                default=json_datetime_converter # <--- SỬA LỖI TẠI ĐÂY
+            )
 
-    await reply_md(update, "✅ Đã backup xong và gửi file cho bạn.")
+        # Gửi file cho admin
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=open(tmp_path, "rb"),
+            filename=filename,
+            caption=(
+                f"📦 Backup dữ liệu core lúc {ts} (tháng {month_key}).\n"
+                "- Dữ liệu bao gồm: Watchlist, User Pro, Orders, Settings...\n"
+                "- Dùng file này cho lệnh /restore_core sau khi tạo DB mới."
+            ),
+        )
+        await reply_md(update, "✅ Đã backup xong và gửi file cho bạn.")
 
-# ============================================================
-# ♻️ /restore_core – Khôi phục dữ liệu core + Clear Redis + Sync Redis từ DB
-# ============================================================
-async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Khôi phục dữ liệu core từ file JSON backup:
-    - Lấy file từ message hiện tại hoặc message được reply.
-    - Clear toàn bộ Redis (flushdb) để tránh lệch dữ liệu cache.
-    - Import dữ liệu vào PostgreSQL (mode = 'replace').
-    - Đồng bộ lại Redis từ PostgreSQL (watchlist).
-    - Trả về thống kê before -> after (chịu lỗi nếu import_core_data không trả kết quả).
-    """
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    if ADMIN_ID is None or user_id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
+    except Exception as e:
+        log.error(f"Lỗi backup core: {e}")
+        await reply_md(update, f"⚠️ Lỗi khi tạo file backup: {e}")
     
-    try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass
-
-    # 1) Lấy file đính kèm
-    document = None
-    msg = update.message
-    if msg and msg.document:
-        document = msg.document
-    elif msg and msg.reply_to_message and msg.reply_to_message.document:
-        document = msg.reply_to_message.document
-
-    if not document:
-        await reply_md(
-            update,
-            "📥 *Cách dùng*\n"
-            "*C1:* Gửi file backup `.json` rồi đặt caption là `/restore_core`\n"
-            "*C2:* Reply `/restore_core` vào tin nhắn có đính kèm file backup `.json`"
-        )
-        return
-
-    # 2) Tải file về thư mục tạm (cross-platform)
-    try:
-        tg_file = await document.get_file()
-    except Exception as e:
-        await reply_md(update, f"⚠️ *Không thể lấy file từ Telegram:* `{e}`")
-        return
-
-    tmp_dir = Path(tempfile.gettempdir()) / "stockbot_restore"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", document.file_name or "backup.json")
-    tmp_path = tmp_dir / f"{int(time.time())}_{safe_name}"
-
-    try:
-        await tg_file.download_to_drive(tmp_path)
-    except Exception as e:
-        await reply_md(update, f"⚠️ *Không thể lưu file về máy:* `{e}`\nVui lòng thử lại.")
-        return
-
-    # 3) Clear Redis trước khi restore
-    try:
-        r = get_redis()
-        key_count = r.dbsize()
-        r.flushdb()
-        await reply_md(
-            update,
-            f"🧹 *Đã xóa toàn bộ dữ liệu Redis trước khi restore.*\n"
-            f"Số key đã xóa: *{key_count}*"
-        )
-    except Exception as e:
-        await reply_md(update, f"⚠️ *Lỗi khi xóa Redis:* `{e}`\nTiếp tục restore vào PostgreSQL…")
-
-    # 4) Đọc JSON payload
-    try:
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except Exception as e:
-        await reply_md(update, f"⚠️ *File JSON không hợp lệ hoặc lỗi đọc file:* `{e}`")
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return
-
-    # 5) Import vào PostgreSQL (mode = replace)
-    try:
-        # import_core_data có thể trả dict (before/after) hoặc None
-        result = await asyncio.to_thread(import_core_data, payload, "replace")
-    except Exception as e:
-        await reply_md(update, f"⚠️ *Lỗi khi restore dữ liệu core:* `{e}`")
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return
-
-    # 6) Lấy thống kê before/after (nếu result == None thì tự đếm)
-    def _count_all():
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM bot_watch"); bw = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(*) FROM news_pref"); np = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(*) FROM bot_config"); bc = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(*) FROM bctc_notified"); bn = cur.fetchone()[0]
-        return {"bot_watch": bw, "news_pref": np, "bot_config": bc, "bctc_notified": bn}
-
-    if result and isinstance(result, dict):
-        before = result.get("before", {})
-        after = result.get("after", {}) or _count_all()
-    else:
-        # Không có thống kê from import_core_data -> hiển thị chỉ "after"
-        before = {}
-        after = _count_all()
-
-    # 7) Đồng bộ lại Redis từ PostgreSQL (watchlist)
-    sync_ok = True
-    synced_users = 0
-    try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT chat_id, watch_list FROM bot_watch")
-                rows = cur.fetchall()
-
-        r = get_redis()
-        # rebuild set danh sách chat_id có watchlist
-        r.delete("watch_chat_ids")
-        for chat_id, watch_list in rows:
-            r.set(f"watch:{chat_id}", json.dumps(watch_list))
-            r.sadd("watch_chat_ids", chat_id)
-            synced_users += 1
-    except Exception as e:
-        sync_ok = False
-        await reply_md(update, f"⚠️ *Lỗi khi đồng bộ Redis từ DB (watchlist):* `{e}`")
-
-    # 8) Trả summary
-    summary_lines = []
-    summary_lines.append("✅ *Khôi phục dữ liệu core thành công!*")
-    summary_lines.append("")
-    summary_lines.append("*Số lượng bản ghi (trước → sau):*")
-    def fmt_row(name):
-        b = before.get(name, "?")
-        a = after.get(name, "?")
-        return f"- {name}: {b} → {a}"
-    summary_lines.append(fmt_row("botWatch"))
-    summary_lines.append(fmt_row("newsPref"))
-    summary_lines.append(fmt_row("botConfig"))
-    summary_lines.append(fmt_row("bctcNotified"))
-    summary_lines.append("")
-    if sync_ok:
-        summary_lines.append(f"🔄 *Đã đồng bộ Redis từ DB (watchlist).* Tổng số user: *{synced_users}*")
-    else:
-        summary_lines.append("⚠️ *Redis chưa được đồng bộ đầy đủ.* Bạn có thể chạy `/sync_watch_from_db` sau.")
-    await reply_md(update, "\n".join(summary_lines))
-
-    # 9) Dọn file tạm (best-effort)
-    try:
-        tmp_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    # Dọn dẹp file tạm (nếu cần thiết, nhưng để lại debug cũng được)
+    # try: os.remove(tmp_path)
+    # except: pass
 
 # ==============================================
 # COMMAND: /report (CÓ CACHE REDIS + RETRY, KHÔNG COOLDOWN)
