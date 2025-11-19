@@ -2293,35 +2293,31 @@ async def alert_loop():
                     # Delta = % Hiện tại - % Mốc cũ
                     # Ví dụ: Mốc cũ (Tham chiếu) = 0.0. Hiện tại = -2.1%. Delta = 2.1 -> BÁO
                     delta_pct = float(pct) - float(last_pct)
-                    
-                    should_alert = abs(delta_pct) >= 2.0
+                    should_alert = abs(delta_pct) >= 2.0 # Ngưỡng 2%
 
                     if should_alert:
-                        # Format tin nhắn
+                        # 1. Chuẩn bị dữ liệu hiển thị
                         icon = "🟢" if pct >= 0 else "🔴"
                         direction = "tăng" if pct >= 0 else "giảm"
-                        trend_icon = "🚀" if delta_pct > 0 else "📉"
                         
+                        # Format giá: 20.000
                         price_str = f"{float(price):,.0f}".replace(",", ".")
+                        # Format %: +2.10%
                         pct_str = f"{float(pct):+.2f}%"
                         
-                        # Dòng 2: Giải thích vì sao báo (so với mốc nào)
-                        # Nếu last_pct = 0.0 thì ghi là "so với Tham Chiếu" cho dễ hiểu
-                        if float(last_pct) == 0.0:
-                            ref_note = "so với Tham Chiếu"
-                        else:
-                            ref_note = "so với mốc trước"
-
+                        # Câu thoại vui
                         fun_line = random.choice(FUN_UP if pct >= 0 else FUN_DOWN)
 
+                        # 2. Tạo nội dung tin nhắn (GỌN GÀNG)
+                        # Mẫu: 🟢 HPG tăng +2.10% Giá hiện tại: 25.000
                         msg = (
-                            f"{icon} *{sym_u} {direction} {pct_str}* — Giá: *{price_str}*\n"
-                            f"({trend_icon} Biến động {abs(delta_pct):.1f}% {ref_note})\n"
+                            f"{icon} {sym_u} {direction} {pct_str} Giá hiện tại: {price_str}\n"
                             f"_{fun_line}_"
                         )
+                        
                         messages.append(msg)
                         
-                        # Cập nhật mốc mới để tính cho lần sau (bước nhảy 2% tiếp theo)
+                        # 3. Cập nhật mốc mới vào State
                         personal_state[sym_u] = {
                             "last_pct": float(pct),
                             "last_alert_at": now.isoformat(),

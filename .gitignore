@@ -7,3 +7,6 @@
 
 __pycache__/
 *.pyc
+
+pytest.ini
+.vscode/
