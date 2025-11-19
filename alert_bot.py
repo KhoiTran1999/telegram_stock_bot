@@ -20,6 +20,7 @@ from digest_template import (
     REPORT_HTML_TEMPLATE,
     REPORT_404_TEMPLATE,
     SCREENER_HTML_TEMPLATE,
+    LOCKED_FEATURE_TEMPLATE,
 )
 from telegram import (
     BotCommand,
@@ -3950,35 +3951,70 @@ async def daily_user_digest_loop():
             for sym, (year, quarter, notified_at) in bctc_by_sym.items():
                 chat_ids_impacted = watch_to_chats.get(sym, [])
                 for cid in chat_ids_impacted:
-                    if cid in pro_chat_ids or cid == ADMIN_ID:
-                        t_str = notified_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
-                        _get_payload(cid)["bctc"].append({
-                            "symbol": sym, "year": year, "quarter": quarter, "time": t_str
+                    payload = _get_payload(cid)
+                    
+                    # Lấy thời gian
+                    t_str = notified_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                    
+                    if payload["is_pro"]:
+                        # PRO: Thấy full
+                        payload["bctc"].append({
+                            "symbol": sym, "year": year, "quarter": quarter, "time": t_str,
+                            "is_locked": False
                         })
+                    else:
+                        # FREE: Thấy bị khóa (Upsell)
+                        # Chỉ thêm 1 lần cho mỗi mã để tránh spam nếu có nhiều quý
+                        if not any(x['symbol'] == sym for x in payload["bctc"]):
+                            payload["bctc"].append({
+                                "symbol": sym, 
+                                "year": year, "quarter": quarter, 
+                                "time": t_str,
+                                "is_locked": True # <--- CỜ KHÓA
+                            })
 
         # --- C. Reports (Pro) ---
         if report_rows:
             for sym, reports_list in reports_by_sym.items():
                 chat_ids_impacted = watch_to_chats.get(sym, [])
                 for cid in chat_ids_impacted:
-                    if cid in pro_chat_ids or cid == ADMIN_ID:
-                        for (title, link, pub_at) in reports_list:
-                            
-                            # 1. Xử lý hiển thị thời gian (Thêm phần này)
-                            time_str = ""
-                            if pub_at:
-                                # Đảm bảo có timezone (phòng trường hợp datetime naive)
-                                if getattr(pub_at, 'tzinfo', None) is None:
-                                    pub_at = pub_at.replace(tzinfo=datetime.timezone.utc)
-                                # Chuyển về giờ Việt Nam và format
-                                time_str = pub_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                    payload = _get_payload(cid)
+                    
+                    # Lấy báo cáo mới nhất làm đại diện
+                    last_rep = reports_list[0]
+                    title = last_rep[0]
+                    link = last_rep[1]
+                    pub_at = last_rep[2]
+                    
+                    time_str = ""
+                    if pub_at:
+                         if getattr(pub_at, 'tzinfo', None) is None:
+                             pub_at = pub_at.replace(tzinfo=datetime.timezone.utc)
+                         time_str = pub_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
 
-                            # 2. Thêm trường "time" vào payload
-                            _get_payload(cid)["reports"].append({
+                    if payload["is_pro"]:
+                        # PRO: Thêm hết
+                        for (t, l, p) in reports_list:
+                             # ... (xử lý time cho từng item như cũ)
+                             # Ở đây mình viết gọn lại logic loop:
+                             t_str_item = "" 
+                             if p: 
+                                 if getattr(p, 'tzinfo', None) is None: p = p.replace(tzinfo=datetime.timezone.utc)
+                                 t_str_item = p.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                                 
+                             payload["reports"].append({
+                                "symbol": sym, "title": t, "link": l, "time": t_str_item,
+                                "is_locked": False
+                            })
+                    else:
+                        # FREE: Chỉ hiện 1 dòng teaser bị khóa
+                        if not any(x['symbol'] == sym and x.get('is_locked') for x in payload["reports"]):
+                            payload["reports"].append({
                                 "symbol": sym, 
-                                "title": title, 
-                                "link": link,
-                                "time": time_str  # <--- Đã thêm thời gian vào đây
+                                "title": "Báo cáo phân tích chuyên sâu", # Ẩn tiêu đề thật
+                                "link": "#",
+                                "time": time_str,
+                                "is_locked": True # <--- CỜ KHÓA
                             })
 
         # --- D. Tin Chuyên Ngành (All) ---
@@ -5771,94 +5807,75 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (PHIÊN BẢN WEB APP JSON)
-    Gửi báo cáo danh mục AI dưới dạng Web App Dashboard.
+    (UX MỚI) Gửi nút WebApp cho cả Free user (Upsell bên trong App).
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     vn_tz = pytz.timezone(TIMEZONE)
-    if not update or not update.effective_chat:
-        return
+    if not update or not update.effective_chat: return
     chat_id = update.effective_chat.id
 
-    # === 1. KIỂM TRA PAYWALL (PRO-ONLY) ===
-    # Hàm check_pro_access (trong file alert_bot.py của bạn) sẽ tự gửi thông báo nếu user không phải Pro
-    if not await check_pro_access(update, context):
-        return
+    # 1. Xác định trạng thái Pro (Gọi DB trực tiếp, không dùng check_pro_access để tránh gửi tin nhắn chặn)
+    is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
 
-    # Gửi ChatAction "Typing" để user biết bot đang xử lý
-    try:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except Exception:
-        pass
-
-    # Log command usage
-    await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
-
-    # Lấy watchlist từ DB
+    # 2. Chuẩn bị thông tin
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
     watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
     symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
+    
+    # Tạo cache key (Nếu list rỗng thì đặt tạm là EMPTY để tạo link hợp lệ)
+    cache_key = make_report_cache_key(symbols) if symbols else "EMPTY"
+    web_app_url = f"{base_url}/report/view/{cache_key}?chat_id={chat_id}"
+
+    # --- [NHÁNH 1: FREE USER -> GỬI NÚT NGAY] ---
+    if not is_pro:
+        try:
+            await asyncio.to_thread(log_command_usage, chat_id, "/report (Free)", ADMIN_ID)
+        except: pass
+
+        kb = [
+            [InlineKeyboardButton("📊 Xem Báo Cáo AI", web_app=WebAppInfo(url=web_app_url))],
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+        ]
+        
+        # Gửi tin nhắn mời gọi (Upsell)
+        await reply_md(
+            update,
+            "📊 **Báo Cáo Danh Mục AI**\n\n"
+            "AI sẽ phân tích chuyên sâu sức khỏe danh mục đầu tư của bạn.\n"
+            "👇 Nhấn nút bên dưới để xem chi tiết.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+    # ---------------------------------------------
+
+    # --- [NHÁNH 2: PRO USER -> CHẠY LOGIC AI] ---
+    
+    # Log command
+    await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
 
     if not symbols:
         await reply_md(update, "📭 Danh mục của bạn trống. Hãy dùng `/add` để thêm mã trước nhé!")
         return
 
-    # Tạo cache key từ danh sách mã
-    cache_key = make_report_cache_key(symbols)
-    log.info(f"[{INSTANCE_ID}] /report cache_key={cache_key} for chat_id={chat_id}")
-
-    # URL gốc của Web App (Lấy từ biến môi trường Render)
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-    
-    # Link đến route hiển thị báo cáo (cần đảm bảo bạn đã thêm route /report/view/<key> vào Flask)
-    web_app_url = f"{base_url}/report/view/{cache_key}"
-
-    # === 2. KIỂM TRA CACHE REDIS ===
-    # Hàm get_report_from_redis trả về: (text_json, generated_at, is_error, wait_sec)
+    # Kiểm tra Cache Redis
     cached = get_report_from_redis(cache_key)
     
     if cached is not None:
         text_json, generated_at, is_error, wait_sec = cached
-        
-        if is_error:
-            # Xử lý trường hợp cache đang lưu trạng thái lỗi (ví dụ do quá tải trước đó)
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            if generated_at.tzinfo is None:
-                generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
-            
-            remain_sec = 0
-            if wait_sec is not None:
-                elapsed = (now_utc - generated_at).total_seconds()
-                remain_sec = max(0, wait_sec - elapsed)
-            
-            if remain_sec > 0:
-                remain_min = math.ceil(remain_sec / 60)
-                await reply_md(
-                    update,
-                    f"⚠️ Hệ thống đang bận xử lý danh mục này.\n"
-                    f"Vui lòng thử lại sau khoảng ~{remain_min} phút nữa."
-                )
-                return
-            # Nếu hết thời gian chờ cache lỗi -> Cho phép chạy tiếp xuống dưới để gọi lại AI
-        
-        else:
-            # === CACHE HIT OK -> GỬI NÚT WEB APP ===
-            log.info(f"[{INSTANCE_ID}] /report CACHE HIT -> Gửi Web App.")
-            
-            kb = [
-                [InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
-                [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")] # <--- THÊM
-            ]
-            
-            # Lấy thời gian tạo từ cache để hiển thị
+        if not is_error:
+            # Cache Hit -> Gửi nút
             time_str = "vừa xong"
             if generated_at:
-                try:
-                    time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                try: time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
                 except: pass
 
+            kb = [
+                [InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
+                [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+            ]
             await reply_md(
                 update, 
                 f"✅ Báo cáo danh mục *{', '.join(symbols)}* đã sẵn sàng (bản lưu lúc {time_str}).",
@@ -5866,82 +5883,36 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # === 3. CACHE MISS -> GỌI AI (JSON MODE) ===
-    await reply_md(update, "🔎 Đang phân tích danh mục (AI)... vui lòng đợi khoảng 10-20s.")
-    
+    # Cache Miss -> Gọi AI
+    msg_wait = await reply_md(update, "🔎 Đang phân tích danh mục (AI)... vui lòng đợi khoảng 10-20s.")
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except: pass
 
-    # Task nhắc nhở nếu AI chạy lâu > 6s (UX)
-    done_flag = {"done": False}
-    async def send_slow_notice():
-        try:
-            await asyncio.sleep(6)
-            if not done_flag["done"]:
-                await send_md(
-                    context.bot, chat_id,
-                    "⏳ Báo cáo danh mục cần phân tích dữ liệu nhiều mã nên sẽ mất chút thời gian...\n"
-                    "Cảm ơn bạn đã kiên nhẫn chờ StockBot ạ 🙏",
-                )
-        except Exception: pass
-    asyncio.create_task(send_slow_notice())
-
     try:
-        # Gọi Gemini (Hàm này trả về chuỗi JSON)
-        start = time.time()
+        # Gọi Gemini
         json_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-        duration = time.time() - start
-        done_flag["done"] = True
-        
-        log.info(f"[{INSTANCE_ID}] /report Gemini JSON done in {duration:.2f}s")
-
-        # Lưu JSON vào Redis (source="on_demand")
         save_report_to_redis(cache_key, json_text, source="on_demand")
         
-        # Gửi nút Web App cho user
+        # Gửi kết quả
         kb = [
             [InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
-            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")] # <--- THÊM
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
         ]
         
+        # Xóa tin nhắn chờ cũ cho gọn (nếu được)
+        try: await context.bot.delete_message(chat_id, msg_wait.message_id)
+        except: pass
+
         await reply_md(
             update, 
-            f"🚀 Phân tích hoàn tất! Nhấn nút bên dưới để xem báo cáo chi tiết.",
+            f"🚀 Phân tích hoàn tất! Nhấn nút bên dưới để xem báo cáo.",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
     except Exception as e:
-        done_flag["done"] = True
-        log.error(f"[{INSTANCE_ID}] Lỗi cmd_report: {e}")
-        
-        # Phân loại lỗi để thông báo user
-        is_quota = classify_error_quota(e) # Hàm này đã có sẵn trong code cũ của bạn
-        if is_quota:
-            user_msg = (
-                "⚠️ Hệ thống AI đang quá tải (hết quota/rate limit). Vui lòng thử lại sau 2 phút."
-            )
-            notify_admin_flag = False
-        else:
-            user_msg = (
-                "⚠️ Gặp lỗi kỹ thuật khi tạo báo cáo. Admin đã được thông báo.\n"
-                "Vui lòng thử lại sau ít phút."
-            )
-            notify_admin_flag = True
-
-        # Lưu cache lỗi (để tránh user spam lệnh khi đang lỗi)
-        save_report_to_redis(
-            cache_key, user_msg, source="error", is_error=True,
-            wait_sec=120, error_type=type(e).__name__, error_detail=str(e),
-        )
-        
-        await reply_md(update, user_msg)
-        
-        # Báo admin nếu cần
-        if notify_admin_flag and tg_app and tg_app.bot:
-            try:
-                await notify_admin_report_error_once(tg_app.bot, cache_key, e)
-            except: pass
+        log.error(f"Lỗi /report: {e}")
+        await reply_md(update, "⚠️ Hệ thống đang bận, vui lòng thử lại sau.")
 
 async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -6018,7 +5989,9 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (REFACORTED JSON) Tra cứu hồ sơ doanh nghiệp.
+    (UX MỚI) Tra cứu hồ sơ doanh nghiệp.
+    Free User: Nhận nút WebApp -> Vào App bị chặn.
+    Pro User: Chờ AI tạo hồ sơ -> Nhận nút WebApp -> Xem được.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
@@ -6027,59 +6000,78 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_chat: return
     chat_id = update.effective_chat.id
 
-    # Check Paywall
-    if not await check_pro_access(update, context): return
-
     if not context.args:
-        await reply_md(update, 
-                       "⚠️ Cách dùng: bạn hãy gõ trực tiếp mã 3 chữ cái (VD: HPG, FPT) vào ô chat."
-                        "\nHoặc gõ lệnh: : /info <MÃ> (VD: /info FPT)"
-                       )
+        await reply_md(update, "⚠️ Cách dùng: `/info <MÃ>` (VD: `/info FPT`)")
         return
 
     symbol = context.args[0].strip().upper()
-
-    # ... (Đoạn check 3 ký tự và check price_board giữ nguyên) ...
-    # ... (Log usage & ChatAction giữ nguyên) ...
-
-    cache_key = make_profile_cache_key(symbol)
     
-    # 1. Check Cache
+    # 1. Xác định trạng thái Pro
+    is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+
+    # 2. Chuẩn bị Link
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
+
+    # --- [NHÁNH 1: FREE USER -> GỬI NÚT NGAY] ---
+    if not is_pro:
+        try:
+            await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol} (Free)", ADMIN_ID)
+        except: pass
+
+        kb = [
+            [InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+        ]
+        await reply_md(
+            update,
+            f"🏢 **Hồ Sơ Doanh Nghiệp: {symbol}**\n\n"
+            "Phân tích chi tiết mô hình kinh doanh, vị thế và rủi ro.\n"
+            "👇 Nhấn nút bên dưới để xem.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+    # ---------------------------------------------
+
+    # --- [NHÁNH 2: PRO USER -> CHẠY LOGIC AI] ---
+    
+    await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
+    cache_key = make_profile_cache_key(symbol)
     cached = get_profile_from_redis(cache_key)
+
+    # Check Cache
     if cached:
         text, _, is_error, _ = cached
         if not is_error:
-            # Gửi Web App luôn
-            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-            web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
-            
-            kb = [[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))], [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            kb = [
+                [InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
+                [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+            ]
             await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=InlineKeyboardMarkup(kb))
             return
 
-    # 2. Cache Miss -> Gọi AI
-    await reply_md(update, "🔎 Đang tổng hợp thông tin doanh nghiệp (AI)...")
+    # Cache Miss -> Gọi AI
+    msg_wait = await reply_md(update, f"🔎 Đang tổng hợp thông tin *{symbol}* (AI)...")
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except: pass
 
     try:
-        # Gọi hàm trả về JSON
         json_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
-        
-        # Lưu JSON vào Redis
         save_profile_to_redis(cache_key, json_text, source="on_demand")
         
-        # Gửi Web App
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
+        kb = [
+            [InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+        ]
         
-        kb = [[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))], [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+        try: await context.bot.delete_message(chat_id, msg_wait.message_id)
+        except: pass
+
         await reply_md(update, f"🚀 Đã tạo xong hồ sơ *{symbol}*.", reply_markup=InlineKeyboardMarkup(kb))
 
     except Exception as e:
         log.error(f"Lỗi /info: {e}")
-        # ... (Xử lý lỗi lưu cache error như cũ) ...
         await reply_md(update, "⚠️ Lỗi khi tạo hồ sơ. Vui lòng thử lại sau.")
 
 async def cmd_info_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6167,7 +6159,7 @@ async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not is_pro and chat_id != ADMIN_ID:
         await reply_md(
             update, 
-            "⚠️ Tính năng này chỉ dành cho Gói Pro. Vui lòng liên hệ Admin `https://t.me/KhoiTran99` để nâng cấp. 😏"
+            "⚠️ Tính năng này chỉ dành cho Gói Pro. Vui lòng liên hệ Admin `https://t.me/KhoiTran99` để nâng cấp ạ 🙏."
         )
         return False
     
@@ -6645,15 +6637,32 @@ def view_digest(digest_id):
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
 
 @flask_app.route("/info/<symbol>")
-# Trong alert_bot.py
-
-@flask_app.route("/info/<symbol>")
 def view_profile(symbol: str):
     """
     Route hiển thị WebApp hồ sơ (JSON Mode).
+    ĐÃ VÁ LỖI: Chặn user Free.
     """
     if not symbol:
         return render_template_string(PROFILE_404_TEMPLATE, symbol=""), 404
+
+    # Logic chặn Free User
+    chat_id_str = request.args.get("chat_id")
+    is_pro = False
+    if chat_id_str:
+        try:
+            cid = int(chat_id_str)
+            is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
+        except: pass
+    
+    if not is_pro:
+        # [NỘI DUNG RIÊNG CHO INFO]
+        return render_template_string(
+            LOCKED_FEATURE_TEMPLATE,
+            icon="🏢",
+            title=f"Hồ Sơ Doanh Nghiệp {symbol}",
+            desc="Phân tích chuyên sâu về Mô hình kinh doanh, Lợi thế cạnh tranh (Moat) và Vị thế trong ngành."
+        ), 403
+    # -----------------------------
 
     sym = symbol.upper().strip()
     cache_key = make_profile_cache_key(sym)
@@ -6667,15 +6676,13 @@ def view_profile(symbol: str):
     if is_error:
         return f"<h3>Đang xử lý hoặc lỗi: {text_json}</h3>", 500
 
-    # 1. Parse JSON
     try:
         data = json.loads(text_json)
     except Exception as e:
         log.error(f"Lỗi parse JSON profile: {e}")
         return "Dữ liệu hồ sơ lỗi format.", 500
 
-    # 2. Map JSON keys sang UI Sections (Tiêu đề + Icon)
-    # Cấu trúc: (JSON_Key, Tiêu đề hiển thị, Icon)
+    # Map JSON keys sang UI Sections
     SECTION_MAPPING = [
         ("overview",        "Tổng quan",                "🧭"),
         ("products",        "Sản phẩm & Dịch vụ",       "🏭"),
@@ -6691,22 +6698,13 @@ def view_profile(symbol: str):
     for key, title, icon in SECTION_MAPPING:
         content = data.get(key, "")
         if content:
-            # Tạo ID để làm mục lục (slug)
             sec_id = "sec_" + key
             sections_view.append({
                 "id": sec_id,
                 "title": title,
                 "icon": icon,
-                "body": content # Content này chứa \n, CSS sẽ lo việc xuống dòng
+                "body": content
             })
-
-    # 3. Xử lý các thông tin phụ
-    is_pro = False
-    try:
-        chat_id_param = request.args.get("chat_id")
-        if chat_id_param:
-            is_pro = is_user_pro(int(chat_id_param))
-    except: pass
 
     vn_tz = pytz.timezone(TIMEZONE)
     generated_str = ""
@@ -6718,22 +6716,41 @@ def view_profile(symbol: str):
         generated_str = local_dt.strftime("%H:%M %d/%m/%Y")
         report_code = f"INFO-{sym}-{local_dt.strftime('%Y%m%d')}"
 
-    # 4. Render Template (Dùng lại PROFILE_HTML_TEMPLATE)
     return render_template_string(
         PROFILE_HTML_TEMPLATE,
         symbol=sym,
-        sections=sections_view, # Truyền danh sách đã map
+        sections=sections_view,
         generated_at=generated_str,
         report_code=report_code,
-        is_pro=is_pro,
+        is_pro=is_pro, # Luôn là True nếu chạy tới đây
         is_error=False
     )
 
 @flask_app.route("/report/view/<cache_key>")
 def view_report(cache_key):
     """
-    Route hiển thị Web App Report từ Redis (JSON).
+    Route hiển thị Web App Report.
+    ĐÃ VÁ LỖI: Chặn user Free.
     """
+    # Logic chặn Free User
+    chat_id_str = request.args.get("chat_id")
+    is_pro = False
+    if chat_id_str:
+        try:
+            cid = int(chat_id_str)
+            is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
+        except: pass
+    
+    if not is_pro:
+        # [NỘI DUNG RIÊNG CHO AI REPORT]
+        return render_template_string(
+            LOCKED_FEATURE_TEMPLATE,
+            icon="📊",
+            title="AI Phân Tích Danh Mục",
+            desc="Trí tuệ nhân tạo đánh giá sức khỏe danh mục, cảnh báo rủi ro và nhận định xu hướng thị trường."
+        ), 403
+    # -----------------------------
+
     cached = get_report_from_redis(cache_key)
     
     if not cached:
@@ -6757,12 +6774,11 @@ def view_report(cache_key):
              generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
         time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
 
-    # [THAY ĐỔI Ở ĐÂY]: Thêm is_pro=True
     return render_template_string(
         REPORT_HTML_TEMPLATE, 
         data=data, 
         generated_at=time_str,
-        is_pro=True  # <--- Luôn hiển thị badge Pro cho báo cáo này
+        is_pro=True 
     )
 
 @flask_app.route("/screener")
@@ -6771,27 +6787,26 @@ def view_screener():
     Route hiển thị Web App Screener.
     Query params: ?type=all&chat_id=123
     """
-    # 1. Lấy tham số
     screener_type = request.args.get("type", "all").lower()
-    chat_id_str = request.args.get("chat_id")
-    
-    if screener_type not in ['all', 'pe', 'pb', 'roe']:
-        screener_type = 'all'
 
-    # 2. Check quyền Pro (Optional - nhưng nên có để bảo vệ API)
-    # Vì đây là WebApp public link, việc check chat_id chỉ mang tính tương đối.
+    # Logic chặn Free User
+    chat_id_str = request.args.get("chat_id")
     is_pro = False
     if chat_id_str:
         try:
             cid = int(chat_id_str)
-            # Dùng hàm check DB của bạn
             is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
         except: pass
     
-    # Nếu bạn muốn chặn user Free dùng WebApp này, uncomment dòng dưới:
-    # if not is_pro: return "Tính năng dành cho gói Pro", 403
-
-    # 3. Lấy dữ liệu (Logic giống hệt cmd_screener_value)
+    if not is_pro:
+        # [NỘI DUNG RIÊNG CHO SCREENER]
+        return render_template_string(
+            LOCKED_FEATURE_TEMPLATE,
+            icon="💎",
+            title="Bộ Lọc Giá Trị Realtime",
+            desc="Lọc cổ phiếu định giá rẻ (P/E, P/B) và hiệu quả cao (ROE) ngay trong phiên giao dịch."
+        ), 403
+    
     # A. Check Redis
     cached = load_value_screener_from_redis(screener_type)
     data = None
@@ -6800,17 +6815,13 @@ def view_screener():
         data = cached
     else:
         # B. Gọi API (nếu miss cache)
-        # Lưu ý: Gọi hàm sync run_value_screener_from_api trực tiếp vì Flask chạy trong thread
         try:
-            # run_value_screener_from_api có thể chạy lâu, Flask có thể bị timeout nếu quá 30s
-            # Nhưng thường nó mất ~10s nên ổn.
             data = run_value_screener_from_api(screener_type)
             if data:
                 save_value_screener_to_redis(data, screener_type)
         except Exception as e:
             log.error(f"[WEBAPP SCREENER] Error fetching data: {e}")
 
-    # 4. Render Template
     error_msg = None
     if not data or not data.get("industries"):
         error_msg = f"Không lấy được dữ liệu cho tiêu chí {screener_type.upper()}."
