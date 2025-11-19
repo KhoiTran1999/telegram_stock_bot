@@ -1303,7 +1303,7 @@ LƯU Ý:
     log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON Mode) cho báo cáo: {symbols_str}")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    model_id = "gemini-2.5-flash"
+    model_id = "gemini-2.5-flash-lite"
 
     try:
         resp = client.models.generate_content(
@@ -1358,7 +1358,7 @@ YÊU CẦU NỘI DUNG:
 """
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    model_id = "gemini-2.5-flash"
+    model_id = "gemini-2.5-flash-lite"
 
     try:
         resp = client.models.generate_content(
