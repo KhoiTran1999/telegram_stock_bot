@@ -1465,9 +1465,35 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     
     data = query.data
+
+    # --- XỬ LÝ MENU DASHBOARD ---
+    if data == "menu_list":
+        await cmd_list(update, context)
+    
+    elif data == "menu_add":
+        # Hướng dẫn user cách thêm vì /add cần tham số
+        await query.message.reply_text(
+            "➕ Để thêm mã, bạn hãy gõ trực tiếp mã 3 chữ cái (VD: `HPG`, `FPT`) vào ô chat.\n"
+            "Hoặc gõ lệnh: `/add <MÃ>`",
+            parse_mode="Markdown"
+        )
+    
+    elif data == "menu_screener":
+        # Gọi hàm screener mặc định (hiện menu chọn loại)
+        context.args = [] # Xóa args cũ để nó hiện menu chọn
+        await cmd_screener_value(update, context)
+        
+    elif data == "menu_report":
+        await cmd_report(update, context)
+        
+    elif data == "menu_setting":
+        await cmd_setting(update, context)
+        
+    elif data == "menu_help":
+        await cmd_help(update, context)
     
     # Xử lý nút ADD
-    if data.startswith("btn_add_"):
+    elif data.startswith("btn_add_"):
         symbol = data.split("_")[2]
         
         # Giả lập tham số context.args để tái sử dụng hàm cmd_add
@@ -1485,6 +1511,86 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Gọi hàm cmd_info
         await cmd_info(update, context)
+
+    elif data.startswith("mgr_"):
+        # Khi user bấm vào 1 mã trong danh sách (VD: HPG)
+        symbol = data.split("_")[1]
+        
+        # Hiện submenu cho mã đó (Sửa lại tin nhắn hiện tại thay vì gửi tin mới)
+        kb = [
+            [
+                InlineKeyboardButton("📄 Soi hồ sơ", callback_data=f"btn_info_{symbol}"),
+                InlineKeyboardButton("🗑️ Xóa mã này", callback_data=f"btn_del_{symbol}")
+            ],
+            [InlineKeyboardButton("🔙 Quay lại danh sách", callback_data="back_to_list")]
+        ]
+        
+        await query.edit_message_text(
+            f"⚙️ **Tùy chọn cho {symbol}**:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("btn_del_"):
+        # Xử lý xóa nhanh
+        symbol = data.split("_")[2]
+        # Gọi logic xóa DB (Copy logic từ cmd_remove hoặc viết hàm tách biệt)
+        # Ở đây giả lập gọi cmd_remove bằng cách set args
+        context.args = [symbol]
+        await cmd_remove(update, context) 
+        # (Lưu ý: cmd_remove cần sửa chút để handle update từ callback nếu cần, 
+        # hoặc bạn viết logic xóa thẳng tại đây cho gọn)
+        
+    elif data == "back_to_list":
+        # Gọi lại cmd_list để hiện lại danh sách tổng
+        await cmd_list(update, context)
+        
+    elif data == "close_list":
+        await query.delete_message()
+    
+    elif data == "v30_on":
+        # Gọi logic bật
+        await cmd_vn30f1m_on(update, context)
+        # Sau khi bật xong, cập nhật lại giao diện nút thành "Tắt ngay" (UX cao cấp)
+        # (Bạn có thể gọi lại cmd_vn30f1m_status để refresh cái message đó)
+        
+    elif data == "v30_off":
+        await cmd_vn30f1m_off(update, context)
+
+    elif data.startswith("scr_"):
+        # data dạng: "scr_pe", "scr_roe"...
+        sType = data.split("_")[1] # Lấy phần sau dấu gạch dưới
+        
+        # Giả lập tham số args để tái sử dụng hàm cmd_screener_value
+        context.args = [sType]
+        
+        # Gọi lại hàm xử lý chính
+        await cmd_screener_value(update, context)
+
+    # [MỚI] XỬ LÝ CÀI ĐẶT
+    elif data == "btn_upgrade":
+        # Gọi lệnh upgrade để hiện mã QR
+        await cmd_upgrade(update, context)
+
+    elif data == "set_vn30_on":
+        # Gọi lệnh bật VN30 (Bot sẽ tự check quyền Pro bên trong lệnh này)
+        await cmd_vn30f1m_on(update, context)
+        # Mẹo UX: Sau khi bật xong, bạn có thể tự động gọi lại cmd_setting 
+        # để cập nhật lại giao diện nút thành "Tắt" (nếu muốn)
+    
+    elif data == "set_vn30_off":
+        await cmd_vn30f1m_off(update, context)
+        
+    elif data == "close_setting":
+        # Xóa tin nhắn cài đặt cho gọn màn hình
+        await query.delete_message()
+
+    # [MỚI] XỬ LÝ NÚT TỪ MENU HELP
+    elif data == "back_to_start":
+        # Gọi lại lệnh start để hiện Dashboard
+        await cmd_start(update, context)
+        # Tùy chọn: Xóa tin nhắn Help cũ cho gọn
+        # await query.delete_message()
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
@@ -2354,6 +2460,11 @@ async def alert_loop():
                             f"_{fun_line}_"
                         )
                         
+                        # TẠO NÚT KÈM THEO ALERT
+                        kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("Soi hồ sơ", callback_data=f"btn_info_{sym_u}")]
+                        ])
+
                         messages.append(msg)
                         
                         # 3. Cập nhật mốc mới vào State
@@ -4370,84 +4481,96 @@ def _fetch_price_board_with_fallback(trading, batch_syms, log, INSTANCE_ID):
 # COMMAND HANDLERS
 # ==============================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    if not BOT_ACTIVE:
-        await reply_md(update,"⚙️ Bot đang bảo trì.")
-        return
-    
-    chat_id = update.effective_chat.id
-    
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/start", ADMIN_ID)
-
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
-    if lst is None:
-        # ⭐️ SỬA: Chạy CSDL trong thread
-        await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
-
-    await reply_md(
-    update,
-    "👋 *Chào bạn! Mình là KT StockBot.*\n"
-        "Trợ lý đầu tư chứng khoán thông minh tích hợp AI ngay trên Telegram.\n\n"
-        "🚀 *Tính năng nổi bật:*\n"
-        "• 🔔 *Cảnh báo Realtime:* Báo biến động giá & VN30F1M ngay lập tức.\n"
-        "• 🌅 *Morning Digest:* Bản tin sáng (07:00) tổng hợp tin tức, BCTC & báo cáo phân tích riêng cho danh mục của bạn.\n"
-        "• 🧠 *AI Analysis:* Phân tích danh mục (/report) và hồ sơ doanh nghiệp (/info) bằng AI chuyên sâu.\n"
-        "• 💎 *Value Screener:* Lọc cổ phiếu định giá rẻ (`/screener_value`) theo dữ liệu thực.\n\n"
-        "💡 *Bắt đầu ngay:*\n"
-        "1️⃣ Thêm mã quan tâm: `/add HPG`\n"
-        "2️⃣ Xem danh sách: /list\n"
-        "3️⃣ Tra cứu doanh nghiệp: `/info FPT`\n\n"
-        "Gõ /help để xem toàn bộ lệnh.\n"
-        "Cần hỗ trợ hoặc nâng cấp Pro? Liên hệ admin @KhoiTran99. 🤝"
-)
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Hiển thị danh sách lệnh & tính năng cho người dùng.
-    (Không liệt kê các lệnh admin.)
+    Hiển thị Dashboard chính với các nút bấm tiện lợi.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
+    
+    chat_id = update.effective_chat.id
+    
+    # Log và khởi tạo DB nếu user mới (giữ nguyên logic cũ)
+    try:
+        await asyncio.to_thread(log_command_usage, chat_id, "/start", ADMIN_ID)
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
+        if lst is None:
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
+    except Exception:
+        pass
 
-    if not update or not update.effective_chat:
+    # --- TẠO DASHBOARD MENU ---
+    # Layout:
+    # [ 📋 Danh mục ] [ ➕ Thêm mã ]
+    # [ 💎 Lọc Cổ Phiếu ] [ 📊 AI Report ]
+    # [ ⚙️ Cài đặt / Pro ] [ ❓ Hướng dẫn ]
+    
+    kb = [
+        [
+            InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"),
+            InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")
+        ],
+        [
+            InlineKeyboardButton("💎 Lọc mã cổ phiếu", callback_data="menu_screener"),
+            InlineKeyboardButton("📊 AI Report", callback_data="menu_report")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting"),
+            InlineKeyboardButton("❓ Help", callback_data="menu_help")
+        ]
+    ]
+
+    welcome_msg = (
+        "👋 *Chào mừng bạn đến với KT StockBot!*\n"
+        "Trợ lý đầu tư chứng khoán thông minh tích hợp AI.\n\n"
+        "👇 *Chọn nhanh tính năng bên dưới:*"
+    )
+
+    await reply_md(update, welcome_msg, reply_markup=InlineKeyboardMarkup(kb))
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ (ĐÃ NÂNG CẤP UX) Hướng dẫn sử dụng gọn gàng & Nút điều hướng """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-
-    # Log thống kê lệnh /help
-    await asyncio.to_thread(log_command_usage, chat_id, "/help", ADMIN_ID)
+    try:
+        await asyncio.to_thread(log_command_usage, chat_id, "/help", ADMIN_ID)
+    except: pass
 
     help_text = (
-        "📘 *HƯỚNG DẪN SỬ DỤNG STOCKBOT*\n\n"
-        "📂 *1. QUẢN LÝ DANH MỤC (Cốt lõi)*\n"
-        "• `/add <MÃ>`: Thêm mã vào watchlist (VD: `/add SSI`).\n"
-        "• `/remove <MÃ>`: Xóa mã khỏi watchlist.\n"
-        "• /list: Xem danh sách mã đang theo dõi.\n"
-        "_Danh sách này dùng để nhận cảnh báo giá và bản tin sáng (Digest)._\n\n"
+        "📘 **HƯỚNG DẪN SỬ DỤNG NHANH**\n\n"
+        
+        "1️⃣ **Quản lý Danh mục (Cực nhanh)**\n"
+        "• **Thêm mã:** Chỉ cần gõ mã 3 chữ cái (VD: `HPG`, `FPT`) vào chat -> Bot sẽ hiện nút thêm.\n"
+        "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]** trên Dashboard (/start).\n\n"
 
-        "🧠 *2. PHÂN TÍCH & DỮ LIỆU (AI)*\n"
-        "• `/info <MÃ>`: Xem hồ sơ doanh nghiệp, lợi thế cạnh tranh & rủi ro (AI).\n"
-        "• /report: Yêu cầu AI phân tích, đánh giá sức khỏe danh mục hiện tại của bạn.\n"
-        "_Nếu bạn không chạy lệnh này, bot vẫn tự gửi báo cáo tuần vào sáng Chủ Nhật._\n\n"
+        "2️⃣ **Phân tích & Dữ liệu AI**\n"
+        "• 📊 `/report`: AI phân tích sức khỏe toàn bộ danh mục.\n"
+        "• 📄 `/info <MÃ>`: Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n\n"
 
-        "💎 *3. CÔNG CỤ PRO & SCREENER*\n"
-        "• `/screener_value <loại>`: Lọc cổ phiếu giá trị.\n"
-        "   Các loại: `all` (tổng hợp), `pe` (P/E thấp), `pb` (P/B thấp), `roe` (ROE cao).\n"
-        "   VD: `/screener_value roe`\n"
-        "• `/vn30f1m_on` / `/vn30f1m_off`: Bật/tắt cảnh báo phái sinh (biến động ±5 điểm).\n\n"
+        "3️⃣ **Công cụ Pro**\n"
+        "• 💎 `/screener_value`: Lọc cổ phiếu giá trị (Realtime).\n"
+        "• 📉 `/vn30f1m_on`: Bật cảnh báo phái sinh (biến động ±5 điểm).\n\n"
 
-        "⚙️ *4. HỆ THỐNG*\n"
-        "• /setting: Xem trạng thái tài khoản (Free/Pro) và ngày hết hạn.\n"
-        "• /upgrade: Lấy mã QR để nâng cấp lên gói Pro.\n"
-        "• /start: Giới thiệu lại từ đầu.\n\n"
-        "💡 *Mẹo:* Bot sẽ tự động gửi *Bản tin sáng (Digest)* lúc 07:00 mỗi ngày, tổng hợp mọi tin tức, BCTC và báo cáo mới nhất liên quan đến danh mục của bạn."
+        "4️⃣ **Hệ thống**\n"
+        "• `/setting`: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
+        "• `/start`: Mở lại Bảng điều khiển chính (Dashboard)."
     )
 
-    await reply_md(update, help_text)
+    # Tạo bàn phím điều hướng
+    kb = [
+        [
+            InlineKeyboardButton("🏠 Mở Dashboard", callback_data="back_to_start"),
+            InlineKeyboardButton("💎 Nâng cấp Pro", callback_data="btn_upgrade")
+        ],
+        [
+            InlineKeyboardButton("💬 Liên hệ Admin", url="https://t.me/KhoiTran99")
+        ]
+    ]
 
+    await reply_md(update, help_text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
@@ -4516,23 +4639,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_vn30f1m_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    mp = get_vn30f1m_enabled_map()
+    # Lấy trạng thái hiện tại (giả sử bạn có hàm helper này)
+    mp = await asyncio.to_thread(get_vn30f1m_enabled_map) 
     enabled = bool(mp.get(chat_id, False))
-    lines = [
-        f"Trạng thái VN30F1M của bạn: *{'Đang bật' if enabled else 'Đang tắt'}*",
-        "Ngưỡng: *±5 điểm* · Chu kỳ: *15s* · Mốc: *Di động*",
-    ]
-    if not BOT_ACTIVE:
-        lines.append("_Lưu ý: Hệ thống đang tắt bởi admin (BOT_ACTIVE=False)._")
-    lines.append("Bật: `/vn30f1m_on` · Tắt: `/vn30f1m_off`")
-    await reply_md(update, "\n".join(lines))
-
-# (Hãy chắc chắn rằng bạn đã import 'is_user_pro' từ db_utils.py ở đầu file)
-# from db_utils import (
-#     ...
-#     is_user_pro,
-#     ...
-# )
+    
+    status_text = "🟢 ĐANG BẬT" if enabled else "🔴 ĐANG TẮT"
+    
+    # Tạo nút đảo ngược trạng thái
+    btn_text = "🔴 Tắt ngay" if enabled else "🟢 Bật ngay"
+    callback_action = "v30_off" if enabled else "v30_on"
+    
+    kb = [[InlineKeyboardButton(btn_text, callback_data=callback_action)]]
+    
+    await reply_md(
+        update, 
+        f"📉 **Trạng thái Phái sinh VN30F1M**\nHiện tại: {status_text}",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 async def cmd_vn30f1m_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -4805,52 +4928,58 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    if not BOT_ACTIVE:
-        await reply_md(update,"⚙️ Bot đang bảo trì.")
-        return
-    
-    await reply_md(update, f"🔎 vui lòng đợi...")
-
-    chat_id = update.effective_chat.id
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/list", ADMIN_ID)
-
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-
-    if not lst:
-        await reply_md(update,
-            "📭 Danh sách theo dõi hiện đang trống.\n"
-            "Bạn có thể dùng lệnh /add <MÃ> để thêm cổ phiếu vào danh sách.",
-        )
-        return
-
-    symbols_text = ", ".join(lst)
-    msg = (
-        "📋 *Danh sách mã bạn đang theo dõi:*\n"
-        f"{symbols_text}\n\n"
-        "Bạn có thể dùng /remove <MÃ> để xoá một mã khỏi danh sách."
-    )
-    await reply_md(update, msg)
-
-async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ CẬP NHẬT) Xem trạng thái tài khoản & Cài đặt """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
+    # Lấy danh sách từ DB
+    lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
 
+    if not lst:
+        await reply_md(update, "📭 Danh mục trống. Dùng `/add <MÃ>` để thêm.")
+        return
+
+    # --- TẠO BÀN PHÍM TỪ DANH SÁCH ---
+    # Mỗi hàng 3 mã
+    keyboard = []
+    row = []
+    for sym in lst:
+        # callback_data dạng: "mgr_HPG" (Manager - HPG)
+        row.append(InlineKeyboardButton(f"{sym}", callback_data=f"mgr_{sym}"))
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    # Thêm nút đóng
+    keyboard.append([InlineKeyboardButton("❌ Đóng danh sách", callback_data="close_list")])
+
+    await reply_md(
+        update, 
+        "📋 **Quản lý danh mục**\nBấm vào mã để xem tùy chọn:", 
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ (ĐÃ CẬP NHẬT UX) Xem trạng thái & Cài đặt bằng nút bấm """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+    
+    # Log command (dùng try-except cho an toàn)
     try:
+        await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except: pass
 
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
 
-    # Lấy dữ liệu song song
+    # --- 1. LẤY DỮ LIỆU SONG SONG ---
     try:
         results = await asyncio.gather(
             asyncio.to_thread(get_user_pro_expiry, chat_id),
@@ -4868,10 +4997,10 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, "⚠️ Lỗi lấy dữ liệu cài đặt.")
         return
 
-    # Build nội dung
+    # --- 2. BUILD NỘI DUNG TEXT ---
     lines = ["⚙️ *CÀI ĐẶT & TRẠNG THÁI TÀI KHOẢN* ⚙️\n"]
 
-    # 1. Trạng thái Pro
+    # Trạng thái Pro
     is_pro = False
     if chat_id == ADMIN_ID:
         lines.append("👤 *Gói cước:* 😎 *ADMIN* (Full quyền)")
@@ -4883,27 +5012,41 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"⏳ *Hết hạn:* {exp_str}")
     else:
         lines.append("👤 *Gói cước:* 🆓 *FREE*")
-        lines.append("Giới hạn: 1 mã theo dõi, không có AI Report & Screener.")
-        lines.append("👉 Nhấn /upgrade để nâng cấp ngay!")
+        lines.append("_Giới hạn: 1 mã theo dõi, không có AI Report & Screener._")
 
-    # 2. Morning Digest
+    # Morning Digest
     lines.append("\n📰 *Bản tin sáng (Digest)*")
     lines.append("✅ Trạng thái: *TỰ ĐỘNG (07:00)*")
-    lines.append("_Tự động tổng hợp Tin tức, BCTC, Báo cáo phân tích theo danh mục của bạn._")
 
-    # 3. Phái sinh
+    # Phái sinh
     lines.append("\n📈 *Cảnh báo VN30F1M*")
     if vn30f1m_enabled:
         lines.append("✅ Trạng thái: *ĐANG BẬT*")
-        lines.append("(Gõ `/vn30f1m_off` để tắt)")
     else:
         lines.append("❌ Trạng thái: *ĐANG TẮT*")
-        if is_pro:
-            lines.append("(Gõ `/vn30f1m_on` để bật)")
-        else:
-            lines.append("_(Tính năng dành riêng cho gói Pro)_")
 
-    await reply_md(update, "\n".join(lines))
+    # --- 3. TẠO BÀN PHÍM ĐIỀU KHIỂN ---
+    
+    # Logic nút VN30: Nếu đang Bật thì hiện nút Tắt, và ngược lại
+    if vn30f1m_enabled:
+        vn30_btn_text = "🔴 Tắt VN30F1M"
+        vn30_callback = "set_vn30_off"
+    else:
+        vn30_btn_text = "🟢 Bật VN30F1M"
+        vn30_callback = "set_vn30_on"
+
+    kb = [
+        # Hàng 1: Nâng cấp (Luôn hiện, vì Pro cũng cần gia hạn)
+        [InlineKeyboardButton("💎 Nâng cấp / Gia hạn Pro", callback_data="btn_upgrade")],
+        
+        # Hàng 2: Bật/Tắt VN30
+        [InlineKeyboardButton(vn30_btn_text, callback_data=vn30_callback)],
+        
+        # Hàng 3: Đóng
+        [InlineKeyboardButton("❌ Đóng", callback_data="close_setting")]
+    ]
+
+    await reply_md(update, "\n".join(lines), reply_markup=InlineKeyboardMarkup(kb))
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -5135,102 +5278,85 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, part)
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id if update.effective_chat else None
-    log_id = str(uuid.uuid4())[:8]
+    """
+    Lọc cổ phiếu giá trị.
+    Nếu không có tham số -> Hiện menu chọn.
+    Nếu có tham số (VD: 'pe') -> Thực hiện lọc.
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
     
     # === 1. XÁC ĐỊNH LOẠI SCREENER ===
     screener_type = ""
     if context.args:
         screener_type = context.args[0].strip().lower()
 
-    # Thống nhất 3: Gõ /screener_value (không có gì) -> Hiện hướng dẫn
+    # [THAY ĐỔI QUAN TRỌNG]: Nếu chưa chọn loại -> Hiện nút bấm
     if not screener_type:
+        kb = [
+            [
+                InlineKeyboardButton("📊 Tổng hợp (All)", callback_data="scr_all"),
+                InlineKeyboardButton("💰 ROE Cao", callback_data="scr_roe")
+            ],
+            [
+                InlineKeyboardButton("📉 P/E Thấp", callback_data="scr_pe"),
+                InlineKeyboardButton("📉 P/B Thấp", callback_data="scr_pb")
+            ]
+        ]
+        
         await reply_md(
             update,
-            (
-                "⚠️ Vui lòng chọn loại screener.\n"
-                "Cách dùng: `/screener_value <loại>`\n\n"
-                "Trong đó `<loại>` là một trong các từ khóa:\n"
-                "• `all`: Báo cáo tổng hợp (theo `value_score`).\n"
-                "• `pe`: Lọc theo P/E (thấp nhất).\n"
-                "• `pb`: Lọc theo P/B (thấp nhất).\n"
-                "• `roe`: Lọc theo ROE (cao nhất)."
-            )
+            "🔍 **Bộ lọc Cổ phiếu Giá trị (Realtime)**\n\n"
+            "Dữ liệu được lọc trực tiếp từ thị trường. Vui lòng chọn tiêu chí:",
+            reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
-    # Nếu gõ từ khóa lạ, cũng coi như lỗi
-    if screener_type not in ['all', 'pe', 'pb', 'roe']:
-        await reply_md(
-            update,
-            (
-                f"⚠️ Loại screener `{screener_type}` không hợp lệ.\n"
-                "Vui lòng chỉ dùng một trong các từ khóa: `all`, `pe`, `pb`, `roe`."
-            )
-        )
-        return
-
-    log_prefix = f"[{log_id}][/screener_value {screener_type}]"
-
-    # ===============================================
-    # 💎 CHECK PAYWALL (Giữ nguyên)
-    # ===============================================
-    if not await check_pro_access(update, context):
-        return
-    # -----------------------
+    # === 2. XỬ LÝ KHI ĐÃ CHỌN LOẠI ===
     
-    # Log command (đã có screener_type)
+    # Kiểm tra từ khóa hợp lệ
+    if screener_type not in ['all', 'pe', 'pb', 'roe']:
+        await reply_md(update, "⚠️ Loại không hợp lệ. Vui lòng chọn từ menu.")
+        return
+
+    # Log command
     await asyncio.to_thread(log_command_usage, chat_id, f"/screener_value {screener_type}", ADMIN_ID)
 
-    # === 2. KIỂM TRA CACHE (THEO LOẠI) ===
-    # Hàm load_value_screener_from_redis mới sẽ nhận screener_type
-    cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
+    # 💎 CHECK PAYWALL (Giữ nguyên logic cũ của bạn)
+    if not await check_pro_access(update, context):
+        return
     
+    # Gửi action Typing để user biết bot đang chạy
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except: pass
+
+    # --- CÁC BƯỚC LẤY DỮ LIỆU (GIỮ NGUYÊN LOGIC CŨ) ---
+    
+    # A. Kiểm tra Cache Redis
+    cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
     if cached is not None:
-        log.info("%s Dùng data cached (loại: %s).", log_prefix, screener_type)
-        # Hàm format mới sẽ tự nhận diện loại báo cáo
         text = await asyncio.to_thread(format_screener_report_text, cached)
         await reply_md(update, text)
         return
     
-    try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass
-
-    # === 3. CACHE MISS -> GỌI API MỚI (THEO LOẠI) ===
-    try:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except:
-        pass
+    # B. Cache Miss -> Gọi API + Tính toán
+    await reply_md(update, f"⏳ Đang quét toàn thị trường theo tiêu chí **{screener_type.upper()}**... (mất ~10s)")
     
-    # Gửi thông báo chờ
-    await reply_md(
-        update,
-        f"🔎 Đang lọc screener loại *{screener_type.upper()}* lần đầu trong ngày...\n"
-        "Việc này có thể mất 10-15 giây, vui lòng đợi."
-    )
-
-    # Hàm run_value_screener_from_api mới sẽ nhận screener_type
     result = await asyncio.to_thread(run_value_screener_from_api, screener_type)
 
     if not result or not result.get("industries"):
-        msg = (
-            f"⚠️ *Không tìm thấy mã nào thỏa tiêu chí (loại: {screener_type.upper()})*.\n"
-            "_Có thể do dữ liệu API thiếu, hoặc tất cả cổ phiếu đều vi phạm "
-            "lọc cơ sở (ví dụ: PE/PB/ROE âm, thanh khoản thấp...)."
-        )
-        await reply_md(update, msg)
+        await reply_md(update, f"⚠️ Không tìm thấy mã nào thỏa tiêu chí {screener_type.upper()}.")
         return
 
-    # === 4. LƯU CACHE (THEO LOẠI) ===
-    # Hàm save mới sẽ nhận screener_type
+    # C. Lưu Cache & Trả kết quả
     await asyncio.to_thread(save_value_screener_to_redis, result, screener_type)
-
-    # === 5. TRẢ KẾT QUẢ ===
     text = await asyncio.to_thread(format_screener_report_text, result)
+    
+    # Gửi kết quả cuối cùng
     await reply_md(update, text)
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5865,7 +5991,10 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_pro_access(update, context): return
 
     if not context.args:
-        await reply_md(update, "⚠️ Cách dùng: `/info <MÃ>` (VD: `/info FPT`)")
+        await reply_md(update, 
+                       "⚠️ Cách dùng: bạn hãy gõ trực tiếp mã 3 chữ cái (VD: HPG, FPT) vào ô chat."
+                        "\nHoặc gõ lệnh: : /info <MÃ> (VD: /info FPT)"
+                       )
         return
 
     symbol = context.args[0].strip().upper()
@@ -6786,19 +6915,17 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
     try:
         # Tác vụ 1: Đăng ký lệnh bot (network call) - Thêm (admin) để phân loại commands của users và admin
         commands = [
-            ("help", "Danh sách lệnh & tính năng"),
-            ("setting", "Xem cài đặt cá nhân & trạng thái Pro"),
-            ("upgrade", "Mua gói tài khoản Pro"),
-            ("add", "Thêm mã cổ phiếu vào danh sách theo dõi"),
-            ("remove", "Xóa mã cổ phiếu khỏi danh sách"),
-            ("list", "Xem danh sách cổ phiếu bạn đang theo dõi"),
-            ("report", "Phân tích danh mục bằng AI"),
-            ("info", "Tra cứu thông tin doanh nghiệp"),
-            ("screener_value", "Lọc cổ phiếu value theo dữ liệu thực"),
-            ("vn30f1m_off", "Tắt nhận cập nhật VN30F1M"),
-            ("vn30f1m_on", "Bật nhận cập nhật VN30F1M"),
-            ("start", "Giới thiệu bot và hướng dẫn sử dụng"),
-            ("vn30f1m_status", "Xem trạng thái nhận cập nhật VN30F1M"),
+            # --- CÁC LỆNH CỐT LÕI ---
+            ("start", "🏠 Mở Dashboard chính"),
+            ("list", "📋 Xem danh mục theo dõi"),
+            ("add", "➕ Thêm mã (VD: /add HPG)"),
+            ("report", "📊 Phân tích danh mục AI"),
+            
+            # --- CÔNG CỤ ---
+            ("screener_value", "💎 Bộ lọc cổ phiếu giá trị"),
+            ("info", "📄 Tra cứu doanh nghiệp"),
+            ("setting", "⚙️ Cài đặt & Gói Pro"),
+            ("help", "❓ Hướng dẫn sử dụng"),
             ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
             ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
             ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
