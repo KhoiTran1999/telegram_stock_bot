@@ -3736,8 +3736,22 @@ async def daily_user_digest_loop():
                 for cid in chat_ids_impacted:
                     if cid in pro_chat_ids or cid == ADMIN_ID:
                         for (title, link, pub_at) in reports_list:
+                            
+                            # 1. Xử lý hiển thị thời gian (Thêm phần này)
+                            time_str = ""
+                            if pub_at:
+                                # Đảm bảo có timezone (phòng trường hợp datetime naive)
+                                if getattr(pub_at, 'tzinfo', None) is None:
+                                    pub_at = pub_at.replace(tzinfo=datetime.timezone.utc)
+                                # Chuyển về giờ Việt Nam và format
+                                time_str = pub_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+
+                            # 2. Thêm trường "time" vào payload
                             _get_payload(cid)["reports"].append({
-                                "symbol": sym, "title": title, "link": link
+                                "symbol": sym, 
+                                "title": title, 
+                                "link": link,
+                                "time": time_str  # <--- Đã thêm thời gian vào đây
                             })
 
         # --- D. Tin Chuyên Ngành (All) ---
