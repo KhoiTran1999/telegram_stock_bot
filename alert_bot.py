@@ -4348,28 +4348,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await reply_md(
     update,
-    "🎯 *Chào mừng bạn đến với KT StockBot* - trợ lý chứng khoán ngay trong Telegram! 🤖📈\n\n"
-        "*Bot giúp bạn làm gì?*\n"
-        "• Theo dõi danh sách cổ phiếu bạn quan tâm\n"
-        "• Nhận cảnh báo giá trong giờ giao dịch\n"
-        "• Nhận tổng kết cuối phiên và tin tức liên quan đến danh mục\n"
-        "• *Với gói Pro:* có thêm báo cáo AI, tổng hợp top cổ phiếu ngành và cảnh báo VN30F1M và quét báo cáo phân tích mới (07:00)\n\n"
-        "*Bắt đầu trong 3 bước đơn giản:*\n"
-        "1. Thêm mã bạn đang theo dõi bằng lệnh `/add <MÃ>`\n"
-        "2. Dùng /list để xem lại danh sách hiện tại\n"
-        "3. Giữ Telegram, bot sẽ tự gửi cảnh báo và tổng kết cho bạn\n\n"
-        "*Một vài lệnh nên thử ngay:*\n"
-        "• `/add <MÃ>` - Thêm mã vào danh sách\n"
-        "• `/remove <MÃ>` - Xoá mã khỏi danh sách\n"
-        "• /list - Xem các mã đang theo dõi\n"
-        "• `/news_on`/`/news_off` - Bật tắt nhận tin tức theo danh mục\n"
-        "• /report - Xin báo cáo phân tích danh mục (PRO)\n"
-        "• `/info <MÃ>` - Tra cứu hồ sơ chi tiết doanh nghiệp (PRO)\n"
-        "• `/screener_value` - Xem danh sách cổ phiếu giá trị trong ngày (PRO)\n"
-        "• `/vn30f1m_on` - `/vn30f1m_off` - Bật tắt cảnh báo chỉ số VN30F1M (PRO)\n"
-        "• /help - Xem đầy đủ tính năng và toàn bộ lệnh\n\n"
-        "😎 Có vấn đề gì thì liên hệ với admin @KhoiTran99 nhé.\n"
-        "Chúc bạn đầu tư hiệu quả cùng KT StockBot! 🚀"
+    "👋 *Chào bạn! Mình là KT StockBot.*\n"
+        "Trợ lý đầu tư chứng khoán thông minh tích hợp AI ngay trên Telegram.\n\n"
+        "🚀 *Tính năng nổi bật:*\n"
+        "• 🔔 *Cảnh báo Realtime:* Báo biến động giá & VN30F1M ngay lập tức.\n"
+        "• 🌅 *Morning Digest:* Bản tin sáng (07:00) tổng hợp tin tức, BCTC & báo cáo phân tích riêng cho danh mục của bạn.\n"
+        "• 🧠 *AI Analysis:* Phân tích danh mục (/report) và hồ sơ doanh nghiệp (/info) bằng AI chuyên sâu.\n"
+        "• 💎 *Value Screener:* Lọc cổ phiếu định giá rẻ (`/screener_value`) theo dữ liệu thực.\n\n"
+        "💡 *Bắt đầu ngay:*\n"
+        "1️⃣ Thêm mã quan tâm: `/add HPG`\n"
+        "2️⃣ Xem danh sách: /list\n"
+        "3️⃣ Tra cứu doanh nghiệp: `/info FPT`\n\n"
+        "Gõ /help để xem toàn bộ lệnh.\n"
+        "Cần hỗ trợ hoặc nâng cấp Pro? Liên hệ admin @KhoiTran99. 🤝"
 )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4391,57 +4382,28 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     help_text = (
         "📘 *HƯỚNG DẪN SỬ DỤNG STOCKBOT*\n\n"
-        "StockBot là *trợ lý chứng khoán realtime* – tập trung vào chiến lược đầu tư tăng trưởng, "
-        "theo dõi danh mục, tin tức và phân tích doanh nghiệp cho nhà đầu tư cá nhân.\n\n"
+        "📂 *1. QUẢN LÝ DANH MỤC (Cốt lõi)*\n"
+        "• `/add <MÃ>`: Thêm mã vào watchlist (VD: `/add SSI`).\n"
+        "• `/remove <MÃ>`: Xóa mã khỏi watchlist.\n"
+        "• /list: Xem danh sách mã đang theo dõi.\n"
+        "_Danh sách này dùng để nhận cảnh báo giá và bản tin sáng (Digest)._\n\n"
 
-        "────────────────────\n"
-        "📂 *1. QUẢN LÝ DANH MỤC THEO DÕI*\n"
-        "• `/add <MÃ>` – Thêm cổ phiếu vào danh sách theo dõi\n"
-        "• `/remove <MÃ>` – Xóa mã khỏi danh sách\n"
-        "• `/list` – Xem toàn bộ danh sách đang theo dõi\n\n"
-        "Danh sách này được dùng cho:\n"
-        "• Cảnh báo giá realtime\n"
-        "• Lọc tin tức chuyên ngành theo danh mục\n"
-        "• Báo cáo phân tích danh mục bằng AI\n\n"
+        "🧠 *2. PHÂN TÍCH & DỮ LIỆU (AI)*\n"
+        "• `/info <MÃ>`: Xem hồ sơ doanh nghiệp, lợi thế cạnh tranh & rủi ro (AI).\n"
+        "• /report: Yêu cầu AI phân tích, đánh giá sức khỏe danh mục hiện tại của bạn.\n"
+        "_Nếu bạn không chạy lệnh này, bot vẫn tự gửi báo cáo tuần vào sáng Chủ Nhật._\n\n"
 
-        "────────────────────\n"
-        "⏰ *2. CẢNH BÁO GIÁ REALTIME*\n"
-        "• Bot tự động quét giá trong giờ giao dịch (T2–T6)\n"
-        "• Khi giá biến động qua các mốc quan trọng, bot sẽ gửi cảnh báo\n"
-        "• Không cần gõ lệnh – chỉ cần thêm mã bằng `/add`\n\n"
+        "💎 *3. CÔNG CỤ PRO & SCREENER*\n"
+        "• `/screener_value <loại>`: Lọc cổ phiếu giá trị.\n"
+        "   Các loại: `all` (tổng hợp), `pe` (P/E thấp), `pb` (P/B thấp), `roe` (ROE cao).\n"
+        "   VD: `/screener_value roe`\n"
+        "• `/vn30f1m_on` / `/vn30f1m_off`: Bật/tắt cảnh báo phái sinh (biến động ±5 điểm).\n\n"
 
-        "────────────────────\n"
-        "ℹ️ *3. TRA CỨU THÔNG TIN DOANH NGHIỆP*\n"
-        "• `/info <MÃ>` – Xem hồ sơ tóm tắt doanh nghiệp (ngành, quy mô, điểm nhanh)\n\n"
-
-        "────────────────────\n"
-        "📊 *4. BÁO CÁO DANH MỤC (PRO)*\n"
-        "• `/report` – Tạo báo cáo phân tích danh mục bằng AI\n"
-        "• Nhận báo cáo tuần tự động nếu đến cuối tuần bạn chưa chạy `/report`\n\n"
-
-        "────────────────────\n"
-        "💎 *5. SCREENER GIÁ TRỊ (PRO)*\n"
-        "• `/screener_value <loại>` – Lọc cổ phiếu theo tiêu chí value\n"
-        "   `<loại>`: `all`, `pe`, `pb`, hoặc `roe`.\n\n"
-
-        "────────────────────\n"
-        "📰 *6. TIN TỨC THEO DANH MỤC (DIGEST)*\n"
-        "• Bot quét tin vĩ mô & tin chuyên ngành cả ngày\n"
-        "• Tin được lọc theo các mã bạn đang theo dõi\n"
-        "• *Không còn bắn lẻ từng tin* – thay vào đó bot gửi *Bản tin 7:00 sáng* "
-        "tổng hợp tin vĩ mô, chuyên ngành, BCTC và báo cáo phân tích nổi bật.\n\n"
-
-        "────────────────────\n"
-        "📈 *7. CẢNH BÁO VN30F1M (PRO)*\n"
-        "• Bot theo dõi VN30F1M realtime và cảnh báo khi biến động ±5 điểm\n"
-        "• `/vn30f1m_on` – Bật cảnh báo phái sinh\n"
-        "• `/vn30f1m_off` – Tắt\n"
-        "• `/vn30f1m_status` – Xem trạng thái\n\n"
-
-        "────────────────────\n"
-        "⚙️ *8. TIỆN ÍCH KHÁC*\n"
-        "• `/start` – Giới thiệu bot & hướng dẫn nhanh\n"
-        "• `/setting` – Xem cài đặt cá nhân (Pro, VN30F1M, digest…)\n"
+        "⚙️ *4. HỆ THỐNG*\n"
+        "• /setting: Xem trạng thái tài khoản (Free/Pro) và ngày hết hạn.\n"
+        "• /upgrade: Lấy mã QR để nâng cấp lên gói Pro.\n"
+        "• /start: Giới thiệu lại từ đầu.\n\n"
+        "💡 *Mẹo:* Bot sẽ tự động gửi *Bản tin sáng (Digest)* lúc 07:00 mỗi ngày, tổng hợp mọi tin tức, BCTC và báo cáo mới nhất liên quan đến danh mục của bạn."
     )
 
     await reply_md(update, help_text)
@@ -4833,102 +4795,75 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_md(update, msg)
 
 async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Hiển thị bảng cài đặt cá nhân:
-    - Trạng thái Pro
-    - Tin tức (digest 7:00 – luôn bật)
-    - Cảnh báo VN30F1M
-    """
+    """ (ĐÃ CẬP NHẬT) Xem trạng thái tài khoản & Cài đặt """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
-
-    if not update or not update.effective_chat:
         return
 
     chat_id = update.effective_chat.id
     await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
 
-    # Gửi hiệu ứng "đang gõ" cho đẹp
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id,
-            action=ChatAction.TYPING,
-        )
-    except Exception:
-        pass
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except: pass
 
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
 
-    # --- Lấy dữ liệu song song ---
+    # Lấy dữ liệu song song
     try:
-        tasks = [
+        results = await asyncio.gather(
             asyncio.to_thread(get_user_pro_expiry, chat_id),
             asyncio.to_thread(get_vn30f1m_enabled_map),
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        if any(isinstance(r, Exception) for r in results):
-            raise Exception(f"Lỗi khi gather: {results}")
-
-        expiry_date: datetime.datetime | None = results[0]
-        vn30f1m_map: dict[int, bool] = results[1] or {}
-
+            return_exceptions=True
+        )
+        
+        expiry_date = results[0] if not isinstance(results[0], Exception) else None
+        vn30f1m_map = results[1] if not isinstance(results[1], Exception) else {}
+        
         vn30f1m_enabled = bool(vn30f1m_map.get(chat_id, False))
 
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] Lỗi khi lấy settings cho {chat_id}: {e}")
-        await reply_md(update, "⚠️ Lỗi khi lấy dữ liệu cài đặt. Vui lòng thử lại sau.")
+        log.error(f"Setting error: {e}")
+        await reply_md(update, "⚠️ Lỗi lấy dữ liệu cài đặt.")
         return
 
-    lines: list[str] = []
-    lines.append("⚙️ *Cài đặt cá nhân của bạn* ⚙️")
+    # Build nội dung
+    lines = ["⚙️ *CÀI ĐẶT & TRẠNG THÁI TÀI KHOẢN* ⚙️\n"]
 
-    # === 1. Tài khoản / Pro ===
-    lines.append("\n👤 *Tài khoản*")
-    is_pro_active = False
-
+    # 1. Trạng thái Pro
+    is_pro = False
     if chat_id == ADMIN_ID:
-        lines.append("Trạng thái: 😎 *Admin* (Full tính năng)")
-        is_pro_active = True
+        lines.append("👤 *Gói cước:* 😎 *ADMIN* (Full quyền)")
+        is_pro = True
     elif expiry_date and expiry_date.astimezone(vn_tz) > now:
-        is_pro_active = True
-        exp_str = expiry_date.astimezone(vn_tz).strftime("%d/%m/%Y %H:%M")
-        lines.append("Trạng thái: 👑 *Pro*")
-        lines.append(f"Ngày hết hạn: *{exp_str}*")
-    elif expiry_date and expiry_date.astimezone(vn_tz) <= now:
-        lines.append("Trạng thái: 🆓 *Pro (Đã hết hạn)*")
-        lines.append("\n*Gia hạn:* Liên hệ Admin `@KhoiTran99` để gia hạn.")
+        is_pro = True
+        exp_str = expiry_date.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
+        lines.append(f"👤 *Gói cước:* 👑 *PRO*")
+        lines.append(f"⏳ *Hết hạn:* {exp_str}")
     else:
-        lines.append("Trạng thái: 🆓 *Miễn phí*")
-        lines.append("\n*Nâng cấp:* Liên hệ Admin @KhoiTran99 để lên gói Pro không giới hạn tính năng.")
+        lines.append("👤 *Gói cước:* 🆓 *FREE*")
+        lines.append("Giới hạn: 1 mã theo dõi, không có AI Report & Screener.")
+        lines.append("👉 Nhấn /upgrade để nâng cấp ngay!")
 
-    # === 2. Tin tức ===
-    lines.append("\n📰 *Tin tức (Vĩ mô & Chuyên ngành)*")
-    lines.append("Chế độ: *Digest buổi sáng 7:00*")
-    lines.append(
-        "_Bot tự động quét tin vĩ mô & chuyên ngành, BCTC và báo cáo phân tích "
-        "liên quan tới danh mục của bạn, rồi gộp vào bản tin gửi lúc 07:00 sáng mỗi ngày._"
-    )
-    lines.append(
-        "_Hiện tại không còn bật/tắt nhận tin thủ công bằng `/news_on` hoặc `/news_off` nữa._"
-    )
+    # 2. Morning Digest
+    lines.append("\n📰 *Bản tin sáng (Digest)*")
+    lines.append("✅ Trạng thái: *TỰ ĐỘNG (07:00)*")
+    lines.append("_Tự động tổng hợp Tin tức, BCTC, Báo cáo phân tích theo danh mục của bạn._")
 
-    # === 3. VN30F1M ===
-    lines.append("\n📈 *Cảnh báo VN30F1M (Pro)*")
+    # 3. Phái sinh
+    lines.append("\n📈 *Cảnh báo VN30F1M*")
     if vn30f1m_enabled:
-        lines.append("Trạng thái: *Bật*")
-        lines.append("(Dùng `/vn30f1m_off` để tắt)")
+        lines.append("✅ Trạng thái: *ĐANG BẬT*")
+        lines.append("(Gõ `/vn30f1m_off` để tắt)")
     else:
-        lines.append("Trạng thái: *Tắt*")
-        if is_pro_active:
-            lines.append("(Dùng `/vn30f1m_on` để bật)")
+        lines.append("❌ Trạng thái: *ĐANG TẮT*")
+        if is_pro:
+            lines.append("(Gõ `/vn30f1m_on` để bật)")
         else:
-            lines.append("(Tính năng này yêu cầu gói Pro để bật)")
+            lines.append("_(Tính năng dành riêng cho gói Pro)_")
 
     await reply_md(update, "\n".join(lines))
-
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -6051,7 +5986,7 @@ async def cmd_admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"🚀 Chúc mừng! Tài khoản của bạn đã được nâng cấp lên Gói Pro, có hiệu lực trong {days_to_add} ngày."
         )
     except Exception as e:
-        await reply_md(update, f"Lỗi: {e}. Cú pháp: /admin_add_user <chat_id> <số_ngày>")
+        await reply_md(update, f"Lỗi: {e}. Cú pháp: `/admin_add_user <chat_id> <số_ngày>`")
 
 async def cmd_admin_deactivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Admin) Ngưng hoạt động Gói Pro của user ngay lập tức."""
