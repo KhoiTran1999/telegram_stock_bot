@@ -12,11 +12,6 @@ import logging
 import tempfile
 from dotenv import load_dotenv
 load_dotenv(override=True)
-from telegram import (
-    Update, WebAppInfo, 
-    InlineKeyboardButton, 
-    InlineKeyboardMarkup
-)
 from digest_template import (
     DIGEST_HTML_TEMPLATE,
     DIGEST_404_TEMPLATE,
@@ -29,6 +24,9 @@ from telegram import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
+    Update, WebAppInfo, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup
 )
 from telegram.constants import ChatAction
 import telegram
@@ -38,6 +36,7 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    CallbackQueryHandler
 )
 from flask import Flask, request, jsonify, render_template_string
 from hypercorn.asyncio import serve
@@ -1408,44 +1407,84 @@ def seconds_until_next_weekly_report():
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Phản hồi khi người dùng gõ văn bản tự do hoặc lệnh không tồn tại.
-    (Đã gộp logic của _collector vào đây)
-    (ĐÃ SỬA LỖI BLOCKING I/O)
+    Xử lý tin nhắn văn bản:
+    - Nếu là mã cổ phiếu (3 chữ cái) -> Gợi ý nút bấm (Add / Info).
+    - Nếu không hiểu -> Báo lỗi hướng dẫn dùng /help.
     """
     if not update.message or not update.message.text:
         return
 
     chat_id = update.effective_chat.id
-    
-    # === LOGIC TỪ _collector ĐÃ GỘP VÀO ĐÂY ===
-    # Tự động lưu chat_id vào DB nếu chưa có
+    user_text = update.message.text.strip().upper()
+
+    # --- LOGIC MỚI: SMART INPUT HANDLING ---
+    # Kiểm tra: Đúng 3 ký tự VÀ là chữ cái (A-Z)
+    if len(user_text) == 3 and user_text.isalpha():
+        # Tạo 2 nút bấm Inline
+        kb = [
+            [
+                InlineKeyboardButton(f"➕ Theo dõi {user_text}", callback_data=f"btn_add_{user_text}"),
+                InlineKeyboardButton(f"📄 Soi hồ sơ", callback_data=f"btn_info_{user_text}")
+            ]
+        ]
+        
+        # Gửi tin nhắn gợi ý
+        await reply_md(
+            update,
+            f"🤔 Bạn đang quan tâm mã **{user_text}** phải không?\n"
+            f"Chọn nhanh thao tác bên dưới nhé:",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+    # ---------------------------------------
+
+    # Logic cũ (Xử lý user mới + Báo lỗi)
     try:
-        # ⭐️ SỬA: Chạy CSDL trong thread
+        # Tự động lưu chat_id vào DB nếu chưa có (giữ nguyên logic cũ của bạn)
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
         if lst is None:
-            # ⭐️ SỬA: Chạy CSDL trong thread
             await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
     except Exception as e:
-        log.warning(f"Lỗi khi auto-save chat_id {chat_id} trong unknown_message: {e}")
-    # === KẾT THÚC LOGIC GỘP ===
-    
-    # user_text = update.message.text
-    
-    # try:
-    #     # ⭐️ SỬA: Chạy CSDL trong thread
-    #     # Log lại hành vi này (tận dụng hàm bạn đã có)
-    #     await asyncio.to_thread(
-    #         log_command_usage, chat_id, f"unknown: {user_text[:50]}", ADMIN_ID
-    #     )
-    # except Exception as e:
-    #     log.warning(f"Không thể log 'unknown' command: {e}")
-    
+        log.warning(f"Lỗi khi auto-save chat_id {chat_id}: {e}")
+
+    # Phản hồi mặc định
     reply_text = (
-        f"Gõ bậy bạ gì vậy...😒 \n"
-        f"Nhấn `/help` để xem hướng dẫn sử dụng đi bạn."
+        f"Để thêm hoặc xem thông tin mã cổ phiếu, hãy gõ 3 chữ cái: HPG \n"
+        f"Hoặc nhấn /help để xem hướng dẫn sử dụng."
     )
-    
     await reply_md(update, reply_text)
+
+async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Xử lý sự kiện khi user bấm vào nút gợi ý (Add / Info).
+    """
+
+    query = update.callback_query
+    
+    # Báo cho Telegram biết đã nhận click (để tắt vòng xoay loading trên nút)
+    await query.answer()
+    
+    data = query.data
+    
+    # Xử lý nút ADD
+    if data.startswith("btn_add_"):
+        symbol = data.split("_")[2]
+        
+        # Giả lập tham số context.args để tái sử dụng hàm cmd_add
+        context.args = [symbol]
+        
+        # Gọi hàm cmd_add (Nó sẽ reply vào tin nhắn chứa nút bấm)
+        await cmd_add(update, context)
+
+    # Xử lý nút INFO
+    elif data.startswith("btn_info_"):
+        symbol = data.split("_")[2]
+        
+        # Giả lập tham số context.args
+        context.args = [symbol]
+        
+        # Gọi hàm cmd_info
+        await cmd_info(update, context)
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
@@ -4104,15 +4143,22 @@ def escape_markdown_v2(text: str) -> str:
 
 async def reply_md(update: Update, text: str, **kwargs):
     """
-    Gửi tin nhắn Markdown an toàn:
-    - Lần 1: gửi nguyên văn (giữ format bạn viết).
-    - Nếu lỗi parse (Can't parse entities) -> escape toàn bộ rồi gửi lại.
-    - Nếu lỗi 'Message is too long' -> tự động chia nhỏ thành nhiều đoạn và gửi lần lượt.
+    Gửi tin nhắn Markdown an toàn.
+    Tự động phát hiện context là Message hay CallbackQuery để reply đúng chỗ.
     """
     from telegram.error import BadRequest
 
+    # --- SỬA ĐỔI QUAN TRỌNG ---
+    # Dùng update.effective_message thay vì update.message
+    # effective_message hoạt động cho cả tin nhắn thường lẫn nút bấm
+    message = update.effective_message 
+    if not message:
+        log.warning("[reply_md] Không tìm thấy message để reply.")
+        return
+    # --------------------------
+
     async def _send(raw_text: str):
-        return await update.message.reply_text(
+        return await message.reply_text(
             raw_text,
             parse_mode="Markdown",
             **kwargs,
@@ -4126,7 +4172,7 @@ async def reply_md(update: Update, text: str, **kwargs):
 
         # 1) Nếu lỗi do quá dài -> chia nhỏ
         if "Message is too long" in msg:
-            MAX_LEN = 4000  # dưới ngưỡng 4096 cho an toàn
+            MAX_LEN = 4000
 
             chunks = []
             remaining = text
@@ -4135,7 +4181,6 @@ async def reply_md(update: Update, text: str, **kwargs):
                     chunks.append(remaining)
                     break
 
-                # Cố gắng cắt ở chỗ xuống dòng để đỡ vỡ format
                 split_pos = remaining.rfind("\n\n", 0, MAX_LEN)
                 if split_pos == -1:
                     split_pos = remaining.rfind("\n", 0, MAX_LEN)
@@ -4150,19 +4195,14 @@ async def reply_md(update: Update, text: str, **kwargs):
                 try:
                     last_msg = await _send(chunk)
                 except BadRequest as e2:
-                    # Nếu vẫn lỗi parse -> escape riêng từng chunk
-                    logging.warning(
-                        f"[Markdown chunk error] {e2} | chunk_len={len(chunk)}"
-                    )
                     safe_chunk = escape_markdown_v2(chunk)
                     last_msg = await _send(safe_chunk)
 
             return last_msg
 
-        # 2) Các lỗi parse khác (Can't parse entities, ...) -> escape toàn bộ rồi gửi lại
+        # 2) Các lỗi parse khác -> escape toàn bộ rồi gửi lại
         safe_text = escape_markdown_v2(text)
         return await _send(safe_text)
-
 
 def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False):
     """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1) với fallback an toàn.
@@ -6932,6 +6972,8 @@ async def main():
     tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
     tg_app.add_handler(CommandHandler("cmd_run_weekly_report_now", cmd_run_weekly_report_now))
     tg_app.add_handler(CommandHandler("test_digest", cmd_admin_test_digest))
+    tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
+    tg_app.add_handler(CallbackQueryHandler(handle_quick_button))
 
     # 🆕 Bắt case gửi file JSON + caption /restore_core
     tg_app.add_handler(
