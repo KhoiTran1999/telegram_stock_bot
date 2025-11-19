@@ -518,12 +518,24 @@ PROFILE_HTML_TEMPLATE = """
         Telegram.WebApp.ready();
         Telegram.WebApp.expand();
 
+        // Hàm cuộn trang (giữ nguyên)
         function scrollToId(id) {
             const el = document.getElementById(id);
             if (el) {
                 el.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            const textElements = document.querySelectorAll('.profile-text');
+            textElements.forEach(el => {
+                let content = el.innerHTML;
+                // Regex tìm chuỗi **text** và thay bằng <b>text</b>
+                content = content.replace(/\*\*(.*?)\*\*/g, '<b style="font-weight: 700; color: var(--text-color);">$1</b>');
+                el.innerHTML = content;
+            });
+        });
+
     </script>
 </body>
 </html>
