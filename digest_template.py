@@ -707,3 +707,296 @@ PROFILE_404_TEMPLATE = """
 </body>
 </html>
 """
+
+#--------------------------------
+
+
+REPORT_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Báo cáo Danh mục</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+            --accent-color: var(--tg-theme-button-color, #007aff);
+            
+            --success-bg: rgba(52, 199, 89, 0.15); --success-text: #34c759;
+            --warning-bg: rgba(255, 204, 0, 0.15); --warning-text: #d48806;
+            --danger-bg: rgba(255, 59, 48, 0.15);  --danger-text: #ff3b30;
+            --info-bg: rgba(0, 122, 255, 0.1);     --info-text: #007aff;
+        }
+        
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 16px; -webkit-font-smoothing: antialiased; }
+        
+        /* Header Title & Badge */
+        .header-row { text-align: center; margin-bottom: 20px; animation: fadeInDown 0.5s ease; }
+        .header-title { font-size: 20px; font-weight: 800; margin: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--text-color); }
+        
+        /* PRO BADGE STYLE (Giống Digest) */
+        .pro-badge { 
+            background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); 
+            color: white; 
+            font-size: 10px; 
+            font-weight: 800; 
+            padding: 3px 8px; 
+            border-radius: 8px; 
+            letter-spacing: 0.5px; 
+            box-shadow: 0 3px 8px rgba(255, 165, 0, 0.3); 
+            text-shadow: 0 1px 1px rgba(0,0,0,0.1); 
+            text-transform: uppercase;
+            transform: translateY(-1px);
+        }
+
+        .header-time { font-size: 12px; color: var(--hint-color); margin-top: 4px; font-weight: 500; }
+
+        /* Header Score */
+        .score-card {
+            background: linear-gradient(135deg, #007aff, #5856d6);
+            color: white;
+            border-radius: 20px;
+            padding: 24px;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 20px rgba(0,122,255,0.25);
+            position: relative; overflow: hidden;
+        }
+        .score-card::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle, rgba(255,255,255,0.2) 0%, transparent 60%); pointer-events: none; }
+        
+        .score-val { font-size: 48px; font-weight: 800; line-height: 1; letter-spacing: -2px; }
+        .score-label { font-size: 14px; font-weight: 500; opacity: 0.9; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .score-sub { font-size: 12px; opacity: 0.8; margin-top: 8px; }
+
+        /* Market Comment */
+        .market-card {
+            background-color: var(--card-bg);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 24px;
+            border-left: 4px solid var(--accent-color);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+        .market-title { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--hint-color); margin-bottom: 8px; letter-spacing: 0.5px; }
+        .market-text { font-size: 14px; line-height: 1.6; font-weight: 400; }
+
+        /* Stock List */
+        .stock-card {
+            background-color: var(--card-bg);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            transition: transform 0.1s;
+        }
+        .stock-card:active { transform: scale(0.98); }
+        
+        .st-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .st-symbol { font-size: 18px; font-weight: 800; color: var(--text-color); }
+        .st-industry { font-size: 12px; color: var(--hint-color); font-weight: 500; margin-left: 6px; }
+        
+        .st-badge {
+            font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase;
+        }
+        /* Badge logic Colors */
+        .act-buy { background-color: var(--success-bg); color: var(--success-text); }
+        .act-hold { background-color: var(--warning-bg); color: var(--warning-text); }
+        .act-sell { background-color: var(--danger-bg); color: var(--danger-text); }
+        .act-neutral { background-color: var(--bg-color); color: var(--hint-color); }
+
+        .st-analysis { 
+            font-size: 14px; 
+            line-height: 1.6;
+            margin-bottom: 12px; 
+            color: var(--text-color);
+            white-space: pre-line;
+        }
+        
+        .st-metrics {
+            background-color: var(--bg-color);
+            border-radius: 10px;
+            padding: 10px;
+            font-size: 12px;
+            color: var(--hint-color);
+            display: flex; align-items: center; gap: 6px;
+        }
+        .st-metrics-icon { font-size: 14px; }
+
+        .footer { text-align: center; margin-top: 30px; font-size: 12px; color: var(--hint-color); padding-bottom: 40px; }
+        
+        .btn-close {
+            display: block; width: 100%; padding: 14px; 
+            background-color: var(--card-bg); color: var(--text-color); 
+            border: none; border-radius: 14px; 
+            font-size: 15px; font-weight: 600; margin-top: 20px; 
+            cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="header-row">
+        <div class="header-title">
+            Báo Cáo Danh Mục
+            {% if is_pro %}
+            <span class="pro-badge">PRO 👑</span>
+            {% endif %}
+        </div>
+        <div class="header-time">Cập nhật lúc: {{ generated_at }}</div>
+    </div>
+
+    <div class="score-card">
+        <div class="score-val">{{ data.portfolio_health_score }}</div>
+        <div class="score-label">Điểm Sức Khỏe Danh Mục</div>
+        <div class="score-sub">Đánh giá dựa trên tiềm năng tăng trưởng</div>
+    </div>
+
+    <div class="market-card">
+        <div class="market-title">NHẬN ĐỊNH THỊ TRƯỜNG & CHIẾN LƯỢC</div>
+        <div class="market-text">{{ data.general_market_comment }}</div>
+    </div>
+
+    <div style="margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--hint-color); text-transform: uppercase; letter-spacing: 0.5px;">Chi tiết cổ phiếu</div>
+    
+    {% for stock in data.stocks %}
+    <div class="stock-card">
+        <div class="st-header">
+            <div>
+                <span class="st-symbol">{{ stock.symbol }}</span>
+                <span class="st-industry">{{ stock.industry }}</span>
+            </div>
+            {% set act = stock.action | lower %}
+            {% set badge_class = 'act-neutral' %}
+            {% if 'mua' in act or 'tăng' in act %}
+                {% set badge_class = 'act-buy' %}
+            {% elif 'giữ' in act or 'nắm' in act %}
+                {% set badge_class = 'act-hold' %}
+            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %}
+                {% set badge_class = 'act-sell' %}
+            {% endif %}
+            
+            <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
+        </div>
+        
+        <div class="st-analysis">
+            {{ stock.analysis }}
+        </div>
+        
+        {% if stock.key_metrics %}
+        <div class="st-metrics">
+            <span class="st-metrics-icon">📊</span> 
+            <span><b>Key Metrics:</b> {{ stock.key_metrics }}</span>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    <div class="footer">
+        Dữ liệu được phân tích tự động bởi AI (Gemini).<br>
+        Không phải khuyến nghị đầu tư tài chính.
+    </div>
+
+    <button class="btn-close" onclick="Telegram.WebApp.close()">Đóng Báo Cáo</button>
+
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+    </script>
+</body>
+</html>
+"""
+
+REPORT_404_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Báo cáo không tìm thấy</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --button-color: var(--tg-theme-button-color, #007aff);
+            --button-text-color: var(--tg-theme-button-text-color, #fff);
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+            box-sizing: border-box;
+        }
+        .icon { 
+            font-size: 64px; 
+            margin-bottom: 24px; 
+            animation: float 3s ease-in-out infinite; 
+        }
+        h2 { 
+            font-size: 20px; 
+            margin: 0 0 12px 0; 
+            font-weight: 700; 
+        }
+        p { 
+            color: var(--hint-color); 
+            font-size: 15px; 
+            line-height: 1.5; 
+            margin-bottom: 32px; 
+            max-width: 300px; 
+        }
+        button {
+            padding: 14px 32px;
+            background-color: var(--button-color);
+            color: var(--button-text-color);
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            max-width: 240px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+            transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.98); }
+        
+        @keyframes float { 
+            0% { transform: translateY(0px); } 
+            50% { transform: translateY(-10px); } 
+            100% { transform: translateY(0px); } 
+        }
+    </style>
+</head>
+<body>
+    <div class="icon">📉</div>
+    <h2>Không tìm thấy báo cáo</h2>
+    <p>
+        Báo cáo phân tích này có thể đã hết hạn (lưu trữ 7 ngày) hoặc đường dẫn không hợp lệ.
+        <br><br>
+        Vui lòng quay lại bot và gõ lệnh <b>/report</b> để tạo báo cáo mới nhất.
+    </p>
+    <button onclick="Telegram.WebApp.close()">Đóng</button>
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+    </script>
+</body>
+</html>
+"""

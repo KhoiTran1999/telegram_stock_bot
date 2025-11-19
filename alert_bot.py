@@ -22,6 +22,8 @@ from digest_template import (
     DIGEST_404_TEMPLATE,
     PROFILE_HTML_TEMPLATE,
     PROFILE_404_TEMPLATE,
+    REPORT_HTML_TEMPLATE,
+    REPORT_404_TEMPLATE,
 )
 from telegram import (
     BotCommand,
@@ -1208,67 +1210,6 @@ def clean_and_highlight_report(text: str, headings: list[str]) -> str:
 
     return text
 
-
-
-def build_prompt_for_symbols(symbols: list[str]) -> str:
-    lines = []
-    for sym in symbols:
-        perf = get_perf_history(sym)
-        if not perf:
-            continue
-        lines.append(format_perf_line(sym, perf))
-
-    if not lines:
-        return "Không có dữ liệu giá để tạo báo cáo."
-
-    data_block = "\n".join(lines)
-    vn_tz = pytz.timezone(TIMEZONE)
-
-    dateStock = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
-    prompt = f"""
-Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng. 
-Hãy viết báo cáo đầu tư trung–dài hạn (3–12 tháng) cho danh mục dưới đây.
-
-YÊU CẦU CHUNG:
-- Giọng văn chuyên nghiệp, súc tích, dễ đọc trên Telegram.
-- Không dùng ký tự markdown: *, _
-- Không nêu giá mục tiêu, không dùng từ ngữ khẳng định tuyệt đối.
-- Không đề cập đến bản thân, người yêu cầu hoặc quy trình tạo nội dung.
-- Không chèn câu meta như “dưới đây là”, “theo yêu cầu”, “tôi viết như sau”.
-- Không nói “hôm nay tăng/giảm”.
-- Truyền đạt trung thực, khách quan.
-- Mỗi mã phân tích khoảng 1000–1300 ký tự nếu danh mục từ 1–3 mã; nếu nhiều hơn, giữ độ sâu hợp lý.
-
-DANH MỤC NGÀY {dateStock}:
-{data_block}
-
-MỞ ĐẦU BẰNG ĐOẠN:
-🔥 Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3–12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam. 🚀
-
-Với mỗi cổ phiếu, trình bày theo cấu trúc:
-🔹 *MÃ*
-• Giá hiện tại: ...
-• KQKD nổi bật: (kết quả kinh doanh gần nhất, mảng chính đóng góp, xu hướng tăng trưởng)
-• Lợi thế cạnh tranh: (thị phần, biên lợi nhuận, công nghệ, thương hiệu…)
-• Triển vọng & Động lực (6–12 tháng): (catalyst, dự án mới, M&A, chính sách, câu chuyện ngành)
-• Bối cảnh định giá: (so với tiềm năng tăng trưởng: hấp dẫn / đã phản ánh / cần chiết khấu)
-• Rủi ro: (pháp lý, nợ vay, giá nguyên liệu, chu kỳ…)
-• Hành động: (tăng tỷ trọng / nắm giữ / giảm tỷ trọng / theo dõi)
-
-3) Không gộp nhiều mã trong cùng một đoạn.
-4) Không được đưa phần tổng quan danh mục vào trong block của một mã.
-
-KẾT THÚC BẰNG MỘT HEADING:
-### TONG_QUAN_DANH_MUC
-
-Sau heading ### TONG_QUAN_DANH_MUC, PHẢI viết ít nhất một đoạn 3–5 câu
-về cơ cấu ngành, mức rủi ro chung, động lực tăng trưởng và định hướng danh mục.
-Không được kết thúc báo cáo ngay sau heading này.
-
-Lưu ý: heading phải viết đúng dạng “### TONG_QUAN_DANH_MUC” (không dấu, không khoảng trắng).
-"""
-    return prompt.strip()
-
 # HELPER: PHÂN LOẠI LỖI VÀ NOTIFY ADMIN
 def classify_error_quota(e: Exception) -> bool:
     """
@@ -1327,43 +1268,68 @@ async def notify_admin_report_error_once(
         )
 
 
+# Trong file alert_bot.py
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
     """
-    Gọi Gemini để sinh bản tin báo cáo danh mục.
-
-    - Dùng build_prompt_for_symbols() như hiện tại.
-    - Gọi đúng 1 lần, KHÔNG retry trong hàm này.
-    - Nếu lỗi -> raise Exception để caller (/report, weekly_report_loop) xử lý.
+    (PHIÊN BẢN JSON - CÓ XUỐNG DÒNG)
     """
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY chưa được cấu hình nên chưa tạo được báo cáo tự động."
-        )
+        raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
 
-    prompt = build_prompt_for_symbols(symbols)
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini cho báo cáo danh mục, symbols={symbols}")
+    if len(symbols) > 6:
+        symbols = symbols[:6]
 
-    # Khởi tạo client Gemini (theo SDK mới)
-    # https://ai.google.dev/gemini-api/docs/quickstart
+    symbols_str = ", ".join(symbols)
+    vn_tz = pytz.timezone(TIMEZONE)
+    date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
+
+    prompt = f"""
+Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng.
+Hãy phân tích danh mục đầu tư trung–dài hạn (3–12 tháng) cho các mã sau: {symbols_str} (Ngày báo cáo: {date_str}).
+
+YÊU CẦU FORMAT OUTPUT:
+Trả về kết quả dưới định dạng **JSON thuần**.
+Cấu trúc JSON bắt buộc:
+{{
+  "general_market_comment": "Đoạn văn (khoảng 3-4 câu) tổng quan về thị trường và định hướng danh mục.",
+  "portfolio_health_score": 8.5,
+  "stocks": [
+    {{
+      "symbol": "MÃ",
+      "industry": "Tên ngành",
+      "action": "Mua / Nắm giữ / Bán / Theo dõi",
+      "analysis": "Phân tích chi tiết (500-700 ký tự). BẮT BUỘC trình bày thành các ý gạch đầu dòng (•), mỗi ý MỘT DÒNG RIÊNG BIỆT. Bao gồm: KQKD, Lợi thế, Động lực, Rủi ro.\\nVí dụ format:\\n• Vị thế: Dẫn đầu ngành...\\n• KQKD: Tăng trưởng 20%...\\n• Rủi ro: Tỷ giá...",
+      "key_metrics": "P/E: 10.x, LNST tăng 20%..."
+    }}
+  ]
+}}
+
+LƯU Ý:
+- Trường `analysis` phải chứa các ký tự xuống dòng (\\n) để tách ý.
+- Giọng văn chuyên nghiệp, khách quan.
+"""
+
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON Mode) cho báo cáo: {symbols_str}")
+
     client = genai.Client(api_key=GEMINI_API_KEY)
-
     model_id = "gemini-2.5-flash"
 
     try:
         resp = client.models.generate_content(
             model=model_id,
             contents=prompt,
+            config={'response_mime_type': 'application/json'}
         )
+        text = getattr(resp, "text", "")
+        if not text:
+            raise RuntimeError("Gemini trả về rỗng.")
+        
+        return text.strip()
+
     except Exception as e:
-        # đẩy lỗi ra ngoài để /report & weekly_report_loop lo
+        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report JSON: {e}")
         raise e
-
-    text = getattr(resp, "text", None)
-    if not text:
-        raise RuntimeError("Gemini trả về response nhưng không có .text")
-
-    return text.strip()
 
 # ==============================================
 # HÀM GỌI GEMINI CHO HỒ SƠ DOANH NGHIỆP (/info)
@@ -2485,8 +2451,9 @@ async def stock_broadcast_loop():
 # ==============================================
 async def execute_weekly_report(admin_update: Update | None = None):
     """
-    Hàm lõi: Chạy, tính toán và gửi báo cáo tuần (Pro + Admin).
-    Nếu có admin_update, sẽ gửi phản hồi cho admin.
+    (PHIÊN BẢN WEB APP JSON)
+    Chạy, tính toán và gửi báo cáo tuần (Pro + Admin).
+    Gửi nút mở Web App thay vì tin nhắn text dài.
     """
     global INSTANCE_ID, log, tg_app, BOT_ACTIVE, GEMINI_API_KEY, ADMIN_ID
 
@@ -2497,196 +2464,128 @@ async def execute_weekly_report(admin_update: Update | None = None):
     try:
         log.info(f"{instance_label} Bắt đầu chạy (trigger by: {'Admin' if admin_chat_id else 'Scheduler'}).")
         if admin_chat_id:
-            await tg_app.bot.send_message(admin_chat_id, "⏳ Bắt đầu chạy tác vụ gửi Weekly Report thủ công...")
+            await tg_app.bot.send_message(admin_chat_id, "⏳ Bắt đầu chạy tác vụ gửi Weekly Report (Web App Mode)...")
 
         if not BOT_ACTIVE:
             log.info(f"{instance_label} Bot TẮT, huỷ tác vụ.")
-            if admin_chat_id:
-                await tg_app.bot.send_message(admin_chat_id, "⚠️ Bot đang TẮT, đã huỷ tác vụ.")
             return
 
         if not GEMINI_API_KEY:
             log.warning(f"{instance_label} Chưa có GEMINI_API_KEY, bỏ qua.")
-            if admin_chat_id:
-                await tg_app.bot.send_message(admin_chat_id, "⚠️ Chưa có GEMINI_API_KEY, đã huỷ tác vụ.")
             return
 
-        # === BÊ NGUYÊN LOGIC TỪ weekly_report_loop VÀO ĐÂY ===
-
-        # 1. Lấy TẤT CẢ user
+        # 1. Lấy dữ liệu user
         all_watch = await asyncio.to_thread(get_all_watch)
-        
-        # 2. Lấy user Pro (1 lần gọi DB)
         pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
 
         if not all_watch:
             log.info(f"{instance_label} Không có user nào theo dõi, bỏ qua.")
-            if admin_chat_id:
-                await tg_app.bot.send_message(admin_chat_id, "ℹ️ Không có user nào theo dõi, bỏ qua.")
             return
 
         sent_count = 0
         skipped_count = 0
+        error_count = 0
 
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+
+        # 2. Duyệt qua từng user
         for chat_key, user_block in all_watch.items():
             if not BOT_ACTIVE:
                 log.info(f"{instance_label} Bot TẮT giữa chừng, dừng gửi.")
-                if admin_chat_id:
-                    await tg_app.bot.send_message(admin_chat_id, "⚠️ Bot TẮT giữa chừng, dừng gửi.")
                 break
 
-            chat_id = int(chat_key)
+            try:
+                chat_id = int(chat_key)
+            except: continue
             
-            # === LOGIC PAYWALL ===
+            # === LOGIC PAYWALL: Chỉ gửi cho Pro & Admin ===
             if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
-                skipped_count += 1
-                continue # Bỏ qua user thường
-            # =====================
-
-            watch_list = user_block.get("list", []) or []
-            if not watch_list:
                 skipped_count += 1
                 continue
 
-            symbols = [
-                s.upper()
-                for s in watch_list
-                if not s.upper().startswith("VN")
-            ]
+            watch_list = user_block.get("list", []) or []
+            # Lọc bỏ index (VN...) và giới hạn 6 mã để đảm bảo JSON ổn định
+            symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+            
             if not symbols:
                 skipped_count += 1
                 continue
+            
+            # Cắt ngắn danh sách nếu quá dài (giống logic /report)
+            if len(symbols) > 6:
+                symbols = symbols[:6]
 
             cache_key = make_report_cache_key(symbols)
-            log.info(
-                f"{instance_label} Xử lý Pro user: chat_id={chat_id}, cache_key={cache_key}"
-            )
-
-            # Với Weekly: dùng max_age_days ~6.9 để:
-            # - BỎ QUA nếu user đã có báo cáo OK trong ~7 ngày gần nhất (thường là do dùng /report).
-            # - BỎ QUA cache weekly cũ (>= 7 ngày) để Chủ Nhật nào cũng sinh report mới cho user không dùng /report.
-            cached = get_report_from_redis(cache_key, max_age_days=6.9)
-
-            if cached is not None:
-                cached_text, generated_at, is_error, wait_sec = cached
-
-                if not is_error:
-                    # Có báo cáo OK trong tuần -> bỏ qua weekly cho user này
-                    log.info(
-                        f"{instance_label} Bỏ qua Weekly cho chat_id={chat_id} "
-                        f"vì đã có report gần đây (generated_at={generated_at})."
-                    )
-                    skipped_count += 1
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    # Cache là lỗi (thường TTL ngắn 60s) -> coi như không có báo cáo dùng được,
-                    # để phía dưới gọi LLM tạo lại.
-                    log.info(
-                        f"{instance_label} Cache hiện tại là LỖI cho chat_id={chat_id}, "
-                        "sẽ gọi LLM tạo report mới."
-                    )
-
-
-            # 2) Không có cache OK -> gọi Gemini 1 lần
-            try:
-                start = time.time()
-                output_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-                duration = time.time() - start
-                log.info(
-                    f"{instance_label} Gemini weekly done in {duration:.1f}s cho chat_id={chat_id}"
-                )
-
-                #Xóa dấu * và _ và add dấu * và tiêu đề đã chỉ định
-                REPORT_HEADINGS = [
-                    "Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam.",
-                    "Giá hiện tại:",
-                    "KQKD nổi bật:",
-                    "Lợi thế cạnh tranh:",
-                    "Triển vọng & Động lực (6–12 tháng):",
-                    "Bối cảnh định giá:",
-                    "Rủi ro:",
-                    "Hành động:",
-                    "Tổng quan danh mục:",
-                    *symbols
-                ]
-                text = clean_and_highlight_report(output_text, REPORT_HEADINGS)
-
-                # Lưu báo cáo OK vào Redis
-                save_report_to_redis(
-                    cache_key,
-                    text,
-                    source="weekly_loop" if not admin_chat_id else "admin_trigger",
-                )
-
-                now_footer = datetime.datetime.now(vn_tz)
-                footer = (
-                    f"\n\n🕓 _Báo cáo được tạo vào "
-                    f"{now_footer.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian._"
-                )
-                final_text = text.strip() + footer
-                await asyncio.to_thread(send_msg_to, chat_id, final_text)
-                log.info(f"{instance_label} Đã gửi báo cáo tuần cho {chat_id}")
-                sent_count += 1
-
-            except Exception as e:
-                # Weekly report lỗi: gửi message nhắc user dùng /report, + cache lỗi cho /report
-                is_quota = classify_error_quota(e)
-
-                if is_quota:
-                    user_msg = (
-                        "⚠️ Weekly report tuần này chưa tạo được do dịch vụ AI (Gemini) "
-                        "đang quá tải hoặc tạm thời hết quota.\n"
-                        "Bạn có thể dùng lệnh /report sau khoảng 2 phút để lấy báo cáo mới."
-                    )
-                    notify_admin_flag = False
-                else:
-                    user_msg = (
-                        "⚠️ Weekly report tuần này tạm thời gặp lỗi kỹ thuật.\n"
-                        "Hệ thống đã ghi nhận lỗi này và thông báo cho Admin.\n"
-                        "Bạn vui lòng đợi khoảng 2 phút rồi dùng lệnh /report để lấy báo cáo danh mục."
-                    )
-                    notify_admin_flag = True
-
-                # Cache lỗi để /report biết mà không spam API
-                save_report_to_redis(
-                    cache_key,
-                    user_msg,
-                    source="weekly_error",
-                    is_error=True,
-                    wait_sec=120,
-                    error_type=type(e).__name__,
-                    error_detail=str(e),
-                )
-
-                await asyncio.to_thread(send_msg_to, chat_id, user_msg)
-
-                if notify_admin_flag and tg_app and tg_app.bot:
-                    try:
-                        await notify_admin_report_error_once(
-                            tg_app.bot,
-                            cache_key,
-                            e,
-                        )
-                    except Exception as e2:
-                        log.warning(
-                            f"{instance_label} notify_admin_report_error_once lỗi: {e2}"
-                        )
-
-                # Weekly vẫn continue với user tiếp theo
-                await asyncio.sleep(3)
-                continue
-            except Exception as e:
-                log.warning(
-                    f"{instance_label} Lỗi gửi cho {chat_id}: {e}"
-                )
             
-            await asyncio.sleep(3) # Giữ nguyên sleep để tránh spam
+            # === KIỂM TRA CACHE ===
+            # Logic: 
+            # - Nếu đã có cache JSON hợp lệ (do user tự chạy /report trước đó) -> Dùng lại.
+            # - Nếu chưa có -> Gọi AI tạo mới -> Lưu Cache.
+            
+            # Max age ~6.9 ngày (để đảm bảo báo cáo tuần luôn mới nếu chưa có trong tuần)
+            cached = get_report_from_redis(cache_key, max_age_days=6.9)
+            
+            json_text = None
+            
+            if cached is not None:
+                # Cache HIT
+                text_val, generated_at, is_error, wait_sec = cached
+                if not is_error:
+                    json_text = text_val
+                    log.info(f"{instance_label} Dùng lại cache có sẵn cho {chat_id}.")
+                else:
+                    # Cache lỗi -> Bỏ qua user này để tránh spam lỗi, hoặc retry (ở đây chọn retry gọi AI)
+                    log.info(f"{instance_label} Cache cũ bị lỗi, sẽ gọi AI lại cho {chat_id}.")
+            
+            # Nếu chưa có nội dung (Cache MISS), gọi AI
+            if not json_text:
+                try:
+                    start = time.time()
+                    # Gọi hàm call_chatgpt_for_report (đã update trả về JSON)
+                    json_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+                    duration = time.time() - start
+                    
+                    # Lưu vào Redis
+                    save_report_to_redis(cache_key, json_text, source="weekly_loop")
+                    log.info(f"{instance_label} Gemini JSON done in {duration:.1f}s cho {chat_id}")
+                    
+                except Exception as e:
+                    log.error(f"{instance_label} Lỗi gọi AI cho {chat_id}: {e}")
+                    # Lưu cache lỗi để tránh retry liên tục nếu user spam
+                    save_report_to_redis(
+                        cache_key, str(e), source="weekly_error", is_error=True, wait_sec=120
+                    )
+                    error_count += 1
+                    continue # Bỏ qua user này, sang người kế tiếp
 
-        # === KẾT THÚC LOGIC CŨ ===
+            # === GỬI TIN NHẮN WEB APP ===
+            if json_text:
+                try:
+                    web_app_url = f"{base_url}/report/view/{cache_key}"
+                    
+                    kb = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📊 Xem Báo Cáo Tuần", web_app=WebAppInfo(url=web_app_url))
+                    ]])
+                    
+                    now_str = datetime.datetime.now(vn_tz).strftime('%d/%m')
+                    msg = (
+                        f"🗞 *Báo cáo danh mục tuần {now_str}*\n"
+                        f"Phân tích chuyên sâu cho: *{', '.join(symbols)}*\n\n"
+                        f"👉 Nhấn nút bên dưới để xem chi tiết nhận định thị trường và cổ phiếu của bạn."
+                    )
+                    
+                    await send_md(tg_app.bot, chat_id, msg, reply_markup=kb)
+                    sent_count += 1
+                    
+                except Exception as e:
+                    log.warning(f"{instance_label} Lỗi gửi tin Telegram cho {chat_id}: {e}")
 
-        final_msg = f"Hoàn tất — gửi {sent_count} (Pro), bỏ qua {skipped_count} (Free)."
+            # Sleep nhẹ để tránh flood
+            await asyncio.sleep(2)
+
+        final_msg = f"Hoàn tất Weekly Report — Gửi: {sent_count} | Bỏ qua: {skipped_count} | Lỗi: {error_count}."
         log.info(f"{instance_label} {final_msg}")
+        
         if admin_chat_id:
             await tg_app.bot.send_message(admin_chat_id, f"✅ {final_msg}")
 
@@ -2694,9 +2593,8 @@ async def execute_weekly_report(admin_update: Update | None = None):
         log.error(f"{instance_label} Lỗi tổng quát: {e}")
         if admin_chat_id:
             try:
-                await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi tổng quát khi chạy Weekly Report: {e}")
-            except Exception as e2:
-                log.error(f"{instance_label} Lỗi gửi tin nhắn lỗi cho admin: {e2}")
+                await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi tổng quát Weekly: {e}")
+            except: pass
 
 async def weekly_report_loop():
     """
@@ -5790,10 +5688,9 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Gửi báo cáo danh mục hiện tại cho user.
-    (ĐÃ SỬA: DÙNG CHATACTION)
+    (PHIÊN BẢN WEB APP JSON)
+    Gửi báo cáo danh mục AI dưới dạng Web App Dashboard.
     """
-
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
@@ -5803,161 +5700,163 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
 
-    # === KIỂM TRA PAYWALL ===
+    # === 1. KIỂM TRA PAYWALL (PRO-ONLY) ===
+    # Hàm check_pro_access (trong file alert_bot.py của bạn) sẽ tự gửi thông báo nếu user không phải Pro
     if not await check_pro_access(update, context):
         return
 
-    # ⭐ THAY THẾ "Đang tổng hợp..." BẰNG CHATACTION
+    # Gửi ChatAction "Typing" để user biết bot đang xử lý
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except Exception:
-        pass # Bỏ qua nếu lỗi
+        pass
 
+    # Log command usage
     await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
+
+    # Lấy watchlist từ DB
     watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
     symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
 
     if not symbols:
-        await reply_md(
-            update,
-            "📭 Danh mục của bạn trống. Hãy /add vài mã trước nhé!",
-        )
+        await reply_md(update, "📭 Danh mục của bạn trống. Hãy dùng `/add` để thêm mã trước nhé!")
         return
 
+    # Tạo cache key từ danh sách mã
     cache_key = make_report_cache_key(symbols)
     log.info(f"[{INSTANCE_ID}] /report cache_key={cache_key} for chat_id={chat_id}")
 
-    # 1️⃣ Thử lấy báo cáo (hoặc lỗi) từ Redis trước
-    cached = get_report_from_redis(cache_key)
-    if cached is not None:
-        text, generated_at, is_error, wait_sec = cached
-        log.info(
-            f"[{INSTANCE_ID}] /report cache HIT cho chat_id={chat_id}, "
-            f"key={cache_key}, is_error={is_error}, generated_at={generated_at}"
-        )
+    # URL gốc của Web App (Lấy từ biến môi trường Render)
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    
+    # Link đến route hiển thị báo cáo (cần đảm bảo bạn đã thêm route /report/view/<key> vào Flask)
+    web_app_url = f"{base_url}/report/view/{cache_key}"
 
+    # === 2. KIỂM TRA CACHE REDIS ===
+    # Hàm get_report_from_redis trả về: (text_json, generated_at, is_error, wait_sec)
+    cached = get_report_from_redis(cache_key)
+    
+    if cached is not None:
+        text_json, generated_at, is_error, wait_sec = cached
+        
         if is_error:
-            # ... (Logic xử lý cache lỗi giữ nguyên) ...
+            # Xử lý trường hợp cache đang lưu trạng thái lỗi (ví dụ do quá tải trước đó)
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             if generated_at.tzinfo is None:
                 generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
-            remain_sec = None
+            
+            remain_sec = 0
             if wait_sec is not None:
                 elapsed = (now_utc - generated_at).total_seconds()
                 remain_sec = max(0, wait_sec - elapsed)
-            if remain_sec is not None and remain_sec > 0:
+            
+            if remain_sec > 0:
                 remain_min = math.ceil(remain_sec / 60)
                 await reply_md(
                     update,
-                    (
-                        "⚠️ Hệ thống đang bận xử lý báo cáo cho danh mục này.\n"
-                        f"Vui lòng thử lại sau khoảng ~{remain_min} phút nữa."
-                    ),
+                    f"⚠️ Hệ thống đang bận xử lý danh mục này.\n"
+                    f"Vui lòng thử lại sau khoảng ~{remain_min} phút nữa."
                 )
                 return
+            # Nếu hết thời gian chờ cache lỗi -> Cho phép chạy tiếp xuống dưới để gọi lại AI
+        
         else:
-            # ... (Logic gửi cache OK giữ nguyên) ...
-            footer = ( f"\n\n🕓 Báo cáo được tạo vào "
-                       f"{generated_at.astimezone(vn_tz).strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian." )
-            final_text = text.strip() + footer
-            await reply_md(update, final_text)
-            await asyncio.to_thread(
-                save_report_to_redis, cache_key, text, "on_demand",
+            # === CACHE HIT OK -> GỬI NÚT WEB APP ===
+            log.info(f"[{INSTANCE_ID}] /report CACHE HIT -> Gửi Web App.")
+            
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))
+            ]])
+            
+            # Lấy thời gian tạo từ cache để hiển thị
+            time_str = "vừa xong"
+            if generated_at:
+                try:
+                    time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                except: pass
+
+            await reply_md(
+                update, 
+                f"✅ Báo cáo danh mục *{', '.join(symbols)}* đã sẵn sàng (bản lưu lúc {time_str}).",
+                reply_markup=kb
             )
-            note = ( "ℹ️ Vì bạn đã nhận báo cáo qua lệnh `/report`, báo cáo tự động vào "
-                     "_Chủ Nhật tuần này_ sẽ được *bỏ qua*.\n"
-                     "Nếu trong tuần tới bạn không dùng lại `/report`, bot sẽ tự động gửi "
-                     "báo cáo vào _Chủ Nhật tuần sau_." )
-            await reply_md(update, note)
             return
 
-    # 2️⃣ Không có cache -> gọi Gemini 1 lần
-
-    # Nhắc nhẹ để user biết bot đang xử lý
-    await reply_md(update, "🔎 Vui lòng đợi, bot đang tổng hợp báo cáo danh mục....")
-
-    # ⭐ GỬI LẠI CHATACTION (vì gọi AI rất lâu)
+    # === 3. CACHE MISS -> GỌI AI (JSON MODE) ===
+    await reply_md(update, "🔎 Đang phân tích danh mục (AI)... vui lòng đợi khoảng 10-20s.")
+    
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except: pass
 
-    # (Task "send_slow_notice" vẫn rất hữu ích, bạn có thể giữ lại
-    #  nếu muốn, nó sẽ chạy song song với ChatAction)
+    # Task nhắc nhở nếu AI chạy lâu > 6s (UX)
     done_flag = {"done": False}
     async def send_slow_notice():
         try:
-            await asyncio.sleep(6) # Giữ nguyên 6s
+            await asyncio.sleep(6)
             if not done_flag["done"]:
                 await send_md(
                     context.bot, chat_id,
-                    "⏳ Báo cáo danh mục này hơi dài nên bot cần thêm chút thời gian để tổng hợp...\n"
-                    "Cảm ơn bạn đã kiên nhẫn chờ cùng StockBot ạ 🙏",
+                    "⏳ Báo cáo danh mục cần phân tích dữ liệu nhiều mã nên sẽ mất chút thời gian...\n"
+                    "Cảm ơn bạn đã kiên nhẫn chờ StockBot ạ 🙏",
                 )
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] /report reminder error: {e}")
+        except Exception: pass
     asyncio.create_task(send_slow_notice())
 
     try:
-        # ... (Toàn bộ logic gọi AI, xử lý lỗi, cache lỗi...
-        #      đều giữ nguyên như code gốc của bạn) ...
+        # Gọi Gemini (Hàm này trả về chuỗi JSON)
         start = time.time()
-        output_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
+        json_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
         duration = time.time() - start
         done_flag["done"] = True
-        log.info(
-            f"[{INSTANCE_ID}] /report Gemini done in {duration:.2f}s (chat_id={chat_id})"
+        
+        log.info(f"[{INSTANCE_ID}] /report Gemini JSON done in {duration:.2f}s")
+
+        # Lưu JSON vào Redis (source="on_demand")
+        save_report_to_redis(cache_key, json_text, source="on_demand")
+        
+        # Gửi nút Web App cho user
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))
+        ]])
+        
+        await reply_md(
+            update, 
+            f"🚀 Phân tích hoàn tất! Nhấn nút bên dưới để xem báo cáo chi tiết.",
+            reply_markup=kb
         )
-        REPORT_HEADINGS = [
-            "Chào mừng quý nhà đầu tư đến với báo cáo phân tích danh mục đầu tư tăng trưởng trung – dài hạn (3-12 tháng). Báo cáo này trình bày góc nhìn về các cổ phiếu trong danh mục, dựa trên chiến lược đầu tư tăng trưởng tại thị trường Việt Nam.",
-            "Giá hiện tại:", "KQKD nổi bật:", "Lợi thế cạnh tranh:",
-            "Triển vọng & Động lực (6–12 tháng):", "Bối cảnh định giá:",
-            "Rủi ro:", "Hành động:", "Tổng quan danh mục:",
-            *watch,
-        ]
-        text = clean_and_highlight_report(output_text, REPORT_HEADINGS)
-        save_report_to_redis(cache_key, text, source="on_demand")
-        now = datetime.datetime.now(vn_tz)
-        footer = ( f"\n\n🕓 Báo cáo được tạo vào "
-                   f"{now.strftime('%d/%m/%Y %H:%M')} — dữ liệu có thể thay đổi theo thời gian." )
-        final_text = text.strip() + footer
-        await reply_md(update, final_text)
-        note = ( "ℹ️ Vì bạn đã nhận báo cáo qua lệnh `/report`, báo cáo tự động vào "
-                 "_Chủ Nhật tuần này_ sẽ được *bỏ qua*.\n"
-                 "Nếu trong tuần tới bạn không dùng lại `/report`, bot sẽ tự động gửi "
-                 "báo cáo vào _Chủ Nhật tuần sau_." )
-        await reply_md(update, note)
+
     except Exception as e:
         done_flag["done"] = True
-        is_quota = classify_error_quota(e)
+        log.error(f"[{INSTANCE_ID}] Lỗi cmd_report: {e}")
+        
+        # Phân loại lỗi để thông báo user
+        is_quota = classify_error_quota(e) # Hàm này đã có sẵn trong code cũ của bạn
         if is_quota:
-            user_msg = ( "⚠️ Hiện tại hệ thống chưa tạo được báo cáo do dịch vụ AI (Gemini) "
-                         "đang quá tải hoặc tạm thời hết quota.\n"
-                         "Bạn vui lòng thử lại sau khoảng 2 phút nữa với lệnh /report nhé." )
+            user_msg = (
+                "⚠️ Hệ thống AI đang quá tải (hết quota/rate limit). Vui lòng thử lại sau 2 phút."
+            )
             notify_admin_flag = False
         else:
-            user_msg = ( "⚠️ Báo cáo danh mục tạm thời gặp lỗi kỹ thuật.\n"
-                         "Hệ thống đã ghi nhận lỗi này và thông báo cho Admin.\n"
-                         "Bạn vui lòng đợi khoảng 2 phút rồi thử lại với lệnh /report nhé." )
+            user_msg = (
+                "⚠️ Gặp lỗi kỹ thuật khi tạo báo cáo. Admin đã được thông báo.\n"
+                "Vui lòng thử lại sau ít phút."
+            )
             notify_admin_flag = True
+
+        # Lưu cache lỗi (để tránh user spam lệnh khi đang lỗi)
         save_report_to_redis(
             cache_key, user_msg, source="error", is_error=True,
             wait_sec=120, error_type=type(e).__name__, error_detail=str(e),
         )
+        
         await reply_md(update, user_msg)
+        
+        # Báo admin nếu cần
         if notify_admin_flag and tg_app and tg_app.bot:
             try:
-                await notify_admin_report_error_once(
-                    tg_app.bot, cache_key, e,
-                )
-            except Exception as e2:
-                log.warning(
-                    f"[{INSTANCE_ID}] notify_admin_report_error_once lỗi: {e2}"
-                )
+                await notify_admin_report_error_once(tg_app.bot, cache_key, e)
+            except: pass
 
 async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -6924,6 +6823,42 @@ def view_profile(symbol: str):
         data_sources=data_sources,
         is_error=is_error,
         is_pro=is_pro,          # <<-- thêm dòng này
+    )
+
+@flask_app.route("/report/view/<cache_key>")
+def view_report(cache_key):
+    """
+    Route hiển thị Web App Report từ Redis (JSON).
+    """
+    cached = get_report_from_redis(cache_key)
+    
+    if not cached:
+        return render_template_string(REPORT_404_TEMPLATE), 404
+
+    text_json, generated_at, is_error, wait_sec = cached
+
+    if is_error:
+        return f"<h3>Đang gặp lỗi hoặc quá tải: {text_json}</h3>", 500
+
+    try:
+        data = json.loads(text_json)
+    except Exception as e:
+        log.error(f"Lỗi parse JSON report route: {e}")
+        return "Lỗi dữ liệu báo cáo (Invalid JSON)", 500
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    time_str = "Vừa xong"
+    if generated_at:
+        if generated_at.tzinfo is None:
+             generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+        time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
+
+    # [THAY ĐỔI Ở ĐÂY]: Thêm is_pro=True
+    return render_template_string(
+        REPORT_HTML_TEMPLATE, 
+        data=data, 
+        generated_at=time_str,
+        is_pro=True  # <--- Luôn hiển thị badge Pro cho báo cáo này
     )
 
 def _apply_simple_markdown(text: str) -> str:
