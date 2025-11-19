@@ -6160,7 +6160,15 @@ async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Dữ liệu Reports (Chỉ hiện nếu là Pro)
         "reports": [
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com"}
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
         ] if is_pro_flag else [],
 
         # Tin tức (Hiện cho cả 2)
