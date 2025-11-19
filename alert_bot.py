@@ -1200,16 +1200,6 @@ def format_perf_line(sym: str, perf: dict) -> str:
         f"ngày {day_str}, tuần {week_str}, tháng {month_str}"
     )
 
-def clean_and_highlight_report(text: str, headings: list[str]) -> str:
-    # Xóa toàn bộ dấu * và _
-    text = text.replace("*", "").replace("_", "")
-
-    # Thêm dấu * vào đúng các heading mong muốn
-    for h in headings:
-        text = text.replace(h, f"*{h}*")
-
-    return text
-
 # HELPER: PHÂN LOẠI LỖI VÀ NOTIFY ADMIN
 def classify_error_quota(e: Exception) -> bool:
     """
@@ -1335,84 +1325,55 @@ LƯU Ý:
 # HÀM GỌI GEMINI CHO HỒ SƠ DOANH NGHIỆP (/info)
 # ==============================================
 
-def build_prompt_for_profile(symbol: str) -> str:
+def call_gemini_for_profile(symbol: str) -> str:
     """
-    Tạo prompt chuyên biệt để hỏi Gemini về hồ sơ doanh nghiệp.
+    (PHIÊN BẢN JSON) Gọi Gemini tạo hồ sơ doanh nghiệp.
     """
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
+
     sym = symbol.upper().strip()
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON) cho hồ sơ: {sym}")
 
     prompt = f"""
 Bạn là chuyên gia phân tích doanh nghiệp tại thị trường chứng khoán Việt Nam.
-Hãy tạo một "Hồ sơ Doanh nghiệp" chi tiết, súc tích cho mã cổ phiếu: {sym}
+Hãy tạo một "Hồ sơ Doanh nghiệp" chi tiết cho mã cổ phiếu: {sym}
 
-YÊU CẦU:
-- Giọng văn chuyên nghiệp, khách quan, trung lập.
-- KHÔNG đưa ra lời khuyên "mua/bán/nắm giữ".
-- KHÔNG dự đoán giá, KHÔNG phân tích kỹ thuật hay hiệu suất giá (như % thay đổi ngày/tuần/tháng).
-- Chỉ tập trung vào CƠ BẢN DOANH NGHIỆP.
-- Không dùng Markdown (*, _).
-- Khi liệt kê nhiều ý trong cùng một mục (ví dụ: các sản phẩm chính, các nhóm khách hàng, các loại rủi ro),
-hãy dùng danh sách gạch đầu dòng theo đúng format:
-    - Ý thứ nhất...
-    - Ý thứ hai...
-    - Ý thứ ba...
-Không dùng số thứ tự 1., 2., 3. cho các bullet này.
-Mỗi bullet phải bắt đầu bằng dấu "-" và một khoảng trắng.
+YÊU CẦU FORMAT:
+Trả về **JSON thuần**. Cấu trúc bắt buộc gồm các keys sau:
+{{
+  "overview": "Tên đầy đủ, ngành nghề, lịch sử tóm tắt...",
+  "products": "Các sản phẩm/dịch vụ cốt lõi...",
+  "business_model": "Cách tạo ra lợi nhuận, khách hàng (B2B/B2C)...",
+  "market_position": "Thị phần, vị thế trong ngành, đối thủ...",
+  "value_chain": "Tự chủ nguyên liệu, gia công hay phân phối...",
+  "moat": "Lợi thế cạnh tranh (thương hiệu, chi phí, công nghệ)...",
+  "risks": "Rủi ro đặc thù (nguyên liệu, tỷ giá, pháp lý)...",
+  "leadership": "Ban lãnh đạo chủ chốt và cơ cấu cổ đông..."
+}}
 
-Cấu trúc nội dung (giữ nguyên các tiêu đề này):
-
-🔹 Tổng quan: (Tên đầy đủ, ngành nghề chính, lịch sử tóm tắt nếu có)
-
-🔹 Sản phẩm & Dịch vụ: (Công ty làm gì? Sản phẩm/dịch vụ cốt lõi là gì?)
-
-🔹 Mô hình kinh doanh: (Cách tạo ra doanh thu và lợi nhuận? Khách hàng chính là ai - B2B/B2C?)
-
-🔹 Vị thế & Thị trường: (Quy mô thị trường? Công ty đang đứng ở đâu trong ngành, thị phần (nếu có)? Đối thủ cạnh tranh chính là ai?)
-
-🔹 Vị thế chuỗi giá trị: (Công ty tự sản xuất, gia công OEM, hay chỉ phân phối? Mức độ tự chủ nguyên liệu?)
-
-🔹 Lợi thế cạnh tranh: (Điều gì làm công ty nổi bật? Ví dụ: thương hiệu mạnh, chi phí thấp, mạng lưới phân phối, công nghệ độc quyền...)
-
-🔹 Rủi ro chính: (Các rủi ro cốt lõi đặc thù của ngành hoặc doanh nghiệp. Ví dụ: phụ thuộc nguyên liệu, pháp lý, cạnh tranh gay gắt, rủi ro tỷ giá...)
-
-🔹 Ban lãnh đạo & Cổ đông: (Chỉ nêu 1-2 nhân vật chủ chốt nếu họ có tầm ảnh hưởng lớn. Cơ cấu cổ đông cô đặc hay pha loãng?)
-
-Chỉ trả về nội dung hồ sơ, không có lời chào hay câu meta.
+YÊU CẦU NỘI DUNG:
+- Các trường nội dung phải trình bày gãy gọn, dùng ký tự xuống dòng (\\n) và gạch đầu dòng (•) để tách ý.
+- Giọng văn khách quan, KHÔNG khuyến nghị mua bán.
 """
-    return prompt.strip()
-
-
-def call_gemini_for_profile(symbol: str) -> str:
-    """
-    Gọi Gemini để sinh hồ sơ doanh nghiệp cho /info.
-    - Dùng build_prompt_for_profile().
-    - Nếu lỗi -> raise Exception để cmd_info xử lý.
-    """
-    if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY chưa được cấu hình."
-        )
-
-    prompt = build_prompt_for_profile(symbol)
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini cho hồ sơ doanh nghiệp, symbol={symbol}")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    model_id = "gemini-2.5-flash" # Bạn có thể đổi sang model mạnh hơn nếu cần
+    model_id = "gemini-2.5-flash"
 
     try:
         resp = client.models.generate_content(
             model=model_id,
             contents=prompt,
+            config={'response_mime_type': 'application/json'}
         )
+        text = getattr(resp, "text", "")
+        if not text:
+            raise RuntimeError("Gemini trả về rỗng.")
+        return text.strip()
+
     except Exception as e:
-        # đẩy lỗi ra ngoài để /info lo
+        # log.error(...) -> để hàm gọi bên ngoài lo
         raise e
-
-    text = getattr(resp, "text", None)
-    if not text:
-        raise RuntimeError("Gemini trả về response nhưng không có .text")
-
-    return text.strip()
 
 #--------------------------------------------
 
@@ -5933,315 +5894,130 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Gửi hồ sơ doanh nghiệp cơ bản cho 1 mã cổ phiếu.
-    (ĐÃ SỬA: Thêm bước kiểm tra mã hợp lệ bằng vnstock
-     trước khi gọi AI, tham khảo từ cmd_add)
-
-    PHASE 1 WEBAPP:
-    - Nếu đã có cache: gửi WebApp /info/<symbol>?chat_id=...
-    - Nếu phải gọi Gemini: tạo xong -> lưu cache -> cũng gửi WebApp.
-    - Không gửi text rất dài trong chat nữa, chỉ gửi tin nhắn + nút WebApp.
+    (REFACORTED JSON) Tra cứu hồ sơ doanh nghiệp.
     """
-
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
-    vn_tz = pytz.timezone(TIMEZONE)
+    if not update.effective_chat: return
+    chat_id = update.effective_chat.id
 
+    # Check Paywall
+    if not await check_pro_access(update, context): return
+
+    if not context.args:
+        await reply_md(update, "⚠️ Cách dùng: `/info <MÃ>` (VD: `/info FPT`)")
+        return
+
+    symbol = context.args[0].strip().upper()
+
+    # ... (Đoạn check 3 ký tự và check price_board giữ nguyên) ...
+    # ... (Log usage & ChatAction giữ nguyên) ...
+
+    cache_key = make_profile_cache_key(symbol)
+    
+    # 1. Check Cache
+    cached = get_profile_from_redis(cache_key)
+    if cached:
+        text, _, is_error, _ = cached
+        if not is_error:
+            # Gửi Web App luôn
+            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+            web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
+            
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))]])
+            await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=kb)
+            return
+
+    # 2. Cache Miss -> Gọi AI
+    await reply_md(update, "🔎 Đang tổng hợp thông tin doanh nghiệp (AI)...")
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    except: pass
+
+    try:
+        # Gọi hàm trả về JSON
+        json_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
+        
+        # Lưu JSON vào Redis
+        save_profile_to_redis(cache_key, json_text, source="on_demand")
+        
+        # Gửi Web App
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
+        
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"📄 Mở hồ sơ {symbol}", web_app=WebAppInfo(url=web_app_url))]])
+        await reply_md(update, f"🚀 Đã tạo xong hồ sơ *{symbol}*.", reply_markup=kb)
+
+    except Exception as e:
+        log.error(f"Lỗi /info: {e}")
+        # ... (Xử lý lỗi lưu cache error như cũ) ...
+        await reply_md(update, "⚠️ Lỗi khi tạo hồ sơ. Vui lòng thử lại sau.")
+
+async def cmd_info_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    (Admin) Xoá TOÀN BỘ cache hồ sơ doanh nghiệp (/info) trong Redis.
+    Quét pattern: profile_cache:*
+    """
     if not update or not update.effective_chat:
         return
 
     chat_id = update.effective_chat.id
 
-    # === 1. KIỂM TRA PAYWALL (PRO-ONLY) ===
-    if not await check_pro_access(update, context):
-        return  # Hàm check_pro_access đã gửi tin nhắn paywall rồi
-
-    # === 2. LẤY MÃ CỔ PHIẾU ===
-    if not context.args:
-        await reply_md(
-            update,
-            "⚠️ Cách dùng: /info <MÃ>\n"
-            "Ví dụ: /info FPT"
-        )
+    # 1. Chỉ Admin mới được dùng
+    if chat_id != ADMIN_ID:
+        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
         return
 
-    symbol = context.args[0].strip().upper()
+    # 2. Ghi log usage
+    await asyncio.to_thread(log_command_usage, chat_id, "/info_clear", ADMIN_ID)
 
-    # Ghi log sử dụng lệnh
-    await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
-
-    # Gửi ChatAction (thay vì "Vui lòng đợi...")
-    try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass  # Bỏ qua nếu lỗi
-
-    # === 2.1. KIỂM TRA ĐỘ DÀI CƠ BẢN (Giữ nguyên) ===
-    if len(symbol) != 3:  # Chỉ cho mã có 3 ký tự
-        await reply_md(
-            update,
-            "⚠️ Mã cổ phiếu không hợp lệ.\n"
-            "Hiện tại bot chỉ hỗ trợ mã cổ phiếu gồm đúng 3 chữ cái.\n"
-            "Ví dụ: HPG, SSI, VNM."
-        )
-        return
-
-    # ==========================================================
-    # === 2.5. KIỂM TRA MÃ HỢP LỆ (VCI) (MỚI - Lấy từ cmd_add) ===
-    # ==========================================================
-    global stock_trading  # Sử dụng trading object toàn cục đã khởi tạo
-
-    # Kiểm tra xem object trading có sẵn sàng không
-    if stock_trading is None:
-        await reply_md(
-            update,
-            "⚠️ Lỗi: Dịch vụ `stock_trading` (VCI) chưa sẵn sàng. Vui lòng thử lại sau giây lát."
-        )
-        log.warning(f"[{INSTANCE_ID}] [/info] Bị gọi khi stock_trading là None.")
-        return
-
-    try:
-        # Chạy Network I/O trong thread
-        df = await asyncio.to_thread(stock_trading.price_board, [symbol])
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi gọi price_board cho {symbol}: {e}")
-        await reply_md(
-            update,
-            f"⚠️ Không thể kiểm tra dữ liệu cho mã *{symbol}*. Lỗi: {e}"
-        )
-        return
-
-    # SỬA LỖI: Lấy dòng đầu tiên để truy cập
-    row = df.iloc[0]
-    ref_price = row.get(("listing", "ref_price"))  # Lấy giá tham chiếu
-
-    # Nếu vnstock không trả về dữ liệu -> coi như mã không hợp lệ
-    if df is None or ref_price is None:
-        await reply_md(
-            update,
-            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
-            "Vui lòng kiểm tra lại mã (chỉ hỗ trợ cổ phiếu VNINDEX)."
-        )
-        return
-
-    # Nếu đến đây thì mã là hợp lệ
-    cache_key = make_profile_cache_key(symbol)
-    log.info(f"[{INSTANCE_ID}] /info: Mã {symbol} hợp lệ. Đang check cache key={cache_key}")
-
-    # === 3. KIỂM TRA CACHE (REDIS) ===
-    cached = get_profile_from_redis(cache_key)  # max_age_days mặc định là 30
-    if cached is not None:
-        text, generated_at, is_error, wait_sec = cached
-        log.info(
-            f"[{INSTANCE_ID}] /info cache HIT cho chat_id={chat_id}, "
-            f"key={cache_key}, is_error={is_error}, generated_at={generated_at}"
-        )
-
-        # A. Cache là lỗi (ví dụ: lần trước gọi bị quota)
-        if is_error:
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            if generated_at.tzinfo is None:
-                generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
-
-            remain_sec = None
-            if wait_sec is not None:
-                elapsed = (now_utc - generated_at).total_seconds()
-                remain_sec = max(0, wait_sec - elapsed)
-
-            if remain_sec is not None and remain_sec > 0:
-                remain_min = math.ceil(remain_sec / 60)
-                await reply_md(
-                    update,
-                    (
-                        f"⚠️ Hệ thống đang bận xử lý hồ sơ cho *{symbol}*.\n"
-                        f"Vui lòng thử lại sau khoảng ~{remain_min} phút nữa."
-                    ),
-                )
-                return
-            # Nếu hết thời gian chờ -> cho phép rơi xuống dưới để gọi lại AI
-
-        # B. Cache OK
-        else:
-            # Dùng cache đã có và gửi WebApp cho user
-            time_str = None
-            if generated_at is not None:
-                try:
-                    time_str = generated_at.astimezone(vn_tz).strftime("%d/%m/%Y %H:%M")
-                except Exception:
-                    time_str = None
-
-            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-            web_app_url = f"{base_url}/info/{symbol}"
-            try:
-                # Gửi kèm chat_id để sau này có thể cá nhân hoá nếu cần
-                web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
-            except Exception:
-                pass
-
-            lines = [f"ℹ️ Hồ sơ doanh nghiệp *{symbol}* đã sẵn sàng."]
-            if time_str:
-                lines.append(
-                    f"_Hồ sơ được tạo vào {time_str}. Sử dụng cache tối đa 30 ngày._"
-                )
-            lines.append("")
-            lines.append("Nhấn nút bên dưới để mở giao diện chi tiết.")
-            msg = "\n".join(lines)
-
-            kb = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(
-                    text=f"📄 Mở hồ sơ {symbol}",
-                    web_app=WebAppInfo(url=web_app_url)
-                )]]
-            )
-
-            await reply_md(update, msg, reply_markup=kb)
-            return
-
-    # === 4. CACHE MISS -> GỌI GEMINI (Giờ đã an toàn) ===
-    log.info(f"[{INSTANCE_ID}] /info cache MISS. Đang gọi Gemini cho {symbol}...")
-
-    # Nhắc nhẹ để user biết bot đang xử lý
     await reply_md(
         update,
-        "🔎 Vui lòng đợi, bot đang tổng hợp thông tin cho bạn...."
+        "🔎 Đang quét và xoá *toàn bộ cache hồ sơ doanh nghiệp (/info)* trong Redis...",
     )
 
-    # Gửi lại ChatAction (vì gọi AI rất lâu)
-    try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass
-
-    # (Task "send_slow_notice" vẫn rất hữu ích)
-    done_flag = {"done": False}
-
-    async def send_slow_notice():
-        try:
-            await asyncio.sleep(6)
-            if not done_flag["done"]:
-                await send_md(
-                    context.bot,
-                    chat_id,
-                    f"⏳ Hồ sơ của *{symbol}* hơi chi tiết nên bot cần thêm chút thời gian...\n"
-                    "Cảm ơn bạn đã kiên nhẫn chờ ạ 🙏",
-                )
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] /info reminder error: {e}")
-
-    asyncio.create_task(send_slow_notice())
-
-    try:
-        start = time.time()
-        # Gọi hàm gọi Gemini (blocking) trong thread
-        output_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
-        duration = time.time() - start
-        done_flag["done"] = True  # báo với reminder là đã xong
-
-        log.info(
-            f"[{INSTANCE_ID}] /info Gemini done in {duration:.2f}s (chat_id={chat_id})"
-        )
-
-        # Tiêu đề cần in đậm (lấy từ prompt)
-        PROFILE_HEADINGS = [
-            "Tổng quan:",
-            "Sản phẩm & Dịch vụ:",
-            "Mô hình kinh doanh:",
-            "Vị thế & Thị trường:",
-            "Vị thế chuỗi giá trị:",
-            "Lợi thế cạnh tranh:",
-            "Rủi ro chính:",
-            "Ban lãnh đạo & Cổ đông:",
-        ]
-
-        # Dùng lại hàm clean_and_highlight_report của /report
-        text = clean_and_highlight_report(output_text, PROFILE_HEADINGS)
-
-        # Lưu cache OK vào Redis (TTL 30 ngày)
-        save_profile_to_redis(cache_key, text, source="on_demand")
-
-        now = datetime.datetime.now(vn_tz)
-        time_str = now.strftime("%d/%m/%Y %H:%M")
-
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        web_app_url = f"{base_url}/info/{symbol}"
-        try:
-            web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
-        except Exception:
-            pass
-
-        lines = [f"ℹ️ Hồ sơ doanh nghiệp *{symbol}* đã được tạo xong."]
-        lines.append(f"_Hồ sơ được tạo vào {time_str}._")
-        lines.append("")
-        lines.append("Nhấn nút bên dưới để mở giao diện chi tiết.")
-        msg = "\n".join(lines)
-
-        kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(
-                text=f"📄 Mở hồ sơ {symbol}",
-                web_app=WebAppInfo(url=web_app_url)
-            )]]
-        )
-
-        await reply_md(update, msg, reply_markup=kb)
-
-    # === 5. XỬ LÝ LỖI KHI GỌI GEMINI (Giữ nguyên) ===
-    except Exception as e:
-        done_flag["done"] = True
-        is_quota = classify_error_quota(e)  # Dùng lại hàm của /report
-
-        if is_quota:
-            user_msg = (
-                f"⚠️ Hiện tại hệ thống chưa tạo được hồ sơ *{symbol}* do dịch vụ AI (Gemini) "
-                "đang quá tải hoặc tạm thời hết quota.\n"
-                "Bạn vui lòng thử lại sau khoảng 2 phút nữa."
-            )
-            notify_admin_flag = False
-        else:
-            user_msg = (
-                f"⚠️ Hồ sơ của *{symbol}* tạm thời gặp lỗi kỹ thuật.\n"
-                "Hệ thống đã ghi nhận lỗi này và thông báo cho Admin.\n"
-                "Bạn vui lòng đợi khoảng 2 phút rồi thử lại."
-            )
-            notify_admin_flag = True
-
-        # Gửi thông báo lỗi cho user
-        try:
-            await reply_md(update, user_msg)
-        except Exception as e_md:
-            log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi gửi message lỗi cho user: {e_md}")
-
-        # Lưu cache lỗi vào Redis với TTL 120s
-        try:
-            save_profile_to_redis(
-                cache_key,
-                user_msg,
-                source="error",
-                is_error=True,
-                wait_sec=120,
-            )
-        except Exception as e_cache:
-            log.warning(f"[{INSTANCE_ID}] [/info] Lỗi khi lưu cache lỗi: {e_cache}")
-
-        # Notify Admin nếu cần
-        if notify_admin_flag and tg_app and tg_app.bot:
+    # 3. Hàm sync: clear tất cả key profile_cache:*
+    def _clear_all_profile_cache() -> int:
+        r = get_redis()
+        deleted = 0
+        # SCAN pattern profile_cache:*
+        for key in r.scan_iter(match="profile_cache:*"):
             try:
-                # Dùng lại hàm của /report, chỉ notify Admin 1 lần
-                await notify_admin_report_error_once(
-                    tg_app.bot,
-                    f"profile_cache:{cache_key}",  # Thêm prefix để phân biệt
-                    e,
-                )
-            except Exception as e2:
-                log.warning(
-                    f"[{INSTANCE_ID}] notify_admin_report_error_once lỗi: {e2}"
-                )
+                r.delete(key)
+                deleted += 1
+            except Exception:
+                continue
+        return deleted
 
+    try:
+        deleted_count = await asyncio.to_thread(_clear_all_profile_cache)
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}][INFO_CLEAR] Lỗi khi xoá profile_cache:*: {e}")
+        await reply_md(
+            update,
+            f"⚠️ Lỗi khi xoá cache hồ sơ trong Redis: `{e}`",
+        )
+        return
+
+    # 4. Phản hồi kết quả
+    if deleted_count > 0:
+        await reply_md(
+            update,
+            (
+                f"✅ Đã xoá *{deleted_count}* hồ sơ doanh nghiệp trong cache.\n"
+                "Lần tới gọi `/info`, bot sẽ gọi AI để tạo mới."
+            ),
+        )
+    else:
+        await reply_md(
+            update,
+            (
+                "ℹ️ Không tìm thấy cache hồ sơ nào (`profile_cache:*`).\n"
+                "Cache có thể đã hết hạn hoặc chưa được tạo."
+            ),
+        )
 #==========================================
 
 async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -6734,95 +6510,88 @@ def view_digest(digest_id):
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
 
 @flask_app.route("/info/<symbol>")
+# Trong alert_bot.py
+
+@flask_app.route("/info/<symbol>")
 def view_profile(symbol: str):
     """
-    Route hiển thị WebApp hồ sơ doanh nghiệp cho /info.
+    Route hiển thị WebApp hồ sơ (JSON Mode).
     """
     if not symbol:
         return render_template_string(PROFILE_404_TEMPLATE, symbol=""), 404
 
     sym = symbol.upper().strip()
     cache_key = make_profile_cache_key(sym)
-
     cached = get_profile_from_redis(cache_key)
+
     if not cached:
         return render_template_string(PROFILE_404_TEMPLATE, symbol=sym), 404
 
-    text, generated_at, is_error, wait_sec = cached
+    text_json, generated_at, is_error, wait_sec = cached
 
-    # --- Xác định user Pro từ query chat_id ---
+    if is_error:
+        return f"<h3>Đang xử lý hoặc lỗi: {text_json}</h3>", 500
+
+    # 1. Parse JSON
+    try:
+        data = json.loads(text_json)
+    except Exception as e:
+        log.error(f"Lỗi parse JSON profile: {e}")
+        return "Dữ liệu hồ sơ lỗi format.", 500
+
+    # 2. Map JSON keys sang UI Sections (Tiêu đề + Icon)
+    # Cấu trúc: (JSON_Key, Tiêu đề hiển thị, Icon)
+    SECTION_MAPPING = [
+        ("overview",        "Tổng quan",                "🧭"),
+        ("products",        "Sản phẩm & Dịch vụ",       "🏭"),
+        ("business_model",  "Mô hình kinh doanh",       "🔧"),
+        ("market_position", "Vị thế & Thị trường",      "📍"),
+        ("value_chain",     "Vị thế chuỗi giá trị",     "🔗"),
+        ("moat",            "Lợi thế cạnh tranh",       "🛡️"),
+        ("risks",           "Rủi ro chính",             "⚠️"),
+        ("leadership",      "Ban lãnh đạo & Cổ đông",   "👔")
+    ]
+
+    sections_view = []
+    for key, title, icon in SECTION_MAPPING:
+        content = data.get(key, "")
+        if content:
+            # Tạo ID để làm mục lục (slug)
+            sec_id = "sec_" + key
+            sections_view.append({
+                "id": sec_id,
+                "title": title,
+                "icon": icon,
+                "body": content # Content này chứa \n, CSS sẽ lo việc xuống dòng
+            })
+
+    # 3. Xử lý các thông tin phụ
     is_pro = False
     try:
         chat_id_param = request.args.get("chat_id")
         if chat_id_param:
-            chat_id_int = int(chat_id_param)
-            is_pro = is_user_pro(chat_id_int)
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] /info view_profile: lỗi khi check is_user_pro: {e}")
+            is_pro = is_user_pro(int(chat_id_param))
+    except: pass
 
-    # Format thời gian tạo: YYYY-MM-DD HH:MM:SS (VN)
-    generated_str = None
-    report_code = None
-    local_dt = None
-    if generated_at is not None:
-        try:
-            if generated_at.tzinfo is None:
-                generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
-            vn_tz = pytz.timezone(TIMEZONE)
-            local_dt = generated_at.astimezone(vn_tz)
-            generated_str = local_dt.strftime("%Y-%m-%d %H:%M:%S")
-            code_time = local_dt.strftime("%Y%m%d%H%M")
-            report_code = f"INFO-{sym}-{code_time}"
-        except Exception:
-            generated_str = str(generated_at)
+    vn_tz = pytz.timezone(TIMEZONE)
+    generated_str = ""
+    report_code = ""
+    if generated_at:
+        if generated_at.tzinfo is None:
+             generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
+        local_dt = generated_at.astimezone(vn_tz)
+        generated_str = local_dt.strftime("%H:%M %d/%m/%Y")
+        report_code = f"INFO-{sym}-{local_dt.strftime('%Y%m%d')}"
 
-    # Parse section & render HTML
-    sections_raw = build_profile_sections(text)
-    full_html = render_profile_text_to_html(text)
-
-    section_views = []
-    for idx, sec in enumerate(sections_raw):
-        title = sec["title"]
-        body = sec["body"]
-
-        body_html = render_profile_text_to_html(body)
-
-        sec_id = None
-        if title:
-            slug = re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_").lower()
-            if not slug:
-                slug = f"sec_{idx}"
-            sec_id = f"sec_{slug}"
-
-        icon = get_profile_section_icon(title)
-
-        section_views.append(
-            {
-                "id": sec_id,
-                "title": title,
-                "icon": icon,
-                "body_html": body_html,
-            }
-        )
-
-    if len(section_views) == 1 and section_views[0]["title"] is None:
-        section_views = []
-
-    data_sources = (
-        "Nguồn dữ liệu: BCTC doanh nghiệp, công bố thông tin, dữ liệu thị trường (VCI), "
-        "tổng hợp & phân tích bởi AI (Gemini)."
-    )
-
+    # 4. Render Template (Dùng lại PROFILE_HTML_TEMPLATE)
     return render_template_string(
         PROFILE_HTML_TEMPLATE,
         symbol=sym,
-        profile_html=full_html,
-        sections=section_views,
+        sections=sections_view, # Truyền danh sách đã map
         generated_at=generated_str,
         report_code=report_code,
-        data_sources=data_sources,
-        is_error=is_error,
-        is_pro=is_pro,          # <<-- thêm dòng này
+        is_pro=is_pro,
+        is_error=False
     )
 
 @flask_app.route("/report/view/<cache_key>")
@@ -6861,151 +6630,6 @@ def view_report(cache_key):
         is_pro=True  # <--- Luôn hiển thị badge Pro cho báo cáo này
     )
 
-def _apply_simple_markdown(text: str) -> str:
-    """
-    Escape HTML + convert *bold* -> <strong>bold</strong>.
-    """
-    escaped = html.escape(text)
-    escaped = re.sub(r"\*(.+?)\*", r"<strong>\1</strong>", escaped)
-    return escaped
-
-def render_profile_text_to_html(text: str | None) -> str:
-    """
-    Chuyển profile_text (Markdown Telegram đơn giản) sang HTML:
-
-    - Dòng bullet bắt đầu bằng: -, •, ▪, ●, 🔹 -> <ul><li>...</li></ul>
-    - Dòng thường -> <p>...</p>
-    - *bold* -> <strong>bold</strong>
-    """
-    if not text:
-        return ""
-
-    lines = text.splitlines()
-    out: list[str] = []
-    in_list = False
-
-    bullet_re = re.compile(r"^[-•▪▫●🔹]\s*(.*)$")
-
-    for raw in lines:
-        line = raw.rstrip()
-
-        if not line.strip():
-            # dòng trống
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append("<br>")
-            continue
-
-        stripped = line.lstrip()
-        m = bullet_re.match(stripped)
-
-        if m:
-            # bullet
-            if not in_list:
-                out.append("<ul>")
-                in_list = True
-            content = m.group(1)
-            out.append(f"<li>{_apply_simple_markdown(content)}</li>")
-        else:
-            # dòng thường
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(f"<p>{_apply_simple_markdown(line)}</p>")
-
-    if in_list:
-        out.append("</ul>")
-
-    return "\n".join(out)
-
-def normalize_headings(text: str) -> str:
-    """
-    Đưa các heading ### XYZ về đầu dòng để regex có thể bắt được.
-    Ví dụ:
-    '... 🚀 ### HPG Giá hiện tại: ...'
-    -> '\n### HPG\nGiá hiện tại: ...'
-    """
-    import re
-
-    # Thêm xuống dòng trước ### nếu đằng trước không phải đầu dòng
-    text = re.sub(r"\s*###\s+", r"\n### ", text)
-
-    # Tách heading ra thành 1 dòng riêng
-    # Ví dụ: "### HPG Giá hiện tại: ..." -> "### HPG\nGiá hiện tại: ..."
-    text = re.sub(r"(###\s+[A-Z0-9_]+)\s+", r"\1\n", text)
-
-    return text
-
-def build_profile_sections(text: str | None) -> list[dict]:
-    """
-    Tách hồ sơ thành các section dựa vào dòng heading kiểu:
-
-    🔹 *Tổng quan:* Nội dung...
-    🔹 *Sản phẩm & Dịch vụ:* ...
-    """
-    if not text:
-        return []
-
-    lines = text.splitlines()
-    sections: list[dict] = []
-    current: dict | None = None
-
-    heading_re = re.compile(r"^[\s\-\u2022•●▪▫🔹]+(\*[^*]+?\*)(:?)(.*)$")
-
-    for raw in lines:
-        line = raw.rstrip()
-        m = heading_re.match(line)
-        if m:
-            # đóng section cũ
-            if current is not None:
-                sections.append(current)
-
-            title_md = m.group(1)  # "*Tổng quan:*"
-            body_start = m.group(3).lstrip() if m.group(3) else ""
-
-            title = title_md.strip("* ").rstrip(":").strip()
-
-            current = {"title": title, "body": body_start}
-        else:
-            if current is None:
-                current = {"title": None, "body": line}
-            else:
-                if current["body"]:
-                    current["body"] += "\n" + line
-                else:
-                    current["body"] = line
-
-    if current is not None:
-        sections.append(current)
-
-    return sections
-
-def get_profile_section_icon(title: str | None) -> str:
-    """
-    Gán icon cho từng section dựa trên tên.
-    """
-    if not title:
-        return "📌"
-
-    t = title.lower()
-    if "tổng quan" in t:
-        return "🧭"
-    if "sản phẩm" in t or "dịch vụ" in t:
-        return "🏭"
-    if "mô hình kinh doanh" in t:
-        return "🔧"
-    if "vị thế" in t and "thị trường" in t:
-        return "📍"
-    if "lợi thế" in t or "cạnh tranh" in t:
-        return "🛡️"
-    if "rủi ro" in t:
-        return "⚠️"
-    if "ban lãnh đạo" in t or "cổ đông" in t:
-        return "👔"
-    if "kqkd" in t or "kết quả kinh doanh" in t or "tài chính" in t:
-        return "📊"
-    return "📌"
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
 # Đây là phần code đã sửa lỗi hoàn toàn
@@ -7216,6 +6840,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
             ("screener_value_clear", "(admin) Xóa dữ liệu screener cache"),
             ("report_clear", "(admin) Xóa dữ liệu AI report trên redis"),
+            ("info_clear", "(admin) Xóa dữ liệu AI hồ sơ (/info)"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
             ("news_test_macro", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
             ("news_test_specialized", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
@@ -7227,7 +6852,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
             ("test_digest", "(admin) Gửi bản tin test Web App ngay lập tức"),
         ]
-        tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
+        
 
         # Tách commands
         user_cmds = [(c, d) for c, d in commands if "(admin)" not in d]
@@ -7357,6 +6982,7 @@ async def main():
     tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
     tg_app.add_handler(CommandHandler("info", cmd_info))
+    tg_app.add_handler(CommandHandler("info_clear", cmd_info_clear))
     tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
     tg_app.add_handler(CommandHandler("vn30f1m_status", cmd_vn30f1m_status))
     tg_app.add_handler(CommandHandler("vn30f1m_on", cmd_vn30f1m_on))

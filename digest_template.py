@@ -327,7 +327,6 @@ DIGEST_404_TEMPLATE = """
 """
 
 #--------------------------------
-
 PROFILE_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -336,210 +335,126 @@ PROFILE_HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Hồ sơ doanh nghiệp {{ symbol }}</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-color: var(--tg-theme-bg-color, #f2f2f7);
             --text-color: var(--tg-theme-text-color, #000);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
-            --card-bg: var(--tg-theme-secondary-bg-color, #fff);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
             --border-color: rgba(0, 0, 0, 0.06);
             --accent: var(--tg-theme-button-color, #007aff);
         }
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
+        
         body {
-            margin: 0;
-            padding: 16px;
-            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            margin: 0; padding: 16px;
+            font-family: 'Inter', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-color);
+            -webkit-font-smoothing: antialiased;
         }
-        .page {
-            max-width: 720px;
-            margin: 0 auto;
-        }
-        .header {
-            margin-bottom: 8px;
-        }
+        
+        .page { max-width: 720px; margin: 0 auto; }
+        
+        /* Header Styles */
+        .header { margin-bottom: 12px; }
+        
         .chip-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 4px;
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 8px; margin-bottom: 8px;
         }
         .chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: rgba(0,0,0,0.04);
-            font-size: 11px;
-            color: var(--hint-color);
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            font-weight: 600;
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 10px; border-radius: 20px;
+            background: rgba(0,0,0,0.05);
+            font-size: 11px; color: var(--hint-color);
+            font-weight: 600; text-transform: uppercase;
         }
+        
+        /* PRO Badge Style */
         .pro-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 4px 10px;
-            border-radius: 999px;
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 3px 8px; border-radius: 8px;
             background: linear-gradient(135deg, #FFD700, #FFA500);
-            color: #4a2c00;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 0.06em;
-            box-shadow: 0 4px 10px rgba(255,165,0,0.35);
-            text-transform: uppercase;
-            white-space: nowrap;
+            color: white; font-size: 10px; font-weight: 800;
+            box-shadow: 0 3px 8px rgba(255,165,0,0.3);
+            text-transform: uppercase; letter-spacing: 0.5px;
+            text-shadow: 0 1px 1px rgba(0,0,0,0.1);
         }
-        .symbol {
-            display: flex;
-            align-items: baseline;
-            gap: 8px;
-            margin-top: 8px;
-        }
-        .symbol-main {
-            font-size: 24px;
-            font-weight: 800;
-            letter-spacing: 0.02em;
-        }
-        .symbol-sub {
-            font-size: 13px;
-            color: var(--hint-color);
-            letter-spacing: 0.01em;
-        }
-        .meta {
-            margin-top: 6px;
-            font-size: 12px;
-            color: var(--hint-color);
-        }
-        .meta-footer {
-            margin-top: 18px;
-            font-size: 11px;
-            color: var(--hint-color);
-            line-height: 1.5;
-        }
-        .meta-footer .meta-line + .meta-line {
-            margin-top: 2px;
-        }
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 11px;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: rgba(0,0,0,0.04);
-            color: var(--hint-color);
-            margin-top: 6px;
-        }
-        .status-dot-ok {
-            width: 8px;
-            height: 8px;
-            border-radius: 999px;
-            background: #12b886;
-        }
+
+        .symbol { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+        .symbol-main { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; color: var(--accent); }
+        .symbol-sub { font-size: 13px; color: var(--hint-color); font-weight: 500; }
+        
+        .meta { margin-top: 4px; font-size: 11px; color: var(--hint-color); }
+
+        /* Table of Contents (Chips) */
         .toc {
-            margin-top: 12px;
-            display: flex;
-            flex-wrap: nowrap;
-            gap: 8px;
-            overflow-x: auto;
-            padding-bottom: 4px;
-            -webkit-overflow-scrolling: touch;
+            margin-top: 16px; display: flex; gap: 8px;
+            overflow-x: auto; padding-bottom: 8px;
+            -webkit-overflow-scrolling: touch; scrollbar-width: none;
         }
+        .toc::-webkit-scrollbar { display: none; }
+        
         .toc-chip {
-            flex: 0 0 auto;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 6px 10px;
-            border-radius: 999px;
-            border: 1px solid rgba(0,0,0,0.06);
-            background: rgba(255,255,255,0.7);
-            font-size: 11px;
-            color: var(--hint-color);
-            cursor: pointer;
-            white-space: nowrap;
-            transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+            flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+            padding: 8px 12px; border-radius: 20px;
+            background: var(--card-bg); border: 1px solid rgba(0,0,0,0.08);
+            font-size: 12px; font-weight: 600; color: var(--text-color);
+            cursor: pointer; transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
         }
-        .toc-chip:hover {
-            background: rgba(255,255,255,0.95);
-            border-color: rgba(0,0,0,0.12);
-            transform: translateY(-1px);
-        }
-        .toc-chip:active {
-            transform: translateY(0);
-            background: rgba(0,0,0,0.04);
-        }
-        .toc-chip-icon {
-            font-size: 13px;
-        }
-        .toc-chip-title {
-            font-weight: 500;
-        }
+        .toc-chip:active { transform: scale(0.96); opacity: 0.8; }
+
+        /* Content Card */
         .card {
             background-color: var(--card-bg);
-            border-radius: 20px;
-            border: 1px solid var(--border-color);
-            padding: 18px 16px;
-            margin-top: 14px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.04);
-            transition: box-shadow 0.18s ease, transform 0.12s ease;
+            border-radius: 16px;
+            padding: 16px; margin-top: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+            border: 1px solid rgba(0,0,0,0.03);
+            scroll-margin-top: 16px; /* Để khi scroll tới không bị che */
         }
-        .card:active {
-            transform: scale(0.995);
-            box-shadow: 0 4px 16px rgba(0,0,0,0.03);
-        }
+        
         .card-title-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 6px;
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 12px; padding-bottom: 8px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
         }
-        .card-title-icon {
-            font-size: 16px;
-        }
-        .card-title {
-            font-size: 15px;
-            font-weight: 700;
-            letter-spacing: 0.01em;
-        }
+        .card-title-icon { font-size: 18px; }
+        .card-title { font-size: 15px; font-weight: 700; text-transform: uppercase; color: var(--text-color); letter-spacing: 0.5px; }
+
+        /* QUAN TRỌNG: Xử lý hiển thị văn bản JSON */
         .profile-text {
             font-size: 14px;
-            line-height: 1.55;
-            white-space: normal;
+            line-height: 1.6;
+            color: var(--text-color);
+            white-space: pre-line; /* Tự động xuống dòng khi gặp \n */
+            font-weight: 400;
         }
-        .profile-text p {
-            margin: 4px 0;
-        }
-        .profile-text ul {
-            margin: 6px 0 6px 18px;
-            padding-left: 0;
-        }
-        .profile-text li {
-            margin: 2px 0;
-        }
-        .footer {
-            margin-top: 18px;
-            display: flex;
-            justify-content: flex-end;
-        }
+
+        /* Footer */
+        .meta-footer { margin-top: 24px; font-size: 11px; color: var(--hint-color); text-align: center; line-height: 1.5; }
+        
+        .footer-btn-container { margin-top: 20px; display: flex; justify-content: center; padding-bottom: 30px; }
         .close-btn {
-            padding: 10px 18px;
-            border-radius: 999px;
-            background: var(--accent);
-            border: none;
-            color: #fff;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
+            padding: 12px 32px; border-radius: 12px;
+            background: var(--card-bg); border: none;
+            color: var(--text-color); font-size: 14px; font-weight: 600;
+            cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        }
+        .close-btn:active { transform: scale(0.98); }
+
+        /* Animation */
+        .card { animation: fadeInUp 0.4s ease-out; animation-fill-mode: backwards; }
+        .card:nth-child(1) { animation-delay: 0.05s; }
+        .card:nth-child(2) { animation-delay: 0.1s; }
+        .card:nth-child(3) { animation-delay: 0.15s; }
+        
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -549,82 +464,64 @@ PROFILE_HTML_TEMPLATE = """
             <div class="chip-row">
                 <div class="chip">Hồ sơ doanh nghiệp</div>
                 {% if is_pro %}
-                <span class="pro-badge">PRO 👑</span>
+                <div class="pro-badge">PRO 👑</div>
                 {% endif %}
             </div>
+            
             <div class="symbol">
                 <div class="symbol-main">{{ symbol }}</div>
-                <div class="symbol-sub">Bản tóm tắt cơ bản doanh nghiệp</div>
+                <div class="symbol-sub">Hồ sơ chi tiết</div>
             </div>
+            
             {% if generated_at %}
-            <div class="meta">
-                Hồ sơ được tạo lúc: {{ generated_at }}
-            </div>
+            <div class="meta">Cập nhật lúc: {{ generated_at }}</div>
             {% endif %}
-            <div class="status-badge">
-                <div class="status-dot-ok"></div>
-                <span>Nội dung lấy từ cache /info</span>
-            </div>
 
-            {% if sections and sections|length > 0 %}
-            <div class="toc" id="toc">
+            {% if sections %}
+            <div class="toc">
                 {% for sec in sections %}
-                    {% if sec.id and sec.title %}
-                    <div class="toc-chip" data-target="{{ sec.id }}">
-                        <span class="toc-chip-icon">{{ sec.icon }}</span>
-                        <span class="toc-chip-title">{{ sec.title }}</span>
-                    </div>
-                    {% endif %}
+                <div class="toc-chip" onclick="scrollToId('{{ sec.id }}')">
+                    <span>{{ sec.icon }} {{ sec.title }}</span>
+                </div>
                 {% endfor %}
             </div>
             {% endif %}
         </div>
 
-        {% if sections and sections|length > 0 %}
-            {% for sec in sections %}
-            <div class="card" {% if sec.id %}id="{{ sec.id }}"{% endif %}>
-                <div class="card-title-row">
-                    <div class="card-title-icon">{{ sec.icon }}</div>
-                    <div class="card-title">{{ sec.title }}</div>
-                </div>
-                <div class="profile-text">
-                    {{ sec.body_html | safe }}
-                </div>
+        {% for sec in sections %}
+        <div class="card" id="{{ sec.id }}">
+            <div class="card-title-row">
+                <div class="card-title-icon">{{ sec.icon }}</div>
+                <div class="card-title">{{ sec.title }}</div>
             </div>
-            {% endfor %}
-        {% else %}
-            <div class="card">
-                <div class="profile-text">
-                    {{ profile_html | safe }}
-                </div>
+            <div class="profile-text">
+                {{ sec.body }}
             </div>
-        {% endif %}
+        </div>
+        {% endfor %}
 
         <div class="meta-footer">
-            <div class="meta-line">{{ data_sources }}</div>
+            <div>Nguồn: Dữ liệu thị trường & BCTC, tổng hợp bởi Gemini AI.</div>
             {% if report_code %}
-            <div class="meta-line">Mã hồ sơ: {{ report_code }}</div>
+            <div>Ref ID: {{ report_code }}</div>
             {% endif %}
         </div>
 
-        <div class="footer">
-            <button class="close-btn" onclick="Telegram.WebApp.close()">Đóng</button>
+        <div class="footer-btn-container">
+            <button class="close-btn" onclick="Telegram.WebApp.close()">Đóng Hồ Sơ</button>
         </div>
     </div>
+
     <script>
         Telegram.WebApp.ready();
         Telegram.WebApp.expand();
 
-        // Smooth scroll khi bấm chip mục lục
-        document.querySelectorAll('.toc-chip').forEach(function(chip) {
-            chip.addEventListener('click', function() {
-                var targetId = this.getAttribute('data-target');
-                if (!targetId) return;
-                var el = document.getElementById(targetId);
-                if (!el) return;
+        function scrollToId(id) {
+            const el = document.getElementById(id);
+            if (el) {
                 el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            });
-        });
+            }
+        }
     </script>
 </body>
 </html>
