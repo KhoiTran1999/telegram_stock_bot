@@ -2598,74 +2598,90 @@ async def weekly_report_loop():
             log.error(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_weekly_report: {e}")
             await asyncio.sleep(300)
 
+# ===============================================================
+# HÀM HELPER TÍNH GIỜ QUÉT (Dùng chung cho cả 2 loop tin tức)
+# ===============================================================
+def get_seconds_until_next_scan(now: datetime.datetime, target_hours: list[int]) -> float:
+    """
+    Tính số giây từ 'now' đến mốc giờ cố định tiếp theo trong danh sách target_hours.
+    Ví dụ: target_hours=[6, 18] -> Sẽ trả về giây tới 06:00 hoặc 18:00 gần nhất.
+    """
+    candidates = []
+    for h in target_hours:
+        # Tạo mốc giờ h:00:00 hôm nay
+        t = now.replace(hour=h, minute=0, second=0, microsecond=0)
+        # Nếu giờ này đã qua, dời sang ngày mai
+        if t <= now:
+            t += datetime.timedelta(days=1)
+        candidates.append(t)
+    
+    # Lấy mốc thời gian gần nhất trong tương lai
+    next_run = min(candidates)
+    return (next_run - now).total_seconds()
+
+
+# ===============================================================
+# 1. LOOP TIN CHUYÊN NGÀNH (Sửa đổi: Quét 06:00 & 18:00)
+# ===============================================================
 async def news_specialized_loop():
     """
-    Quét RSS chuyên ngành, tìm bài có chứa mã cổ phiếu HOẶC tên doanh nghiệp
-    trong danh mục của user.
-    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
+    Quét RSS chuyên ngành 2 LẦN/NGÀY (06:00 và 18:00).
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
-    warmed_up = False
+    
+    # 🕒 CẤU HÌNH GIỜ QUÉT (Sáng & Chiều)
+    SCAN_HOURS = [6, 18] 
 
     all_specialized_urls: list[str] = []
     for urls in RSS_FEEDS_SPECIALIZED.values():
         all_specialized_urls.extend(urls)
 
+    log.info(f"[{INSTANCE_ID}][NEWS_SPEC] Đã chuyển sang chế độ quét theo lịch: {SCAN_HOURS}h hàng ngày.")
+
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
+        # 1. TÍNH TOÁN THỜI GIAN NGỦ TỚI PHIÊN TIẾP THEO
+        # Nếu bot vừa khởi động (loop_id=1), ta có thể cho chạy ngay hoặc chờ. 
+        # Ở đây mình chọn logic: Chờ đúng giờ mới chạy để tiết kiệm resource.
+        wait_seconds = get_seconds_until_next_scan(now, SCAN_HOURS)
+        next_run_str = (now + datetime.timedelta(seconds=wait_seconds)).strftime("%H:%M %d/%m")
+        
+        log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Ngủ {wait_seconds/3600:.1f}h. Quét tiếp theo lúc: {next_run_str}")
+        
+        await asyncio.sleep(wait_seconds)
+
+        # 2. THỨC DẬY & KIỂM TRA ACTIVE
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
+            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Đến giờ quét nhưng Bot đang TẮT.")
+            await asyncio.sleep(60) # Chờ 1 phút rồi check lại schedule
             continue
 
+        # 3. THỰC HIỆN QUÉT (Logic cũ giữ nguyên)
         try:
-            # 1. Fetch RSS (Giữ nguyên)
+            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] 🟢 Bắt đầu quét tin chuyên ngành...")
+            
             entries = await asyncio.to_thread(
                 fetch_rss_entries_for_urls, all_specialized_urls
             )
             
-            # 2. Warm-up (Giữ nguyên)
+            # Giới hạn số lượng để xử lý nhanh
             if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
                 entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
-            if not warmed_up:
-                count_in_db = await asyncio.to_thread(
-                    get_news_seen_count, NEWS_FEED_TYPE_SPECIALIZED
-                )
-                if count_in_db == 0 and entries:
-                    for it in entries:
-                        await asyncio.to_thread(
-                            mark_news_seen,
-                            NEWS_FEED_TYPE_SPECIALIZED,
-                            link=it["link"],
-                            guid=None,
-                            title=it["title"],
-                            published=it["published"],
-                        )
-                    warmed_up = True
-                    log.info(
-                        f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Warm-up lần đầu, lưu {len(entries)} bài, KHÔNG gửi tin."
-                    )
-                    await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
-                    continue
-                else:
-                    warmed_up = True
-
-            if not entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài RSS.")
-                await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
-                continue
-
-            # 3. Lọc bài mới (Giữ nguyên)
             new_entries = []
+            scan_now = datetime.datetime.now(vn_tz) # Lấy giờ thực tế lúc quét
+            
             for it in entries:
                 link = (it.get("link") or "").strip()
                 if not link: continue
+                
+                # Check tươi mới & Check đã xem
                 pub_dt = it.get("published")
-                if not is_fresh_news(pub_dt, now): continue
+                if not is_fresh_news(pub_dt, scan_now): continue
+                
                 is_seen = await asyncio.to_thread(
                     has_news_seen,
                     NEWS_FEED_TYPE_SPECIALIZED,
@@ -2675,25 +2691,11 @@ async def news_specialized_loop():
                     new_entries.append(it)
             
             if not new_entries:
-                log.info(
-                    f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài chuyên ngành mới."
-                )
-                await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
+                log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài mới.")
                 continue
 
-            unique_by_link: dict[str, dict[str, Any]] = {}
-            for it in new_entries:
-                link = (it.get("link") or "").strip()
-                if not link: continue
-                if link in unique_by_link: continue
-                unique_by_link[link] = it
-            new_entries = list(unique_by_link.values())
-
-            # ❗️ SỬA: XÓA TOÀN BỘ KHỐI 4, 5, 6, 7 (LẤY USER, COMPILE, XỬ LÝ, GỬI BÀI)
-            # Chỉ giữ lại logic "Đánh dấu đã xem"
-            
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Phát hiện {len(new_entries)} bài chuyên ngành mới. Đang đánh dấu đã xem...")
-
+            # Lưu vào DB (Chỉ thu thập)
+            unique_count = 0
             for it in new_entries:
                 await asyncio.to_thread(
                     mark_news_seen,
@@ -2703,77 +2705,70 @@ async def news_specialized_loop():
                     title=it["title"],
                     published=it["published"],
                 )
+                unique_count += 1
 
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Đã đánh dấu xong (chỉ thu thập).")
+            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] ✅ Đã lưu {unique_count} tin mới (chờ Digest sáng).")
 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Lỗi tổng quát: {e}")
+        
+        # (Sau khi quét xong, vòng lặp quay lại đầu -> tính giờ ngủ tiếp theo)
 
-        await asyncio.sleep(NEWS_SPECIALIZED_INTERVAL_SECONDS)
 
+# ===============================================================
+# 2. LOOP TIN VĨ MÔ (Sửa đổi: Quét 06:00 & 18:00)
+# ===============================================================
 async def news_macro_loop():
     """
-    Quét RSS vĩ mô, nếu có bài mới thì broadcast cho tất cả user
-    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
+    Quét RSS vĩ mô 2 LẦN/NGÀY (06:00 và 18:00).
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
-    warmed_up = False
+    
+    # 🕒 CẤU HÌNH GIỜ QUÉT
+    SCAN_HOURS = [6, 18]
+
+    log.info(f"[{INSTANCE_ID}][NEWS_MACRO] Đã chuyển sang chế độ quét theo lịch: {SCAN_HOURS}h hàng ngày.")
 
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
+        # 1. TÍNH TOÁN THỜI GIAN NGỦ
+        wait_seconds = get_seconds_until_next_scan(now, SCAN_HOURS)
+        next_run_str = (now + datetime.timedelta(seconds=wait_seconds)).strftime("%H:%M %d/%m")
+
+        log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Ngủ {wait_seconds/3600:.1f}h. Quét tiếp theo lúc: {next_run_str}")
+        
+        await asyncio.sleep(wait_seconds)
+
+        # 2. THỨC DẬY & KIỂM TRA ACTIVE
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đến giờ quét nhưng Bot đang TẮT.")
             await asyncio.sleep(60)
             continue
 
+        # 3. THỰC HIỆN QUÉT (Logic cũ giữ nguyên)
         try:
-            # 1. Fetch RSS (Giữ nguyên)
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] 🟢 Bắt đầu quét tin vĩ mô...")
+
             entries = await asyncio.to_thread(
                 fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
             )
             
-            # 2. Warm-up (Giữ nguyên)
             if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
                 entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
-            if not warmed_up:
-                count_in_db = await asyncio.to_thread(
-                    get_news_seen_count, NEWS_FEED_TYPE_MACRO
-                )
-                if count_in_db == 0 and entries:
-                    for it in entries:
-                        await asyncio.to_thread(
-                            mark_news_seen,
-                            NEWS_FEED_TYPE_MACRO,
-                            link=it["link"],
-                            guid=None,
-                            title=it["title"],
-                            published=it["published"],
-                        )
-                    warmed_up = True
-                    log.info(
-                        f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Warm-up lần đầu, lưu {len(entries)} bài, KHÔNG gửi tin."
-                    )
-                    await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
-                    continue
-                else:
-                    warmed_up = True
-
-            if not entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài RSS.")
-                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
-                continue
-
-            # 3. Lọc bài mới (Giữ nguyên)
             new_entries = []
+            scan_now = datetime.datetime.now(vn_tz)
+            
             for it in entries:
                 link = (it.get("link") or "").strip()
                 if not link: continue
+                
                 pub_dt = it.get("published")
-                if not is_fresh_news(pub_dt, now): continue
+                if not is_fresh_news(pub_dt, scan_now): continue
+                
                 is_seen = await asyncio.to_thread(
                     has_news_seen,
                     NEWS_FEED_TYPE_MACRO,
@@ -2783,17 +2778,11 @@ async def news_macro_loop():
                     new_entries.append(it)
             
             if not new_entries:
-                log.info(
-                    f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài vĩ mô mới."
-                )
-                await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
+                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài mới.")
                 continue
 
-            # ❗️ SỬA: XÓA TOÀN BỘ KHỐI 4, 5, 6, 7 (LẤY USER, FORMAT, GỬI BÀI)
-            # Chỉ giữ lại logic "Đánh dấu đã xem"
-            
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Phát hiện {len(new_entries)} bài vĩ mô mới. Đang đánh dấu đã xem...")
-
+            # Lưu vào DB
+            unique_count = 0
             for it in new_entries:
                 await asyncio.to_thread(
                     mark_news_seen,
@@ -2803,13 +2792,12 @@ async def news_macro_loop():
                     title=it["title"],
                     published=it["published"],
                 )
+                unique_count += 1
             
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đã đánh dấu xong (chỉ thu thập).")
+            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] ✅ Đã lưu {unique_count} tin vĩ mô mới.")
 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
-
-        await asyncio.sleep(NEWS_MACRO_INTERVAL_SECONDS)
 
 async def news_cleanup_loop():
     """
