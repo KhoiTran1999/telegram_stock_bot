@@ -2407,7 +2407,7 @@ except Exception as e:
 _stock_broadcast_queue = asyncio.Queue()
 _stock_current_price_cache: dict[str, dict] = {} # Cache giá {HPG: {"price": ..., "pct": ...}}
 _stock_current_watch_cache: dict[str, dict] = {} # Cache watchlist {chat_id: {"list": [...]}}
-TICKER_INTERVAL_SECONDS = 5  # Tần suất Ticker (check cache)
+TICKER_INTERVAL_SECONDS = 10  # Tần suất Ticker (check cache)
 FETCHER_INTERVAL_SECONDS = 15 # Tần suất Fetcher (gọi API)
 
 # (Các hàm same_sign, get_quote... của bạn nằm ở đây)
@@ -3127,7 +3127,7 @@ async def news_cleanup_loop():
 # --- Tham số riêng
 VN30F1M_SYMBOL = "VN30F1M"
 VN30F1M_DELTA_THRESHOLD = 5    # ±5 điểm
-VN30F1M_TICK_SECONDS = 5        # chu kỳ quét
+VN30F1M_TICK_SECONDS = 10        # chu kỳ quét
 
 # --- State trong RAM
 _vn30f1m_anchor: float | None = None      # ❗️ SỬA: Mốc di động (giá của lần alert cuối)
