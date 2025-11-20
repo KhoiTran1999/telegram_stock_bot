@@ -2693,17 +2693,12 @@ async def alert_loop():
     - Báo khi giá thay đổi >= 2% so với mốc gần nhất.
     """
     vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
 
     log.info(f"[{INSTANCE_ID}][TICKER_STOCK] Bắt đầu. Mốc khởi tạo = GIÁ THAM CHIẾU (0%).")
 
     while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
 
-        # --- HEARTBEAT LOG (MỚI): Log mỗi 20 vòng (khoảng 60s) ---
-        if loop_id % 20 == 0:
-            log.info(f"[{INSTANCE_ID}][TICKER_STOCK] 💓 Heartbeat: Đang theo dõi {len(_stock_current_watch_cache)} user. Bot vẫn sống.")
+        now = datetime.datetime.now(vn_tz)
 
         # 1. Kiểm tra điều kiện chạy
         if not BOT_ACTIVE:
