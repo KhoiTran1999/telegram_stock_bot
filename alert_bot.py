@@ -2426,30 +2426,29 @@ _vci_blocked_date = None
 # ==============================================
 async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
     """
-    Hàm Async lấy dữ liệu thông minh với cơ chế "Ngắt mạch" (Circuit Breaker).
-    - Mặc định: Thử VCI (Timeout 20s).
-    - Nếu VCI lỗi: Đánh dấu chặn VCI trong ngày hôm nay -> Chuyển ngay sang TCBS.
-    - Các lần gọi sau: Nếu thấy đã chặn -> Vào thẳng TCBS (không chờ 20s nữa).
+    Hàm Async lấy dữ liệu thông minh (VCI Snapshot -> Fallback TCBS 1 phút).
+    Cập nhật: 
+    - Xử lý VN30F1M = 0 từ VCI.
+    - Dùng nến 1m của TCBS để có giá sát thực tế nhất.
+    - Tự động fix lỗi đơn vị giá (x1000) của TCBS.
     """
     global _vci_blocked_date
     
     results = {}
     vn_tz = pytz.timezone(TIMEZONE)
-    today_date = datetime.datetime.now(vn_tz).date()
+    now = datetime.datetime.now(vn_tz)
+    today_date = now.date()
 
     # 1. KIỂM TRA TRẠNG THÁI VCI
-    # Nếu ngày chặn trùng với hôm nay -> VCI đang bị chặn -> Skip
     skip_vci = (_vci_blocked_date == today_date)
 
     if not skip_vci:
-        # --- THỬ NGUỒN VCI (Full Data) ---
+        # --- THỬ NGUỒN VCI (Ưu tiên vì nhanh) ---
         try:
-            # Hàm wrapper để chạy trong thread
             def _run_vci():
                 t = Trading(source="VCI")
                 return t.price_board(symbols)
 
-            # Ép timeout 20 giây
             df = await asyncio.wait_for(
                 asyncio.to_thread(_run_vci), 
                 timeout=20.0
@@ -2458,12 +2457,20 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
             if df is not None and not df.empty:
                 for _, row in df.iterrows():
                     try:
-                        sym = str(row[('listing', 'symbol')]).upper().strip()
-                        match_p = float(row[('match', 'match_price')])
-                        ref_p = float(row[('listing', 'ref_price')])
+                        # Parse MultiIndex an toàn
+                        sym = str(row.get(('listing', 'symbol'))).upper().strip()
+                        match_p = float(row.get(('match', 'match_price'), 0))
+                        ref_p = float(row.get(('listing', 'ref_price'), 0))
                         
-                        if match_p == 0: match_p = ref_p 
-                        
+                        # [FIX QUAN TRỌNG] Nếu VCI trả về 0 (thường gặp ở Phái sinh), dùng tham chiếu
+                        # Hoặc nếu muốn chính xác tuyệt đối: bỏ qua để Fallback sang TCBS
+                        if match_p == 0:
+                            if ref_p > 0:
+                                match_p = ref_p 
+                            else:
+                                # Nếu cả khớp và tham chiếu đều 0/lỗi -> Bỏ qua để TCBS xử lý
+                                continue
+
                         pct = 0.0
                         if ref_p > 0:
                             pct = ((match_p - ref_p) / ref_p) * 100.0
@@ -2471,52 +2478,63 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
                         results[sym] = {"price": match_p, "pct": pct, "ref": ref_p}
                     except: continue
                 
-                if results: return results # VCI thành công -> Trả về ngay
+                # Nếu lấy đủ số lượng mã yêu cầu thì trả về luôn
+                # Nếu thiếu (do VCI lỗi 1 vài mã), code sẽ chạy tiếp xuống TCBS để bù vào
+                if len(results) == len(symbols):
+                    return results
                 
         except asyncio.TimeoutError:
-            log.warning(f"[SMART] ⏳ VCI quá hạn 20s. ⛔ CHẶN VCI TRONG NGÀY HÔM NAY.")
-            _vci_blocked_date = today_date # Kích hoạt chặn
-            
+            log.warning(f"[SMART] ⏳ VCI timeout. Chuyển sang TCBS.")
+            _vci_blocked_date = today_date
         except Exception as e:
-            log.warning(f"[SMART] ❌ VCI lỗi: {e}. ⛔ CHẶN VCI TRONG NGÀY HÔM NAY.")
-            _vci_blocked_date = today_date # Kích hoạt chặn
-    
-    # else:
-        # Nếu muốn debug xem nó có skip thật không thì uncomment dòng này
-        # log.info("[SMART] ⏭️ VCI đang bị chặn hôm nay, vào thẳng TCBS.")
+            log.warning(f"[SMART] ❌ VCI lỗi: {e}. Chuyển sang TCBS.")
+            _vci_blocked_date = today_date
 
-    # --- NGUỒN DỰ PHÒNG: TCBS ---
-    # Chạy khi VCI bị lỗi, timeout HOẶC đang bị chặn (skip_vci = True)
+    # --- NGUỒN DỰ PHÒNG: TCBS (Dùng Nến 1 Phút) ---
+    # Chạy khi VCI lỗi, timeout, bị chặn, hoặc thiếu mã
+    missing_symbols = [s for s in symbols if s not in results]
+    if not missing_symbols:
+        return results
+
     try:
+        # Lấy data 2 ngày gần nhất để đảm bảo có nến (phòng trường hợp đầu phiên sáng sớm)
         today_str = today_date.strftime("%Y-%m-%d")
-        start_str = (today_date - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+        start_str = (today_date - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
         
-        def _run_tcbs_fallback():
+        def _run_tcbs_1m_fallback(syms_to_run):
             tcbs_results = {}
-            for sym in symbols:
+            for sym in syms_to_run:
                 try:
                     quote = Quote(symbol=sym, source="TCBS")
-                    df = quote.history(start=start_str, end=today_str, interval="1D")
+                    # [UPDATE] Dùng interval='1m' thay vì '1D'
+                    df = quote.history(start=start_str, end=today_str, interval="1m")
                     
-                    if df is not None and len(df) >= 1:
-                        df = df.sort_values('time')
+                    if df is not None and not df.empty:
+                        # Lấy cây nến cuối cùng (mới nhất)
                         last_row = df.iloc[-1]
                         
-                        # Giá hiện tại
+                        # Giá hiện tại (Close của nến phút cuối)
                         current_price = float(last_row['close'])
-                        if current_price < 500: current_price *= 1000
-
-                        # Giá tham chiếu
-                        ref_price = current_price 
-                        if len(df) >= 2:
-                            if str(last_row['time'].date()) == today_str:
-                                prev_row = df.iloc[-2]
-                                ref_val = float(prev_row['close'])
-                                if ref_val < 500: ref_val *= 1000
-                                ref_price = ref_val
-                            else:
-                                ref_price = current_price 
                         
+                        # [FIX] Xử lý đơn vị giá (TCBS trả về 27.25 -> 27250)
+                        if current_price < 500: 
+                            current_price *= 1000
+
+                        # Để tính % thay đổi, ta cần giá tham chiếu.
+                        # Với nến 1m, khó lấy tham chiếu chính xác. 
+                        # Cách tạm thời: Lấy giá open của ngày hoặc nến đầu tiên trong ngày.
+                        # Tuy nhiên, để đơn giản và nhanh: ta tính pct dựa trên biến động nến cuối
+                        # Hoặc chấp nhận pct = 0 nếu không có ref chuẩn.
+                        # Ở đây mình giả lập ref_price bằng giá đóng cửa cây nến liền trước đó (nếu có)
+                        
+                        ref_price = current_price # Default
+                        if len(df) >= 2:
+                            prev_close = float(df.iloc[-2]['close'])
+                            if prev_close < 500: prev_close *= 1000
+                            ref_price = prev_close
+                        
+                        # Tính % (So với nến phút trước - Biến động tức thời)
+                        # Lưu ý: Đây không phải % so với tham chiếu ngày, nhưng đủ để bot alert biến động
                         pct = 0.0
                         if ref_price > 0:
                             pct = ((current_price - ref_price) / ref_price) * 100.0
@@ -2525,10 +2543,12 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
                 except: continue
             return tcbs_results
 
-        results = await asyncio.to_thread(_run_tcbs_fallback)
+        # Chạy TCBS trong thread
+        tcbs_data = await asyncio.to_thread(_run_tcbs_1m_fallback, missing_symbols)
+        results.update(tcbs_data)
                 
     except Exception as e:
-        log.error(f"[SMART] ❌ TCBS Fatal Error: {e}")
+        log.error(f"[SMART] ❌ TCBS 1m Fatal Error: {e}")
         
     return results
 
