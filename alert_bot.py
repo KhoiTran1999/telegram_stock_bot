@@ -1476,6 +1476,11 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     """
 
     query = update.callback_query
+
+    # 🔥 CHẶN TẠI ĐÂY: Nếu bot đang bảo trì, không cho bấm nút gì cả
+    if not BOT_ACTIVE:
+        await query.answer("⚙️ Hệ thống đang bảo trì.", show_alert=True)
+        return
     
     # Báo cho Telegram biết đã nhận click (để tắt vòng xoay loading trên nút)
     try:
@@ -2790,10 +2795,8 @@ async def alert_loop():
 
 async def stock_broadcast_loop():
     """
-    (TÁC VỤ 3 - BROADCASTER - MỚI)
-    - Loop này CHỈ GỬI TIN NHẮN (cho cổ phiếu thường).
-    - Chờ tin nhắn trong _stock_broadcast_queue.
-    - Gọi (blocking) send_msg_to trong thread.
+    (TÁC VỤ 3 - BROADCASTER STOCK)
+    - Đã thêm check BOT_ACTIVE để chặn tin tồn đọng khi tắt bot.
     """
     log.info("[BCASTER_STOCK] Bắt đầu. Chờ tin nhắn trong queue...")
     
@@ -2802,6 +2805,11 @@ async def stock_broadcast_loop():
             # Chờ Ticker đẩy tin nhắn vào
             item = await _stock_broadcast_queue.get()
             
+            # 🔥 CHẶN TẠI ĐÂY: Nếu bot tắt, hủy bỏ tin nhắn này luôn
+            if not BOT_ACTIVE:
+                _stock_broadcast_queue.task_done()
+                continue
+
             chat_id = item.get("chat_id")
             body = item.get("body")
             
@@ -2809,15 +2817,11 @@ async def stock_broadcast_loop():
                 _stock_broadcast_queue.task_done()
                 continue
             
-            # log.info(f"[BCASTER_STOCK] Nhận được tin cho {chat_id}, đang gửi...")
-
-            # [TỐI ƯU] Gọi hàm blocking send_msg_to trong thread
+            # Gửi tin nhắn (đã gán msg_type='STOCK_ALERT')
             await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown", False, "STOCK_ALERT")
 
             _stock_broadcast_queue.task_done()
-            # log.info(f"[BCASTER_STOCK] Gửi xong cho {chat_id}. Quay lại chờ...")
-            
-            await asyncio.sleep(0.1) # Thêm 1 sleep nhỏ 100ms để tránh dồn dập
+            await asyncio.sleep(0.1)
 
         except asyncio.CancelledError:
             log.info("[BCASTER_STOCK] Bị huỷ (Cancelled).")
@@ -2825,10 +2829,9 @@ async def stock_broadcast_loop():
         except Exception as e:
             log.warning(f"[BCASTER_STOCK] Lỗi: {e}")
             if '_stock_broadcast_queue' in locals():
-                try:
-                    _stock_broadcast_queue.task_done()
-                except ValueError:
-                    pass
+                try: _stock_broadcast_queue.task_done()
+                except: pass
+
 #-------------------------------------------
 
 # ==============================================
@@ -3568,25 +3571,25 @@ async def vn30f1m_price_fetcher_loop():
 
 async def vn30f1m_broadcast_loop():
     """
-    (Tác vụ 3: Broadcaster)
-    - Loop này CHỈ GỬI TIN NHẮN.
-    - Chờ tin nhắn trong Queue.
+    (Tác vụ 3: Broadcaster VN30)
+    - Đã thêm check BOT_ACTIVE.
     """
     log.info("[VN30F1M][BCASTER] Bắt đầu. Chờ tin nhắn trong queue...")
     
     while True:
         try:
-            # Chờ Ticker đẩy tin nhắn vào
             text = await _vn30f1m_broadcast_queue.get()
             
+            # 🔥 CHẶN TẠI ĐÂY
+            if not BOT_ACTIVE:
+                _vn30f1m_broadcast_queue.task_done()
+                continue
+
             if not text:
                 _vn30f1m_broadcast_queue.task_done()
                 continue
 
-            user_count = len(_vn30f1m_enabled_cache)
-            log.info(f"[VN30F1M][BCASTER] NHẬN ĐƯỢC TIN! Bắt đầu gửi cho {user_count} users...")
-            log.info(f"[VN30F1M][BCASTER] Nội dung: {text.splitlines()[0]}") # Log dòng đầu của tin nhắn
-
+            # Logic gửi tin
             tasks = []
             for cid in list(_vn30f1m_enabled_cache):
                 tasks.append(send_md(tg_app.bot, cid, text, msg_type="VN30_ALERT"))
@@ -3595,20 +3598,15 @@ async def vn30f1m_broadcast_loop():
                 await asyncio.gather(*tasks, return_exceptions=True)
 
             _vn30f1m_broadcast_queue.task_done()
-            log.info("[VN30F1M][BCASTER] Gửi tin xong. Quay lại chờ queue...")
 
         except asyncio.CancelledError:
             log.info("[VN30F1M][BCASTER] Bị huỷ (Cancelled).")
             break
         except Exception as e:
             log.warning(f"[VN30F1M][BCASTER] Lỗi: {e}")
-            # Đảm bảo task_done được gọi ngay cả khi gather lỗi, 
-            # để queue không bị kẹt
-            if '_vn30f1m_broadcast_queue' in locals():
-                try:
-                    _vn30f1m_broadcast_queue.task_done()
-                except ValueError:
-                    pass # nếu task_done đã được gọi
+            try: _vn30f1m_broadcast_queue.task_done()
+            except: pass
+
 #-------------------------------
 
 
