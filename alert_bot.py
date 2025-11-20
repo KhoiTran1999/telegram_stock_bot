@@ -2605,7 +2605,7 @@ async def alert_loop():
                         # 2. Tạo nội dung tin nhắn (GỌN GÀNG)
                         # Mẫu: 🟢 HPG tăng +2.10% Giá hiện tại: 25.000
                         msg = (
-                            f"{icon} {sym_u} {direction} {pct_str} Giá hiện tại: {price_str}\n"
+                            f"{icon} * {sym_u} {direction} {pct_str} Giá hiện tại: {price_str}*\n"
                             f"_{fun_line}_"
                         )
                         
