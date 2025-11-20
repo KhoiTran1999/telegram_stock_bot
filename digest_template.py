@@ -945,7 +945,6 @@ REPORT_404_TEMPLATE = """
 </html>
 """
 
-#--------------------------------
 
 SCREENER_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -1312,6 +1311,233 @@ LOCKED_FEATURE_TEMPLATE = r"""
     
     <button class="btn" onclick="Telegram.WebApp.close()">🔥 Nâng cấp Pro ngay</button>
     
+    <script>Telegram.WebApp.ready(); Telegram.WebApp.expand();</script>
+</body>
+</html>
+"""
+
+#----------------------------------
+
+EOD_HTML_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Tổng Kết Cuối Phiên</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+            
+            /* 🎨 BẢNG MÀU CHỨNG KHOÁN */
+            --up-color: #34c759;   
+            --down-color: #ff3b30; 
+            --ref-color: #ffcc00;  
+            --ceil-color: #ce23ff; 
+            --floor-color: #00c5c5;
+        }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; }
+
+        /* Header */
+        .header { text-align: center; margin-bottom: 24px; }
+        .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 8px; }
+        .header-title { 
+            font-size: 28px; font-weight: 800; margin: 0; 
+            background: linear-gradient(135deg, #007aff 0%, #af52de 100%); 
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+        }
+
+        /* AI Insight Card */
+        .ai-card { 
+            background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%); 
+            border-left: 4px solid #007aff;
+            border-radius: 16px; padding: 16px; margin-bottom: 20px; 
+            box-shadow: 0 4px 12px rgba(0,122,255,0.1);
+        }
+        .ai-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .ai-icon { font-size: 20px; }
+        .ai-title { font-size: 14px; font-weight: 700; color: #007aff; text-transform: uppercase; letter-spacing: 0.5px; }
+        .ai-content { font-size: 14px; color: #334155; line-height: 1.6; white-space: pre-line; }
+
+        /* Market Grid */
+        .market-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 24px; }
+        .m-card { background-color: var(--card-bg); border-radius: 12px; padding: 12px 8px; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }
+        .m-label { font-size: 11px; color: var(--hint-color); font-weight: 600; text-transform: uppercase; margin-bottom: 4px; }
+        .m-val { font-size: 16px; font-weight: 800; }
+        .m-change { font-size: 11px; font-weight: 600; margin-top: 2px; }
+        
+        /* Color Helpers */
+        .text-up { color: var(--up-color); }
+        .text-down { color: var(--down-color); }
+        .text-ref { color: var(--ref-color); }
+        
+        /* Portfolio List */
+        .section-title { font-size: 15px; font-weight: 700; margin-bottom: 12px; padding-left: 4px; display: flex; align-items: center; gap: 8px; }
+        .p-list { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+        .p-item { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .p-item:last-child { border-bottom: none; }
+        
+        .p-sym { font-size: 16px; font-weight: 700; }
+        .p-price { font-size: 15px; font-weight: 600; text-align: right; }
+        .p-change { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; min-width: 50px; text-align: center; display: inline-block; margin-left: 8px;}
+
+        /* Color Badges (Full logic) */
+        .bg-up { background-color: rgba(52, 199, 89, 0.1); color: var(--up-color); }
+        .bg-down { background-color: rgba(255, 59, 48, 0.1); color: var(--down-color); }
+        .bg-ref { background-color: rgba(255, 204, 0, 0.15); color: #d4a017; }
+        .bg-ceil { background-color: rgba(206, 35, 255, 0.1); color: var(--ceil-color); }
+        .bg-floor { background-color: rgba(0, 197, 197, 0.1); color: var(--floor-color); }
+
+        /* Footer */
+        .footer-btn { display: block; width: 100%; padding: 14px; background-color: var(--text-color); color: var(--bg-color); border: none; border-radius: 14px; font-size: 15px; font-weight: 700; margin-top: 30px; cursor: pointer; }
+        .meta-time { text-align: center; margin-top: 16px; color: var(--hint-color); font-size: 11px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="date-badge">📅 {{ generated_at }}</div>
+        <div class="header-title">Tổng Kết Phiên</div>
+    </div>
+
+    {% if market_data.ai_comment %}
+    <div class="ai-card">
+        <div class="ai-header">
+            <div class="ai-icon">🧠</div>
+            <div class="ai-title">Góc nhìn AI (Gemini)</div>
+        </div>
+        <div class="ai-content">{{ market_data.ai_comment }}</div>
+    </div>
+    {% endif %}
+
+    <div class="market-grid">
+        <div class="m-card">
+            <div class="m-label">VN-INDEX</div>
+            {% set idx_cls = 'text-ref' %}
+            {% if market_data.vnindex.change > 0 %}{% set idx_cls = 'text-up' %}
+            {% elif market_data.vnindex.change < 0 %}{% set idx_cls = 'text-down' %}{% endif %}
+            
+            <div class="m-val {{ idx_cls }}">{{ market_data.vnindex.price }}</div>
+            <div class="m-change {{ idx_cls }}">
+                {{ '+' if market_data.vnindex.change > 0 else '' }}{{ market_data.vnindex.change }}
+            </div>
+        </div>
+        <div class="m-card">
+            <div class="m-label">VN30</div>
+            {% set v30_cls = 'text-ref' %}
+            {% if market_data.vn30.change > 0 %}{% set v30_cls = 'text-up' %}
+            {% elif market_data.vn30.change < 0 %}{% set v30_cls = 'text-down' %}{% endif %}
+            
+            <div class="m-val {{ v30_cls }}">{{ market_data.vn30.price }}</div>
+            <div class="m-change {{ v30_cls }}">
+                 {{ '+' if market_data.vn30.change > 0 else '' }}{{ market_data.vn30.change }}
+            </div>
+        </div>
+        <div class="m-card">
+            <div class="m-label">Khối ngoại</div>
+            <div class="m-val {{ 'text-up' if market_data.foreign_net_val >= 0 else 'text-down' }}">
+                {{ (market_data.foreign_net_val | abs) }} tỷ
+            </div>
+            <div class="m-change {{ 'text-up' if market_data.foreign_net_val >= 0 else 'text-down' }}">
+                {{ 'MUA RÒNG' if market_data.foreign_net_val >= 0 else 'BÁN RÒNG' }}
+            </div>
+        </div>
+    </div>
+
+    {% if user_stocks %}
+    <div class="section-title">👤 Danh mục của bạn</div>
+    <div class="p-list">
+        {% for stock in user_stocks %}
+        <div class="p-item">
+            <div class="p-sym">{{ stock.symbol }}</div>
+            <div>
+                <span class="p-price">{{ stock.price }}</span>
+                
+                {% set badge_cls = 'bg-ref' %}
+                {% set val_sign = '' %}
+                
+                {% if stock.pct >= 6.9 %}
+                    {% set badge_cls = 'bg-ceil' %}
+                    {% set val_sign = '+' %}
+                {% elif stock.pct <= -6.9 %}
+                    {% set badge_cls = 'bg-floor' %}
+                {% elif stock.pct == 0 %}
+                    {% set badge_cls = 'bg-ref' %}
+                {% elif stock.pct > 0 %}
+                    {% set badge_cls = 'bg-up' %}
+                    {% set val_sign = '+' %}
+                {% elif stock.pct < 0 %}
+                    {% set badge_cls = 'bg-down' %}
+                {% endif %}
+
+                <span class="p-change {{ badge_cls }}">{{ val_sign }}{{ stock.pct }}%</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div style="text-align:center; padding:20px; color:var(--hint-color);">
+        Bạn chưa theo dõi mã nào. <br>Gõ <b>/add MÃ</b> để thêm.
+    </div>
+    {% endif %}
+
+    <button class="footer-btn" onclick="Telegram.WebApp.close()">Đóng Bản Tin</button>
+    <div class="meta-time">Dữ liệu được cập nhật lúc 15:15</div>
+
+    <script>Telegram.WebApp.ready(); Telegram.WebApp.expand();</script>
+</body>
+</html>
+"""
+
+EOD_404_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link hết hạn</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; color: #555; }
+        h2 { margin-bottom: 10px; }
+        p { font-size: 14px; max-width: 300px; line-height: 1.5; }
+        button { margin-top: 20px; padding: 10px 25px; border: none; background: #007aff; color: white; border-radius: 8px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div style="font-size: 50px; margin-bottom: 20px;">🌙</div>
+    <h2>Bản tin đã cũ</h2>
+    <p>Bản tin cuối ngày chỉ có giá trị trong ngày giao dịch.</p>
+    <button onclick="Telegram.WebApp.close()">Đóng</button>
+    <script>Telegram.WebApp.ready(); Telegram.WebApp.expand();</script>
+</body>
+</html>
+"""
+
+EOD_404_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link hết hạn</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; color: #555; }
+        h2 { margin-bottom: 10px; }
+        p { font-size: 14px; max-width: 300px; line-height: 1.5; }
+        button { margin-top: 20px; padding: 10px 25px; border: none; background: #007aff; color: white; border-radius: 8px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div style="font-size: 50px; margin-bottom: 20px;">🌙</div>
+    <h2>Bản tin đã cũ</h2>
+    <p>Bản tin cuối ngày chỉ có giá trị trong ngày giao dịch để đảm bảo tính thời sự.</p>
+    <button onclick="Telegram.WebApp.close()">Đóng</button>
     <script>Telegram.WebApp.ready(); Telegram.WebApp.expand();</script>
 </body>
 </html>
