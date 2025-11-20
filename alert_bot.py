@@ -3453,16 +3453,17 @@ async def vn30f1m_alert_loop():
     loop_count = 0 # Thêm biến đếm
 
     while True:
-         # 1. Kiểm tra điều kiện chạy
-        if not BOT_ACTIVE:
-            await asyncio.sleep(30)
-            continue
-        if not in_session_vietnam():
-            await asyncio.sleep(60)
-            continue
 
         loop_start = datetime.datetime.now(vn_tz)
         try:
+            # 1. Kiểm tra điều kiện chạy
+            if not BOT_ACTIVE:
+                await asyncio.sleep(30)
+                continue
+            if not in_session_vietnam():
+                await asyncio.sleep(60)
+                continue
+
             now = loop_start
             _vn30f1m_reset_if_new_day(now)
 
