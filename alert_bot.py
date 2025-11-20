@@ -2422,34 +2422,30 @@ def format_roe_pct(roe_decimal: float | None) -> str:
 _vci_blocked_date = None 
 
 # ==============================================
-# SMART DATA FETCHER (Circuit Breaker Mode)
+# SMART DATA FETCHER (Final Version: Circuit Breaker + TCBS 1m/1D)
 # ==============================================
 async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
     """
-    Hàm Async lấy dữ liệu thông minh với cơ chế "Ngắt mạch" (Circuit Breaker).
-    - Mặc định: Thử VCI (Timeout 20s).
-    - Nếu VCI lỗi: Đánh dấu chặn VCI trong ngày hôm nay -> Chuyển ngay sang TCBS.
-    - Các lần gọi sau: Nếu thấy đã chặn -> Vào thẳng TCBS (không chờ 20s nữa).
+    Hàm Async lấy dữ liệu thông minh.
+    - Ưu tiên VCI (Timeout 20s).
+    - Fallback TCBS: Kết hợp nến Ngày (Ref) và nến Phút (Live) để có giá chính xác.
     """
     global _vci_blocked_date
     
     results = {}
     vn_tz = pytz.timezone(TIMEZONE)
     today_date = datetime.datetime.now(vn_tz).date()
+    today_str = today_date.strftime("%Y-%m-%d")
 
-    # 1. KIỂM TRA TRẠNG THÁI VCI
-    # Nếu ngày chặn trùng với hôm nay -> VCI đang bị chặn -> Skip
+    # 1. KIỂM TRA TRẠNG THÁI VCI (Circuit Breaker)
     skip_vci = (_vci_blocked_date == today_date)
 
     if not skip_vci:
-        # --- THỬ NGUỒN VCI (Full Data) ---
         try:
-            # Hàm wrapper để chạy trong thread
             def _run_vci():
                 t = Trading(source="VCI")
                 return t.price_board(symbols)
 
-            # Ép timeout 20 giây
             df = await asyncio.wait_for(
                 asyncio.to_thread(_run_vci), 
                 timeout=20.0
@@ -2471,24 +2467,18 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
                         results[sym] = {"price": match_p, "pct": pct, "ref": ref_p}
                     except: continue
                 
-                if results: return results # VCI thành công -> Trả về ngay
+                if results: return results
                 
         except asyncio.TimeoutError:
-            log.warning(f"[SMART] ⏳ VCI quá hạn 20s. ⛔ CHẶN VCI TRONG NGÀY HÔM NAY.")
-            _vci_blocked_date = today_date # Kích hoạt chặn
-            
+            log.warning(f"[SMART] ⏳ VCI quá hạn 20s. ⛔ CHẶN VCI HÔM NAY.")
+            _vci_blocked_date = today_date
         except Exception as e:
-            log.warning(f"[SMART] ❌ VCI lỗi: {e}. ⛔ CHẶN VCI TRONG NGÀY HÔM NAY.")
-            _vci_blocked_date = today_date # Kích hoạt chặn
+            # log.warning(f"[SMART] ❌ VCI lỗi: {e}. ⛔ CHẶN VCI HÔM NAY.")
+            _vci_blocked_date = today_date
     
-    # else:
-        # Nếu muốn debug xem nó có skip thật không thì uncomment dòng này
-        # log.info("[SMART] ⏭️ VCI đang bị chặn hôm nay, vào thẳng TCBS.")
-
-    # --- NGUỒN DỰ PHÒNG: TCBS ---
-    # Chạy khi VCI bị lỗi, timeout HOẶC đang bị chặn (skip_vci = True)
+    # --- NGUỒN DỰ PHÒNG: TCBS (Nâng cấp logic 1m + 1D) ---
     try:
-        today_str = today_date.strftime("%Y-%m-%d")
+        # Lấy lịch sử xa hơn chút để chắc chắn có nến ngày hôm trước
         start_str = (today_date - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
         
         def _run_tcbs_fallback():
@@ -2496,32 +2486,47 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
             for sym in symbols:
                 try:
                     quote = Quote(symbol=sym, source="TCBS")
-                    df = quote.history(start=start_str, end=today_str, interval="1D")
                     
-                    if df is not None and len(df) >= 1:
-                        df = df.sort_values('time')
-                        last_row = df.iloc[-1]
+                    # BƯỚC 1: Lấy nến NGÀY (1D) để tìm Giá Tham Chiếu (Ref)
+                    df_day = quote.history(start=start_str, end=today_str, interval="1D")
+                    
+                    ref_price = None
+                    if df_day is not None and len(df_day) >= 1:
+                        df_day = df_day.sort_values('time')
+                        last_row = df_day.iloc[-1]
+                        last_date_str = str(last_row['time'].date())
                         
-                        # Giá hiện tại
-                        current_price = float(last_row['close'])
-                        if current_price < 500: current_price *= 1000
+                        # Nếu dòng cuối là hôm nay -> Ref là dòng áp chót (hôm qua)
+                        if last_date_str == today_str:
+                            if len(df_day) >= 2:
+                                ref_price = float(df_day.iloc[-2]['close'])
+                        else:
+                            # Nếu dòng cuối là hôm qua -> Ref là dòng cuối
+                            ref_price = float(last_row['close'])
+                    
+                    # Xử lý đơn vị cho Ref (TCBS có thể trả về 26.5 thay vì 26500)
+                    if ref_price and ref_price < 500: ref_price *= 1000
 
-                        # Giá tham chiếu
-                        ref_price = current_price 
-                        if len(df) >= 2:
-                            if str(last_row['time'].date()) == today_str:
-                                prev_row = df.iloc[-2]
-                                ref_val = float(prev_row['close'])
-                                if ref_val < 500: ref_val *= 1000
-                                ref_price = ref_val
-                            else:
-                                ref_price = current_price 
-                        
-                        pct = 0.0
-                        if ref_price > 0:
-                            pct = ((current_price - ref_price) / ref_price) * 100.0
+                    # BƯỚC 2: Lấy nến PHÚT (1m) để tìm Giá Hiện Tại (Realtime)
+                    current_price = ref_price # Mặc định fallback là Ref nếu chưa có giao dịch
+                    
+                    df_min = quote.history(start=today_str, end=today_str, interval="1m")
+                    if df_min is not None and not df_min.empty:
+                        last_min = df_min.iloc[-1]
+                        current_price = float(last_min['close'])
+                    
+                    # Xử lý đơn vị cho Current
+                    if current_price and current_price < 500: current_price *= 1000
+                    
+                    # Nếu không tìm được Ref thì tạm dùng Current làm Ref
+                    if not ref_price: ref_price = current_price
 
-                        tcbs_results[sym] = {"price": current_price, "pct": pct, "ref": ref_price}
+                    # Tính toán %
+                    pct = 0.0
+                    if ref_price and ref_price > 0:
+                        pct = ((current_price - ref_price) / ref_price) * 100.0
+
+                    tcbs_results[sym] = {"price": current_price, "pct": pct, "ref": ref_price}
                 except: continue
             return tcbs_results
 
