@@ -98,8 +98,14 @@ def init_db():
                     id         SERIAL PRIMARY KEY,
                     chat_id    BIGINT NOT NULL,
                     message_id BIGINT NOT NULL,
-                    sent_at    TIMESTAMP NOT NULL DEFAULT NOW()
+                    sent_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+                    msg_type   TEXT DEFAULT 'GENERAL'  
                 )
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_msg_log_cleanup 
+                ON bot_msg_log(msg_type, sent_at);
             """)
 
             # Tin tức đã xử lý (RSS) – tránh gửi trùng
