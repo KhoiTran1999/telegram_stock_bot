@@ -752,6 +752,7 @@ async def send_eod_summary():
     """
     Gửi Tổng kết cuối phiên (EOD) dạng Web App.
     Chạy lúc 15:15.
+    (ĐÃ SỬA: Dùng fetch_data_smart để tự động chuyển nguồn VCI -> TCBS)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -776,58 +777,50 @@ async def send_eod_summary():
             all_symbols.add(str(s).upper())
     
     # Thêm các chỉ số thị trường
-    MARKET_IDXS = ["VNINDEX", "VN30", "HNX30"] 
+    MARKET_IDXS = ["VNINDEX", "VN30"]
     for idx in MARKET_IDXS: all_symbols.add(idx)
     
     if not all_symbols: return
 
-    # 3. Gọi API lấy giá (Batch)
+    # 3. GỌI SMART FETCHER (Thay vì gọi trực tiếp Trading VCI)
+    # Hàm này sẽ tự lo việc thử VCI, nếu lỗi thì qua TCBS, và trả về dict chuẩn
     try:
-        tr = Trading(source="VCI")
-        # Chia nhỏ batch nếu quá nhiều mã (ví dụ 50 mã/lần) - ở đây làm đơn giản
-        df = await asyncio.to_thread(tr.price_board, list(all_symbols))
+        # Chia batch nếu quá nhiều (ví dụ > 50 mã) để tránh timeout 20s của Smart Fetcher
+        # Ở đây mình gọi 1 lần cho đơn giản, nếu danh sách > 50 mã nên chia nhỏ
+        data_source = await fetch_data_smart(list(all_symbols))
     except Exception as e:
-        log.error(f"[{INSTANCE_ID}][EOD] Lỗi lấy giá: {e}")
+        log.error(f"[{INSTANCE_ID}][EOD] Lỗi Smart Fetcher: {e}")
         return
 
-    if df is None or df.empty: return
-
-    # Helper parse giá
-    def _get_info(sym):
-        # Tìm row
-        try:
-            # Cố gắng tìm theo symbol hoặc ticker
-            row = df[df['listing'].apply(lambda x: x.get('symbol') == sym or x.get('ticker') == sym)]
-            if row.empty: return None
-            r = row.iloc[0]
-            
-            # Parse giá
-            match_p = float(r['match']['match_price'])
-            ref_p = float(r['listing']['ref_price'])
-            pct = round((match_p - ref_p) / ref_p * 100, 2)
-            
-            # Khối ngoại (nếu có) - VCI trả về structure hơi lạ, cần try-catch kỹ
-            f_buy = float(r.get('foreign', {}).get('buy_val', 0) or 0)
-            f_sell = float(r.get('foreign', {}).get('sell_val', 0) or 0)
-            
-            return {
-                "price": f"{match_p:,.0f}".replace(",", ".") if match_p > 1000 else f"{match_p:,.2f}", 
-                "change": round(match_p - ref_p, 2),
-                "pct": pct,
-                "f_net": (f_buy - f_sell) / 1e9 # Tỷ đồng
-            }
-        except:
-            return None
+    if not data_source:
+        log.warning(f"[{INSTANCE_ID}][EOD] Không lấy được dữ liệu thị trường.")
+        return
 
     # 4. Chuẩn bị dữ liệu Thị trường chung (Market Data)
-    vnindex = _get_info("VNINDEX") or {"price": "---", "change": 0, "pct": 0}
-    vn30 = _get_info("VN30") or {"price": "---", "change": 0, "pct": 0}
+    # Hàm helper lấy từ dict đã chuẩn hóa
+    def _get_market_info(sym):
+        if sym not in data_source:
+            return {"price": "---", "change": 0, "pct": 0}
+        
+        item = data_source[sym]
+        p = item['price']
+        pct = item['pct']
+        # Tính change (tương đối)
+        ref = item.get('ref', p)
+        change = p - ref
+        
+        return {
+            "price": f"{p:,.2f}", # Index thường có số lẻ
+            "change": round(change, 2),
+            "pct": round(pct, 2)
+        }
+
+    vnindex = _get_market_info("VNINDEX")
+    vn30 = _get_market_info("VN30")
     
-    # Tính tổng khối ngoại toàn thị trường (ước lượng qua các mã có trong list)
-    total_f_net = 0
-    for sym in all_symbols:
-        info = _get_info(sym)
-        if info: total_f_net += info.get("f_net", 0)
+    # Lưu ý: Smart Fetcher hiện tại chưa trả về f_net (Khối ngoại) khi fallback TCBS
+    # Nên ta tạm để 0 hoặc update fetch_data_smart sau nếu cần thiết
+    total_f_net = 0 
 
     market_data_input = {
         "vnindex": vnindex,
@@ -837,7 +830,7 @@ async def send_eod_summary():
 
     # 5. Gọi AI (1 lần duy nhất)
     ai_comment = await call_gemini_eod_insight(market_data_input)
-    market_data_input["ai_comment"] = ai_comment # Gắn comment vào data
+    market_data_input["ai_comment"] = ai_comment 
 
     # 6. Tạo và gửi Web App cho từng user
     base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
@@ -849,18 +842,19 @@ async def send_eod_summary():
             watch_list = block.get("list", [])
             if not watch_list: continue
 
-            # Build danh sách cổ phiếu riêng của user
+            # Build danh sách cổ phiếu riêng của user từ data_source
             user_stocks = []
             for sym in watch_list:
-                info = _get_info(sym)
-                if info:
+                sym_u = str(sym).upper()
+                if sym_u in data_source:
+                    info = data_source[sym_u]
+                    price_fmt = f"{info['price']:,.0f}".replace(",", ".") # Cổ phiếu thường không có số lẻ
                     user_stocks.append({
-                        "symbol": sym,
-                        "price": info["price"],
-                        "pct": info["pct"]
+                        "symbol": sym_u,
+                        "price": price_fmt,
+                        "pct": round(info['pct'], 2)
                     })
             
-            # Nếu không lấy được giá mã nào thì bỏ qua
             if not user_stocks: continue
 
             # Tạo Payload
@@ -868,27 +862,13 @@ async def send_eod_summary():
                 "market_data": market_data_input,
                 "user_stocks": user_stocks,
                 "generated_at": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m"),
-                "is_pro": False # Mặc định False vì đã bỏ badge
+                "is_pro": False 
             }
 
-            # Lưu Redis (Key riêng: eod_web:UUID)
+            # Lưu Redis
             digest_id = uuid.uuid4().hex
-            # Reuse hàm save_digest_to_redis nhưng đổi key prefix
-            # Ta dùng trick: truyền key prefix vào hàm get_redis
-            # Hoặc đơn giản là gọi trực tiếp Redis ở đây cho gọn
             r = get_redis()
             r.set(f"digest_web:eod_web:{digest_id}", json.dumps(payload), ex=86400)
-
-            # Tạo Link
-            # Lưu ý: Route Flask là /eod/<id>, nhưng hàm get_digest trong route dùng key gì?
-            # Ở route view_eod mình đã viết: get_digest_from_redis(f"eod_web:{eod_id}")
-            # Nhưng hàm get_digest_from_redis mặc định tìm key "digest_web:{id}"
-            # -> SỬA LẠI LOGIC LƯU REDIS CHO ĐỒNG BỘ:
-            
-            # Cách đúng: Lưu với key khớp với hàm get trong Route
-            # Route view_eod gọi: data = get_digest_from_redis(f"eod_web:{eod_id}")
-            # Hàm get_digest_from_redis lại gọi: r.get(f"digest_web:{digest_id}") 
-            # ==> Vậy ta cần lưu key là: "digest_web:eod_web:{digest_id}"
             
             web_app_url = f"{base_url}/eod/{digest_id}"
             
@@ -899,7 +879,7 @@ async def send_eod_summary():
             msg = (
                 f"🇻🇳 *Tổng kết phiên {today_str}*\n"
                 f"VN-INDEX: {vnindex['price']} ({vnindex['pct']}%)\n"
-                f"👉 Nhấn nút bên dưới để xem chi tiết danh mục."
+                f"👉 Nhấn nút bên dưới để xem chi tiết."
             )
             
             tasks.append(send_md(tg_app.bot, chat_id, msg, reply_markup=kb, msg_type='EOD_SUMMARY'))
@@ -914,8 +894,8 @@ async def send_eod_summary():
     
     # Kích hoạt dọn dẹp sau 10s
     await asyncio.sleep(10)
-    # from alert_bot import cleanup_after_eod # (Đã có trong file)
-    # asyncio.create_task(cleanup_after_eod())
+    from alert_bot import cleanup_after_eod
+    asyncio.create_task(cleanup_after_eod())
 
 def get_next_notice_after(now: datetime.datetime):
     """
@@ -1130,76 +1110,82 @@ def get_quote(symbol: str):
 
 def get_perf_history(symbol: str):
     """
-    Lấy chính xác:
-    - Giá hiện tại (close gần nhất)
-    - % thay đổi so với:
-        + 1 ngày trước (trading day gần nhất trước đó)
-        + 1 tuần trước (close gần nhất trước ngày -7)
-        + 1 tháng trước (close gần nhất trước ngày -30)
-    Dùng dữ liệu lịch sử từ vnstock Quote.history (nguồn VCI).
+    Lấy hiệu suất giá (Ngày/Tuần/Tháng).
+    (ĐÃ SỬA: Fallback VCI -> TCBS)
     """
+    vn_tz = pytz.timezone(TIMEZONE)
+    today = datetime.datetime.now(vn_tz).date()
+    start_date = (today - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+    
+    df = None
+    
+    # --- CÁCH 1: THỬ VCI ---
     try:
-        vn_tz = pytz.timezone(TIMEZONE)
-        today = datetime.datetime.now(vn_tz).date()
-
-        # Lấy tầm 60 ngày gần nhất là đủ để tính 1 tháng
-        start_date = (today - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-
         quote = Quote(symbol=symbol, source="VCI")
         df = quote.history(start=start_date, end=end_date, interval="1D")
-
-        if df is None or len(df) == 0:
-            log.warning(f"[{INSTANCE_ID}] [PERF] {symbol}: không có dữ liệu history")
+    except Exception:
+        pass # Lỗi thì bỏ qua, xuống cách 2
+        
+    # --- CÁCH 2: THỬ TCBS (Nếu VCI tạch) ---
+    if df is None or df.empty:
+        try:
+            quote = Quote(symbol=symbol, source="TCBS")
+            df = quote.history(start=start_date, end=end_date, interval="1D")
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] [PERF FAIL] {symbol}: Cả VCI và TCBS đều lỗi: {e}")
             return None
 
-        # Chuẩn hoá time -> datetime + sort
+    if df is None or len(df) == 0:
+        return None
+
+    # Chuẩn hoá dữ liệu (TCBS và VCI có thể khác tên cột, vnstock3 thường chuẩn hóa về lower)
+    # Đảm bảo có cột 'time' và 'close'
+    try:
+        df.columns = [c.lower() for c in df.columns] # Force lower case
+        if 'time' not in df.columns or 'close' not in df.columns:
+            return None
+            
         df["time"] = pd.to_datetime(df["time"])
         df = df.sort_values("time").reset_index(drop=True)
 
         last = df.iloc[-1]
         last_date = last["time"].date()
-        price = int(last["close"]*1000)
-
+        
+        # Xử lý đơn vị giá (TCBS có thể trả về 26.5 thay vì 26500)
+        price = float(last["close"])
+        if price < 500: price *= 1000
+        
+        # Hàm tìm giá quá khứ
         def find_price_before(target_date: datetime.date):
-            """Tìm giá close gần nhất TRƯỚC hoặc BẰNG target_date."""
             sub = df[df["time"].dt.date <= target_date]
-            if sub.empty:
-                return None
-            return float(sub.iloc[-1]["close"])
+            if sub.empty: return None
+            val = float(sub.iloc[-1]["close"])
+            if val < 500: val *= 1000
+            return val
 
-        # % NGÀY: so với trading day gần nhất trước hôm nay
+        # % NGÀY
         prev_price = find_price_before(last_date - datetime.timedelta(days=1))
-        if prev_price is not None and prev_price != 0:
-            day_pct = (price/1000 - prev_price) / prev_price * 100.0
-        else:
-            day_pct = None
+        day_pct = (price - prev_price) / prev_price * 100.0 if prev_price else None
 
-        # % TUẦN: so với close gần nhất trước (hôm nay - 7 ngày)
+        # % TUẦN (7 ngày)
         week_price = find_price_before(last_date - datetime.timedelta(days=7))
-        if week_price is not None and week_price != 0:
-            week_pct = (price/1000 - week_price) / week_price * 100.0
-        else:
-            week_pct = None
+        week_pct = (price - week_price) / week_price * 100.0 if week_price else None
 
-        # % THÁNG: so với close gần nhất trước (hôm nay - 30 ngày)
+        # % THÁNG (30 ngày)
         month_price = find_price_before(last_date - datetime.timedelta(days=30))
-        if month_price is not None and month_price != 0:
-            month_pct = (price/1000 - month_price) / month_price * 100.0
-        else:
-            month_pct = None
+        month_pct = (price - month_price) / month_price * 100.0 if month_price else None
 
         return {
-            "price": price,
+            "price": int(price),
             "day_pct": day_pct,
             "week_pct": week_pct,
             "month_pct": month_pct,
         }
 
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] [PERF FAIL] {symbol}: {e}")
+        log.warning(f"[{INSTANCE_ID}] [PERF ERROR] {symbol}: {e}")
         return None
-
 
 def format_perf_line(sym: str, perf: dict) -> str:
     price = perf.get("price")
@@ -4913,9 +4899,8 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ 
-    (ĐÃ REFACTOR + THÊM CHATACTION) Thêm mã vào watchlist.
-    - User thường: Giới hạn 1 mã.
-    - Pro User / Admin: Không giới hạn.
+    (ĐÃ SỬA - SMART MODE) Thêm mã vào watchlist.
+    Sử dụng fetch_data_smart để tránh lỗi VCI.
     """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
@@ -4927,133 +4912,100 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await reply_md(update,
             "⚠️ Cách dùng: /add <MÃ>\n"
-            "Ví dụ: /add HPG, /add SSI, /add VNM\n"
-            "(*Chỉ hỗ trợ mã cổ phiếu gồm 3 chữ cái.*)"
+            "Ví dụ: /add HPG, /add SSI, /add VNM"
         )
         return
 
     symbol = context.args[0].strip().upper()
 
-    # ⭐ THAY THẾ "Đang kiểm tra..." BẰNG CHATACTION
+    # Gửi chat action
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     except Exception:
-        pass # Bỏ qua nếu lỗi (ví dụ bot bị block)
+        pass 
 
+    # Validate sơ bộ
     if len(symbol) != 3 or not symbol.isalpha():
-        await reply_md(update,
-            "⚠️ Mã không hợp lệ.\n"
-            "Hiện bot chỉ cho phép thêm *mã cổ phiếu* gồm đúng 3 chữ cái, "
-            "ví dụ: HPG, SSI, VNM."
-        )
+        await reply_md(update, "⚠️ Mã không hợp lệ. Chỉ hỗ trợ mã 3 chữ cái (VD: HPG).")
         return
 
-    # (Phần còn lại của hàm giữ nguyên)
-    def _fetch_price_board(sym):
-        trading = Trading(source="VCI")
-        return trading.price_board([sym])
-
+    # --- GỌI SMART FETCHER (Thay vì gọi trực tiếp Trading VCI) ---
     try:
-        df = await asyncio.to_thread(_fetch_price_board, symbol)
+        # Hàm này đã bao gồm logic: Thử VCI -> Lỗi -> Qua TCBS -> Lỗi -> None
+        data = await fetch_data_smart([symbol])
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi gọi price_board cho {symbol}: {e}")
+        log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi fetch_data_smart {symbol}: {e}")
+        await reply_md(update, f"⚠️ Lỗi hệ thống khi lấy dữ liệu *{symbol}*. Vui lòng thử lại sau.")
+        return
+
+    # Kiểm tra dữ liệu trả về
+    if not data or symbol not in data:
         await reply_md(update,
-            f"⚠️ Không lấy được dữ liệu cho mã *{symbol}*. Vui lòng thử lại sau."
+            f"⚠️ Không tìm thấy dữ liệu cho mã *{symbol}*.\n"
+            "Vui lòng kiểm tra lại mã hoặc thử lại sau (có thể do lỗi nguồn dữ liệu)."
         )
         return
+
+    # Parse dữ liệu từ Smart Fetcher
+    info = data[symbol]
+    price = info.get('price')
+    pct = info.get('pct')
     
-    # ... (Toàn bộ logic xử lý df, norm(), paywall, lưu DB, gửi kết quả...
-    #      đều giữ nguyên như code gốc của bạn) ...
-    row = df.iloc[0]
-            
-    price = None
-    pct = None
-    change_abs = None
-    volume = None
-    exchange = None
-    try:
-        price = row.get(('match', 'match_price'))
-        ref_price = row.get(('listing', 'ref_price'))
-        if price is not None and ref_price is not None and ref_price != 0:
-            change_abs = price - ref_price
-            pct = (change_abs / ref_price) * 100.0
-    except Exception: pass
-    try: volume = row.get(('match', 'accumulated_vol'))
-    except Exception: pass
-    try: exchange = row.get(("listing", "exchange"), None)
-    except Exception: exchange = None
+    # Kiểm tra giá
+    if price is None or price == 0:
+         await reply_md(update, f"⚠️ Dữ liệu giá của *{symbol}* đang bị lỗi (0 hoặc None).")
+         return
 
-    if df is None or ref_price == None:
-        await reply_md(update,
-            f"⚠️ Không tìm thấy dữ liệu giao dịch cho mã *{symbol}*.\n"
-            "Vui lòng kiểm tra lại mã hoặc thử mã khác.\n"
-            "(*Chỉ hỗ trợ cổ phiếu đang giao dịch trên HOSE/HNX/UPCOM.*)"
-        )
-        return
-
-    if price == 0:
-        await reply_md(update,
-            f"⚠️ Hiện chưa có dữ liệu giao dịch cho mã *{symbol}*.\n\n"
-            "Lưu ý: 🕒 Trong vòng *2 tiếng trước khi phiên giao dịch bắt đầu*, hệ thống có thể "
-            "tạm thời không thêm được mã mới do sàn chưa cập nhật dữ liệu.\n\n"
-            "👉 Vui lòng thử lại mã khác hoặc sau khi thị trường mở cửa để đảm bảo dữ liệu chính xác."
-        )
-        return
-
+    # Lấy watchlist cũ
     lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+    
+    # Kiểm tra đã tồn tại chưa
     if symbol in lst:
         symbols_text = ", ".join(lst) if lst else "—"
-        msg = ( f"ℹ️ *{symbol}* đã có trong danh sách theo dõi rồi.\n\n"
-                "📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
-                f"{symbols_text}" )
-        await reply_md(update, msg)
+        await reply_md(update, f"ℹ️ *{symbol}* đã có trong danh sách theo dõi rồi.\n\n📋 Danh mục hiện tại: {symbols_text}")
         return
 
+    # Kiểm tra Paywall (User Free chỉ 1 mã)
     is_pro = await asyncio.to_thread(is_user_pro, chat_id)
     is_admin = (chat_id == ADMIN_ID)
-    current_stock_count = len(lst)
     
-    if not is_pro and not is_admin:
-        if current_stock_count >= 1:
-            log.warning(f"[PAYWALL] User {chat_id} (Free) bị chặn thêm mã {symbol}. Đã đạt giới hạn 1 mã.")
-            await reply_md(update,
-                f"⚠️ Tài khoản miễn phí chỉ được theo dõi tối đa **1 mã**.\n"
-                f"Bạn đang theo dõi: {lst[0]}\n\n"
-                f"Vui lòng `/remove {lst[0]}` trước khi thêm mã mới, hoặc nâng cấp lên Gói Pro để theo dõi không giới hạn.\n\n"
-                f"Liên hệ Admin: `https://t.me/KhoiTran99`"
-            )
-            return
+    if not is_pro and not is_admin and len(lst) >= 1:
+        await reply_md(update,
+            f"⚠️ Tài khoản miễn phí chỉ được theo dõi tối đa **1 mã**.\n"
+            f"Vui lòng `/remove {lst[0]}` trước, hoặc nâng cấp Pro."
+        )
+        return
 
+    # Lưu vào DB
     lst.append(symbol)
     await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
 
+    # Format tin nhắn phản hồi
     symbols_text = ", ".join(lst)
-    watchlist_section = ( "\n\n📋 *Danh sách mã bạn đang theo dõi hiện tại:*\n"
-                          f"{symbols_text}" )
+    
+    # Format số liệu
+    price_str = f"{price:,.0f}".replace(",", ".")
+    
+    pct_sign = "+" if pct > 0 else ""
+    pct_str = f"{pct_sign}{pct:.2f}%" if pct is not None else "—"
+    
+    # Tính thay đổi tuyệt đối (ước lượng từ % và giá hiện tại vì Smart Fetcher không trả về change_abs)
+    # Công thức: ref = price / (1 + pct/100) -> change = price - ref
     try:
-        change_sign = "+" if (pct is not None and pct >= 0) else ""
-        pct_text = f"{change_sign}{pct:.2f}%" if pct is not None else "—"
-        abs_text = ( f"{change_sign}{int(change_abs):,}".replace(",", ".")
-                     if change_abs is not None else "—" )
-        
-        price_str = f"{price:,.0f}".replace(",", ".") if price is not None else "N/A"
+        ref_price = price / (1 + pct/100)
+        change_abs = price - ref_price
+        abs_str = f"{pct_sign}{change_abs:,.0f}".replace(",", ".")
+    except:
+        abs_str = "—"
 
-        summary = ( f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
-                    f"💰 Giá hiện tại: *{price_str}*\n"
-                    f"📊 Thay đổi: *{pct_text}* ({abs_text})\n" )
-        if volume is not None:
-            summary += f"📦 Khối lượng: *{int(volume):,}* cp\n"
-        if exchange:
-            summary += f"🏛️ Sàn: *{exchange}*\n"
-        summary += watchlist_section
-        await reply_md(update,summary)
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi khi format summary cho {symbol}: {e}")
-        fallback_msg = ( f"✅ Đã thêm *{symbol}* vào danh sách theo dõi.\n"
-                         f"{watchlist_section}" )
-        await reply_md(update,fallback_msg)
+    summary = ( 
+        f"📈 *{symbol}* đã được thêm vào danh sách theo dõi.\n\n"
+        f"💰 Giá hiện tại: *{price_str}*\n"
+        f"📊 Thay đổi: *{pct_str}* ({abs_str})\n\n"
+        f"📋 *Danh mục của bạn:*\n{symbols_text}" 
+    )
+    
+    await reply_md(update, summary)
 
 async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ SỬA LỖI BLOCKING I/O) """
