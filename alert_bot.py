@@ -6461,20 +6461,27 @@ async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TY
         # Dữ liệu Value Stocks (Chỉ hiện nếu là Pro)
         "value_stocks": [
             {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "FPT", "industry": "Công nghệ", "pe": "21.0", "roe": "26.0", "score": "9.2"}
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
+     
         ] if is_pro_flag else [],
 
         # Dữ liệu BCTC (Chỉ hiện nếu là Pro)
         "bctc": [
             {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
+            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
+            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
+            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
+            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
+    
         ] if is_pro_flag else [],
 
         # Dữ liệu Reports (Chỉ hiện nếu là Pro)
         "reports": [
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
             {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
             {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
             {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
@@ -6485,10 +6492,22 @@ async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TY
         # Tin tức (Hiện cho cả 2)
         "specialized": [
             {"title": "Tin test: Doanh nghiệp X đạt lợi nhuận kỷ lục", "link": "https://google.com", "time": "09:00"},
-             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"}
+             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
+             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
+             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
+             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
+             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
+
         ],
         "macro": [
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"}
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
         ]
     }
 

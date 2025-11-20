@@ -1,4 +1,3 @@
-
 DIGEST_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -20,12 +19,13 @@ DIGEST_HTML_TEMPLATE = """
         }
         body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; }
         
-        /* ... (Giữ nguyên các CSS cũ: header, card, badge...) ... */
+        /* Header Styles */
         .header { text-align: center; margin-bottom: 32px; }
         .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 12px; }
         .header-title { font-size: 32px; font-weight: 800; margin: 0; background: linear-gradient(135deg, #007aff 0%, #af52de 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .pro-badge { background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); color: white; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 8px; display: inline-flex; transform: translateY(-2px); }
         
+        /* Card & List Styles */
         .section-card { background-color: var(--card-bg); border-radius: 16px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; }
         .card-header { padding: 16px 16px 10px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
@@ -38,38 +38,37 @@ DIGEST_HTML_TEMPLATE = """
         .item-title { font-size: 15px; font-weight: 500; line-height: 1.4; }
         .item-meta { font-size: 12px; color: var(--hint-color); margin-top: 4px; }
 
-        /* --- CSS MỚI CHO LOCKED ITEM --- */
+        /* Locked Item Styles */
         .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, #f9f9f9 10px, #f9f9f9 20px); }
-        
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
+        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
+        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; transform: translateY(2px); }
         
-        .lock-overlay {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            background: rgba(255, 255, 255, 0.6); z-index: 2;
-        }
-        
-        .lock-btn {
-            background: var(--text-color); color: var(--bg-color);
-            border: none; padding: 6px 16px; border-radius: 20px;
-            font-size: 12px; font-weight: 700; cursor: pointer;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px;
-            transform: translateY(2px);
-        }
-        
-        /* Stock Table (Giữ nguyên) */
+        /* Stock Table Styles */
         .stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .stock-table th { text-align: left; padding: 10px 16px; color: var(--hint-color); font-weight: 600; font-size: 11px; }
         .stock-table td { padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        /* Fix border bottom for hidden rows */
+        .stock-table tr.hidden-item td { border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .stock-table tr:last-child td { border-bottom: none; }
+        
         .score-badge { background: #5856d6; color: white; padding: 4px 8px; border-radius: 8px; font-weight: 700; font-size: 12px; }
         
         /* Footer Upsell */
         .premium-card { background: linear-gradient(135deg, #007aff 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
         .premium-btn { display: block; width: 100%; padding: 15px; background-color: #fff; color: #007aff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
 
-        /* Utilities */
-        .hidden { display: none; }
-        .load-more-btn { width: 100%; padding: 12px; background: none; border: none; color: var(--accent-color); font-weight: 600; cursor: pointer; }
+        /* Toggle Button Utilities (Generic) */
+        .hidden-item { display: none; } /* Class chung để ẩn item */
+        
+        .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
+        .btn-toggle {
+            background: none; border: none;
+            color: var(--accent-color); font-size: 13px; font-weight: 600;
+            cursor: pointer; padding: 6px 12px;
+            display: inline-flex; align-items: center; gap: 4px;
+        }
+        .btn-toggle:active { opacity: 0.7; }
     </style>
 </head>
 <body>
@@ -80,13 +79,13 @@ DIGEST_HTML_TEMPLATE = """
     </div>
 
     {% if data.value_stocks %}
-    <div class="section-card">
-        <div class="card-header"><div class="card-icon">💎</div><div class="card-title">Top Value Hôm Nay</div></div>
+    <div class="section-card" id="stocks-card">
+        <div class="card-header"><div class="card-icon">💎</div><div class="card-title">Top Cổ Phiếu Hôm Nay</div></div>
         <table class="stock-table">
             <thead><tr><th>Mã</th><th style="text-align:right">Chỉ Số</th><th style="text-align:right">Điểm</th></tr></thead>
             <tbody>
                 {% for item in data.value_stocks %}
-                <tr>
+                <tr class="{% if loop.index > 5 %}hidden-item{% endif %}">
                     <td><b>{{ item.symbol }}</b><br><span style="font-size:11px; color:#8e8e93;">{{ item.industry }}</span></td>
                     <td style="text-align:right">P/E: {{ item.pe }}<br>ROE: {{ item.roe }}%</td>
                     <td style="text-align:right"><span class="score-badge">{{ item.score }}</span></td>
@@ -94,85 +93,129 @@ DIGEST_HTML_TEMPLATE = """
                 {% endfor %}
             </tbody>
         </table>
+        
+        {% if data.value_stocks|length > 5 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('stocks-card', this, {{ data.value_stocks|length }}, 5)">
+                Xem thêm {{ data.value_stocks|length - 5 }} mã ↓
+            </button>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
     {% if data.bctc %}
-    <div class="section-card">
-        <div class="card-header"><div class="card-icon" style="color:#34c759; background:rgba(52,199,89,0.1)">📊</div><div class="card-title">Báo Cáo Tài Chính</div></div>
+    <div class="section-card" id="bctc-card">
+        <div class="card-header"><div class="card-icon" style="color:#34c759; background:rgba(52,199,89,0.1)">📊</div><div class="card-title">Cập Nhật BCTC</div></div>
         <div class="list-container">
             {% for item in data.bctc %}
-                {% if item.is_locked %}
-                <div class="list-item locked">
-                    <div class="blur-content">
+                <div class="{% if loop.index > 3 %}hidden-item{% endif %}">
+                    {% if item.is_locked %}
+                    <div class="list-item locked">
+                        <div class="blur-content">
+                            <div class="item-header"><span class="badge">{{ item.symbol }}</span> <b>Q{{ item.quarter }}/{{ item.year }}</b></div>
+                            <div class="item-meta">Lợi nhuận tăng trưởng đột biến...</div>
+                        </div>
+                        <div class="lock-overlay">
+                            <button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Nâng cấp để xem</button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="list-item">
                         <div class="item-header"><span class="badge">{{ item.symbol }}</span> <b>Q{{ item.quarter }}/{{ item.year }}</b></div>
-                        <div class="item-meta">Lợi nhuận tăng trưởng đột biến...</div>
+                        <div class="item-meta">🕒 Công bố lúc {{ item.time }}</div>
                     </div>
-                    <div class="lock-overlay">
-                        <button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Nâng cấp để xem</button>
-                    </div>
+                    {% endif %}
                 </div>
-                {% else %}
-                <div class="list-item">
-                    <div class="item-header"><span class="badge">{{ item.symbol }}</span> <b>Q{{ item.quarter }}/{{ item.year }}</b></div>
-                    <div class="item-meta">🕒 Công bố lúc {{ item.time }}</div>
-                </div>
-                {% endif %}
             {% endfor %}
         </div>
+        
+        {% if data.bctc|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('bctc-card', this, {{ data.bctc|length }}, 3)">
+                Xem thêm {{ data.bctc|length - 3 }} mục ↓
+            </button>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
     {% if data.reports %}
-    <div class="section-card">
+    <div class="section-card" id="reports-card">
         <div class="card-header"><div class="card-icon" style="color:#007aff; background:rgba(0,122,255,0.1)">📑</div><div class="card-title">Góc Nhìn Chuyên Gia</div></div>
         <div class="list-container">
             {% for item in data.reports %}
-                {% if item.is_locked %}
-                <div class="list-item locked">
-                     <div class="blur-content">
+                <div class="{% if loop.index > 3 %}hidden-item{% endif %}">
+                    {% if item.is_locked %}
+                    <div class="list-item locked">
+                         <div class="blur-content">
+                            <div class="item-header"><span class="badge">{{ item.symbol }}</span></div>
+                            <div class="item-title">{{ item.title }}</div>
+                        </div>
+                        <div class="lock-overlay">
+                            <button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Mở khóa {{ item.symbol }}</button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <a href="{{ item.link }}" target="_blank" class="list-item">
                         <div class="item-header"><span class="badge">{{ item.symbol }}</span></div>
                         <div class="item-title">{{ item.title }}</div>
-                    </div>
-                    <div class="lock-overlay">
-                        <button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Mở khóa {{ item.symbol }}</button>
-                    </div>
+                        {% if item.time %}<div class="item-meta">🕒 {{ item.time }}</div>{% endif %}
+                    </a>
+                    {% endif %}
                 </div>
-                {% else %}
-                <a href="{{ item.link }}" target="_blank" class="list-item">
-                    <div class="item-header"><span class="badge">{{ item.symbol }}</span></div>
-                    <div class="item-title">{{ item.title }}</div>
-                    {% if item.time %}<div class="item-meta">🕒 {{ item.time }}</div>{% endif %}
-                </a>
-                {% endif %}
             {% endfor %}
         </div>
+        
+        {% if data.reports|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('reports-card', this, {{ data.reports|length }}, 3)">
+                Xem thêm {{ data.reports|length - 3 }} báo cáo ↓
+            </button>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
     {% if data.specialized %}
-    <div class="section-card">
+    <div class="section-card" id="specialized-card">
         <div class="card-header"><div class="card-icon" style="color:#ff9500; background:rgba(255,149,0,0.1)">🏢</div><div class="card-title">Tin Doanh Nghiệp</div></div>
         <div class="list-container">
             {% for item in data.specialized %}
-            <a href="{{ item.link }}" target="_blank" class="list-item">
+            <a href="{{ item.link }}" target="_blank" class="list-item {% if loop.index > 3 %}hidden-item{% endif %}">
                 <div class="item-title">{{ item.title }}</div>
             </a>
             {% endfor %}
         </div>
+        
+        {% if data.specialized|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('specialized-card', this, {{ data.specialized|length }}, 3)">
+                Xem thêm {{ data.specialized|length - 3 }} tin ↓
+            </button>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
     {% if data.macro %}
-    <div class="section-card">
+    <div class="section-card" id="macro-card">
         <div class="card-header"><div class="card-icon" style="color:#af52de; background:rgba(175,82,222,0.1)">🌍</div><div class="card-title">Vĩ Mô & Chính Sách</div></div>
         <div class="list-container">
             {% for item in data.macro %}
-            <a href="{{ item.link }}" target="_blank" class="list-item">
+            <a href="{{ item.link }}" target="_blank" class="list-item {% if loop.index > 3 %}hidden-item{% endif %}">
                 <div class="item-title">{{ item.title }}</div>
             </a>
             {% endfor %}
         </div>
+
+        {% if data.macro|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('macro-card', this, {{ data.macro|length }}, 3)">
+                Xem thêm {{ data.macro|length - 3 }} tin ↓
+            </button>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
 
@@ -192,11 +235,68 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <script>Telegram.WebApp.ready(); Telegram.WebApp.expand();</script>
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+
+        /**
+         * Hàm toggle chung cho mọi section.
+         * @param {string} cardId - ID của thẻ section-card
+         * @param {HTMLElement} btn - Nút bấm
+         * @param {number} total - Tổng số item
+         * @param {number} limit - Số item hiển thị mặc định (ví dụ: stocks=5, news=3)
+         */
+        function toggleSection(cardId, btn, total, limit) {
+            const card = document.getElementById(cardId);
+            // Tìm tất cả các item đang bị ẩn (class .hidden-item)
+            const hiddenItems = card.querySelectorAll('.hidden-item');
+            
+            // Kiểm tra trạng thái
+            const isExpanded = btn.getAttribute('data-expanded') === 'true';
+            const hiddenCount = total - limit;
+            
+            // Xác định loại đơn vị (mã, tin, mục...) dựa trên ID để hiển thị text cho đẹp
+            let unit = 'mục';
+            if (cardId.includes('stocks')) unit = 'mã';
+            else if (cardId.includes('specialized') || cardId.includes('macro')) unit = 'tin';
+            else if (cardId.includes('reports')) unit = 'báo cáo';
+
+            if (!isExpanded) {
+                // MỞ RỘNG: display block cho các item ẩn
+                hiddenItems.forEach(item => {
+                    // Với table row (tr) cần display table-row, còn div/a thì block
+                    if (item.tagName === 'TR') item.style.display = 'table-row';
+                    else item.style.display = 'block';
+                    
+                    item.style.animation = 'fadeIn 0.3s ease';
+                });
+                btn.innerHTML = 'Thu gọn ↑';
+                btn.setAttribute('data-expanded', 'true');
+            } else {
+                // THU GỌN: display none
+                hiddenItems.forEach(item => {
+                    item.style.display = 'none';
+                });
+                btn.innerHTML = `Xem thêm ${hiddenCount} ${unit} ↓`;
+                btn.setAttribute('data-expanded', 'false');
+                
+                // Cuộn nhẹ lên đầu card
+                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        const style = document.createElement('style');
+        style.innerHTML = `
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(-5px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
 </body>
 </html>
 """
-
 
 DIGEST_404_TEMPLATE = r"""
 <!DOCTYPE html>
