@@ -2274,6 +2274,124 @@ def format_roe_pct(roe_decimal: float | None) -> str:
     return f"{pct:.1f}%"
 
 # ==============================================
+# SMART DATA FETCHER (Async + Timeout 20s)
+# ==============================================
+# Biến toàn cục để lưu trạng thái chặn VCI theo ngày
+# Nếu _vci_blocked_date == hôm nay -> Bỏ qua VCI
+_vci_blocked_date = None 
+
+# ==============================================
+# SMART DATA FETCHER (Circuit Breaker Mode)
+# ==============================================
+async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
+    """
+    Hàm Async lấy dữ liệu thông minh với cơ chế "Ngắt mạch" (Circuit Breaker).
+    - Mặc định: Thử VCI (Timeout 20s).
+    - Nếu VCI lỗi: Đánh dấu chặn VCI trong ngày hôm nay -> Chuyển ngay sang TCBS.
+    - Các lần gọi sau: Nếu thấy đã chặn -> Vào thẳng TCBS (không chờ 20s nữa).
+    """
+    global _vci_blocked_date
+    
+    results = {}
+    vn_tz = pytz.timezone(TIMEZONE)
+    today_date = datetime.datetime.now(vn_tz).date()
+
+    # 1. KIỂM TRA TRẠNG THÁI VCI
+    # Nếu ngày chặn trùng với hôm nay -> VCI đang bị chặn -> Skip
+    skip_vci = (_vci_blocked_date == today_date)
+
+    if not skip_vci:
+        # --- THỬ NGUỒN VCI (Full Data) ---
+        try:
+            # Hàm wrapper để chạy trong thread
+            def _run_vci():
+                t = Trading(source="VCI")
+                return t.price_board(symbols)
+
+            # Ép timeout 20 giây
+            df = await asyncio.wait_for(
+                asyncio.to_thread(_run_vci), 
+                timeout=20.0
+            )
+            
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    try:
+                        sym = str(row[('listing', 'symbol')]).upper().strip()
+                        match_p = float(row[('match', 'match_price')])
+                        ref_p = float(row[('listing', 'ref_price')])
+                        
+                        if match_p == 0: match_p = ref_p 
+                        
+                        pct = 0.0
+                        if ref_p > 0:
+                            pct = ((match_p - ref_p) / ref_p) * 100.0
+
+                        results[sym] = {"price": match_p, "pct": pct, "ref": ref_p}
+                    except: continue
+                
+                if results: return results # VCI thành công -> Trả về ngay
+                
+        except asyncio.TimeoutError:
+            log.warning(f"[SMART] ⏳ VCI quá hạn 20s. ⛔ CHẶN VCI TRONG NGÀY HÔM NAY.")
+            _vci_blocked_date = today_date # Kích hoạt chặn
+            
+        except Exception as e:
+            log.warning(f"[SMART] ❌ VCI lỗi: {e}. ⛔ CHẶN VCI TRONG NGÀY HÔM NAY.")
+            _vci_blocked_date = today_date # Kích hoạt chặn
+    
+    # else:
+        # Nếu muốn debug xem nó có skip thật không thì uncomment dòng này
+        # log.info("[SMART] ⏭️ VCI đang bị chặn hôm nay, vào thẳng TCBS.")
+
+    # --- NGUỒN DỰ PHÒNG: TCBS ---
+    # Chạy khi VCI bị lỗi, timeout HOẶC đang bị chặn (skip_vci = True)
+    try:
+        today_str = today_date.strftime("%Y-%m-%d")
+        start_str = (today_date - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+        
+        def _run_tcbs_fallback():
+            tcbs_results = {}
+            for sym in symbols:
+                try:
+                    quote = Quote(symbol=sym, source="TCBS")
+                    df = quote.history(start=start_str, end=today_str, interval="1D")
+                    
+                    if df is not None and len(df) >= 1:
+                        df = df.sort_values('time')
+                        last_row = df.iloc[-1]
+                        
+                        # Giá hiện tại
+                        current_price = float(last_row['close'])
+                        if current_price < 500: current_price *= 1000
+
+                        # Giá tham chiếu
+                        ref_price = current_price 
+                        if len(df) >= 2:
+                            if str(last_row['time'].date()) == today_str:
+                                prev_row = df.iloc[-2]
+                                ref_val = float(prev_row['close'])
+                                if ref_val < 500: ref_val *= 1000
+                                ref_price = ref_val
+                            else:
+                                ref_price = current_price 
+                        
+                        pct = 0.0
+                        if ref_price > 0:
+                            pct = ((current_price - ref_price) / ref_price) * 100.0
+
+                        tcbs_results[sym] = {"price": current_price, "pct": pct, "ref": ref_price}
+                except: continue
+            return tcbs_results
+
+        results = await asyncio.to_thread(_run_tcbs_fallback)
+                
+    except Exception as e:
+        log.error(f"[SMART] ❌ TCBS Fatal Error: {e}")
+        
+    return results
+
+# ==============================================
 # VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL) - ALERT_LOOP
 # ==============================================
 
@@ -2289,7 +2407,7 @@ except Exception as e:
 _stock_broadcast_queue = asyncio.Queue()
 _stock_current_price_cache: dict[str, dict] = {} # Cache giá {HPG: {"price": ..., "pct": ...}}
 _stock_current_watch_cache: dict[str, dict] = {} # Cache watchlist {chat_id: {"list": [...]}}
-TICKER_INTERVAL_SECONDS = 3  # Tần suất Ticker (check cache)
+TICKER_INTERVAL_SECONDS = 5  # Tần suất Ticker (check cache)
 FETCHER_INTERVAL_SECONDS = 15 # Tần suất Fetcher (gọi API)
 
 # (Các hàm same_sign, get_quote... của bạn nằm ở đây)
@@ -2299,161 +2417,80 @@ def same_sign(a: float, b: float) -> bool:
 
 async def stock_price_fetcher_loop():
     """
-    (TÁC VỤ 1 - FETCHER - ĐÃ SỬA, CÓ BATCHING)
-    - Loop này chạy 15 GIÂY/LẦN (FETCHER_INTERVAL_SECONDS).
-    - Chỉ làm 2 việc nặng: Lấy DB (get_all_watch) và Lấy API (price_board).
-    - Cập nhật kết quả vào 2 biến cache toàn cục.
-    - SỬA: Chia nhỏ API call thành nhiều batch (50 mã/lần) để tránh lỗi 1 mã
-      làm hỏng cả vòng lặp.
+    (TÁC VỤ 1 - FETCHER STOCK)
+    - Đã thêm log chi tiết giá của 3 mã đầu tiên để debug.
     """
     global _stock_current_price_cache, _stock_current_watch_cache
-    
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
-
-    if not stock_trading:
-        log.error(f"[{INSTANCE_ID}][FETCHER_STOCK] 'stock_trading' (VCI) bị lỗi, không thể chạy.")
-        return # Thoát
-
-    # Hằng số để batching API call
-    BATCH_SIZE = 50 
-    BATCH_SLEEP = 0.5 # Nghỉ 0.5s giữa các batch
+    BATCH_SIZE = 10 
 
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
 
         if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Bot TẮT, ngủ 60s.")
             await asyncio.sleep(60)
             continue
 
         if not in_session_vietnam():
             next_start = next_session_start(now)
             delay = max((next_start - now).total_seconds(), 60.0)
-            log.info(
-                f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Ngoài giờ... "
-                f"sleep {delay:.0f}s tới {next_start.strftime('%Y-%m-%d %H:%M')}"
-            )
+            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK] Ngoài giờ... Ngủ tới {next_start.strftime('%H:%M')}")
             await asyncio.sleep(delay)
             continue
 
         loop_start = now
-        log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Bắt đầu lấy DB (watch) và API (price)...")
         try:
-            # ==================================================
-            # 1. GATHER (GOM) - (I/O Nặng 1: DB)
-            # ==================================================
+            # 1. Lấy Watchlist
             all_watch = await asyncio.to_thread(get_all_watch)
-
-            all_symbols: set[str] = set()
+            all_symbols = set()
             for block in all_watch.values():
                 for sym in (block.get("list", []) or []):
                     if len(sym) == 3 and sym.isalpha():
                          all_symbols.add(sym.upper())
-
-            if not all_symbols:
-                log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Không có symbol nào, sleep 60s.")
-                _stock_current_watch_cache = {} # Xóa cache
-                _stock_current_price_cache = {}
-                await asyncio.sleep(60)
-                continue
             
+            if not all_symbols:
+                await asyncio.sleep(30)
+                continue
+
             symbols_list = sorted(list(all_symbols))
-            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Cần lấy giá cho {len(symbols_list)} mã (chia batch {BATCH_SIZE} mã/lần).")
 
-            # ==================================================
-            # 2. FETCH (Lấy dữ liệu - I/O Nặng 2: API)
-            #    (⭐ ĐÃ SỬA: DÙNG BATCHING)
-            # ==================================================       
-            final_df = None # DataFrame cuối cùng để ghép các batch
-
+            # 2. Gọi Smart Fetcher theo Batch
+            final_results = {}
+            
             for i in range(0, len(symbols_list), BATCH_SIZE):
                 batch_syms = symbols_list[i:i + BATCH_SIZE]
-                log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Đang lấy batch {i//BATCH_SIZE + 1} ({len(batch_syms)} mã)...")
                 
-                try:
-                    # Dùng lại hàm fallback bạn đã viết cho screener!
-                    df_batch = await asyncio.to_thread(
-                        _fetch_price_board_with_fallback,
-                        stock_trading, # trading object
-                        batch_syms,    # list mã
-                        log,           # log object
-                        INSTANCE_ID    # instance_id
-                    )
-                    
-                    if df_batch is not None and not df_batch.empty:
-                        if final_df is None:
-                            final_df = df_batch
-                        else:
-                            # Ghép batch mới vào kết quả cuối
-                            final_df = pd.concat([final_df, df_batch], ignore_index=True)
+                # Gọi hàm Async Smart Fetcher
+                batch_data = await fetch_data_smart(batch_syms)
                 
-                except Exception as e:
-                    log.warning(f"Lỗi nghiêm trọng khi xử lý batch {batch_syms}: {e}")
+                if batch_data:
+                    final_results.update(batch_data)
                 
-                await asyncio.sleep(BATCH_SLEEP) # Nghỉ nhẹ giữa các batch
-            
-            # Gán kết quả cuối cùng cho biến 'df'
-            df = final_df
-            # ==================================================
+                await asyncio.sleep(0.5) 
 
-            if df is None or df.empty:
-                log.warning(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] price_board rỗng (sau khi chạy {len(symbols_list)//BATCH_SIZE + 1} batch).")
-                await asyncio.sleep(FETCHER_INTERVAL_SECONDS)
-                continue
-
-            # ==================================================
-            # 3. PROCESS (Xử lý & Build Cache) - (Giữ nguyên)
-            # ==================================================
-            quote_cache: dict[str, dict] = {}
-            def norm(x):
-                if x is None: return None
-                try:
-                    if hasattr(x, "item"): x = x.item()
-                except Exception: pass
-                try: x = float(x)
-                except Exception: return None
-                if isinstance(x, float) and math.isnan(x): return None
-                return x
-
-            for _, row in df.iterrows():
-                try:
-                    sym = row[('listing', 'symbol')]
-                    sym_u = sym.upper()
-                    match_price = norm(row.get(("match", "match_price")))
-                    ref_price = norm(
-                        row.get(("match", "reference_price"))
-                        if ("match", "reference_price") in row.index 
-                        else row.get(("listing", "ref_price"))
-                    )
-                    price = match_price if match_price is not None else ref_price
-                    pct_change = (
-                        ((float(match_price) - float(ref_price)) / float(ref_price)) * 100.0
-                        if match_price is not None and ref_price is not None and ref_price != 0
-                        else None
-                    )
-                    if price is None or pct_change is None:
-                        continue
-                    quote_cache[sym_u] = {"price": price, "pct": pct_change}
-                except Exception as e:
-                    sym_debug = row.get(('listing', 'symbol'), 'Unknown')
-                    log.warning(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi xử lý hàng {sym_debug}: {e}")
-            
-            # ==================================================
-            # 4. CẬP NHẬT CACHE TOÀN CỤC - (Giữ nguyên)
-            # ==================================================
-            _stock_current_watch_cache = all_watch
-            _stock_current_price_cache = quote_cache
-            log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Cập nhật cache: {len(all_watch)} users, {len(quote_cache)} mã.")
+            # 3. Cập nhật Cache & LOG CHI TIẾT
+            if final_results:
+                _stock_current_price_cache = final_results
+                _stock_current_watch_cache = all_watch
+                
+                # 🔥 LOG DEBUG: In ra giá của 3 mã đầu tiên để kiểm tra 🔥
+                sample_log = []
+                for sym, info in list(final_results.items())[:3]:
+                    price = info.get('price')
+                    sample_log.append(f"{sym}={price}")
+                
+                sample_str = " | ".join(sample_log)
+                log.info(f"[{INSTANCE_ID}][FETCHER_STOCK] ✅ Cache updated: {len(final_results)} mã. Sample: [{sample_str}]")
+            else:
+                log.warning(f"[{INSTANCE_ID}][FETCHER_STOCK] ⚠️ Không lấy được dữ liệu nào.")
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Lỗi nghiêm trọng: {e}")
+            log.error(f"[{INSTANCE_ID}][FETCHER_STOCK] Error: {e}")
 
-        # Giữ nhịp quét 15 giây
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(FETCHER_INTERVAL_SECONDS - elapsed, 1)
-        log.info(f"[{INSTANCE_ID}][FETCHER_STOCK {loop_id}] Sleep {delay:.1f}s")
         await asyncio.sleep(delay)
 
 async def alert_loop():
@@ -2470,6 +2507,10 @@ async def alert_loop():
     while True:
         loop_id += 1
         now = datetime.datetime.now(vn_tz)
+
+        # --- HEARTBEAT LOG (MỚI): Log mỗi 20 vòng (khoảng 60s) ---
+        if loop_id % 20 == 0:
+            log.info(f"[{INSTANCE_ID}][TICKER_STOCK] 💓 Heartbeat: Đang theo dõi {len(_stock_current_watch_cache)} user. Bot vẫn sống.")
 
         # 1. Kiểm tra điều kiện chạy
         if not BOT_ACTIVE:
@@ -3086,7 +3127,7 @@ async def news_cleanup_loop():
 # --- Tham số riêng
 VN30F1M_SYMBOL = "VN30F1M"
 VN30F1M_DELTA_THRESHOLD = 5    # ±5 điểm
-VN30F1M_TICK_SECONDS = 3        # chu kỳ quét
+VN30F1M_TICK_SECONDS = 5        # chu kỳ quét
 
 # --- State trong RAM
 _vn30f1m_anchor: float | None = None      # ❗️ SỬA: Mốc di động (giá của lần alert cuối)
@@ -3180,34 +3221,44 @@ def vn30f1m_day_healthcheck():
 
 async def _vn30f1m_get_current_price() -> float | None:
     """
-    (V7 - Đã tối ưu) Lấy giá 1m.
-    Sử dụng object 'quote_vn30f1m' toàn cục, không khởi tạo lại.
+    (V8 - Fix) Lấy giá realtime dùng price_board (nhẹ & ổn định hơn history).
+    Tránh lỗi ConnectionError/RetryError từ endpoint history.
     """
+    # Sử dụng biến global stock_trading (đã được cơ chế Re-init quản lý bên fetcher loop)
+    global stock_trading
+    
     try:
-        # 1. Lấy ngày hôm nay (giờ VN)
-        vn_tz = pytz.timezone(TIMEZONE)
-        today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
-
-        # 2. Dùng object 'quote_vn30f1m' (đã khởi tạo 1 lần)
-        df = await asyncio.to_thread(quote_vn30f1m.history, start=today, end=today, interval="1m")
-        
-        if df is None or df.empty:
-            log.warning(f"[VN30F1M] quote.history(interval='1m') trả về rỗng cho hôm nay.")
-            # (Fallback)
-            try:
-                df_1d = await asyncio.to_thread(quote_vn30f1m.history, start=today, end=today, interval="1D")
-                if df_1d is not None and not df_1d.empty:
-                    return float(df_1d.iloc[-1]["close"])
-            except Exception:
-                pass 
+        if stock_trading is None:
             return None
 
-        # 3. Lấy giá 'close' của dòng CUỐI CÙNG
-        price = float(df.iloc[-1]["close"])
-        return price
+        # Gọi API lấy bảng giá (Snapshot realtime) - Nhanh và ít bị chặn
+        df = await asyncio.to_thread(stock_trading.price_board, [VN30F1M_SYMBOL])
+        
+        if df is None or df.empty:
+            return None
 
-    except (Exception, SystemExit) as e:
-        log.warning(f"[VN30F1M] Lỗi khi lấy giá 1m (quote.history): {e}")
+        # Lấy giá khớp lệnh (Match Price) từ DataFrame
+        # Cấu trúc price_board trả về thường là MultiIndex: ('match', 'match_price')
+        try:
+            row = df.iloc[0]
+            # Ưu tiên lấy giá khớp lệnh
+            val = row.get(('match', 'match_price'))
+            
+            # Nếu không có giá khớp (ví dụ đầu phiên chưa khớp), thử lấy giá tham chiếu
+            if val is None or val == 0:
+                 val = row.get(('listing', 'ref_price'))
+
+            if val is not None:
+                return float(val)
+                
+        except Exception:
+            pass
+            
+        return None
+
+    except Exception as e:
+        # Log warning nhẹ để debug nếu cần
+        log.warning(f"[VN30F1M] Lỗi lấy giá Live (price_board): {e}")
         return None
 
 async def _vn30f1m_process_tick(price: float):
@@ -3260,12 +3311,18 @@ async def vn30f1m_alert_loop():
     log.info(f"[VN30F1M][TICKER] Bắt đầu. Users đang bật: {len(_vn30f1m_enabled_cache)}")
     
     vn_tz = pytz.timezone(TIMEZONE)
+    loop_count = 0 # Thêm biến đếm
 
     while True:
         loop_start = datetime.datetime.now(vn_tz)
         try:
             now = loop_start
             _vn30f1m_reset_if_new_day(now)
+
+            # --- HEARTBEAT LOG (MỚI): Mỗi 20 vòng (khoảng 60s) ---
+            if loop_count % 20 == 0:
+                current_p = _vn30f1m_current_price_cache
+                log.info(f"[VN30F1M][TICKER] 💓 Heartbeat: Giá hiện tại={current_p}, Anchor={_vn30f1m_anchor}. Bot vẫn sống.")
 
             if not BOT_ACTIVE:
                 await asyncio.sleep(30)
@@ -3311,90 +3368,58 @@ async def vn30f1m_alert_loop():
 
 async def vn30f1m_price_fetcher_loop():
     """
-    (Tác vụ 1: Fetcher - Yêu cầu 10 giây)
-    (ĐÃ SỬA: Lấy Giá Tham Chiếu (TC) lúc đầu ngày và
-     cập nhật mốc di động _vn30f1m_anchor)
+    (Tác vụ 1: Fetcher VN30F1M - Smart Async)
     """
-    global _vn30f1m_current_price_cache, _vn30f1m_anchor, stock_trading
+    global _vn30f1m_current_price_cache, _vn30f1m_anchor, _vn30f1m_ref_price
     vn_tz = pytz.timezone(TIMEZONE)
     FETCH_INTERVAL = 15
     
+    log.info(f"[{INSTANCE_ID}][VN30F1M] Bắt đầu (Smart Mode Async)...")
+
     while True:
         loop_start = datetime.datetime.now(vn_tz)
         try:
-            now = loop_start
-            
             if not BOT_ACTIVE:
-                log.info("[VN30F1M][FETCHER] Bot OFF, ngủ 30s.")
                 await asyncio.sleep(30)
                 continue
                 
             if not in_session_vietnam():
-                # ... (Logic ngủ ngoài giờ giữ nguyên) ...
                 now = datetime.datetime.now(vn_tz)
                 next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-                if now >= next_open:
-                    next_open += datetime.timedelta(days=1)
-                while next_open.weekday() >= 5:
-                    next_open += datetime.timedelta(days=1)
+                if now >= next_open: next_open += datetime.timedelta(days=1)
+                while next_open.weekday() >= 5: next_open += datetime.timedelta(days=1)
                 sleep_seconds = max(5, (next_open - now).total_seconds())
-                log.info(f"[VN30F1M][FETCHER] Ngoài giờ. Ngủ tới {next_open.strftime('%Y-%m-%d %H:%M:%S')} ({int(sleep_seconds)}s)")
+                log.info(f"[VN30F1M] Ngoài giờ. Ngủ tới {next_open.strftime('%H:%M')}")
                 await asyncio.sleep(sleep_seconds)
                 continue
+
+            # 🔥 SỬA ĐỔI: Gọi trực tiếp await
+            data = await fetch_data_smart([VN30F1M_SYMBOL])
             
-            # ❗️ LOGIC SỬA BẮT ĐẦU TỪ ĐÂY
-            
-            # Sửa điều kiện: Check cả ref_price
-            if _vn30f1m_anchor is None or _vn30f1m_ref_price is None: 
-                log.info("[VN30F1M][FETCHER] Đang lấy Giá Tham Chiếu (TC)...")
-                try:
-                    # ... (đoạn gọi stock_trading.price_board giữ nguyên) ...
-                    df_tc = await asyncio.to_thread(stock_trading.price_board, [VN30F1M_SYMBOL])
-                    
-                    if df_tc is None or df_tc.empty:
-                         # ... (giữ nguyên log warning) ...
-                         await asyncio.sleep(FETCH_INTERVAL)
-                         continue
-                    
-                    ref_price = df_tc.iloc[0].get(('listing', 'ref_price'))
-                    
-                    if ref_price is None:
-                        # ... (giữ nguyên log warning) ...
-                        await asyncio.sleep(FETCH_INTERVAL)
-                        continue
+            if data and VN30F1M_SYMBOL in data:
+                info = data[VN30F1M_SYMBOL]
+                current_price = info['price']
+                ref_price = info['ref']
+                
+                _vn30f1m_current_price_cache = current_price
+                
+                if _vn30f1m_ref_price is None:
+                    _vn30f1m_ref_price = ref_price
+                    log.info(f"[VN30F1M] ⛳ Ref Price Set: {ref_price}")
+                
+                if _vn30f1m_anchor is None:
+                    _vn30f1m_anchor = ref_price
 
-                    # --- CẬP NHẬT CẢ 2 BIẾN ---
-                    current_ref = float(ref_price)
-                    if _vn30f1m_ref_price is None:
-                        _vn30f1m_ref_price = current_ref
-                    
-                    if _vn30f1m_anchor is None:
-                        _vn30f1m_anchor = current_ref
-                        
-                    log.info(f"[VN30F1M][FETCHER] ⛳ ĐÃ SET THAM CHIẾU = {current_ref}")
-
-                except Exception as e:
-                    log.error(f"[VN30F1M][FETCHER] Lỗi nghiêm trọng khi lấy TC: {e}")
-                    await asyncio.sleep(FETCH_INTERVAL)
-                    continue
-
-            # 2. LẤY GIÁ LIVE (1m) (Luôn chạy)
-            price = await _vn30f1m_get_current_price()
-
-            if price is not None:
-                _vn30f1m_current_price_cache = float(price)
             else:
-                log.warning("[VN30F1M][FETCHER] API (1m) trả về None.")
+                # Log nhẹ để biết đang retry
+                pass
 
-        except asyncio.CancelledError:
-            log.info("[VN30F1M][FETCHER] Bị huỷ (Cancelled).")
-            break
         except Exception as e:
-            log.warning(f"[VN30F1M][FETCHER] Lỗi: {e}")
+            log.error(f"[VN30F1M] Lỗi Loop: {e}")
+            await asyncio.sleep(10)
         
-        # Giữ nhịp 10 giây
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
-        delay = max(0.1, FETCH_INTERVAL - elapsed)
+        delay = max(1, FETCH_INTERVAL - elapsed)
         await asyncio.sleep(delay)
 
 async def vn30f1m_broadcast_loop():
