@@ -3457,7 +3457,7 @@ async def vn30f1m_alert_loop():
         if not in_session_vietnam():
             await asyncio.sleep(60)
             continue
-        
+
         loop_start = datetime.datetime.now(vn_tz)
         try:
             now = loop_start
@@ -4674,9 +4674,9 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", si
 async def auto_on_after_delay(initial_active: bool):
     """
     Tự động bật lại bot sau 2 phút kể từ khi khởi động,
-    *chỉ khi* trạng thái ban đầu là OFF và sau 2 phút vẫn còn OFF.
+    nếu trạng thái ban đầu là OFF.
     """
-    global BOT_ACTIVE
+    global BOT_ACTIVE, tg_app # 👈 Cần access global tg_app để lấy đối tượng bot
 
     # Nếu lúc start bot đang ON thì khỏi cần auto /on
     if initial_active:
@@ -4687,12 +4687,16 @@ async def auto_on_after_delay(initial_active: bool):
     # Chỉ auto /on nếu tới lúc này bot vẫn đang OFF
     if BOT_ACTIVE is False:
         BOT_ACTIVE = True
-        set_bot_active(True)
+        # Lưu trạng thái vào DB (chạy trong thread)
+        await asyncio.to_thread(set_bot_active, True)
+        
         log.info(f"[{INSTANCE_ID}] BOT auto switched ON after 2 minutes (initial OFF).")
 
         if ADMIN_ID:
             try:
+                # 👇 ĐÃ SỬA: Thêm tham số 'tg_app.bot' vào đầu
                 await send_md(
+                    tg_app.bot, 
                     ADMIN_ID,
                     "✅ *Hệ thống đã được kích hoạt trở lại (auto /on sau 2 phút).* \n\n"
                     "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
