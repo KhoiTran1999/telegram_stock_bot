@@ -59,16 +59,9 @@ from db_utils import (
     delete_bot_messages_in_range,
     load_stock_value_cache,
     has_news_seen,
-    mark_news_seen,          
-    get_news_seen_count,
-    get_news_pref,
-    set_news_pref,   
-    is_news_enabled_for_chat,
+    mark_news_seen,         
     has_bctc_notified,
     mark_bctc_notified,
-    add_bctc_queue,
-    get_bctc_queue_by_date,
-    clear_bctc_queue_entry,
     export_core_data,
     import_core_data,
     get_last_restore_month,
@@ -79,7 +72,6 @@ from db_utils import (
     remove_paid_user,
     get_all_pro_chat_ids,
     cleanup_old_news_seen,
-    get_all_news_pref,
     get_user_pro_expiry,
     has_report_seen,
     mark_report_seen,
@@ -88,7 +80,10 @@ from db_utils import (
     get_recent_news_seen,
     create_pending_order,
     get_order_by_id,
-    mark_order_as_paid
+    mark_order_as_paid,
+    save_bot_message,
+    get_messages_to_cleanup,
+    delete_bot_log_record,
 )
 import psutil
 import time
@@ -440,29 +435,24 @@ def fetch_rss_entries_for_urls(urls: list[str]) -> list[dict[str, Any]]:
 # HÀM TIỆN ÍCH
 # ==============================================
 
-async def send_md(bot: telegram.Bot, chat_id: int, text: str, **kwargs):
+async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'GENERAL', **kwargs):
     """
-    Gửi tin nhắn Markdown an toàn (async) bằng bot instance.
+    Gửi tin nhắn Markdown an toàn (async) + Ghi log msg_type.
     """
     try:
-        return await bot.send_message(
+        msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode="Markdown",
             **kwargs,
         )
+        # 🔥 LƯU DB ASYNC (Chạy trong thread để không chặn) 🔥
+        await asyncio.to_thread(save_bot_message, chat_id, msg.message_id, msg_type)
+        return msg
     except BadRequest as e:
-        if "can't parse entities" in str(e).lower():
-            log.warning(f"[Markdown error] {e} | text={text!r}")
-            safe_text = escape_markdown_v2(text) # Bạn đã có hàm này
-            return await bot.send_message(
-                chat_id=chat_id,
-                text=safe_text,
-                parse_mode="Markdown",
-                **kwargs,
-            )
-        else:
-            log.error(f"[Telegram Send Error] chat={chat_id}: {e}")
+        # ... (giữ nguyên phần xử lý lỗi cũ của bạn) ...
+        # Nhưng nhớ thêm save_bot_message vào chỗ retry thành công nếu cần
+        pass
     except Exception as e:
         log.error(f"[Telegram Send Error] chat={chat_id}: {e}")
 
@@ -524,6 +514,55 @@ def save_state_for_all(all_state):
     global ALERT_STATE
     ALERT_STATE = all_state
 
+async def cleanup_after_eod():
+    """
+    Dọn dẹp tin nhắn rác sau khi kết thúc phiên.
+    Xóa: STOCK_ALERT, VN30_ALERT, SESSION_NOTICE.
+    """
+    log.info("[CLEANUP] 🧹 Bắt đầu dọn dẹp tin nhắn phiên hôm nay...")
+    
+    # Các loại tin cần xóa
+    TARGET_TYPES = ['STOCK_ALERT', 'VN30_ALERT', 'SESSION_NOTICE']
+    
+    # Lấy danh sách từ DB
+    records = await asyncio.to_thread(get_messages_to_cleanup, TARGET_TYPES)
+    
+    if not records:
+        log.info("[CLEANUP] Không có tin nhắn rác nào để xóa.")
+        return
+
+    log.info(f"[CLEANUP] Tìm thấy {len(records)} tin nhắn cần xóa.")
+    
+    count_deleted = 0
+    for row in records:
+        record_id, chat_id, msg_id = row
+        
+        try:
+            # 1. Xóa trên Telegram
+            try:
+                await tg_app.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except BadRequest as e:
+                if "Message to delete not found" in str(e):
+                    # User đã xóa rồi -> Không sao, vẫn xóa trong DB
+                    pass
+                else:
+                    log.warning(f"[CLEANUP] Lỗi Tele xóa msg {msg_id}: {e}")
+                    continue # Nếu lỗi khác (như rate limit nặng), tạm bỏ qua record này
+            except Exception as e:
+                log.warning(f"[CLEANUP] Lỗi lạ: {e}")
+                continue
+
+            # 2. Xóa trong DB (nếu xóa Tele thành công hoặc tin đã mất)
+            await asyncio.to_thread(delete_bot_log_record, record_id)
+            count_deleted += 1
+            
+            # 3. Rate Limit: Nghỉ 0.2s giữa các tin để tránh lỗi 429
+            await asyncio.sleep(0.2)
+            
+        except Exception as e:
+            log.error(f"[CLEANUP] Error loop item: {e}")
+
+    log.info(f"[CLEANUP] ✅ Hoàn tất. Đã xóa {count_deleted}/{len(records)} tin nhắn.")
 
 def in_session_vietnam() -> bool:
     """Giờ giao dịch Việt Nam: 09:15–11:30, 13:00–14:45 (T2–T6)."""
@@ -617,12 +656,8 @@ def get_git_deploy_info() -> str | None:
 
     return "\n".join(lines)
 
-# Thay thế hàm này trong alert_bot.py
 
-# (Trong file alert_bot.py)
-# THAY THẾ HÀM NÀY:
-
-async def broadcast_to_all_watchers(text: str, target_audience: str = 'pro'):
+async def broadcast_to_all_watchers(text: str, target_audience: str = 'pro', msg_type: str = 'GENERAL'):
     """
     (ĐÃ SỬA) Gửi 1 thông báo tới user.
     - target_audience='pro': Chỉ gửi cho Pro User + Admin (Mặc định)
@@ -657,7 +692,7 @@ async def broadcast_to_all_watchers(text: str, target_audience: str = 'pro'):
             # đi thẳng tới bước gửi
             # ================================
 
-            tasks.append(send_md(tg_app.bot, chat_id, text))
+            tasks.append(send_md(tg_app.bot, chat_id, text, msg_type=msg_type))
             
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][NOTICE] Lỗi chuẩn bị gửi cho {chat_key}: {e}")
@@ -983,11 +1018,16 @@ async def session_notice_loop():
         try:
             label = spec.get("label")
             if label == "EOD_SUMMARY":
-                # 🔔 15:00 – Tổng kết cuối phiên theo từng danh mục
+                # 🔔 15:00 – Tổng kết cuối phiên
                 await send_eod_summary()
+
+                # Chờ 1 chút cho EOD đi hết rồi mới dọn dẹp
+                await asyncio.sleep(10) 
+                asyncio.create_task(cleanup_after_eod())
+                # =========================
             else:
                 # Các mốc khác: broadcast câu text cố định
-                await broadcast_to_all_watchers(spec["text"], target_audience="all")
+                await broadcast_to_all_watchers(spec["text"], target_audience="all", msg_type="SESSION_NOTICE")
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][SESSION {loop_id}] Lỗi khi xử lý thông báo {label}: {e}")
 
@@ -2626,7 +2666,7 @@ async def stock_broadcast_loop():
             # log.info(f"[BCASTER_STOCK] Nhận được tin cho {chat_id}, đang gửi...")
 
             # [TỐI ƯU] Gọi hàm blocking send_msg_to trong thread
-            await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown")
+            await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown", False, "STOCK_ALERT")
 
             _stock_broadcast_queue.task_done()
             # log.info(f"[BCASTER_STOCK] Gửi xong cho {chat_id}. Quay lại chờ...")
@@ -3411,7 +3451,7 @@ async def vn30f1m_broadcast_loop():
 
             tasks = []
             for cid in list(_vn30f1m_enabled_cache):
-                tasks.append(send_md(tg_app.bot, cid, text))
+                tasks.append(send_md(tg_app.bot, cid, text, msg_type="VN30_ALERT"))
             
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
@@ -4449,10 +4489,10 @@ async def reply_md(update: Update, text: str, **kwargs):
         safe_text = escape_markdown_v2(text)
         return await _send(safe_text)
 
-def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False):
-    """Gửi tin nhắn Telegram, mặc định dùng Markdown (v1) với fallback an toàn.
-    
-    silent=True -> gửi disable_notification (tin nhắn im lặng, không bật noti). 
+
+def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False, msg_type: str = 'GENERAL'):
+    """
+    Gửi tin nhắn Telegram, có hỗ trợ msg_type để phân loại rác.
     """
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
@@ -4464,12 +4504,10 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", si
         if mode:
             params["parse_mode"] = mode
         if silent_flag:
-            # Gửi tin im lặng, không rung / popup trên điện thoại
             params["disable_notification"] = True
 
         res = requests.get(url, params=params, timeout=10)
-        data = res.json()
-        return data
+        return res.json()
 
     try:
         # Lần 1: gửi nguyên văn
@@ -4482,19 +4520,18 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", si
             and "description" in data
             and "can't parse entities" in data["description"].lower()
         ):
-            log.warning(f"[WARN] Markdown parse error, retry with escaped text: {data}")
             safe_text = escape_markdown_v2(text)
             data = _do_send(safe_text, parse_mode, silent)
 
         if data.get("ok") and "result" in data:
             msg_id = data["result"]["message_id"]
-            save_bot_message(chat_id, msg_id)
+            # 🔥 LƯU LOẠI TIN NHẮN VÀO DB 🔥
+            save_bot_message(chat_id, msg_id, msg_type)
         else:
             log.warning(f"[WARN] Telegram send failed: {data}")
 
     except Exception as e:
         log.warning(f"[WARN] Telegram send error: {e}")
-
 
 async def auto_on_after_delay(initial_active: bool):
     """
@@ -4664,7 +4701,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     welcome_msg = (
-        "👋 *Chào mừng bạn đến với KT StockBot!*\n"
+        "👋 *Chào mừng bạn đến với Người Canh Bảng 🧑‍💻*\n"
         "Trợ lý đầu tư chứng khoán thông minh tích hợp AI.\n\n"
         "👇 *Chọn nhanh tính năng bên dưới:*"
     )

@@ -469,14 +469,17 @@ def get_command_stats():
 # ==========================================
 # LOG TIN NHẮN BOT ĐÃ GỬI
 # ==========================================
-def save_bot_message(chat_id: int, message_id: int):
-    """Lưu lại message bot đã gửi để sau này xóa theo khoảng thời gian."""
+def save_bot_message(chat_id: int, message_id: int, msg_type: str = 'GENERAL'):
+    """
+    Lưu lại message bot đã gửi kèm theo LOẠI TIN NHẮN.
+    msg_type: 'STOCK_ALERT', 'VN30_ALERT', 'SESSION_NOTICE', 'EOD_SUMMARY', 'GENERAL'
+    """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO bot_msg_log (chat_id, message_id)
-                VALUES (%s, %s)
-            """, (chat_id, message_id))
+                INSERT INTO bot_msg_log (chat_id, message_id, msg_type)
+                VALUES (%s, %s, %s)
+            """, (chat_id, message_id, msg_type))
         conn.commit()
 
 
@@ -1642,3 +1645,32 @@ def cleanup_old_pending_orders(days_old: int = 3):
     except Exception as e:
         print(f"[DB_UTILS] Lỗi khi dọn dẹp bot_orders: {e}")
         return 0
+    
+#-------------------------------------------------
+def get_messages_to_cleanup(target_types: list[str], older_than_minutes: int = 0):
+    """
+    Lấy danh sách các tin nhắn cần xóa dựa trên loại tin.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Lấy id, chat_id, message_id của các tin thuộc loại target_types
+            # Có thể thêm điều kiện thời gian nếu muốn (ở đây ta xóa hết các loại này trước EOD)
+            cur.execute("""
+                SELECT id, chat_id, message_id
+                FROM bot_msg_log
+                WHERE msg_type = ANY(%s)
+                ORDER BY sent_at ASC
+            """, (target_types,))
+            return cur.fetchall()
+
+def delete_bot_log_record(record_id: int):
+    """Xóa 1 dòng log trong DB sau khi đã xóa trên Telegram"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM bot_msg_log WHERE id = %s", (record_id,))
+        conn.commit()
+
+
+
+
+
