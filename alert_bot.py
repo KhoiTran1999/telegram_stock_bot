@@ -86,6 +86,7 @@ from db_utils import (
     save_bot_message,
     get_messages_to_cleanup,
     delete_bot_log_record,
+    get_latest_bot_message_id
 )
 import psutil
 import time
@@ -751,8 +752,9 @@ async def call_gemini_eod_insight(market_data: dict) -> str:
 async def send_eod_summary():
     """
     Gửi Tổng kết cuối phiên (EOD) dạng Web App.
-    Chạy lúc 15:15.
-    (ĐÃ SỬA: Dùng fetch_data_smart để tự động chuyển nguồn VCI -> TCBS)
+    - Index: Dùng VCI History (Giá + Vol).
+    - Stocks: Dùng Smart Fetcher (Giá + %).
+    - Market: Bỏ khối ngoại, tập trung vào xu hướng và thanh khoản.
     """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -760,79 +762,67 @@ async def send_eod_summary():
     
     log.info(f"[{INSTANCE_ID}][EOD] 🚀 Bắt đầu quy trình EOD Summary {today_str}...")
 
-    # 1. Lấy danh sách User
+    # 1. Lấy dữ liệu Index (QUAN TRỌNG: Dùng hàm VCI History mới)
+    # Chạy trong thread để không chặn loop
+    vni_data = await asyncio.to_thread(get_index_eod_vci, "VNINDEX")
+    v30_data = await asyncio.to_thread(get_index_eod_vci, "VN30")
+
+    # Hàm helper format dữ liệu Index cho Template
+    def _fmt_idx(data):
+        if not data:
+            return {
+                "price": "Nguồn lỗi ⚠️",
+                "cls": "text-ref",
+                "change_str": "--",
+                "vol_str": "--"
+            }
+        
+        c = data['change']
+        # Class màu sắc
+        cls = "text-up" if c > 0 else ("text-down" if c < 0 else "text-ref")
+        sign = "+" if c > 0 else ""
+        
+        # Volume: Chia 1 triệu -> Triệu CP
+        vol_mil = data['volume'] / 1_000_000
+        
+        return {
+            "price": f"{data['price']:,.2f}",
+            "cls": cls,
+            "change_str": f"{sign}{c:,.2f} ({sign}{data['pct']:.2f}%)",
+            "vol_str": f"{vol_mil:,.1f} Triệu CP"
+        }
+
+    market_data_input = {
+        "vnindex": _fmt_idx(vni_data),
+        "vn30": _fmt_idx(v30_data),
+        # "foreign_net_val": ... -> Đã bỏ
+    }
+
+    # 2. Gọi AI Insight (Vẫn dùng nhưng prompt sẽ ngắn gọn hơn về vol/giá)
+    ai_comment = await call_gemini_eod_insight(market_data_input)
+    market_data_input["ai_comment"] = ai_comment 
+
+    # 3. Lấy danh sách User & Cổ phiếu của họ
     try:
         all_watch = await asyncio.to_thread(get_all_watch)
-        if not all_watch:
-            log.info(f"[{INSTANCE_ID}][EOD] Không có user nào, bỏ qua.")
-            return
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}][EOD] Lỗi get_all_watch: {e}")
-        return
+        if not all_watch: return
+    except Exception: return
 
-    # 2. Gom toàn bộ mã để lấy giá 1 lần (Batching)
+    # Gom mã để fetch giá cổ phiếu
     all_symbols = set()
     for block in all_watch.values():
         for s in block.get("list", []):
             all_symbols.add(str(s).upper())
     
-    # Thêm các chỉ số thị trường
-    MARKET_IDXS = ["VNINDEX", "VN30"]
-    for idx in MARKET_IDXS: all_symbols.add(idx)
-    
     if not all_symbols: return
 
-    # 3. GỌI SMART FETCHER (Thay vì gọi trực tiếp Trading VCI)
-    # Hàm này sẽ tự lo việc thử VCI, nếu lỗi thì qua TCBS, và trả về dict chuẩn
+    # Gọi Smart Fetcher cho danh sách cổ phiếu (Vẫn dùng logic cũ vì nó ổn cho stock)
     try:
-        # Chia batch nếu quá nhiều (ví dụ > 50 mã) để tránh timeout 20s của Smart Fetcher
-        # Ở đây mình gọi 1 lần cho đơn giản, nếu danh sách > 50 mã nên chia nhỏ
-        data_source = await fetch_data_smart(list(all_symbols))
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}][EOD] Lỗi Smart Fetcher: {e}")
-        return
+        stock_data_source = await fetch_data_smart(list(all_symbols))
+    except Exception:
+        stock_data_source = {}
 
-    if not data_source:
-        log.warning(f"[{INSTANCE_ID}][EOD] Không lấy được dữ liệu thị trường.")
-        return
-
-    # 4. Chuẩn bị dữ liệu Thị trường chung (Market Data)
-    # Hàm helper lấy từ dict đã chuẩn hóa
-    def _get_market_info(sym):
-        if sym not in data_source:
-            return {"price": "---", "change": 0, "pct": 0}
-        
-        item = data_source[sym]
-        p = item['price']
-        pct = item['pct']
-        # Tính change (tương đối)
-        ref = item.get('ref', p)
-        change = p - ref
-        
-        return {
-            "price": f"{p:,.2f}", # Index thường có số lẻ
-            "change": round(change, 2),
-            "pct": round(pct, 2)
-        }
-
-    vnindex = _get_market_info("VNINDEX")
-    vn30 = _get_market_info("VN30")
-    
-    # Lưu ý: Smart Fetcher hiện tại chưa trả về f_net (Khối ngoại) khi fallback TCBS
-    # Nên ta tạm để 0 hoặc update fetch_data_smart sau nếu cần thiết
-    total_f_net = 0 
-
-    market_data_input = {
-        "vnindex": vnindex,
-        "vn30": vn30,
-        "foreign_net_val": round(total_f_net, 1)
-    }
-
-    # 5. Gọi AI (1 lần duy nhất)
-    ai_comment = await call_gemini_eod_insight(market_data_input)
-    market_data_input["ai_comment"] = ai_comment 
-
-    # 6. Tạo và gửi Web App cho từng user
+    # 4. Gửi tin
     base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
     tasks = []
 
@@ -842,13 +832,12 @@ async def send_eod_summary():
             watch_list = block.get("list", [])
             if not watch_list: continue
 
-            # Build danh sách cổ phiếu riêng của user từ data_source
             user_stocks = []
             for sym in watch_list:
                 sym_u = str(sym).upper()
-                if sym_u in data_source:
-                    info = data_source[sym_u]
-                    price_fmt = f"{info['price']:,.0f}".replace(",", ".") # Cổ phiếu thường không có số lẻ
+                if sym_u in stock_data_source:
+                    info = stock_data_source[sym_u]
+                    price_fmt = f"{info['price']:,.0f}".replace(",", ".")
                     user_stocks.append({
                         "symbol": sym_u,
                         "price": price_fmt,
@@ -857,7 +846,7 @@ async def send_eod_summary():
             
             if not user_stocks: continue
 
-            # Tạo Payload
+            # Payload mới (Không còn foreign_net_val, thay bằng cấu trúc index mới)
             payload = {
                 "market_data": market_data_input,
                 "user_stocks": user_stocks,
@@ -865,8 +854,8 @@ async def send_eod_summary():
                 "is_pro": False 
             }
 
-            # Lưu Redis
             digest_id = uuid.uuid4().hex
+            # Key Redis cho EOD (dùng 24h)
             r = get_redis()
             r.set(f"digest_web:eod_web:{digest_id}", json.dumps(payload), ex=86400)
             
@@ -876,12 +865,16 @@ async def send_eod_summary():
                 InlineKeyboardButton("📊 Xem Tổng Kết Phiên", web_app=WebAppInfo(url=web_app_url))
             ]])
             
+            # Text ngắn gọn bên ngoài
+            vni_price = market_data_input['vnindex']['price']
             msg = (
                 f"🇻🇳 *Tổng kết phiên {today_str}*\n"
-                f"VN-INDEX: {vnindex['price']} ({vnindex['pct']}%)\n"
+                f"VN-INDEX: {vni_price}\n"
                 f"👉 Nhấn nút bên dưới để xem chi tiết."
             )
             
+            # Dùng hàm send_digest_with_pin (nếu bạn đã tích hợp) hoặc send_md
+            # Ở đây dùng send_md mặc định, bạn có thể đổi sang send_digest_with_pin nếu muốn ghim
             tasks.append(send_md(tg_app.bot, chat_id, msg, reply_markup=kb, msg_type='EOD_SUMMARY'))
 
         except Exception as e:
@@ -890,11 +883,10 @@ async def send_eod_summary():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
         
-    log.info(f"[{INSTANCE_ID}][EOD] ✅ Đã gửi EOD cho {len(tasks)} users.")
+    log.info(f"[{INSTANCE_ID}][EOD] ✅ Đã gửi EOD Mới cho {len(tasks)} users.")
     
-    # Kích hoạt dọn dẹp sau 10s
+    # Dọn dẹp tin cũ sau 10s
     await asyncio.sleep(10)
-    from alert_bot import cleanup_after_eod
     asyncio.create_task(cleanup_after_eod())
 
 def get_next_notice_after(now: datetime.datetime):
@@ -2552,6 +2544,46 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
         
     return results
 
+def get_index_eod_vci(symbol: str):
+    """
+    Lấy dữ liệu EOD (Close, Change, Volume) từ VCI History.
+    Dùng cho EOD Summary để đảm bảo độ ổn định và có Volume.
+    """
+    try:
+        # Lấy 5 ngày gần nhất để chắc chắn có dữ liệu tính tham chiếu
+        today = datetime.datetime.now().date()
+        start_date = (today - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+        
+        # Gọi API VCI History
+        quote = Quote(symbol=symbol, source="VCI")
+        df = quote.history(start=start_date, end=end_date, interval="1D")
+        
+        if df is None or df.empty or len(df) < 2:
+            return None
+
+        # Lấy dòng mới nhất và dòng liền trước
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        price = float(last['close'])
+        ref_price = float(prev['close'])
+        change = price - ref_price
+        pct = 0.0
+        if ref_price > 0:
+            pct = (change / ref_price) * 100.0
+        volume = float(last['volume'])
+        
+        return {
+            "price": price,
+            "change": change,
+            "pct": pct,
+            "volume": volume
+        }
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] Lỗi lấy EOD VCI cho {symbol}: {e}")
+        return None
+
 # ==============================================
 # VÒNG LẶP CẢNH BÁO (CÓ CACHE SYMBOL) - ALERT_LOOP
 # ==============================================
@@ -4022,6 +4054,38 @@ async def analysis_report_loop():
         log.info(f"{loop_label} Hoàn tất lần quét 07:00 (chỉ thu thập).")
 
 #-------------------------------------------
+
+async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
+    """
+    Hàm gửi Digest có tính năng: Tháo ghim tin cũ -> Gửi tin mới -> Ghim tin mới.
+    """
+    # 1. Tìm và Tháo ghim tin cũ (nếu có)
+    try:
+        old_msg_id = await asyncio.to_thread(get_latest_bot_message_id, chat_id, 'DAILY_DIGEST')
+        if old_msg_id:
+            try:
+                await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
+            except Exception:
+                # Bỏ qua lỗi nếu tin cũ đã bị user xóa hoặc tháo ghim trước đó
+                pass
+    except Exception as e:
+        log.warning(f"Lỗi tháo ghim cũ cho {chat_id}: {e}")
+
+    # 2. Gửi tin mới (Lưu ý: msg_type='DAILY_DIGEST')
+    # Hàm send_md sẽ tự động lưu message_id mới vào DB
+    msg = await send_md(bot, chat_id, text, msg_type='DAILY_DIGEST', reply_markup=reply_markup)
+
+    # 3. Ghim tin mới (Silent)
+    if msg:
+        try:
+            await bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                disable_notification=True # Không làm phiền user
+            )
+        except Exception as e:
+            log.warning(f"Lỗi ghim tin mới cho {chat_id}: {e}")
+
 async def daily_user_digest_loop():
     """
     Gửi bản tin tổng hợp (Digest) 7:00 sáng.
@@ -4281,7 +4345,7 @@ async def daily_user_digest_loop():
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Bản Tin Sáng 🌅", web_app=WebAppInfo(url=web_app_url))]])
             text = f"🌅 *Bản tin sáng {now_local.strftime('%d/%m')}*\nTổng hợp thị trường và danh mục của bạn.\n👉 Nhấn nút bên dưới để xem chi tiết."
             
-            tasks.append(send_md(tg_app.bot, chat_id, text, reply_markup=kb))
+            tasks.append(send_digest_with_pin(tg_app.bot, chat_id, text, kb))
             sent_count += 1
         
         if tasks:

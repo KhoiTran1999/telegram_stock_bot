@@ -1676,7 +1676,22 @@ def delete_bot_log_record(record_id: int):
             cur.execute("DELETE FROM bot_msg_log WHERE id = %s", (record_id,))
         conn.commit()
 
-
+def get_latest_bot_message_id(chat_id: int, msg_type: str) -> int | None:
+    """
+    Lấy message_id của tin nhắn gần nhất theo loại (msg_type) gửi cho chat_id.
+    Dùng để tìm lại tin Digest cũ để tháo ghim.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT message_id
+                FROM bot_msg_log
+                WHERE chat_id = %s AND msg_type = %s
+                ORDER BY sent_at DESC
+                LIMIT 1
+            """, (chat_id, msg_type))
+            row = cur.fetchone()
+    return row[0] if row else None
 
 
 

@@ -1229,6 +1229,7 @@ LOCKED_FEATURE_TEMPLATE = r"""
 """
 
 #----------------------------------
+
 EOD_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
@@ -1253,7 +1254,6 @@ EOD_HTML_TEMPLATE = r"""
             --floor-color: #00c5c5;
         }
         
-        /* --- SMOOTH LOADING --- */
         body { 
             font-family: 'Inter', sans-serif; 
             background-color: var(--bg-color); 
@@ -1264,7 +1264,6 @@ EOD_HTML_TEMPLATE = r"""
         }
         body.loaded { visibility: visible; opacity: 1; }
 
-        /* Header */
         .header { text-align: center; margin-bottom: 24px; }
         .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 8px; }
         .header-title { 
@@ -1273,7 +1272,6 @@ EOD_HTML_TEMPLATE = r"""
             -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
         }
 
-        /* AI Insight Card */
         .ai-card { 
             background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%); 
             border-left: 4px solid #007aff;
@@ -1285,19 +1283,21 @@ EOD_HTML_TEMPLATE = r"""
         .ai-title { font-size: 14px; font-weight: 700; color: #007aff; text-transform: uppercase; letter-spacing: 0.5px; }
         .ai-content { font-size: 14px; color: #334155; line-height: 1.6; white-space: pre-line; }
 
-        /* Market Grid */
-        .market-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 24px; }
-        .m-card { background-color: var(--card-bg); border-radius: 12px; padding: 12px 8px; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.04); }
-        .m-label { font-size: 11px; color: var(--hint-color); font-weight: 600; text-transform: uppercase; margin-bottom: 4px; }
-        .m-val { font-size: 16px; font-weight: 800; }
-        .m-change { font-size: 11px; font-weight: 600; margin-top: 2px; }
+        /* GRID 2 CỘT CHO VNINDEX & VN30 */
+        .market-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+        .m-card { background-color: var(--card-bg); border-radius: 16px; padding: 16px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+        .m-label { font-size: 12px; color: var(--hint-color); font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
+        .m-val { font-size: 20px; font-weight: 800; line-height: 1.2; margin-bottom: 4px; }
+        .m-change { font-size: 13px; font-weight: 600; }
         
-        /* Color Helpers */
+        /* Khối lượng giao dịch */
+        .m-vol { margin-top: 12px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,0.05); font-size: 12px; color: var(--hint-color); }
+        .m-vol-val { font-weight: 700; color: var(--text-color); }
+        
         .text-up { color: var(--up-color); }
         .text-down { color: var(--down-color); }
         .text-ref { color: var(--ref-color); }
         
-        /* Portfolio List */
         .section-title { font-size: 15px; font-weight: 700; margin-bottom: 12px; padding-left: 4px; display: flex; align-items: center; gap: 8px; }
         .p-list { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
         .p-item { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
@@ -1307,14 +1307,12 @@ EOD_HTML_TEMPLATE = r"""
         .p-price { font-size: 15px; font-weight: 600; text-align: right; }
         .p-change { font-size: 12px; font-weight: 600; padding: 4px 8px; border-radius: 6px; min-width: 50px; text-align: center; display: inline-block; margin-left: 8px;}
 
-        /* Color Badges */
         .bg-up { background-color: rgba(52, 199, 89, 0.1); color: var(--up-color); }
         .bg-down { background-color: rgba(255, 59, 48, 0.1); color: var(--down-color); }
         .bg-ref { background-color: rgba(255, 204, 0, 0.15); color: #d4a017; }
         .bg-ceil { background-color: rgba(206, 35, 255, 0.1); color: var(--ceil-color); }
         .bg-floor { background-color: rgba(0, 197, 197, 0.1); color: var(--floor-color); }
 
-        /* Footer */
         .footer-btn { display: block; width: 100%; padding: 14px; background-color: var(--text-color); color: var(--bg-color); border: none; border-radius: 14px; font-size: 15px; font-weight: 700; margin-top: 30px; cursor: pointer; }
         .meta-time { text-align: center; margin-top: 16px; color: var(--hint-color); font-size: 11px; }
     </style>
@@ -1338,34 +1336,15 @@ EOD_HTML_TEMPLATE = r"""
     <div class="market-grid">
         <div class="m-card">
             <div class="m-label">VN-INDEX</div>
-            {% set idx_cls = 'text-ref' %}
-            {% if market_data.vnindex.change > 0 %}{% set idx_cls = 'text-up' %}
-            {% elif market_data.vnindex.change < 0 %}{% set idx_cls = 'text-down' %}{% endif %}
-            
-            <div class="m-val {{ idx_cls }}">{{ market_data.vnindex.price }}</div>
-            <div class="m-change {{ idx_cls }}">
-                {{ '+' if market_data.vnindex.change > 0 else '' }}{{ market_data.vnindex.change }}
-            </div>
+            <div class="m-val {{ market_data.vnindex.cls }}">{{ market_data.vnindex.price }}</div>
+            <div class="m-change {{ market_data.vnindex.cls }}">{{ market_data.vnindex.change_str }}</div>
+            <div class="m-vol">KL: <span class="m-vol-val">{{ market_data.vnindex.vol_str }}</span></div>
         </div>
         <div class="m-card">
             <div class="m-label">VN30</div>
-            {% set v30_cls = 'text-ref' %}
-            {% if market_data.vn30.change > 0 %}{% set v30_cls = 'text-up' %}
-            {% elif market_data.vn30.change < 0 %}{% set v30_cls = 'text-down' %}{% endif %}
-            
-            <div class="m-val {{ v30_cls }}">{{ market_data.vn30.price }}</div>
-            <div class="m-change {{ v30_cls }}">
-                 {{ '+' if market_data.vn30.change > 0 else '' }}{{ market_data.vn30.change }}
-            </div>
-        </div>
-        <div class="m-card">
-            <div class="m-label">Khối ngoại</div>
-            <div class="m-val {{ 'text-up' if market_data.foreign_net_val >= 0 else 'text-down' }}">
-                {{ (market_data.foreign_net_val | abs) }} tỷ
-            </div>
-            <div class="m-change {{ 'text-up' if market_data.foreign_net_val >= 0 else 'text-down' }}">
-                {{ 'MUA RÒNG' if market_data.foreign_net_val >= 0 else 'BÁN RÒNG' }}
-            </div>
+            <div class="m-val {{ market_data.vn30.cls }}">{{ market_data.vn30.price }}</div>
+            <div class="m-change {{ market_data.vn30.cls }}">{{ market_data.vn30.change_str }}</div>
+            <div class="m-vol">KL: <span class="m-vol-val">{{ market_data.vn30.vol_str }}</span></div>
         </div>
     </div>
 
@@ -1407,7 +1386,7 @@ EOD_HTML_TEMPLATE = r"""
     {% endif %}
 
     <button class="footer-btn" onclick="Telegram.WebApp.close()">Đóng Bản Tin</button>
-    <div class="meta-time">Dữ liệu được cập nhật lúc 15:15</div>
+    <div class="meta-time">Dữ liệu được cập nhật cuối phiên</div>
 
     <script>
         Telegram.WebApp.expand();
