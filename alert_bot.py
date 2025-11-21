@@ -42,6 +42,7 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler
 )
+from telegram.request import HTTPXRequest
 from flask import Flask, request, jsonify, render_template_string
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
@@ -7562,10 +7563,19 @@ async def main():
     initial_active = BOT_ACTIVE  # lưu trạng thái ban đầu
     log.info(f"[{INSTANCE_ID}] BOT_ACTIVE loaded from DB: {BOT_ACTIVE}")
 
-    # Khởi tạo Application
+    # Tăng timeout lên 60 giây để tránh lỗi trên Render Free
+    t_request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=60.0,
+        read_timeout=60.0,
+        write_timeout=60.0
+    )
+
+    # Khởi tạo Application với request tùy chỉnh
     tg_app = (
         ApplicationBuilder()
         .token(TOKEN)
+        .request(t_request)
         .concurrent_updates(True)
         .build()
     )
