@@ -1,3 +1,4 @@
+# chart_utils.py
 import asyncio
 import pandas as pd
 from vnstock import Quote
@@ -7,7 +8,9 @@ import datetime
 
 async def generate_chart_html(symbol: str) -> str:
     """
-    Vẽ biểu đồ Line Chart Transparent (để hỗ trợ Dark/Light Mode).
+    [Dùng cho /info]
+    Vẽ biểu đồ Line Chart Transparent.
+    FIX: Tắt hoàn toàn tương tác (Zoom, Pan, Hover Tooltip).
     """
     try:
         # 1. Lấy dữ liệu
@@ -61,9 +64,9 @@ async def generate_chart_html(symbol: str) -> str:
             name='Giá', 
             line=dict(color='#007aff', width=2.5),
             fill='tozeroy',
-            # Màu fill cũng phải hơi trong suốt để hợp dark mode
             fillcolor='rgba(0, 122, 255, 0.15)', 
-            showlegend=False
+            showlegend=False,
+            hoverinfo='skip'  # <--- TẮT HOVER TRÊN ĐƯỜNG GIÁ
         ), row=1, col=1)
 
         # Volume
@@ -71,32 +74,112 @@ async def generate_chart_html(symbol: str) -> str:
             x=df['time'].tolist(), 
             y=df['volume'].tolist(), 
             name='Vol', 
-            marker_color='rgba(128, 128, 128, 0.5)', # Màu xám trung tính
-            showlegend=False
+            marker_color='rgba(128, 128, 128, 0.5)', 
+            showlegend=False,
+            hoverinfo='skip'  # <--- TẮT HOVER TRÊN VOL
         ), row=2, col=1)
 
-        # 5. Layout Transparent (Quan trọng)
+        # 5. Layout Transparent + TẮT CỬ CHỈ + TẮT HOVER MODE
         fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', # Trong suốt
-            plot_bgcolor='rgba(0,0,0,0)',  # Trong suốt
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
             xaxis_rangeslider_visible=False,
-            height=380, # Giảm chiều cao chút cho gọn
+            height=380,
             margin=dict(l=10, r=10, t=10, b=10),
-            font=dict(size=10, family='Inter, sans-serif'), # Font chữ mặc định
-            hovermode='x unified'
+            font=dict(size=10, family='Inter, sans-serif'),
+            hovermode=False, # <--- TẮT CHẾ ĐỘ HOVER CHUNG (Quan trọng nhất)
+            dragmode=False   # Tắt kéo thả
         )
 
-        # Trục Y
-        fig.update_yaxes(range=[y_min, y_max], showgrid=True, row=1, col=1)
-        fig.update_yaxes(showticklabels=False, showgrid=False, row=2, col=1)
+        # Trục Y: Fixed Range (Không cho Zoom)
+        fig.update_yaxes(range=[y_min, y_max], showgrid=True, fixedrange=True, row=1, col=1)
+        fig.update_yaxes(showticklabels=False, showgrid=False, fixedrange=True, row=2, col=1)
+        
+        # Trục X: Fixed Range
+        fig.update_xaxes(fixedrange=True, row=1, col=1)
+        fig.update_xaxes(fixedrange=True, row=2, col=1)
 
-        # Xuất HTML div
         return fig.to_html(
             full_html=False, 
             include_plotlyjs=False, 
-            config={'displayModeBar': False, 'responsive': True} 
+            config={'displayModeBar': False, 'responsive': True, 'staticPlot': True} # staticPlot=True làm biểu đồ thành ảnh tĩnh hoàn toàn
         )
 
     except Exception as e:
         print(f"Chart Error: {e}")
         return f'<div style="padding:20px;">Lỗi hiển thị: {e}</div>'
+
+
+async def generate_mini_chart(symbol: str) -> str:
+    """
+    [Dùng cho /report]
+    Vẽ biểu đồ Mini.
+    FIX: Tắt hoàn toàn tương tác (Zoom, Pan, Hover Tooltip).
+    """
+    try:
+        def _get_data():
+            end = datetime.datetime.now()
+            start = end - datetime.timedelta(days=180)
+            q = Quote(symbol=symbol, source='VCI')
+            return q.history(start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), interval='1D')
+
+        df = await asyncio.to_thread(_get_data)
+        
+        if df is None or df.empty: 
+            return ""
+            
+        df.columns = df.columns.str.lower().str.strip()
+        if 'time' in df.columns: df['time'] = pd.to_datetime(df['time'])
+        
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        df = df.dropna(subset=['close'])
+        
+        if df['close'].mean() < 500: 
+            df['close'] = df['close'] * 1000
+
+        mn, mx = df['close'].min(), df['close'].max()
+        padding = (mx - mn) * 0.2 if (mx - mn) > 0 else mx * 0.05
+        y_min, y_max = mn - padding, mx + padding
+
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.75, 0.25])
+
+        fig.add_trace(go.Scatter(
+            x=df['time'].tolist(), y=df['close'].tolist(), 
+            mode='lines', name='Giá', 
+            line=dict(color='#007aff', width=2),
+            fill='tozeroy', fillcolor='rgba(0, 122, 255, 0.1)',
+            showlegend=False,
+            hoverinfo='skip' # <--- TẮT HOVER
+        ), row=1, col=1)
+
+        fig.add_trace(go.Bar(
+            x=df['time'].tolist(), y=df['volume'].tolist(), 
+            name='Vol', marker_color='rgba(128, 128, 128, 0.3)',
+            showlegend=False,
+            hoverinfo='skip' # <--- TẮT HOVER
+        ), row=2, col=1)
+
+        # Layout Mini
+        fig.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            xaxis_rangeslider_visible=False,
+            height=320,
+            margin=dict(l=0, r=0, t=10, b=10),
+            font=dict(size=9, family='Inter, sans-serif'),
+            hovermode=False, # <--- TẮT HOVER MODE
+            dragmode=False
+        )
+
+        fig.update_yaxes(range=[y_min, y_max], showgrid=True, gridcolor='rgba(128,128,128,0.1)', fixedrange=True, row=1, col=1)
+        fig.update_yaxes(showticklabels=False, showgrid=False, fixedrange=True, row=2, col=1)
+        
+        fig.update_xaxes(fixedrange=True, row=1, col=1)
+        fig.update_xaxes(fixedrange=True, row=2, col=1)
+
+        return fig.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False, 'responsive': True, 'staticPlot': True})
+
+    except Exception as e:
+        print(f"Mini Chart Error {symbol}: {e}")
+        return ""

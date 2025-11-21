@@ -119,7 +119,7 @@ from pathlib import Path
 from google import genai
 import uuid
 import hmac
-from chart_utils import generate_chart_html
+from chart_utils import generate_chart_html, generate_mini_chart
 
 # --- HÀM HELPER VẼ THANH TIẾN TRÌNH ---
 def make_progress_bar(percent: int, width: int = 8) -> str:
@@ -7356,46 +7356,54 @@ async def view_profile(symbol: str): # <--- Đổi thành async
     )
 
 @flask_app.route("/report/view/<cache_key>")
-def view_report(cache_key):
+async def view_report(cache_key): # <--- Đổi thành async
     """
-    Route hiển thị Web App Report.
-    ĐÃ VÁ LỖI: Chặn user Free.
+    Route hiển thị Web App Report (JSON Mode + Mini Charts).
     """
-    # Logic chặn Free User
+    # 1. Check Pro (Giữ nguyên logic cũ)
     chat_id_str = request.args.get("chat_id")
     is_pro = False
     if chat_id_str:
         try:
             cid = int(chat_id_str)
-            is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
+            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
         except: pass
     
     if not is_pro:
-        # [NỘI DUNG RIÊNG CHO AI REPORT]
-        return render_template_string(
-            LOCKED_FEATURE_TEMPLATE,
-            icon="📊",
-            title="AI Phân Tích Danh Mục",
-            desc="Trí tuệ nhân tạo đánh giá sức khỏe danh mục, cảnh báo rủi ro và nhận định xu hướng thị trường."
-        ), 403
-    # -----------------------------
+        return render_template_string(LOCKED_FEATURE_TEMPLATE, icon="📊", title="AI Phân Tích Danh Mục", desc="..."), 403
 
+    # 2. Lấy Cache (Giữ nguyên)
     cached = get_report_from_redis(cache_key)
-    
     if not cached:
         return render_template_string(REPORT_404_TEMPLATE), 404
 
     text_json, generated_at, is_error, wait_sec = cached
-
     if is_error:
-        return f"<h3>Đang gặp lỗi hoặc quá tải: {text_json}</h3>", 500
+        return f"<h3>Đang gặp lỗi: {text_json}</h3>", 500
 
     try:
         data = json.loads(text_json)
     except Exception as e:
-        log.error(f"Lỗi parse JSON report route: {e}")
-        return "Lỗi dữ liệu báo cáo (Invalid JSON)", 500
+        log.error(f"Lỗi parse JSON report: {e}")
+        return "Lỗi dữ liệu báo cáo", 500
 
+    # 3. [MỚI] TẠO BIỂU ĐỒ SONG SONG
+    if 'stocks' in data and data['stocks']:
+        try:
+            # Tạo danh sách task vẽ chart cho từng mã
+            tasks = [generate_mini_chart(stock['symbol']) for stock in data['stocks']]
+            
+            # Chạy song song -> Rất nhanh
+            charts = await asyncio.gather(*tasks)
+            
+            # Gán HTML chart vào từng object stock
+            for i, stock in enumerate(data['stocks']):
+                stock['chart_html'] = charts[i]
+                
+        except Exception as e:
+            log.error(f"Lỗi tạo mini charts: {e}")
+
+    # 4. Format thời gian & Render (Giữ nguyên)
     vn_tz = pytz.timezone(TIMEZONE)
     time_str = "Vừa xong"
     if generated_at:

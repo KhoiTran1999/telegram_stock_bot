@@ -571,6 +571,7 @@ REPORT_HTML_TEMPLATE = r"""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Báo cáo Danh mục</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -597,101 +598,64 @@ REPORT_HTML_TEMPLATE = r"""
         }
         body.loaded { visibility: visible; opacity: 1; }
         
-        /* Header Title & Badge */
-        .header-row { text-align: center; margin-bottom: 20px; animation: fadeInDown 0.5s ease; }
+        /* Header */
+        .header-row { text-align: center; margin-bottom: 20px; }
         .header-title { font-size: 20px; font-weight: 800; margin: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--text-color); }
-        
-        .pro-badge { 
-            background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); 
-            color: white; font-size: 10px; font-weight: 800; 
-            padding: 3px 8px; border-radius: 8px; 
-            text-transform: uppercase; transform: translateY(-1px);
-        }
-
+        .pro-badge { background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); color: white; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 8px; text-transform: uppercase; transform: translateY(-1px); }
         .header-time { font-size: 12px; color: var(--hint-color); margin-top: 4px; font-weight: 500; }
 
-        /* Header Score */
-        .score-card {
-            background: linear-gradient(135deg, #007aff, #5856d6);
-            color: white; border-radius: 20px; padding: 24px;
-            text-align: center; margin-bottom: 20px;
-            box-shadow: 0 8px 20px rgba(0,122,255,0.25);
-            position: relative; overflow: hidden;
-        }
-        .score-card::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle, rgba(255,255,255,0.2) 0%, transparent 60%); pointer-events: none; }
-        
+        /* Score & Market Cards (Giữ nguyên) */
+        .score-card { background: linear-gradient(135deg, #007aff, #5856d6); color: white; border-radius: 20px; padding: 24px; text-align: center; margin-bottom: 20px; box-shadow: 0 8px 20px rgba(0,122,255,0.25); position: relative; overflow: hidden; }
         .score-val { font-size: 48px; font-weight: 800; line-height: 1; letter-spacing: -2px; }
         .score-label { font-size: 14px; font-weight: 500; opacity: 0.9; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
         .score-sub { font-size: 12px; opacity: 0.8; margin-top: 8px; }
 
-        /* Market Comment */
-        .market-card {
-            background-color: var(--card-bg); border-radius: 16px;
-            padding: 16px; margin-bottom: 24px;
-            border-left: 4px solid var(--accent-color);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-        }
+        .market-card { background-color: var(--card-bg); border-radius: 16px; padding: 16px; margin-bottom: 24px; border-left: 4px solid var(--accent-color); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
         .market-title { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--hint-color); margin-bottom: 8px; letter-spacing: 0.5px; }
         .market-text { font-size: 14px; line-height: 1.6; font-weight: 400; }
 
         /* Stock List */
-        .stock-card {
-            background-color: var(--card-bg); border-radius: 16px;
-            padding: 16px; margin-bottom: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-            transition: transform 0.1s;
-        }
-        .stock-card:active { transform: scale(0.98); }
-        
+        .stock-card { background-color: var(--card-bg); border-radius: 16px; padding: 16px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
         .st-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         .st-symbol { font-size: 18px; font-weight: 800; color: var(--text-color); }
         .st-industry { font-size: 12px; color: var(--hint-color); font-weight: 500; margin-left: 6px; }
         
         .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
-        
         .act-buy { background-color: var(--success-bg); color: var(--success-text); }
         .act-hold { background-color: var(--warning-bg); color: var(--warning-text); }
         .act-sell { background-color: var(--danger-bg); color: var(--danger-text); }
         .act-neutral { background-color: var(--bg-color); color: var(--hint-color); }
 
-        .st-analysis { font-size: 14px; line-height: 1.6; margin-bottom: 12px; color: var(--text-color); white-space: pre-line; }
-        
-        .st-metrics {
-            background-color: var(--bg-color); border-radius: 10px;
-            padding: 10px; font-size: 12px; color: var(--hint-color);
-            display: flex; align-items: center; gap: 6px;
+        /* --- CHART MINI WRAPPER --- */
+        .chart-mini-wrapper {
+            border: 1px solid rgba(0,0,0,0.05); border-radius: 12px;
+            padding: 4px 0; margin-bottom: 16px;
+            background: rgba(128,128,128,0.02); /* Nền siêu nhẹ */
+            overflow: hidden;
         }
+
+        .st-analysis { font-size: 14px; line-height: 1.6; margin-bottom: 12px; color: var(--text-color); white-space: pre-line; }
+        .st-metrics { background-color: var(--bg-color); border-radius: 10px; padding: 10px; font-size: 12px; color: var(--hint-color); display: flex; align-items: center; gap: 6px; }
         .st-metrics-icon { font-size: 14px; }
 
         .footer { text-align: center; margin-top: 30px; font-size: 12px; color: var(--hint-color); padding-bottom: 40px; }
-        
-        .btn-close {
-            display: block; width: 100%; padding: 14px; 
-            background-color: var(--card-bg); color: var(--text-color); 
-            border: none; border-radius: 14px; font-size: 15px; font-weight: 600; 
-            margin-top: 20px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        }
-
-        @keyframes fadeInDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .btn-close { display: block; width: 100%; padding: 14px; background-color: var(--card-bg); color: var(--text-color); border: none; border-radius: 14px; font-size: 15px; font-weight: 600; margin-top: 20px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
     <div class="header-row">
-        <div class="header-title">
-            Báo Cáo Danh Mục
-            {% if is_pro %}<span class="pro-badge">PRO 👑</span>{% endif %}
-        </div>
+        <div class="header-title">Báo Cáo Danh Mục {% if is_pro %}<span class="pro-badge">PRO 👑</span>{% endif %}</div>
         <div class="header-time">Cập nhật lúc: {{ generated_at }}</div>
     </div>
 
     <div class="score-card">
         <div class="score-val">{{ data.portfolio_health_score }}</div>
-        <div class="score-label">Điểm Sức Khỏe Danh Mục</div>
-        <div class="score-sub">Đánh giá dựa trên tiềm năng tăng trưởng</div>
+        <div class="score-label">Điểm Sức Khỏe</div>
+        <div class="score-sub">Đánh giá tiềm năng danh mục</div>
     </div>
 
     <div class="market-card">
-        <div class="market-title">NHẬN ĐỊNH THỊ TRƯỜNG & CHIẾN LƯỢC</div>
+        <div class="market-title">NHẬN ĐỊNH THỊ TRƯỜNG</div>
         <div class="market-text">{{ data.general_market_comment }}</div>
     </div>
 
@@ -706,43 +670,63 @@ REPORT_HTML_TEMPLATE = r"""
             </div>
             {% set act = stock.action | lower %}
             {% set badge_class = 'act-neutral' %}
-            {% if 'mua' in act or 'tăng' in act %}
-                {% set badge_class = 'act-buy' %}
-            {% elif 'giữ' in act or 'nắm' in act %}
-                {% set badge_class = 'act-hold' %}
-            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %}
-                {% set badge_class = 'act-sell' %}
+            {% if 'mua' in act or 'tăng' in act %} {% set badge_class = 'act-buy' %}
+            {% elif 'giữ' in act or 'nắm' in act %} {% set badge_class = 'act-hold' %}
+            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %} {% set badge_class = 'act-sell' %}
             {% endif %}
-            
             <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
         </div>
         
-        <div class="st-analysis">
-            {{ stock.analysis }}
+        {% if stock.chart_html %}
+        <div class="chart-mini-wrapper">
+            {{ stock.chart_html | safe }}
         </div>
+        {% endif %}
+        
+        <div class="st-analysis">{{ stock.analysis }}</div>
         
         {% if stock.key_metrics %}
         <div class="st-metrics">
             <span class="st-metrics-icon">📊</span> 
-            <span><b>Key Metrics:</b> {{ stock.key_metrics }}</span>
+            <span><b>Metrics:</b> {{ stock.key_metrics }}</span>
         </div>
         {% endif %}
     </div>
     {% endfor %}
 
-    <div class="footer">
-        Dữ liệu được phân tích tự động bởi AI (Gemini).<br>
-        Không phải khuyến nghị đầu tư tài chính.
-    </div>
-
+    <div class="footer">Dữ liệu được phân tích tự động bởi AI (Gemini).<br>Không phải khuyến nghị đầu tư tài chính.</div>
     <button class="btn-close" onclick="Telegram.WebApp.close()">Đóng Báo Cáo</button>
 
     <script>
         Telegram.WebApp.expand();
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
+            applyChartTheme();
+            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
             Telegram.WebApp.ready();
         });
+
+        function applyChartTheme() {
+            // Logic đổi màu biểu đồ theo Theme Telegram
+            const chartDivs = document.querySelectorAll('.plotly-graph-div');
+            if (!chartDivs.length) return;
+
+            const scheme = Telegram.WebApp.colorScheme;
+            const style = getComputedStyle(document.body);
+            const textColor = style.getPropertyValue('--text-color').trim();
+            const hintColor = style.getPropertyValue('--hint-color').trim();
+            const gridColor = (scheme === 'dark') ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
+
+            const update = {
+                'font.color': textColor,
+                'xaxis.gridcolor': gridColor,
+                'yaxis.gridcolor': gridColor,
+                'xaxis.tickfont.color': hintColor,
+                'yaxis.tickfont.color': hintColor
+            };
+
+            chartDivs.forEach(div => Plotly.relayout(div, update));
+        }
     </script>
 </body>
 </html>
