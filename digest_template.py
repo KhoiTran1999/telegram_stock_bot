@@ -1361,4 +1361,101 @@ EOD_404_TEMPLATE = r"""
 """
 
 
+#------------------------------------
+
+
+# [DÁN VÀO digest_template.py]
+
+FLASH_VIEW_HTML_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Flash View {{ symbol }}</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-body: #f8f9fa; --card-bg: #ffffff; 
+            --text-primary: #111827; --text-secondary: #6b7280;
+            --up-color: #089981; --down-color: #f23645; --ref-color: #f0b90b;
+            --accent-blue: #2962ff;
+            --radius: 16px; --shadow: 0 4px 24px rgba(0,0,0,0.06);
+        }
+        body { margin: 0; padding: 16px; font-family: 'Manrope', sans-serif; background-color: var(--bg-body); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
+        
+        .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+        .sym-name { font-size: 28px; font-weight: 800; margin: 0; line-height: 1; }
+        .sym-sub { font-size: 12px; color: var(--text-secondary); font-weight: 600; margin-top: 4px; }
+        .price-main { font-size: 28px; font-weight: 800; display: block; line-height: 1; }
+        .price-change { font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 8px; display: inline-flex; margin-top: 6px; }
+        .btn-refresh { background: rgba(41, 98, 255, 0.1); border: none; cursor: pointer; color: var(--accent-blue); font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 20px; }
+        .btn-refresh:active { transform: scale(0.95); }
+
+        .t-up { color: var(--up-color); } .t-down { color: var(--down-color); }
+        .bg-up { background: rgba(8, 153, 129, 0.12); color: var(--up-color); }
+        .bg-down { background: rgba(242, 54, 69, 0.12); color: var(--down-color); }
+
+        .card { background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; padding: 16px; border: 1px solid rgba(0,0,0,0.03); }
+        
+        .chart-wrapper { height: 300px; width: 100%; margin-left: -5px; margin-right: -5px; }
+
+        .flow-bar-wrapper { display: flex; height: 8px; width: 100%; border-radius: 4px; overflow: hidden; background: #f0f3fa; margin-bottom: 8px; }
+        .fb-buy { background-color: var(--up-color); height: 100%; } .fb-sell { background-color: var(--down-color); height: 100%; }
+        .flow-labels { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; margin-top: 8px; }
+        .lbl-buy { color: var(--up-color); } .lbl-sell { color: var(--down-color); }
+        .flow-sub { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+
+        .range-track { height: 4px; background: #e0e3eb; border-radius: 2px; position: relative; margin: 14px 0; }
+        .range-fill { position: absolute; height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--down-color), var(--up-color)); opacity: 0.3; width: 100%; }
+        .range-thumb { position: absolute; top: -6px; width: 16px; height: 16px; background: #fff; border: 3px solid var(--text-primary); border-radius: 50%; transform: translateX(-50%); box-shadow: 0 2px 5px rgba(0,0,0,0.15); }
+        .range-meta { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--text-primary); }
+        .range-lbl { font-size: 10px; color: var(--text-secondary); font-weight: 500; text-transform: uppercase; }
+
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .m-box { background: var(--card-bg); padding: 14px; border-radius: var(--radius); text-align: center; box-shadow: var(--shadow); }
+        .m-lbl { font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; }
+        .m-val { font-size: 18px; font-weight: 800; margin-top: 6px; color: var(--text-primary); letter-spacing: -0.5px; }
+        .rsi-status { font-size: 11px; font-weight: 600; margin-top: 4px; }
+
+        .btn-close { width: 100%; padding: 16px; background: var(--text-primary); color: #fff; border: none; border-radius: var(--radius); font-weight: 700; font-size: 15px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="sym-box"><h1 class="sym-name">{{ symbol }}</h1><div style="display:flex;align-items:center;gap:8px;margin-top:4px;"><span class="sym-sub">HOSE • Intraday</span><button class="btn-refresh" onclick="window.location.reload()">🔄 Làm mới</button></div></div>
+        <div style="text-align:right"><div class="price-main {{ cls_color }}">{{ current_price }}</div><div class="price-change {{ bg_cls }}">{{ change_str }}</div></div>
+    </div>
+
+    <div class="card" style="padding: 10px 0 0 0;">
+        <div class="chart-wrapper">{{ chart_html | safe }}</div>
+    </div>
+
+    <div class="card">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:var(--text-secondary);margin-bottom:12px;">⚡ Phân bổ dòng tiền (Chủ động)</div>
+        <div class="flow-bar-wrapper"><div class="fb-buy" style="width: {{ buy_pct }}%"></div><div class="fb-sell" style="width: {{ sell_pct }}%"></div></div>
+        <div class="flow-labels"><span class="lbl-buy">{{ buy_pct }}% Mua</span><span class="lbl-sell">{{ sell_pct }}% Bán</span></div>
+        <div class="flow-sub"><span>{{ buy_vol_str }}</span><span>{{ sell_vol_str }}</span></div>
+        <div style="height: 220px; margin-top: 20px;">{{ orderbook_html | safe }}</div>
+    </div>
+
+    <div class="card">
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;color:var(--text-secondary);margin-bottom:12px;">🎯 Vị thế giá</div>
+        <div class="range-meta"><span>Thấp: {{ low }}</span><span>Cao: {{ high }}</span></div>
+        <div class="range-track"><div class="range-fill"></div><div class="range-thumb" style="left: {{ range_pct }}%;"></div></div>
+    </div>
+
+    <div class="metrics-grid">
+        <div class="m-box"><div class="m-lbl">RSI (5M)</div><div class="m-val" style="color:{{ rsi_color }}">{{ rsi_val }}</div><div class="rsi-status" style="color:{{ rsi_color }}">{{ rsi_msg }}</div></div>
+        <div class="m-box"><div class="m-lbl">Tổng KL</div><div class="m-val">{{ volume_str }}</div><div class="rsi-status" style="color:var(--text-secondary)">Cổ phiếu</div></div>
+    </div>
+
+    <button class="btn-close" onclick="Telegram.WebApp.close()">Đóng</button>
+    <script>Telegram.WebApp.expand();</script>
+</body>
+</html>
+"""
+
 

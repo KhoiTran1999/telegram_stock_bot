@@ -119,7 +119,13 @@ from pathlib import Path
 from google import genai
 import uuid
 import hmac
-from chart_utils import generate_chart_html, generate_mini_chart
+from digest_template import FLASH_VIEW_HTML_TEMPLATE
+from chart_utils import (
+    get_flash_view_data,
+    draw_line_chart_fixed_ui,
+    draw_orderbook_fixed_ui,
+    generate_chart_html,
+)
 
 # --- HÀM HELPER VẼ THANH TIẾN TRÌNH ---
 def make_progress_bar(percent: int, width: int = 8) -> str:
@@ -3020,9 +3026,15 @@ async def alert_loop():
                             f"_{fun_line}_"
                         )
                         
-                        # TẠO NÚT KÈM THEO ALERT
+                        # TẠO NÚT "SOI CHART" (Link Web App)
+                        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+                        chart_url = f"{base_url}/chart/{sym_u}"
+                        
                         kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Soi hồ sơ", callback_data=f"btn_info_{sym_u}")]
+                            [
+                                InlineKeyboardButton("📉 Soi Chart Realtime", web_app=WebAppInfo(url=chart_url)),
+                                InlineKeyboardButton("📄 Hồ sơ", callback_data=f"btn_info_{sym_u}")
+                            ]
                         ])
 
                         messages.append(msg)
@@ -7503,6 +7515,48 @@ def view_eod(eod_id):
         user_stocks=data.get('user_stocks'),
         generated_at=data.get('generated_at'),
         is_pro=data.get('is_pro', False) # Mặc định False, nhưng template đã bỏ badge
+    )
+
+@flask_app.route("/chart/<symbol>")
+async def view_chart(symbol: str):
+    """
+    Route hiển thị Flash View (Chart Intraday + Dòng tiền).
+    """
+    # 1. Lấy dữ liệu (Logic đã gom vào chart_utils)
+    data = await get_flash_view_data(symbol.upper())
+    
+    if not data:
+        return "<h3>Chưa có dữ liệu hoặc lỗi kết nối. Vui lòng thử lại sau.</h3>", 404
+
+    # 2. Vẽ Chart (Gọi hàm vẽ UI)
+    chart_html = draw_line_chart_fixed_ui(*data['chart_data'])
+    orderbook_html = draw_orderbook_fixed_ui(data['price_depth'], data['ref_price'])
+
+    # 3. Render
+    return render_template_string(
+        FLASH_VIEW_HTML_TEMPLATE,
+        symbol=data['symbol'],
+        current_price=f"{data['current']:,.0f}",
+        change_str=data['change_str'],
+        bg_cls=data['bg_cls'],
+        cls_color=data['cls_color'],
+        
+        chart_html=chart_html,
+        orderbook_html=orderbook_html,
+        
+        buy_pct=data['buy_pct'],
+        sell_pct=data['sell_pct'],
+        buy_vol_str=data['buy_vol_str'],
+        sell_vol_str=data['sell_vol_str'],
+        
+        low_price=data['low'],
+        high_price=data['high'],
+        range_pct=data['range_pct'],
+        
+        rsi_val=data['rsi_val'],
+        rsi_color=data['rsi_color'],
+        rsi_msg=data['rsi_msg'],
+        volume_str=data['volume_str']
     )
 
 # ==============================================
