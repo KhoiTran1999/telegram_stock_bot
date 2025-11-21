@@ -1369,12 +1369,89 @@ async def notify_admin_report_error_once(
             f"[{INSTANCE_ID}] Lỗi khi gửi thông báo báo cáo lỗi cho Admin: {e2}"
         )
 
+# =====================================================
+# HELPER CHO AI REPORT: INJECT REALTIME DATA TỪ REDIS
+# =====================================================
+
+def build_stock_metrics_map(redis_data):
+    """
+    Biến đổi dữ liệu Redis (Phân cấp) -> Dictionary (Phẳng) để tra cứu O(1).
+    Format lại số liệu cho đẹp luôn.
+    """
+    metrics_map = {}
+    
+    if not redis_data or "industries" not in redis_data:
+        return {}
+
+    industries = redis_data.get("industries", [])
+    for ind_block in industries:
+        # Tên ngành
+        industry_name = ind_block.get("industry", "Khác")
+        
+        for row in ind_block.get("rows", []):
+            sym = row.get("symbol", "").upper()
+            
+            # Helper format số
+            def fmt(val, is_percent=False):
+                if val is None: return "N/A"
+                if is_percent:
+                    return f"{val * 100:.1f}%" # 0.225 -> 22.5%
+                return f"{val:.1f}x"       # 10.5 -> 10.5x
+
+            # Xây dựng chuỗi dữ liệu STOCK
+            stock_str = (
+                f"P/E={fmt(row.get('pe'))}, "
+                f"P/B={fmt(row.get('pb'))}, "
+                f"ROE={fmt(row.get('roe'), True)}"
+            )
+
+            # Xây dựng chuỗi dữ liệu NGÀNH
+            ind_str = (
+                f"TB Ngành ({industry_name}): "
+                f"P/E={fmt(row.get('pe_industry'))}, "
+                f"P/B={fmt(row.get('pb_industry'))}, "
+                f"ROE={fmt(row.get('roe_industry'), True)}"
+            )
+
+            metrics_map[sym] = {
+                "full_context": f"   + Chỉ số hiện tại: {stock_str}\n   + {ind_str}"
+            }
+            
+    return metrics_map
+
+def generate_injected_prompt(user_symbols, metrics_map):
+    """
+    Tạo đoạn text 'Context' để nhét vào Prompt của Gemini.
+    """
+    lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH THỰC TẾ (REALTIME) & SO SÁNH NGÀNH:**"]
+    lines.append("(BẮT BUỘC sử dụng số liệu dưới đây để đánh giá đắt/rẻ trong bài phân tích)")
+    lines.append("-" * 50)
+
+    for sym in user_symbols:
+        sym = sym.upper()
+        lines.append(f"📌 **{sym}**:")
+        
+        if sym in metrics_map:
+            # Trường hợp CÓ dữ liệu (Trong bộ lọc)
+            context = metrics_map[sym]["full_context"]
+            lines.append(context)
+        else:
+            # Trường hợp KHÔNG có dữ liệu (Penny, thanh khoản thấp...)
+            lines.append("   ⚠️ Dữ liệu thực: Không khả dụng trong bộ lọc Value (Do thanh khoản thấp hoặc lỗ).")
+            lines.append("   👉 AI tự đánh giá dựa trên kiến thức nội tại.")
+        
+        lines.append("") # Dòng trống
+
+    lines.append("-" * 50)
+    return "\n".join(lines)
+
 
 # Trong file alert_bot.py
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
     """
-    (PHIÊN BẢN JSON - CÓ XUỐNG DÒNG)
+    (PHIÊN BẢN JSON - DATA INJECTION - OPTIMIZED PROMPT)
+    Gọi Gemini tạo báo cáo danh mục, có bơm dữ liệu P/E, P/B, ROE thực tế từ Redis.
     """
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
@@ -1382,37 +1459,65 @@ def call_chatgpt_for_report(symbols: list[str]) -> str:
     if len(symbols) > 6:
         symbols = symbols[:6]
 
+    # --- 1. LẤY DỮ LIỆU SCREENER (REDIS HOẶC API) ---
+    screener_data = load_value_screener_from_redis('all')
+    
+    if not screener_data:
+        log.info(f"[{INSTANCE_ID}] Redis screener miss. Fetching fresh data for report context...")
+        try:
+            # Gọi API lấy dữ liệu mới nhất nếu cache rỗng
+            screener_data = run_value_screener_from_api('all')
+            if screener_data:
+                save_value_screener_to_redis(screener_data, 'all')
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] Lỗi fetch screener context: {e}")
+            screener_data = None
+
+    # --- 2. TẠO CONTEXT STRING ---
+    context_str = ""
+    if screener_data:
+        try:
+            metrics_map = build_stock_metrics_map(screener_data)
+            context_str = generate_injected_prompt(symbols, metrics_map)
+        except Exception as e:
+            log.error(f"[{INSTANCE_ID}] Lỗi map data context: {e}")
+
+    # --- 3. CHUẨN BỊ PROMPT ---
     symbols_str = ", ".join(symbols)
     vn_tz = pytz.timezone(TIMEZONE)
     date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
 
     prompt = f"""
-Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng.
+Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng & giá trị.
 Hãy phân tích danh mục đầu tư trung–dài hạn (3–12 tháng) cho các mã sau: {symbols_str} (Ngày báo cáo: {date_str}).
+
+{context_str}
 
 YÊU CẦU FORMAT OUTPUT:
 Trả về kết quả dưới định dạng **JSON thuần**.
 Cấu trúc JSON bắt buộc:
 {{
   "general_market_comment": "Đoạn văn (khoảng 3-4 câu) tổng quan về thị trường và định hướng danh mục.",
-  "portfolio_health_score": 8.5,
+  "portfolio_health_score": 8.5, 
   "stocks": [
     {{
       "symbol": "MÃ",
       "industry": "Tên ngành",
-      "action": "Mua / Nắm giữ / Bán / Theo dõi",
-      "analysis": "Phân tích chi tiết (500-700 ký tự). BẮT BUỘC trình bày thành các ý gạch đầu dòng (•), mỗi ý MỘT DÒNG RIÊNG BIỆT. Bao gồm: KQKD, Lợi thế, Động lực, Rủi ro.\\nVí dụ format:\\n• Vị thế: Dẫn đầu ngành...\\n• KQKD: Tăng trưởng 20%...\\n• Rủi ro: Tỷ giá...",
-      "key_metrics": "P/E: 10.x, LNST tăng 20%..."
+      "action": "Mua / Nắm giữ / Hạ tỷ trọng / Theo dõi",
+      "analysis": "Phân tích chi tiết (1000-1200 ký tự). BẮT BUỘC trình bày thành các ý gạch đầu dòng (•), mỗi ý xuống dòng (\\n) riêng biệt. Nội dung phải bao hàm các khía cạnh sau:\\n• KQKD & Lợi thế: Tăng trưởng doanh thu/LN, thị phần, biên lợi nhuận...\\n• Động lực (Catalyst): Dự án mới, game M&A, chính sách ủng hộ...\\n• Định giá: So sánh P/E, P/B với trung bình ngành (đã cung cấp ở trên) để kết luận Đắt/Rẻ.\\n• Rủi ro: Pháp lý, tỷ giá, chi phí đầu vào...",
+      "key_metrics": "Điền các chỉ số P/E, P/B, ROE từ dữ liệu đã cung cấp. Ví dụ: 'P/E 10.5x (Ngành 15.2x), ROE 22%'."
     }}
   ]
 }}
 
-LƯU Ý:
-- Trường `analysis` phải chứa các ký tự xuống dòng (\\n) để tách ý.
-- Giọng văn chuyên nghiệp, khách quan.
+LƯU Ý QUAN TRỌNG:
+1. Trường `portfolio_health_score` là số thực từ 1.0 đến 10.0.
+2. Trường `analysis` là MỘT CHUỖI VĂN BẢN (String) chứa các ký tự xuống dòng (\\n) để tách ý, KHÔNG được là object JSON.
+3. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU TÀI CHÍNH'.
+4. Giọng văn chuyên nghiệp, khách quan, sắc sảo.
 """
 
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON Mode) cho báo cáo: {symbols_str}")
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON Mode + Data Injection) cho báo cáo: {symbols_str}")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     model_id = "gemini-2.5-flash-lite"
