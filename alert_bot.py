@@ -2644,7 +2644,7 @@ _stock_broadcast_queue = asyncio.Queue()
 _stock_current_price_cache: dict[str, dict] = {} # Cache giá {HPG: {"price": ..., "pct": ...}}
 _stock_current_watch_cache: dict[str, dict] = {} # Cache watchlist {chat_id: {"list": [...]}}
 TICKER_INTERVAL_SECONDS = 10  # Tần suất Ticker (check cache)
-FETCHER_INTERVAL_SECONDS = 15 # Tần suất Fetcher (gọi API)
+FETCHER_INTERVAL_SECONDS = 20 # Tần suất Fetcher (gọi API)
 
 # (Các hàm same_sign, get_quote... của bạn nằm ở đây)
 def same_sign(a: float, b: float) -> bool:
@@ -3612,7 +3612,7 @@ async def vn30f1m_price_fetcher_loop():
     """
     global _vn30f1m_current_price_cache, _vn30f1m_anchor, _vn30f1m_ref_price
     vn_tz = pytz.timezone(TIMEZONE)
-    FETCH_INTERVAL = 5  # Tốc độ fetch nhanh (5s) vì phái sinh biến động mạnh
+    FETCH_INTERVAL = 20  # Tốc độ fetch nhanh (20s) vì phái sinh biến động mạnh
     
     log.info(f"[{INSTANCE_ID}][VN30F1M] Bắt đầu (Mode: Quote History 1m - VCI)...")
 
