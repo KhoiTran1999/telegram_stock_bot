@@ -750,12 +750,102 @@ async def call_gemini_eod_insight(market_data: dict) -> str:
         
     return "Thị trường biến động. Hãy quan sát kỹ dòng tiền."
 
+# --- HELPER FORMAT EOD ---
+def fmt_price(p):
+    """Giá: 26500 -> 26.500"""
+    if p is None: return "--"
+    return f"{int(p):,}".replace(",", ".")
+
+def fmt_volume(v):
+    """Vol: 1500000 -> 1.5M"""
+    if v is None: return "--"
+    if v >= 1_000_000: return f"{v/1_000_000:.1f}M"
+    if v >= 1_000: return f"{v/1_000:.0f}K"
+    return str(int(v))
+
+def fmt_value(v):
+    """Value: 150 tỷ -> 150 Tỷ"""
+    if v is None or v == 0: return "--"
+    if v >= 1_000_000_000: return f"{v/1_000_000_000:.0f} Tỷ"
+    if v >= 1_000_000: return f"{v/1_000_000:.0f} Tr"
+    return "--"
+
+# --- FETCHER RIÊNG CHO EOD (Dùng Quote History 1D) ---
+async def fetch_full_eod_data(symbols):
+    """
+    Lấy dữ liệu EOD đầy đủ: Giá, %, Vol, Value.
+    Tự động fix lỗi đơn vị giá (x1000).
+    """
+    if not symbols: return []
+    
+    async def _get_one(sym):
+        try:
+            def _call_api():
+                # Lấy 5 ngày gần nhất để chắc chắn có dữ liệu
+                today = datetime.datetime.now()
+                start_d = (today - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
+                end_d = today.strftime('%Y-%m-%d')
+                
+                quote = Quote(symbol=sym, source='VCI')
+                return quote.history(start=start_d, end=end_d, interval='1D')
+
+            df = await asyncio.to_thread(_call_api)
+            
+            if df is None or df.empty: return None
+
+            # Lấy dòng mới nhất
+            last = df.iloc[-1]
+            close = float(last['close'])
+            volume = float(last['volume'])
+            
+            # [FIX QUAN TRỌNG] Nếu giá < 500 (tức là đơn vị nghìn), nhân 1000
+            if close < 500:
+                close *= 1000
+
+            # Tính giá trị ước tính
+            trading_val = close * volume
+
+            # Tính % thay đổi
+            pct = 0.0
+            if len(df) >= 2:
+                prev = float(df.iloc[-2]['close'])
+                if prev < 500: prev *= 1000 # Fix cả giá tham chiếu
+                
+                if prev > 0:
+                    pct = ((close - prev) / prev) * 100
+
+            # Màu sắc
+            bg_cls = "bg-ref"
+            text_cls = "t-ref"
+            sign = ""
+            
+            if pct > 0:
+                bg_cls = "bg-up"; text_cls = "t-up"; sign = "+"
+            elif pct < 0:
+                bg_cls = "bg-down"; text_cls = "t-down"
+
+            return {
+                "symbol": sym,
+                "price": fmt_price(close),
+                "pct": f"{sign}{pct:.2f}",
+                "vol_str": fmt_volume(volume),
+                "val_str": fmt_value(trading_val),
+                "bg_cls": bg_cls,
+                "text_cls": text_cls
+            }
+        except Exception as e:
+            log.warning(f"[EOD_FETCH] Lỗi mã {sym}: {e}")
+            return None
+
+    # Chạy song song tất cả các mã
+    tasks = [_get_one(s) for s in symbols]
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r]
+
 async def send_eod_summary():
     """
-    Gửi Tổng kết cuối phiên (EOD) dạng Web App.
-    - Index: Dùng VCI History (Giá + Vol).
-    - Stocks: Dùng Smart Fetcher (Giá + %).
-    - Market: Bỏ khối ngoại, tập trung vào xu hướng và thanh khoản.
+    [UPDATED] Gửi Tổng kết cuối phiên (EOD).
+    Dùng fetch_full_eod_data để có Giá, %, Vol, Value chính xác.
     """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -763,65 +853,28 @@ async def send_eod_summary():
     
     log.info(f"[{INSTANCE_ID}][EOD] 🚀 Bắt đầu quy trình EOD Summary {today_str}...")
 
-    # 1. Lấy dữ liệu Index (QUAN TRỌNG: Dùng hàm VCI History mới)
-    # Chạy trong thread để không chặn loop
-    vni_data = await asyncio.to_thread(get_index_eod_vci, "VNINDEX")
-    v30_data = await asyncio.to_thread(get_index_eod_vci, "VN30")
-
-    # Hàm helper format dữ liệu Index cho Template
-    def _fmt_idx(data):
-        if not data:
-            return {
-                "price": "Nguồn lỗi ⚠️",
-                "cls": "text-ref",
-                "change_str": "--",
-                "vol_str": "--"
-            }
-        
-        c = data['change']
-        # Class màu sắc
-        cls = "text-up" if c > 0 else ("text-down" if c < 0 else "text-ref")
-        sign = "+" if c > 0 else ""
-        
-        # Volume: Chia 1 triệu -> Triệu CP
-        vol_mil = data['volume'] / 1_000_000
-        
-        return {
-            "price": f"{data['price']:,.2f}",
-            "cls": cls,
-            "change_str": f"{sign}{c:,.2f} ({sign}{data['pct']:.2f}%)",
-            "vol_str": f"{vol_mil:,.1f} Triệu CP"
-        }
-
-    market_data_input = {
-        "vnindex": _fmt_idx(vni_data),
-        "vn30": _fmt_idx(v30_data),
-        # "foreign_net_val": ... -> Đã bỏ
-    }
-
-    # 2. Gọi AI Insight (Vẫn dùng nhưng prompt sẽ ngắn gọn hơn về vol/giá)
-    ai_comment = await call_gemini_eod_insight(market_data_input)
-    market_data_input["ai_comment"] = ai_comment 
-
-    # 3. Lấy danh sách User & Cổ phiếu của họ
+    # 1. Lấy danh sách User
     try:
         all_watch = await asyncio.to_thread(get_all_watch)
         if not all_watch: return
     except Exception: return
 
-    # Gom mã để fetch giá cổ phiếu
+    # 2. Gom mã (chỉ lấy 3 chữ cái)
     all_symbols = set()
     for block in all_watch.values():
         for s in block.get("list", []):
-            all_symbols.add(str(s).upper())
+            s_clean = str(s).upper().strip()
+            if len(s_clean) == 3: # Chỉ lấy mã cổ phiếu, bỏ index VN30...
+                all_symbols.add(s_clean)
     
     if not all_symbols: return
 
-    # Gọi Smart Fetcher cho danh sách cổ phiếu (Vẫn dùng logic cũ vì nó ổn cho stock)
-    try:
-        stock_data_source = await fetch_data_smart(list(all_symbols))
-    except Exception:
-        stock_data_source = {}
+    # 3. Fetch dữ liệu FULL (Giá, %, Vol, Value)
+    # Hàm này trả về list các dict đã format sẵn
+    stock_data_list = await fetch_full_eod_data(list(all_symbols))
+    
+    # Chuyển list thành dict để map nhanh: { "HPG": {...data...} }
+    stock_map = { item['symbol']: item for item in stock_data_list }
 
     # 4. Gửi tin
     base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
@@ -833,31 +886,24 @@ async def send_eod_summary():
             watch_list = block.get("list", [])
             if not watch_list: continue
 
-            user_stocks = []
+            # Lọc ra các mã của user có trong dữ liệu đã fetch
+            user_stocks_ready = []
             for sym in watch_list:
                 sym_u = str(sym).upper()
-                if sym_u in stock_data_source:
-                    info = stock_data_source[sym_u]
-                    price_fmt = f"{info['price']:,.0f}".replace(",", ".")
-                    user_stocks.append({
-                        "symbol": sym_u,
-                        "price": price_fmt,
-                        "pct": round(info['pct'], 2)
-                    })
+                if sym_u in stock_map:
+                    user_stocks_ready.append(stock_map[sym_u])
             
-            if not user_stocks: continue
+            if not user_stocks_ready: continue
 
-            # Payload mới (Không còn foreign_net_val, thay bằng cấu trúc index mới)
+            # Payload cho Template mới
             payload = {
-                "market_data": market_data_input,
-                "user_stocks": user_stocks,
+                "user_stocks": user_stocks_ready,
                 "generated_at": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m"),
-                "is_pro": False 
             }
 
             digest_id = uuid.uuid4().hex
-            # Key Redis cho EOD (dùng 24h)
             r = get_redis()
+            # Key Redis cho EOD
             r.set(f"digest_web:eod_web:{digest_id}", json.dumps(payload), ex=86400)
             
             web_app_url = f"{base_url}/eod/{digest_id}"
@@ -866,16 +912,12 @@ async def send_eod_summary():
                 InlineKeyboardButton("📊 Xem Tổng Kết Phiên", web_app=WebAppInfo(url=web_app_url))
             ]])
             
-            # Text ngắn gọn bên ngoài
-            vni_price = market_data_input['vnindex']['price']
             msg = (
                 f"🇻🇳 *Tổng kết phiên {today_str}*\n"
-                f"VN-INDEX: {vni_price}\n"
+                f"Dữ liệu chốt phiên đã sẵn sàng.\n"
                 f"👉 Nhấn nút bên dưới để xem chi tiết."
             )
             
-            # Dùng hàm send_digest_with_pin (nếu bạn đã tích hợp) hoặc send_md
-            # Ở đây dùng send_md mặc định, bạn có thể đổi sang send_digest_with_pin nếu muốn ghim
             tasks.append(send_md(tg_app.bot, chat_id, msg, reply_markup=kb, msg_type='EOD_SUMMARY'))
 
         except Exception as e:
@@ -3564,13 +3606,15 @@ async def vn30f1m_alert_loop():
 
 async def vn30f1m_price_fetcher_loop():
     """
-    (Tác vụ 1: Fetcher VN30F1M - Smart Async)
+    (Tác vụ 1: Fetcher VN30F1M - Dedicated Quote Mode)
+    Sử dụng Quote History 1m của VCI để đảm bảo lấy giá khớp lệnh mới nhất,
+    tránh lỗi snapshot của price_board.
     """
     global _vn30f1m_current_price_cache, _vn30f1m_anchor, _vn30f1m_ref_price
     vn_tz = pytz.timezone(TIMEZONE)
-    FETCH_INTERVAL = 15
+    FETCH_INTERVAL = 5  # Tốc độ fetch nhanh (5s) vì phái sinh biến động mạnh
     
-    log.info(f"[{INSTANCE_ID}][VN30F1M] Bắt đầu (Smart Mode Async)...")
+    log.info(f"[{INSTANCE_ID}][VN30F1M] Bắt đầu (Mode: Quote History 1m - VCI)...")
 
     while True:
         loop_start = datetime.datetime.now(vn_tz)
@@ -3585,35 +3629,66 @@ async def vn30f1m_price_fetcher_loop():
                 if now >= next_open: next_open += datetime.timedelta(days=1)
                 while next_open.weekday() >= 5: next_open += datetime.timedelta(days=1)
                 sleep_seconds = max(5, (next_open - now).total_seconds())
-                log.info(f"[VN30F1M] Ngoài giờ. Ngủ tới {next_open.strftime('%H:%M')}")
+                log.info(f"[{INSTANCE_ID}][VN30F1M] Ngoài giờ. Ngủ tới {next_open.strftime('%H:%M')}")
                 await asyncio.sleep(sleep_seconds)
                 continue
 
-            # 🔥 SỬA ĐỔI: Gọi trực tiếp await
-            data = await fetch_data_smart([VN30F1M_SYMBOL])
+            # --- LOGIC MỚI: Dùng Quote History ---
+            today_str = loop_start.strftime('%Y-%m-%d')
             
-            if data and VN30F1M_SYMBOL in data:
-                info = data[VN30F1M_SYMBOL]
-                current_price = info['price']
-                ref_price = info['ref']
+            def _fetch_vn30_direct():
+                # 1. Lấy giá hiện tại (Nến 1 phút mới nhất)
+                q = Quote(symbol=VN30F1M_SYMBOL, source='VCI')
+                df_now = q.history(start=today_str, end=today_str, interval='1m')
                 
-                _vn30f1m_current_price_cache = current_price
+                price_now = None
+                price_ref = None
                 
+                if df_now is not None and not df_now.empty:
+                    # Giá hiện tại = Close của cây nến phút cuối cùng
+                    price_now = float(df_now.iloc[-1]['close'])
+                
+                # 2. Lấy giá tham chiếu (Nếu chưa có trong RAM)
+                # Chỉ gọi khi cần thiết để tiết kiệm API
                 if _vn30f1m_ref_price is None:
-                    _vn30f1m_ref_price = ref_price
-                    log.info(f"[VN30F1M] ⛳ Ref Price Set: {ref_price}")
+                    start_d = (loop_start - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+                    df_day = q.history(start=start_d, end=today_str, interval='1D')
+                    if df_day is not None and len(df_day) >= 2:
+                        # Tham chiếu = Close của ngày hôm qua (dòng áp chót)
+                        # Dòng cuối là hôm nay (đang chạy), dòng áp chót là hôm qua
+                        price_ref = float(df_day.iloc[-2]['close'])
+                    elif df_day is not None and len(df_day) == 1:
+                         # Trường hợp ngày đầu tiên lên sàn hoặc dữ liệu thiếu, tạm lấy open
+                         price_ref = float(df_day.iloc[0]['open'])
+
+                return price_now, price_ref
+
+            # Chạy trong thread để không block bot
+            current_p, ref_p = await asyncio.to_thread(_fetch_vn30_direct)
+
+            # Cập nhật Cache
+            if current_p is not None:
+                _vn30f1m_current_price_cache = current_p
                 
+                # Cập nhật Tham Chiếu (chỉ set 1 lần trong ngày)
+                if _vn30f1m_ref_price is None and ref_p is not None:
+                    _vn30f1m_ref_price = ref_p
+                    log.info(f"[{INSTANCE_ID}][VN30F1M] ⛳ Ref Price Set (Quote 1D): {ref_p}")
+                
+                # Cập nhật Anchor khởi tạo
                 if _vn30f1m_anchor is None:
-                    _vn30f1m_anchor = ref_price
+                    _vn30f1m_anchor = current_p if current_p else ref_p
 
             else:
-                # Log nhẹ để biết đang retry
+                # Log nhẹ nếu không lấy được data (để debug)
+                # log.warning(f"[{INSTANCE_ID}][VN30F1M] Quote 1m trả về rỗng.")
                 pass
 
         except Exception as e:
-            log.error(f"[VN30F1M] Lỗi Loop: {e}")
-            await asyncio.sleep(10)
+            log.error(f"[{INSTANCE_ID}][VN30F1M] Lỗi Loop: {e}")
+            await asyncio.sleep(5)
         
+        # Giữ nhịp fetch
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(1, FETCH_INTERVAL - elapsed)
         await asyncio.sleep(delay)
