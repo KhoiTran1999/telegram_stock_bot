@@ -1232,7 +1232,15 @@ EOD_HTML_TEMPLATE = r"""
         body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; }
         
         .header { text-align: center; margin-bottom: 20px; }
-        .header-title { font-size: 24px; font-weight: 800; margin: 0; }
+
+        .header-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; }
+        
+        .header-title { 
+            font-size: 28px; font-weight: 800; margin: 0; letter-spacing: -1px; line-height: 1.2;
+            background: var(--brand-gradient); 
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
+            background-clip: text; color: var(--button-color);
+        }
         .header-sub { font-size: 13px; color: var(--hint-color); margin-top: 4px; }
 
         /* --- AI CARD --- */
@@ -1275,13 +1283,13 @@ EOD_HTML_TEMPLATE = r"""
 </head>
 <body>
     <div class="header">
-        <div class="header-title">Danh Mục EOD</div>
+        <div class="header-title">Tổng Kết Phiên</div>
         <div class="header-sub">Dữ liệu chốt phiên {{ generated_at }}</div>
     </div>
 
     {% if market_data and market_data.ai_comment %}
     <div class="ai-card">
-        <div class="ai-title">🧠 GÓC NHÌN AI (GEMINI)</div>
+        <div class="ai-title">🧠 Nhận Định Thị Trường</div>
         <div class="ai-content">{{ market_data.ai_comment }}</div>
     </div>
     {% endif %}
