@@ -886,6 +886,7 @@ async def send_eod_summary():
             watch_list = block.get("list", [])
             if not watch_list: continue
 
+            # ... (Giữ nguyên logic lọc mã user_stocks_ready) ...
             # Lọc ra các mã của user có trong dữ liệu đã fetch
             user_stocks_ready = []
             for sym in watch_list:
@@ -903,7 +904,6 @@ async def send_eod_summary():
 
             digest_id = uuid.uuid4().hex
             r = get_redis()
-            # Key Redis cho EOD
             r.set(f"digest_web:eod_web:{digest_id}", json.dumps(payload), ex=86400)
             
             web_app_url = f"{base_url}/eod/{digest_id}"
@@ -912,13 +912,28 @@ async def send_eod_summary():
                 InlineKeyboardButton("📊 Xem Tổng Kết Phiên", web_app=WebAppInfo(url=web_app_url))
             ]])
             
-            msg = (
+            msg_text = (
                 f"🇻🇳 *Tổng kết phiên {today_str}*\n"
                 f"Dữ liệu chốt phiên đã sẵn sàng.\n"
                 f"👉 Nhấn nút bên dưới để xem chi tiết."
             )
             
-            tasks.append(send_md(tg_app.bot, chat_id, msg, reply_markup=kb, msg_type='EOD_SUMMARY'))
+            # --- [THAY ĐỔI Ở ĐÂY] ---
+            # 1. Gửi tin nhắn
+            sent_msg = await send_md(tg_app.bot, chat_id, msg_text, reply_markup=kb, msg_type='EOD_SUMMARY')
+            
+            # 2. Ghim tin nhắn này (Pin thêm vào danh sách)
+            if sent_msg:
+                try:
+                    await tg_app.bot.pin_chat_message(
+                        chat_id=chat_id,
+                        message_id=sent_msg.message_id,
+                        disable_notification=True
+                    )
+                except Exception as e:
+                    log.warning(f"[{INSTANCE_ID}] Lỗi ghim EOD cho {chat_id}: {e}")
+            
+            tasks.append(asyncio.create_task(asyncio.sleep(0))) # Dummy task để giữ cấu trúc cũ nếu cần, hoặc bỏ qua
 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][EOD] Lỗi gửi cho {chat_key}: {e}")
@@ -4128,34 +4143,35 @@ async def analysis_report_loop():
 
 async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
     """
-    Hàm gửi Digest có tính năng: Tháo ghim tin cũ -> Gửi tin mới -> Ghim tin mới.
+    [UPDATED] Sáng: Tháo ghim TẤT CẢ tin cũ (Digest + EOD) -> Gửi tin mới -> Ghim tin mới.
     """
-    # 1. Tìm và Tháo ghim tin cũ (nếu có)
-    try:
-        old_msg_id = await asyncio.to_thread(get_latest_bot_message_id, chat_id, 'DAILY_DIGEST')
-        if old_msg_id:
-            try:
-                await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
-            except Exception:
-                # Bỏ qua lỗi nếu tin cũ đã bị user xóa hoặc tháo ghim trước đó
-                pass
-    except Exception as e:
-        log.warning(f"Lỗi tháo ghim cũ cho {chat_id}: {e}")
+    # 1. Tháo ghim các loại tin cũ để làm sạch buổi sáng
+    msg_types_to_unpin = ['DAILY_DIGEST', 'EOD_SUMMARY']
+    
+    for m_type in msg_types_to_unpin:
+        try:
+            old_msg_id = await asyncio.to_thread(get_latest_bot_message_id, chat_id, m_type)
+            if old_msg_id:
+                try:
+                    await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
+                except Exception:
+                    pass # Bỏ qua nếu tin đã bị user xóa hoặc tháo ghim thủ công
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] Lỗi tháo ghim {m_type} cũ cho {chat_id}: {e}")
 
     # 2. Gửi tin mới (Lưu ý: msg_type='DAILY_DIGEST')
-    # Hàm send_md sẽ tự động lưu message_id mới vào DB
     msg = await send_md(bot, chat_id, text, msg_type='DAILY_DIGEST', reply_markup=reply_markup)
 
-    # 3. Ghim tin mới (Silent)
+    # 3. Ghim tin mới
     if msg:
         try:
             await bot.pin_chat_message(
                 chat_id=chat_id,
                 message_id=msg.message_id,
-                disable_notification=True # Không làm phiền user
+                disable_notification=True 
             )
         except Exception as e:
-            log.warning(f"Lỗi ghim tin mới cho {chat_id}: {e}")
+            log.warning(f"[{INSTANCE_ID}] Lỗi ghim Digest mới cho {chat_id}: {e}")
 
 async def daily_user_digest_loop():
     """
