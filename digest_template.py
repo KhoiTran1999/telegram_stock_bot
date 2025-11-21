@@ -17,16 +17,12 @@ DIGEST_HTML_TEMPLATE = """
         }
         
         body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: var(--bg-color); 
-            color: var(--text-color); 
-            margin: 0; padding: 20px 16px 40px 16px; 
-            font-size: 14px; line-height: 1.5;
+            font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
+            margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5;
             visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
         }
         body.loaded { visibility: visible; opacity: 1; }
 
-        /* CSS Cũ giữ nguyên (rút gọn để tập trung vào phần mới) */
         .header { text-align: center; margin-bottom: 32px; }
         .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 12px; }
         .header-title { font-size: 32px; font-weight: 800; margin: 0; background: linear-gradient(135deg, #007aff 0%, #af52de 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -37,54 +33,31 @@ DIGEST_HTML_TEMPLATE = """
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
         
-        /* --- SỬA ĐỔI: List Item giờ là div có cursor pointer --- */
+        /* Item có hiệu ứng click */
         .list-item { padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); display: block; text-decoration: none; color: inherit; cursor: pointer; }
         .list-item:active { background-color: rgba(0,0,0,0.05); }
-        
         .list-item:last-child { border-bottom: none; }
+        
         .item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
         .badge { background: rgba(0,0,0,0.05); font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; }
         .item-title { font-size: 15px; font-weight: 500; line-height: 1.4; }
         .item-meta { font-size: 12px; color: var(--hint-color); margin-top: 4px; }
-
-        /* ... (Giữ nguyên CSS Locked, Table, Utilities cũ) ... */
-        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, #f9f9f9 10px, #f9f9f9 20px); }
-        .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
-        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
-        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; transform: translateY(2px); }
+        .hidden-item { display: none; }
+        .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
+        .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
+        
         .stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .stock-table th { text-align: left; padding: 10px 16px; color: var(--hint-color); font-weight: 600; font-size: 11px; }
         .stock-table td { padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .score-badge { background: #5856d6; color: white; padding: 4px 8px; border-radius: 8px; font-weight: 700; font-size: 12px; }
+        
         .premium-card { background: linear-gradient(135deg, #007aff 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
         .premium-btn { display: block; width: 100%; padding: 15px; background-color: #fff; color: #007aff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
-        .hidden-item { display: none; }
-        .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
-        .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
-
-        /* --- CSS MỚI CHO NEWS READER (MODAL) --- */
-        .news-modal {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: #fff; z-index: 9999;
-            display: flex; flex-direction: column;
-            transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .news-modal.active { transform: translateY(0); }
         
-        .modal-header {
-            padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;
-            background: rgba(255,255,255,0.95); border-bottom: 1px solid rgba(0,0,0,0.1);
-            backdrop-filter: blur(10px);
-        }
-        .close-news-btn {
-            background: rgba(0,0,0,0.05); border: none; width: 32px; height: 32px; border-radius: 50%;
-            font-size: 18px; display: flex; align-items: center; justify-content: center; cursor: pointer;
-        }
-        .open-ext-btn {
-            color: var(--accent-color); font-weight: 600; font-size: 13px; text-decoration: none;
-        }
-        .news-iframe { flex: 1; border: none; width: 100%; height: 100%; background: #fff; }
-        
+        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, #f9f9f9 10px, #f9f9f9 20px); cursor: default; }
+        .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
+        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
+        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; transform: translateY(2px); }
     </style>
 </head>
 <body>
@@ -232,15 +205,6 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <div id="newsModal" class="news-modal">
-        <div class="modal-header">
-            <button class="close-news-btn" onclick="closeNews()">✕</button>
-            <span style="font-weight:600; font-size:14px;">Xem tin tức</span>
-            <a id="extLink" href="#" target="_blank" class="open-ext-btn">Mở Web ↗️</a>
-        </div>
-        <iframe id="newsFrame" class="news-iframe" src=""></iframe>
-    </div>
-
     <script>
         Telegram.WebApp.expand();
         window.addEventListener('load', function() {
@@ -248,36 +212,14 @@ DIGEST_HTML_TEMPLATE = """
             Telegram.WebApp.ready();
         });
 
-        // --- HÀM XEM TIN MỚI ---
+        // --- HÀM MỞ LINK CƠ BẢN NHẤT ---
         function viewNews(url) {
-            const modal = document.getElementById('newsModal');
-            const frame = document.getElementById('newsFrame');
-            const extLink = document.getElementById('extLink');
-            
-            // Set link cho iframe và nút mở ngoài
-            frame.src = url;
-            extLink.href = url;
-            extLink.onclick = function() { Telegram.WebApp.openLink(url); return false; }; // Dùng SDK để mở ngoài an toàn hơn
-            
-            // Hiện modal
-            modal.classList.add('active');
-            Telegram.WebApp.BackButton.show();
-            Telegram.WebApp.BackButton.onClick(closeNews);
+            // Mở link bằng trình duyệt mặc định (Safari/Chrome)
+            // Đảm bảo hoạt động 100% trên mọi thiết bị
+            Telegram.WebApp.openLink(url);
         }
 
-        function closeNews() {
-            const modal = document.getElementById('newsModal');
-            const frame = document.getElementById('newsFrame');
-            
-            modal.classList.remove('active');
-            // Xóa src để dừng load/âm thanh nếu có
-            setTimeout(() => { frame.src = ''; }, 300);
-            
-            Telegram.WebApp.BackButton.hide();
-            Telegram.WebApp.BackButton.offClick(closeNews);
-        }
-
-        // Hàm toggle cũ
+        // Hàm toggle view cũ
         function toggleSection(cardId, btn, total, limit) {
             const card = document.getElementById(cardId);
             const hiddenItems = card.querySelectorAll('.hidden-item');
@@ -306,10 +248,7 @@ DIGEST_HTML_TEMPLATE = """
 
         const style = document.createElement('style');
         style.innerHTML = `
-            @keyframes fadeIn {
-                from { opacity: 0; transform: translateY(-5px); }
-                to { opacity: 1; transform: translateY(0); }
-            }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
         `;
         document.head.appendChild(style);
     </script>

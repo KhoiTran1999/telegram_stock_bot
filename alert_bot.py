@@ -7336,7 +7336,7 @@ async def run_telegram_processing():
         
     # Giữ cho các task của tg_app (như job_queue) được chạy
     # Đây là nơi đúng để dùng Event().wait()
-    await asyncio.Event().wait() 
+    # await asyncio.Event().wait() 
 
 async def asgi_wrapper_app(scope, receive, send):
     """
@@ -7642,9 +7642,7 @@ async def main():
         run_telegram_processing(),
     )
 
-if __name__ == "__main__":
-    log.info("🚀 Khởi động bot đa người dùng + Flask keepalive (Render Web Service)...")
-    asyncio.run(main())
+
 if __name__ == "__main__":
     log.info("🚀 Khởi động bot đa người dùng + Flask keepalive (Render Web Service)...")
     asyncio.run(main())
