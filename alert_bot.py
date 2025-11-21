@@ -2533,13 +2533,11 @@ _vci_blocked_date = None
 # ==============================================
 # SMART DATA FETCHER (Final Version: Circuit Breaker + TCBS 1m/1D)
 # ==============================================
+
 async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
     """
-    Hàm Async lấy dữ liệu thông minh (VCI Snapshot -> Fallback TCBS 1 phút).
-    Cập nhật: 
-    - Xử lý VN30F1M = 0 từ VCI.
-    - Dùng nến 1m của TCBS để có giá sát thực tế nhất.
-    - Tự động fix lỗi đơn vị giá (x1000) của TCBS.
+    [UPDATED] Smart Fetcher: VCI PriceBoard -> Fallback TCBS.
+    Tự động chuẩn hóa đơn vị giá (nếu < 500 đồng -> nhân 1000) để tránh lệch số.
     """
     global _vci_blocked_date
     
@@ -2548,11 +2546,18 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
     now = datetime.datetime.now(vn_tz)
     today_date = now.date()
 
+    # Helper: Chuẩn hóa giá (x1000 nếu cần)
+    def _norm_price(p):
+        if p is None: return 0.0
+        p = float(p)
+        if 0 < p < 500: return p * 1000.0
+        return p
+
     # 1. KIỂM TRA TRẠNG THÁI VCI
     skip_vci = (_vci_blocked_date == today_date)
 
     if not skip_vci:
-        # --- THỬ NGUỒN VCI (Ưu tiên vì nhanh) ---
+        # --- NGUỒN 1: VCI (BATCH - NHANH NHẤT) ---
         try:
             def _run_vci():
                 t = Trading(source="VCI")
@@ -2566,19 +2571,15 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
             if df is not None and not df.empty:
                 for _, row in df.iterrows():
                     try:
-                        # Parse MultiIndex an toàn
-                        sym = str(row.get(('listing', 'symbol'))).upper().strip()
-                        match_p = float(row.get(('match', 'match_price'), 0))
-                        ref_p = float(row.get(('listing', 'ref_price'), 0))
+                        sym = str(row.get(('listing', 'symbol'), row.get('symbol'))).upper().strip()
                         
-                        # [FIX QUAN TRỌNG] Nếu VCI trả về 0 (thường gặp ở Phái sinh), dùng tham chiếu
-                        # Hoặc nếu muốn chính xác tuyệt đối: bỏ qua để Fallback sang TCBS
-                        if match_p == 0:
-                            if ref_p > 0:
-                                match_p = ref_p 
-                            else:
-                                # Nếu cả khớp và tham chiếu đều 0/lỗi -> Bỏ qua để TCBS xử lý
-                                continue
+                        # Lấy giá & chuẩn hóa ngay lập tức
+                        match_p = _norm_price(row.get(('match', 'match_price')))
+                        ref_p = _norm_price(row.get(('listing', 'ref_price')))
+                        
+                        # Nếu giá khớp = 0 (đầu phiên), dùng tham chiếu tạm
+                        if match_p == 0 and ref_p > 0:
+                            match_p = ref_p
 
                         pct = 0.0
                         if ref_p > 0:
@@ -2587,8 +2588,6 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
                         results[sym] = {"price": match_p, "pct": pct, "ref": ref_p}
                     except: continue
                 
-                # Nếu lấy đủ số lượng mã yêu cầu thì trả về luôn
-                # Nếu thiếu (do VCI lỗi 1 vài mã), code sẽ chạy tiếp xuống TCBS để bù vào
                 if len(results) == len(symbols):
                     return results
                 
@@ -2599,14 +2598,12 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
             log.warning(f"[SMART] ❌ VCI lỗi: {e}. Chuyển sang TCBS.")
             _vci_blocked_date = today_date
 
-    # --- NGUỒN DỰ PHÒNG: TCBS (Dùng Nến 1 Phút) ---
-    # Chạy khi VCI lỗi, timeout, bị chặn, hoặc thiếu mã
+    # --- NGUỒN 2: TCBS (FALLBACK - CHẬM HƠN) ---
     missing_symbols = [s for s in symbols if s not in results]
     if not missing_symbols:
         return results
 
     try:
-        # Lấy data 2 ngày gần nhất để đảm bảo có nến (phòng trường hợp đầu phiên sáng sớm)
         today_str = today_date.strftime("%Y-%m-%d")
         start_str = (today_date - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
         
@@ -2615,35 +2612,21 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
             for sym in syms_to_run:
                 try:
                     quote = Quote(symbol=sym, source="TCBS")
-                    # [UPDATE] Dùng interval='1m' thay vì '1D'
+                    # Dùng nến 1m để lấy giá tươi nhất
                     df = quote.history(start=start_str, end=today_str, interval="1m")
                     
                     if df is not None and not df.empty:
-                        # Lấy cây nến cuối cùng (mới nhất)
                         last_row = df.iloc[-1]
                         
-                        # Giá hiện tại (Close của nến phút cuối)
-                        current_price = float(last_row['close'])
+                        # Lấy giá & chuẩn hóa
+                        current_price = _norm_price(last_row['close'])
                         
-                        # [FIX] Xử lý đơn vị giá (TCBS trả về 27.25 -> 27250)
-                        if current_price < 500: 
-                            current_price *= 1000
-
-                        # Để tính % thay đổi, ta cần giá tham chiếu.
-                        # Với nến 1m, khó lấy tham chiếu chính xác. 
-                        # Cách tạm thời: Lấy giá open của ngày hoặc nến đầu tiên trong ngày.
-                        # Tuy nhiên, để đơn giản và nhanh: ta tính pct dựa trên biến động nến cuối
-                        # Hoặc chấp nhận pct = 0 nếu không có ref chuẩn.
-                        # Ở đây mình giả lập ref_price bằng giá đóng cửa cây nến liền trước đó (nếu có)
-                        
-                        ref_price = current_price # Default
+                        # Giả lập tham chiếu từ nến trước (để tính %)
+                        ref_price = current_price
                         if len(df) >= 2:
-                            prev_close = float(df.iloc[-2]['close'])
-                            if prev_close < 500: prev_close *= 1000
+                            prev_close = _norm_price(df.iloc[-2]['close'])
                             ref_price = prev_close
                         
-                        # Tính % (So với nến phút trước - Biến động tức thời)
-                        # Lưu ý: Đây không phải % so với tham chiếu ngày, nhưng đủ để bot alert biến động
                         pct = 0.0
                         if ref_price > 0:
                             pct = ((current_price - ref_price) / ref_price) * 100.0
@@ -2652,7 +2635,6 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
                 except: continue
             return tcbs_results
 
-        # Chạy TCBS trong thread
         tcbs_data = await asyncio.to_thread(_run_tcbs_1m_fallback, missing_symbols)
         results.update(tcbs_data)
                 
@@ -3680,15 +3662,18 @@ async def vn30f1m_alert_loop():
 
 async def vn30f1m_price_fetcher_loop():
     """
-    (Tác vụ 1: Fetcher VN30F1M - Dedicated Quote Mode)
-    Sử dụng Quote History 1m của VCI để đảm bảo lấy giá khớp lệnh mới nhất,
-    tránh lỗi snapshot của price_board.
+    (Tác vụ 1: Fetcher VN30F1M - Hybrid Mode)
+    - Giá Hiện tại: Dùng Quote History 1m (Chính xác realtime, không bị delay/cache).
+    - Giá Tham chiếu: Dùng Price Board (Chính xác theo sàn).
+    - Anchor khởi tạo: LUÔN LẤY GIÁ THAM CHIẾU (nếu có) để so sánh nhịp đầu tiên.
     """
     global _vn30f1m_current_price_cache, _vn30f1m_anchor, _vn30f1m_ref_price
-    vn_tz = pytz.timezone(TIMEZONE)
-    FETCH_INTERVAL = 20  # Tốc độ fetch nhanh (20s) vì phái sinh biến động mạnh
+    global stock_trading # Sử dụng trading object toàn cục để gọi price_board
     
-    log.info(f"[{INSTANCE_ID}][VN30F1M] Bắt đầu (Mode: Quote History 1m - VCI)...")
+    vn_tz = pytz.timezone(TIMEZONE)
+    FETCH_INTERVAL = 5
+    
+    log.info(f"[{INSTANCE_ID}][VN30F1M] Bắt đầu (Hybrid: Quote 1m + Board Ref)...")
 
     while True:
         loop_start = datetime.datetime.now(vn_tz)
@@ -3698,6 +3683,7 @@ async def vn30f1m_price_fetcher_loop():
                 continue
                 
             if not in_session_vietnam():
+                # ... (Logic ngủ ngoài giờ) ...
                 now = datetime.datetime.now(vn_tz)
                 next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
                 if now >= next_open: next_open += datetime.timedelta(days=1)
@@ -3707,62 +3693,60 @@ async def vn30f1m_price_fetcher_loop():
                 await asyncio.sleep(sleep_seconds)
                 continue
 
-            # --- LOGIC MỚI: Dùng Quote History ---
             today_str = loop_start.strftime('%Y-%m-%d')
             
-            def _fetch_vn30_direct():
-                # 1. Lấy giá hiện tại (Nến 1 phút mới nhất)
+            def _fetch_hybrid():
+                # 1. Lấy Giá Hiện Tại từ Quote History (Nến 1 phút) - Rất nhạy
                 q = Quote(symbol=VN30F1M_SYMBOL, source='VCI')
                 df_now = q.history(start=today_str, end=today_str, interval='1m')
                 
                 price_now = None
-                price_ref = None
-                
                 if df_now is not None and not df_now.empty:
-                    # Giá hiện tại = Close của cây nến phút cuối cùng
                     price_now = float(df_now.iloc[-1]['close'])
                 
-                # 2. Lấy giá tham chiếu (Nếu chưa có trong RAM)
-                # Chỉ gọi khi cần thiết để tiết kiệm API
-                if _vn30f1m_ref_price is None:
-                    start_d = (loop_start - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
-                    df_day = q.history(start=start_d, end=today_str, interval='1D')
-                    if df_day is not None and len(df_day) >= 2:
-                        # Tham chiếu = Close của ngày hôm qua (dòng áp chót)
-                        # Dòng cuối là hôm nay (đang chạy), dòng áp chót là hôm qua
-                        price_ref = float(df_day.iloc[-2]['close'])
-                    elif df_day is not None and len(df_day) == 1:
-                         # Trường hợp ngày đầu tiên lên sàn hoặc dữ liệu thiếu, tạm lấy open
-                         price_ref = float(df_day.iloc[0]['open'])
+                # 2. Lấy Giá Tham Chiếu từ Price Board (Nếu chưa có) - Rất chuẩn
+                price_ref = None
+                if _vn30f1m_ref_price is None and stock_trading:
+                    try:
+                        # Gọi price_board chỉ để lấy Ref (nhẹ)
+                        pb_df = stock_trading.price_board([VN30F1M_SYMBOL])
+                        if pb_df is not None and not pb_df.empty:
+                            row = pb_df.iloc[0]
+                            val = row.get(('listing', 'ref_price')) or row.get('ref_price')
+                            if val:
+                                price_ref = float(val)
+                    except Exception as e:
+                        log.warning(f"[VN30F1M] Lỗi lấy Ref từ Board: {e}")
 
                 return price_now, price_ref
 
-            # Chạy trong thread để không block bot
-            current_p, ref_p = await asyncio.to_thread(_fetch_vn30_direct)
+            # Chạy trong thread
+            current_p, ref_p = await asyncio.to_thread(_fetch_hybrid)
 
             # Cập nhật Cache
             if current_p is not None:
                 _vn30f1m_current_price_cache = current_p
                 
-                # Cập nhật Tham Chiếu (chỉ set 1 lần trong ngày)
+                # Cập nhật Tham Chiếu (ưu tiên lấy từ Board)
                 if _vn30f1m_ref_price is None and ref_p is not None:
                     _vn30f1m_ref_price = ref_p
-                    log.info(f"[{INSTANCE_ID}][VN30F1M] ⛳ Ref Price Set (Quote 1D): {ref_p}")
+                    log.info(f"[{INSTANCE_ID}][VN30F1M] ⛳ Ref Price Set (PriceBoard): {ref_p}")
                 
-                # Cập nhật Anchor khởi tạo
+                # --- [THAY ĐỔI QUAN TRỌNG TẠI ĐÂY] ---
+                # Anchor khởi tạo: Ưu tiên lấy REF PRICE
                 if _vn30f1m_anchor is None:
-                    _vn30f1m_anchor = current_p if current_p else ref_p
-
-            else:
-                # Log nhẹ nếu không lấy được data (để debug)
-                # log.warning(f"[{INSTANCE_ID}][VN30F1M] Quote 1m trả về rỗng.")
-                pass
+                    if _vn30f1m_ref_price is not None:
+                        _vn30f1m_anchor = _vn30f1m_ref_price
+                        log.info(f"[{INSTANCE_ID}][VN30F1M] ⚓ Anchor khởi tạo theo THAM CHIẾU: {_vn30f1m_anchor}")
+                    else:
+                        # Fallback: Nếu chưa lấy được tham chiếu thì mới dùng giá hiện tại
+                        _vn30f1m_anchor = current_p
+                        log.info(f"[{INSTANCE_ID}][VN30F1M] ⚓ Anchor khởi tạo theo GIÁ HIỆN TẠI (do thiếu Ref): {_vn30f1m_anchor}")
 
         except Exception as e:
             log.error(f"[{INSTANCE_ID}][VN30F1M] Lỗi Loop: {e}")
             await asyncio.sleep(5)
         
-        # Giữ nhịp fetch
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(1, FETCH_INTERVAL - elapsed)
         await asyncio.sleep(delay)
