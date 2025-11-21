@@ -1226,67 +1226,49 @@ EOD_HTML_TEMPLATE = r"""
             --text-color: var(--tg-theme-text-color, #000);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
-            
-            --up-color: #34c759;   
-            --down-color: #ff3b30; 
-            --ref-color: #ffcc00;  
+            --up-color: #34c759; --down-color: #ff3b30; --ref-color: #ffcc00;
         }
         
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: var(--bg-color); 
-            color: var(--text-color); 
-            margin: 0; padding: 20px 16px 40px 16px; 
-            font-size: 14px; line-height: 1.5; 
-            visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
-        }
-        body.loaded { visibility: visible; opacity: 1; }
-
-        .header { text-align: center; margin-bottom: 24px; }
-        .header-title { 
-            font-size: 24px; font-weight: 800; margin: 0; 
-            color: var(--text-color);
-        }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; }
+        
+        .header { text-align: center; margin-bottom: 20px; }
+        .header-title { font-size: 24px; font-weight: 800; margin: 0; }
         .header-sub { font-size: 13px; color: var(--hint-color); margin-top: 4px; }
 
-        .section-card { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); padding: 8px 0; }
-        
-        .p-item { 
-            display: flex; justify-content: space-between; align-items: center; 
-            padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); 
+        /* --- AI CARD --- */
+        .ai-card { 
+            background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%); 
+            border-left: 4px solid #007aff; border-radius: 16px; 
+            padding: 16px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,122,255,0.1); 
         }
+        .ai-title { font-size: 14px; font-weight: 700; color: #007aff; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+        .ai-content { font-size: 14px; color: #334155; white-space: pre-line; }
+
+        /* --- MARKET GRID --- */
+        .market-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .m-card { background-color: var(--card-bg); border-radius: 16px; padding: 12px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+        .m-label { font-size: 11px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; }
+        .m-val { font-size: 18px; font-weight: 800; margin: 4px 0; }
+        .m-change { font-size: 12px; font-weight: 600; }
+        
+        .t-up { color: var(--up-color); } .t-down { color: var(--down-color); } .t-ref { color: var(--ref-color); }
+
+        /* --- STOCK LIST --- */
+        .section-card { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); padding: 8px 0; }
+        .p-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .p-item:last-child { border-bottom: none; }
         
-        .col-left { display: flex; flex-direction: column; }
-        .p-sym { font-size: 17px; font-weight: 800; color: var(--text-color); }
-        .p-market { font-size: 11px; color: var(--hint-color); font-weight: 500; margin-top: 2px; }
-
-        .col-right { text-align: right; }
-        
-        /* Dòng 1: Giá & % */
+        .p-sym { font-size: 17px; font-weight: 800; }
+        .p-market { font-size: 11px; color: var(--hint-color); }
         .line-top { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 6px; }
         .p-price { font-size: 16px; font-weight: 600; }
-        
-        .p-badge { 
-            font-size: 13px; font-weight: 700; 
-            padding: 4px 10px; border-radius: 6px; 
-            min-width: 60px; text-align: center; display: inline-block;
-        }
-
-        /* Dòng 2: KL & Giá trị */
-        .line-bottom { font-size: 12px; color: var(--hint-color); font-weight: 500; display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
-        .val-icon { font-size: 12px; margin-right: 2px; }
+        .p-badge { font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 6px; min-width: 60px; text-align: center; }
+        .line-bottom { font-size: 12px; color: var(--hint-color); display: flex; gap: 12px; justify-content: flex-end; }
         .val-text { color: var(--text-color); font-weight: 600; }
 
-        /* Màu sắc text */
-        .t-up { color: var(--up-color); }
-        .t-down { color: var(--down-color); }
-        .t-ref { color: #d4a017; }
-
-        /* Màu nền badge */
-        .bg-up { background-color: rgba(52, 199, 89, 0.15); color: var(--up-color); }
-        .bg-down { background-color: rgba(255, 59, 48, 0.15); color: var(--down-color); }
-        .bg-ref { background-color: rgba(255, 204, 0, 0.15); color: #d4a017; }
+        .bg-up { background: rgba(52,199,89,0.15); color: var(--up-color); }
+        .bg-down { background: rgba(255,59,48,0.15); color: var(--down-color); }
+        .bg-ref { background: rgba(255,204,0,0.15); color: #d4a017; }
 
         .footer-btn { display: block; width: 100%; padding: 14px; background-color: var(--text-color); color: var(--bg-color); border: none; border-radius: 14px; font-size: 15px; font-weight: 700; margin-top: 24px; cursor: pointer; }
     </style>
@@ -1294,24 +1276,46 @@ EOD_HTML_TEMPLATE = r"""
 <body>
     <div class="header">
         <div class="header-title">Danh Mục EOD</div>
-        <div class="header-sub">Dữ liệu chốt phiên (Quote History 1D)</div>
+        <div class="header-sub">Dữ liệu chốt phiên {{ generated_at }}</div>
     </div>
+
+    {% if market_data and market_data.ai_comment %}
+    <div class="ai-card">
+        <div class="ai-title">🧠 GÓC NHÌN AI (GEMINI)</div>
+        <div class="ai-content">{{ market_data.ai_comment }}</div>
+    </div>
+    {% endif %}
+
+    {% if market_data %}
+    <div class="market-grid">
+        <div class="m-card">
+            <div class="m-label">VN-INDEX</div>
+            <div class="m-val {{ market_data.vnindex.cls }}">{{ market_data.vnindex.price }}</div>
+            <div class="m-change {{ market_data.vnindex.cls }}">{{ market_data.vnindex.change_str }}</div>
+        </div>
+        <div class="m-card">
+            <div class="m-label">VN30</div>
+            <div class="m-val {{ market_data.vn30.cls }}">{{ market_data.vn30.price }}</div>
+            <div class="m-change {{ market_data.vn30.cls }}">{{ market_data.vn30.change_str }}</div>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="section-card">
         {% for s in user_stocks %}
         <div class="p-item">
-            <div class="col-left">
+            <div>
                 <div class="p-sym">{{ s.symbol }}</div>
                 <div class="p-market">HOSE</div>
             </div>
-            <div class="col-right">
+            <div style="text-align: right;">
                 <div class="line-top">
                     <span class="p-price {{ s.text_cls }}">{{ s.price }}</span>
                     <span class="p-badge {{ s.bg_cls }}">{{ s.pct }}%</span>
                 </div>
                 <div class="line-bottom">
                     <span>KL: {{ s.vol_str }}</span>
-                    <span><span class="val-icon">💰</span> <span class="val-text">{{ s.val_str }}</span></span>
+                    <span>💰 <span class="val-text">{{ s.val_str }}</span></span>
                 </div>
             </div>
         </div>
@@ -1319,18 +1323,10 @@ EOD_HTML_TEMPLATE = r"""
     </div>
 
     <button class="footer-btn" onclick="Telegram.WebApp.close()">Đóng</button>
-
-    <script>
-        Telegram.WebApp.expand();
-        window.addEventListener('load', function() {
-            document.body.classList.add('loaded');
-            Telegram.WebApp.ready();
-        });
-    </script>
+    <script>Telegram.WebApp.expand();</script>
 </body>
 </html>
 """
-
 
 EOD_404_TEMPLATE = r"""
 <!DOCTYPE html>

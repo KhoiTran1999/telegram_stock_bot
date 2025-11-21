@@ -852,8 +852,7 @@ async def fetch_full_eod_data(symbols):
 
 async def send_eod_summary():
     """
-    [UPDATED] Gửi Tổng kết cuối phiên (EOD).
-    Dùng fetch_full_eod_data để có Giá, %, Vol, Value chính xác.
+    [UPDATED V2] Gửi Tổng kết cuối phiên (EOD) + AI Insight + Market Data.
     """
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -861,30 +860,86 @@ async def send_eod_summary():
     
     log.info(f"[{INSTANCE_ID}][EOD] 🚀 Bắt đầu quy trình EOD Summary {today_str}...")
 
-    # 1. Lấy danh sách User
+    # --- 1. LẤY DỮ LIỆU INDEX (VNINDEX, VN30) ---
+    # Hàm này dùng để AI phân tích xu hướng chung
+    def _get_index_data(symbol):
+        try:
+            q = Quote(symbol=symbol, source='VCI')
+            # Lấy 3 ngày để tính change chuẩn
+            df = q.history(start=(now - datetime.timedelta(days=5)).strftime('%Y-%m-%d'), 
+                           end=now.strftime('%Y-%m-%d'), interval='1D')
+            if df is None or len(df) < 2: return None
+            
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            
+            price = float(last['close'])
+            change = price - float(prev['close'])
+            pct = (change / float(prev['close'])) * 100
+            volume = float(last['volume'])
+            
+            # Format màu sắc
+            cls = "t-ref"
+            if change > 0: cls = "t-up"
+            elif change < 0: cls = "t-down"
+            
+            sign = "+" if change > 0 else ""
+            
+            return {
+                "price": f"{price:,.2f}",
+                "change_str": f"{sign}{change:,.2f} ({sign}{pct:.2f}%)",
+                "vol_str": f"{volume/1_000_000:.1f}M", # Triệu cổ phiếu
+                "cls": cls,
+                # Dữ liệu thô cho AI đọc
+                "raw_price": price,
+                "raw_change": change,
+                "raw_vol": volume
+            }
+        except Exception as e:
+            log.warning(f"Lỗi lấy index {symbol}: {e}")
+            return None
+
+    # Chạy song song lấy Index
+    vni_task = asyncio.to_thread(_get_index_data, 'VNINDEX')
+    v30_task = asyncio.to_thread(_get_index_data, 'VN30')
+    vni_data, v30_data = await asyncio.gather(vni_task, v30_task)
+
+    # Chuẩn bị dữ liệu cho AI (market_data)
+    market_data = {
+        "vnindex": vni_data if vni_data else {"price": "---", "change_str": "---", "cls": "t-ref"},
+        "vn30": v30_data if v30_data else {"price": "---", "change_str": "---", "cls": "t-ref"}
+    }
+
+    # --- 2. GỌI AI INSIGHT ---
+    ai_comment = "Thị trường đang biến động. Hãy quan sát kỹ dòng tiền."
+    if vni_data: # Chỉ gọi AI nếu có dữ liệu Index
+        try:
+            # Gọi hàm AI với dữ liệu thị trường vừa lấy
+            ai_comment = await call_gemini_eod_insight(market_data)
+        except Exception as e:
+            log.error(f"[EOD] Lỗi gọi AI: {e}")
+
+    # Thêm comment vào market_data để gửi xuống template
+    market_data["ai_comment"] = ai_comment
+
+    # --- 3. LẤY DANH SÁCH CỔ PHIẾU USER ---
     try:
         all_watch = await asyncio.to_thread(get_all_watch)
         if not all_watch: return
     except Exception: return
 
-    # 2. Gom mã (chỉ lấy 3 chữ cái)
     all_symbols = set()
     for block in all_watch.values():
         for s in block.get("list", []):
-            s_clean = str(s).upper().strip()
-            if len(s_clean) == 3: # Chỉ lấy mã cổ phiếu, bỏ index VN30...
-                all_symbols.add(s_clean)
+            if len(str(s)) == 3: all_symbols.add(str(s).upper())
     
     if not all_symbols: return
 
-    # 3. Fetch dữ liệu FULL (Giá, %, Vol, Value)
-    # Hàm này trả về list các dict đã format sẵn
+    # Fetch dữ liệu cổ phiếu (Hàm fetch_full_eod_data bạn đã có)
     stock_data_list = await fetch_full_eod_data(list(all_symbols))
-    
-    # Chuyển list thành dict để map nhanh: { "HPG": {...data...} }
     stock_map = { item['symbol']: item for item in stock_data_list }
 
-    # 4. Gửi tin
+    # --- 4. GỬI TIN ---
     base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
     tasks = []
 
@@ -894,8 +949,6 @@ async def send_eod_summary():
             watch_list = block.get("list", [])
             if not watch_list: continue
 
-            # ... (Giữ nguyên logic lọc mã user_stocks_ready) ...
-            # Lọc ra các mã của user có trong dữ liệu đã fetch
             user_stocks_ready = []
             for sym in watch_list:
                 sym_u = str(sym).upper()
@@ -904,8 +957,9 @@ async def send_eod_summary():
             
             if not user_stocks_ready: continue
 
-            # Payload cho Template mới
+            # Payload đầy đủ: Market (Index + AI) + Stocks
             payload = {
+                "market_data": market_data,  # <--- ĐÃ THÊM LẠI
                 "user_stocks": user_stocks_ready,
                 "generated_at": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m"),
             }
@@ -920,17 +974,16 @@ async def send_eod_summary():
                 InlineKeyboardButton("📊 Xem Tổng Kết Phiên", web_app=WebAppInfo(url=web_app_url))
             ]])
             
+            # Tiêu đề tin nhắn kèm chỉ số VNINDEX nhanh
+            vni_text = f"VN-INDEX: {market_data['vnindex']['price']} {market_data['vnindex']['change_str']}"
             msg_text = (
                 f"🇻🇳 *Tổng kết phiên {today_str}*\n"
-                f"Dữ liệu chốt phiên đã sẵn sàng.\n"
+                f"{vni_text}\n"
                 f"👉 Nhấn nút bên dưới để xem chi tiết."
             )
             
-            # --- [THAY ĐỔI Ở ĐÂY] ---
-            # 1. Gửi tin nhắn
             sent_msg = await send_md(tg_app.bot, chat_id, msg_text, reply_markup=kb, msg_type='EOD_SUMMARY')
             
-            # 2. Ghim tin nhắn này (Pin thêm vào danh sách)
             if sent_msg:
                 try:
                     await tg_app.bot.pin_chat_message(
@@ -938,10 +991,9 @@ async def send_eod_summary():
                         message_id=sent_msg.message_id,
                         disable_notification=True
                     )
-                except Exception as e:
-                    log.warning(f"[{INSTANCE_ID}] Lỗi ghim EOD cho {chat_id}: {e}")
+                except Exception: pass
             
-            tasks.append(asyncio.create_task(asyncio.sleep(0))) # Dummy task để giữ cấu trúc cũ nếu cần, hoặc bỏ qua
+            tasks.append(asyncio.create_task(asyncio.sleep(0)))
 
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}][EOD] Lỗi gửi cho {chat_key}: {e}")
@@ -949,9 +1001,8 @@ async def send_eod_summary():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
         
-    log.info(f"[{INSTANCE_ID}][EOD] ✅ Đã gửi EOD Mới cho {len(tasks)} users.")
+    log.info(f"[{INSTANCE_ID}][EOD] ✅ Đã gửi EOD (có AI) cho {len(tasks)} users.")
     
-    # Dọn dẹp tin cũ sau 10s
     await asyncio.sleep(10)
     asyncio.create_task(cleanup_after_eod())
 
