@@ -172,12 +172,60 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("bot")
 log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
 
-# Thiết lập Gemini API cho báo cáo danh mục
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    log.warning(
-        "⚠️ GEMINI_API_KEY chưa được cấu hình – chức năng báo cáo tuần và /report sẽ không hoạt động."
-    )
+# ==============================================
+# CẤU HÌNH GEMINI MULTI-KEY (CHÍNH/PHỤ)
+# ==============================================
+# Lấy danh sách key từ môi trường, lọc bỏ key rỗng
+_k1 = os.getenv("GEMINI_API_KEY")
+_k2 = os.getenv("GEMINI_API_KEY_2")
+
+GEMINI_KEYS = [k for k in [_k1, _k2] if k]
+
+# Giữ biến này để tương thích với các đoạn check cũ (True nếu có ít nhất 1 key)
+GEMINI_API_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else None
+
+if not GEMINI_KEYS:
+    log.warning("⚠️ CHƯA CẤU HÌNH GEMINI_API_KEY nào cả! Các tính năng AI sẽ không hoạt động.")
+else:
+    log.info(f"[{INSTANCE_ID}] Đã cấu hình {len(GEMINI_KEYS)} API Key cho Gemini.")
+
+# --- HÀM WRAPPER GỌI GEMINI AN TOÀN (Tự động đổi key) ---
+def call_gemini_safe(model_id: str, contents: str, config: dict = None) -> str:
+    """
+    Hàm gọi Gemini có cơ chế Failover:
+    - Thử Key 1 -> Nếu lỗi -> Thử Key 2 -> ...
+    - Trả về text kết quả hoặc raise Exception nếu tất cả đều lỗi.
+    """
+    last_error = None
+    
+    for i, api_key in enumerate(GEMINI_KEYS):
+        try:
+            # Khởi tạo client với key hiện tại
+            client = genai.Client(api_key=api_key)
+            
+            # Gọi API (Sync)
+            resp = client.models.generate_content(
+                model=model_id,
+                contents=contents,
+                config=config
+            )
+            
+            text = getattr(resp, "text", "").strip()
+            if not text:
+                raise ValueError("Gemini trả về nội dung rỗng.")
+                
+            return text
+
+        except Exception as e:
+            # Che giấu key khi log để bảo mật
+            masked_key = api_key[:5] + "..." + api_key[-4:]
+            log.warning(f"[{INSTANCE_ID}] ⚠️ Gemini Key {i+1} ({masked_key}) gặp lỗi: {e}. Đang thử key tiếp theo...")
+            last_error = e
+            continue # Chuyển sang key tiếp theo trong vòng lặp
+            
+    # Nếu chạy hết vòng lặp mà vẫn không được
+    log.error(f"[{INSTANCE_ID}] ❌ TẤT CẢ GEMINI KEYS ĐỀU THẤT BẠI.")
+    raise last_error
 
 # Lấy Token bảo mật của SePay từ .env
 SEPAY_TOKEN = os.getenv("SEPAY_TOKEN")
@@ -720,10 +768,10 @@ async def broadcast_to_all_watchers(text: str, target_audience: str = 'pro', msg
 
 async def call_gemini_eod_insight(market_data: dict) -> str:
     """
-    Gọi Gemini nhận định thị trường cuối ngày (1 lần duy nhất).
+    Gọi Gemini nhận định thị trường cuối ngày (Multi-Key Support).
     Trả về JSON string chứa field 'ai_comment'.
     """
-    if not GEMINI_API_KEY:
+    if not GEMINI_KEYS:
         return "AI chưa được cấu hình."
 
     prompt = f"""
@@ -749,19 +797,20 @@ async def call_gemini_eod_insight(market_data: dict) -> str:
 """
     
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model="gemini-2.5-flash-lite",
+        # SỬ DỤNG call_gemini_safe TRONG THREAD
+        text = await asyncio.to_thread(
+            call_gemini_safe,
+            model_id="gemini-2.5-flash-lite",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
-        text = getattr(resp, "text", "")
+        
         if text:
             data = json.loads(text)
             return data.get("ai_comment", "")
+            
     except Exception as e:
-        log.error(f"[EOD] Lỗi Gemini: {e}")
+        log.error(f"[EOD] Lỗi Gemini Multi-Key: {e}")
         
     return "Thị trường biến động. Hãy quan sát kỹ dòng tiền."
 
@@ -1471,14 +1520,12 @@ def generate_injected_prompt(user_symbols, metrics_map):
     return "\n".join(lines)
 
 
-# Trong file alert_bot.py
-
 def call_chatgpt_for_report(symbols: list[str]) -> str:
     """
-    (PHIÊN BẢN JSON - DATA INJECTION - OPTIMIZED PROMPT)
-    Gọi Gemini tạo báo cáo danh mục, có bơm dữ liệu P/E, P/B, ROE thực tế từ Redis.
+    (PHIÊN BẢN JSON - DATA INJECTION - MULTI-KEY)
+    Gọi Gemini tạo báo cáo danh mục, tự động chuyển key nếu lỗi.
     """
-    if not GEMINI_API_KEY:
+    if not GEMINI_KEYS:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
 
     if len(symbols) > 6:
@@ -1542,25 +1589,18 @@ LƯU Ý QUAN TRỌNG:
 4. Giọng văn chuyên nghiệp, khách quan, sắc sảo.
 """
 
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON Mode + Data Injection) cho báo cáo: {symbols_str}")
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model_id = "gemini-2.5-flash-lite"
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Multi-Key) cho báo cáo: {symbols_str}")
 
     try:
-        resp = client.models.generate_content(
-            model=model_id,
+        # GỌI HÀM WRAPPER TRỰC TIẾP (Vì hàm này đã chạy trong to_thread ở lớp ngoài)
+        return call_gemini_safe(
+            model_id="gemini-2.5-flash-lite",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
-        text = getattr(resp, "text", "")
-        if not text:
-            raise RuntimeError("Gemini trả về rỗng.")
-        
-        return text.strip()
 
     except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report JSON: {e}")
+        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report JSON (All keys failed): {e}")
         raise e
 
 # ==============================================
@@ -1569,13 +1609,13 @@ LƯU Ý QUAN TRỌNG:
 
 def call_gemini_for_profile(symbol: str) -> str:
     """
-    (PHIÊN BẢN JSON) Gọi Gemini tạo hồ sơ doanh nghiệp.
+    (PHIÊN BẢN JSON - MULTI-KEY) Gọi Gemini tạo hồ sơ doanh nghiệp.
     """
-    if not GEMINI_API_KEY:
+    if not GEMINI_KEYS:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
 
     sym = symbol.upper().strip()
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (JSON) cho hồ sơ: {sym}")
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Multi-Key) cho hồ sơ: {sym}")
 
     prompt = f"""
 Bạn là chuyên gia phân tích doanh nghiệp tại thị trường chứng khoán Việt Nam.
@@ -1599,19 +1639,13 @@ YÊU CẦU NỘI DUNG:
 - Giọng văn khách quan, KHÔNG khuyến nghị mua bán.
 """
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model_id = "gemini-2.5-flash-lite"
-
     try:
-        resp = client.models.generate_content(
-            model=model_id,
+        # GỌI HÀM WRAPPER TRỰC TIẾP
+        return call_gemini_safe(
+            model_id="gemini-2.5-flash-lite",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
-        text = getattr(resp, "text", "")
-        if not text:
-            raise RuntimeError("Gemini trả về rỗng.")
-        return text.strip()
 
     except Exception as e:
         # log.error(...) -> để hàm gọi bên ngoài lo
