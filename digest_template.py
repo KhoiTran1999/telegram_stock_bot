@@ -320,6 +320,9 @@ DIGEST_404_TEMPLATE = r"""
 """
 
 #--------------------------------
+
+# digest_template.py
+
 PROFILE_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
@@ -328,125 +331,73 @@ PROFILE_HTML_TEMPLATE = r"""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Hồ sơ doanh nghiệp {{ symbol }}</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
+            /* Biến màu mặc định (sẽ được override bởi Telegram Theme) */
             --bg-color: var(--tg-theme-bg-color, #f2f2f7);
             --text-color: var(--tg-theme-text-color, #000);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
-            --border-color: rgba(0, 0, 0, 0.06);
             --accent: var(--tg-theme-button-color, #007aff);
+            --chart-grid: #e5e5ea; /* Màu lưới mặc định sáng */
         }
+        
+        /* Dark Mode Overrides (Telegram tự inject class hoặc biến, ta dùng media query fallback) */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --chart-grid: #3a3a3c; /* Màu lưới tối */
+            }
+        }
+
         * { box-sizing: border-box; }
         
-        /* --- SMOOTH LOADING --- */
         body {
             margin: 0; padding: 16px;
             font-family: 'Inter', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-color);
-            -webkit-font-smoothing: antialiased;
-            
             visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
         }
         body.loaded { visibility: visible; opacity: 1; }
         
         .page { max-width: 720px; margin: 0 auto; }
         
-        /* Header Styles */
+        /* Header */
         .header { margin-bottom: 12px; }
+        .chip-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
+        .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; background: rgba(128,128,128,0.15); font-size: 11px; color: var(--hint-color); font-weight: 600; text-transform: uppercase; }
+        .pro-badge { display: inline-flex; padding: 3px 8px; border-radius: 8px; background: linear-gradient(135deg, #FFD700, #FFA500); color: white; font-size: 10px; font-weight: 800; text-transform: uppercase; }
         
-        .chip-row {
-            display: flex; align-items: center; justify-content: space-between;
-            gap: 8px; margin-bottom: 8px;
-        }
-        .chip {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 4px 10px; border-radius: 20px;
-            background: rgba(0,0,0,0.05);
-            font-size: 11px; color: var(--hint-color);
-            font-weight: 600; text-transform: uppercase;
-        }
-        
-        .pro-badge {
-            display: inline-flex; align-items: center; gap: 4px;
-            padding: 3px 8px; border-radius: 8px;
-            background: linear-gradient(135deg, #FFD700, #FFA500);
-            color: white; font-size: 10px; font-weight: 800;
-            box-shadow: 0 3px 8px rgba(255,165,0,0.3);
-            text-transform: uppercase; letter-spacing: 0.5px;
-            text-shadow: 0 1px 1px rgba(0,0,0,0.1);
-        }
-
         .symbol { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
         .symbol-main { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; color: var(--accent); }
         .symbol-sub { font-size: 13px; color: var(--hint-color); font-weight: 500; }
-        
         .meta { margin-top: 4px; font-size: 11px; color: var(--hint-color); }
 
-        /* Table of Contents */
-        .toc {
-            margin-top: 16px; display: flex; gap: 8px;
-            overflow-x: auto; padding-bottom: 8px;
-            -webkit-overflow-scrolling: touch; scrollbar-width: none;
-        }
-        .toc::-webkit-scrollbar { display: none; }
-        
-        .toc-chip {
-            flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
-            padding: 8px 12px; border-radius: 20px;
-            background: var(--card-bg); border: 1px solid rgba(0,0,0,0.08);
-            font-size: 12px; font-weight: 600; color: var(--text-color);
-            cursor: pointer; transition: all 0.2s ease;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-        }
-        .toc-chip:active { transform: scale(0.96); opacity: 0.8; }
-
-        /* Content Card */
+        /* Card Text */
         .card {
-            background-color: var(--card-bg);
-            border-radius: 16px;
-            padding: 16px; margin-top: 16px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
-            border: 1px solid rgba(0,0,0,0.03);
-            scroll-margin-top: 16px; 
-            /* Animation cho card */
-            animation: fadeInUp 0.4s ease-out; animation-fill-mode: backwards;
+            background-color: var(--card-bg); border-radius: 16px; padding: 16px; margin-top: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03); 
         }
-        .card:nth-child(1) { animation-delay: 0.05s; }
-        .card:nth-child(2) { animation-delay: 0.1s; }
-        .card:nth-child(3) { animation-delay: 0.15s; }
-        
-        .card-title-row {
-            display: flex; align-items: center; gap: 8px;
-            margin-bottom: 12px; padding-bottom: 8px;
-            border-bottom: 1px solid rgba(0,0,0,0.05);
-        }
-        .card-title-icon { font-size: 18px; }
-        .card-title { font-size: 15px; font-weight: 700; text-transform: uppercase; color: var(--text-color); letter-spacing: 0.5px; }
+        .card-title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; border-bottom: 1px solid rgba(128,128,128,0.1); padding-bottom: 8px; }
+        .card-title { font-size: 15px; font-weight: 700; text-transform: uppercase; color: var(--text-color); }
+        .profile-text { font-size: 14px; line-height: 1.6; color: var(--text-color); white-space: pre-line; }
 
-        .profile-text {
-            font-size: 14px; line-height: 1.6; color: var(--text-color);
-            white-space: pre-line; font-weight: 400;
+        /* Chart Card */
+        .chart-card {
+            background-color: var(--card-bg); border-radius: 16px;
+            padding: 16px 0; margin-top: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05); overflow: hidden;
+        }
+        .chart-header { 
+            padding: 0 16px; margin-bottom: 4px; 
+            font-size: 12px; font-weight: 700; text-transform: uppercase; 
+            color: var(--text-color); opacity: 0.8;
         }
 
         /* Footer */
-        .meta-footer { margin-top: 24px; font-size: 11px; color: var(--hint-color); text-align: center; line-height: 1.5; }
-        
-        .footer-btn-container { margin-top: 20px; display: flex; justify-content: center; padding-bottom: 30px; }
-        .close-btn {
-            padding: 12px 32px; border-radius: 12px;
-            background: var(--card-bg); border: none;
-            color: var(--text-color); font-size: 14px; font-weight: 600;
-            cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-        }
-        .close-btn:active { transform: scale(0.98); }
-        
-        @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
+        .close-btn { width: 100%; padding: 12px; margin-top: 30px; border-radius: 12px; background: var(--card-bg); border: none; color: var(--text-color); font-weight: 600; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
@@ -454,78 +405,78 @@ PROFILE_HTML_TEMPLATE = r"""
         <div class="header">
             <div class="chip-row">
                 <div class="chip">Hồ sơ doanh nghiệp</div>
-                {% if is_pro %}
-                <div class="pro-badge">PRO 👑</div>
-                {% endif %}
+                {% if is_pro %}<div class="pro-badge">PRO 👑</div>{% endif %}
             </div>
-            
             <div class="symbol">
                 <div class="symbol-main">{{ symbol }}</div>
                 <div class="symbol-sub">Hồ sơ chi tiết</div>
             </div>
-            
-            {% if generated_at %}
-            <div class="meta">Cập nhật lúc: {{ generated_at }}</div>
-            {% endif %}
-
-            {% if sections %}
-            <div class="toc">
-                {% for sec in sections %}
-                <div class="toc-chip" onclick="scrollToId('{{ sec.id }}')">
-                    <span>{{ sec.icon }} {{ sec.title }}</span>
-                </div>
-                {% endfor %}
-            </div>
-            {% endif %}
+            {% if generated_at %}<div class="meta">Cập nhật lúc: {{ generated_at }}</div>{% endif %}
         </div>
 
         {% for sec in sections %}
-        <div class="card" id="{{ sec.id }}">
+        <div class="card">
             <div class="card-title-row">
-                <div class="card-title-icon">{{ sec.icon }}</div>
+                <span>{{ sec.icon }}</span>
                 <div class="card-title">{{ sec.title }}</div>
             </div>
-            <div class="profile-text">
-                {{ sec.body }}
-            </div>
+            <div class="profile-text">{{ sec.body }}</div>
         </div>
         {% endfor %}
 
-        <div class="meta-footer">
-            <div>Nguồn: Dữ liệu thị trường & BCTC, tổng hợp bởi Gemini AI.</div>
-            {% if report_code %}
-            <div>Ref ID: {{ report_code }}</div>
-            {% endif %}
+        {% if chart_html %}
+        <div class="chart-card" id="chart-container">
+            <div class="chart-header">📉 Biến động giá (6 tháng)</div>
+            {{ chart_html | safe }}
         </div>
+        {% endif %}
 
-        <div class="footer-btn-container">
-            <button class="close-btn" onclick="Telegram.WebApp.close()">Đóng Hồ Sơ</button>
-        </div>
+        <button class="close-btn" onclick="Telegram.WebApp.close()">Đóng Hồ Sơ</button>
     </div>
 
     <script>
         Telegram.WebApp.expand();
 
-        // --- LOGIC SMOOTH LOADING ---
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
             
-            // Format lại text đậm
+            // Format text bold
             const textElements = document.querySelectorAll('.profile-text');
             textElements.forEach(el => {
-                let content = el.innerHTML;
-                content = content.replace(/\*\*(.*?)\*\*/g, '<b style="font-weight: 700; color: var(--text-color);">$1</b>');
-                el.innerHTML = content;
+                el.innerHTML = el.innerHTML.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
             });
+
+            // --- [THEME ADAPTION LOGIC] ---
+            applyChartTheme();
             
-            Telegram.WebApp.ready();
+            // Lắng nghe sự kiện đổi theme của Telegram (nếu có)
+            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
         });
 
-        function scrollToId(id) {
-            const el = document.getElementById(id);
-            if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
+        function applyChartTheme() {
+            // Tìm thẻ div của Plotly (nó thường có class 'plotly-graph-div')
+            const chartDiv = document.querySelector('.plotly-graph-div');
+            if (!chartDiv) return;
+
+            // Lấy màu từ biến CSS của Telegram
+            const style = getComputedStyle(document.body);
+            const textColor = style.getPropertyValue('--tg-theme-text-color').trim() || '#000000';
+            const hintColor = style.getPropertyValue('--tg-theme-hint-color').trim() || '#8e8e93';
+            
+            // Xác định màu Grid dựa trên theme (Telegram.WebApp.colorScheme)
+            const scheme = Telegram.WebApp.colorScheme; // 'light' or 'dark'
+            const gridColor = (scheme === 'dark') ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
+
+            // Update layout Plotly
+            const update = {
+                'font.color': textColor,     // Đổi màu chữ
+                'xaxis.gridcolor': gridColor, // Đổi màu lưới X
+                'yaxis.gridcolor': gridColor, // Đổi màu lưới Y
+                'xaxis.tickfont.color': hintColor,
+                'yaxis.tickfont.color': hintColor
+            };
+
+            Plotly.relayout(chartDiv, update);
         }
     </script>
 </body>

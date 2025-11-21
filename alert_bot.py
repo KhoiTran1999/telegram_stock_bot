@@ -119,6 +119,7 @@ from pathlib import Path
 from google import genai
 import uuid
 import hmac
+from chart_utils import generate_chart_html
 
 # --- HÀM HELPER VẼ THANH TIẾN TRÌNH ---
 def make_progress_bar(percent: int, width: int = 8) -> str:
@@ -7257,7 +7258,7 @@ def view_digest(digest_id):
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
 
 @flask_app.route("/info/<symbol>")
-def view_profile(symbol: str):
+async def view_profile(symbol: str): # <--- Đổi thành async
     """
     Route hiển thị WebApp hồ sơ (JSON Mode).
     ĐÃ VÁ LỖI: Chặn user Free.
@@ -7271,22 +7272,20 @@ def view_profile(symbol: str):
     if chat_id_str:
         try:
             cid = int(chat_id_str)
-            is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
+            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
         except: pass
     
     if not is_pro:
-        # [NỘI DUNG RIÊNG CHO INFO]
         return render_template_string(
             LOCKED_FEATURE_TEMPLATE,
             icon="🏢",
             title=f"Hồ Sơ Doanh Nghiệp {symbol}",
             desc="Phân tích chuyên sâu về Mô hình kinh doanh, Lợi thế cạnh tranh (Moat) và Vị thế trong ngành."
         ), 403
-    # -----------------------------
 
     sym = symbol.upper().strip()
     cache_key = make_profile_cache_key(sym)
-    cached = get_profile_from_redis(cache_key)
+    cached = await asyncio.to_thread(get_profile_from_redis, cache_key)
 
     if not cached:
         return render_template_string(PROFILE_404_TEMPLATE, symbol=sym), 404
@@ -7336,13 +7335,23 @@ def view_profile(symbol: str):
         generated_str = local_dt.strftime("%H:%M %d/%m/%Y")
         report_code = f"INFO-{sym}-{local_dt.strftime('%Y%m%d')}"
 
+    # --- [TẠO BIỂU ĐỒ] ---
+    chart_div = ""
+    try:
+        # Gọi hàm từ chart_utils (đã import)
+        chart_div = await generate_chart_html(sym)
+    except Exception as e:
+        log.error(f"Lỗi tạo chart cho {sym}: {e}")
+    # ---------------------
+
     return render_template_string(
         PROFILE_HTML_TEMPLATE,
         symbol=sym,
         sections=sections_view,
         generated_at=generated_str,
         report_code=report_code,
-        is_pro=is_pro, # Luôn là True nếu chạy tới đây
+        is_pro=is_pro,
+        chart_html=chart_div, # <--- Truyền biểu đồ vào đây
         is_error=False
     )
 

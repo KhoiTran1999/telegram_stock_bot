@@ -122,3 +122,5 @@ wordcloud==1.9.4
 wsproto==1.2.0
 zipp==3.23.0
 beautifulsoup4
+plotly
+pandas
