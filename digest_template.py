@@ -1146,6 +1146,8 @@ LOCKED_FEATURE_TEMPLATE = r"""
 
 #----------------------------------
 
+# digest_template.py
+
 EOD_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
@@ -1154,6 +1156,7 @@ EOD_HTML_TEMPLATE = r"""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Tổng Kết Cuối Phiên</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -1163,55 +1166,63 @@ EOD_HTML_TEMPLATE = r"""
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
             --up-color: #34c759; --down-color: #ff3b30; --ref-color: #ffcc00;
         }
-        
         body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; }
         
         .header { text-align: center; margin-bottom: 20px; }
+        .header-title { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
+        .header-sub { font-size: 12px; color: var(--hint-color); }
 
-        .header-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; }
-        
-        .header-title { 
-            font-size: 28px; font-weight: 800; margin: 0; letter-spacing: -1px; line-height: 1.2;
-            background: var(--brand-gradient); 
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
-            background-clip: text; color: var(--button-color);
-        }
-        .header-sub { font-size: 13px; color: var(--hint-color); margin-top: 4px; }
-
-        /* --- AI CARD --- */
-        .ai-card { 
-            background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%); 
-            border-left: 4px solid #007aff; border-radius: 16px; 
-            padding: 16px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,122,255,0.1); 
-        }
-        .ai-title { font-size: 14px; font-weight: 700; color: #007aff; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+        .ai-card { background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%); border-left: 4px solid #007aff; border-radius: 16px; padding: 16px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,122,255,0.1); }
+        .ai-title { font-size: 13px; font-weight: 700; color: #007aff; margin-bottom: 6px; text-transform: uppercase; }
         .ai-content { font-size: 14px; color: #334155; white-space: pre-line; }
 
-        /* --- MARKET GRID --- */
         .market-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-        .m-card { background-color: var(--card-bg); border-radius: 16px; padding: 12px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
-        .m-label { font-size: 11px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; }
-        .m-val { font-size: 18px; font-weight: 800; margin: 4px 0; }
+        .m-card { background-color: var(--card-bg); border-radius: 16px; padding: 12px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04); cursor: pointer; transition: transform 0.1s; }
+        .m-card:active { transform: scale(0.96); }
+        .m-label { font-size: 11px; font-weight: 700; color: var(--hint-color); display: flex; align-items: center; justify-content: center; gap: 4px; }
+        .m-val { font-size: 17px; font-weight: 800; margin: 4px 0; }
         .m-change { font-size: 12px; font-weight: 600; }
-        
         .t-up { color: var(--up-color); } .t-down { color: var(--down-color); } .t-ref { color: var(--ref-color); }
 
-        /* --- STOCK LIST --- */
-        .section-card { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); padding: 8px 0; }
+        .section-card { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); padding: 0; }
         .p-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .p-item:last-child { border-bottom: none; }
-        
-        .p-sym { font-size: 17px; font-weight: 800; }
+        .p-sym { font-size: 16px; font-weight: 700; }
         .p-market { font-size: 11px; color: var(--hint-color); }
-        .line-top { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 6px; }
+        .p-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
+        .p-price-row { display: flex; align-items: center; gap: 8px; }
         .p-price { font-size: 16px; font-weight: 600; }
-        .p-badge { font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 6px; min-width: 60px; text-align: center; }
-        .line-bottom { font-size: 12px; color: var(--hint-color); display: flex; gap: 12px; justify-content: flex-end; }
-        .val-text { color: var(--text-color); font-weight: 600; }
-
+        .p-badge { font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 4px; min-width: 50px; text-align: center; }
+        .val-row { font-size: 11px; color: var(--hint-color); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
         .bg-up { background: rgba(52,199,89,0.15); color: var(--up-color); }
         .bg-down { background: rgba(255,59,48,0.15); color: var(--down-color); }
         .bg-ref { background: rgba(255,204,0,0.15); color: #d4a017; }
+
+        .btn-chart { background: none; border: none; padding: 4px 0 4px 8px; cursor: pointer; font-size: 16px; opacity: 0.7; }
+
+        /* MODAL */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.6); z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+            opacity: 0; visibility: hidden; transition: opacity 0.3s ease, visibility 0.3s ease;
+            backdrop-filter: blur(3px);
+        }
+        .modal-overlay.active { opacity: 1; visibility: visible; }
+
+        .modal-box {
+            background: var(--card-bg); width: 90%; max-width: 400px; border-radius: 20px; padding: 20px 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+            transform: scale(0.95); transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        .modal-overlay.active .modal-box { transform: scale(1); }
+
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .modal-title { font-size: 17px; font-weight: 800; }
+        .modal-close { background: rgba(0,0,0,0.05); border: none; width: 30px; height: 30px; border-radius: 50%; font-weight: bold; color: var(--hint-color); cursor: pointer; font-size: 16px; }
+        
+        .chart-container { width: 100%; height: 300px; border-radius: 12px; overflow: hidden; border: 1px solid rgba(0,0,0,0.05); }
+        .chart-note { text-align: center; font-size: 11px; color: var(--hint-color); margin-top: 10px; }
 
         .footer-btn { display: block; width: 100%; padding: 14px; background-color: var(--text-color); color: var(--bg-color); border: none; border-radius: 14px; font-size: 15px; font-weight: 700; margin-top: 24px; cursor: pointer; }
     </style>
@@ -1222,24 +1233,41 @@ EOD_HTML_TEMPLATE = r"""
         <div class="header-sub">Dữ liệu chốt phiên {{ generated_at }}</div>
     </div>
 
-    {% if market_data and market_data.ai_comment %}
+    {% if market_data.ai_comment %}
     <div class="ai-card">
-        <div class="ai-title">🧠 Nhận Định Thị Trường</div>
+        <div class="ai-title">🧠 AI Insight</div>
         <div class="ai-content">{{ market_data.ai_comment }}</div>
     </div>
     {% endif %}
 
-    {% if market_data %}
     <div class="market-grid">
-        <div class="m-card">
-            <div class="m-label">VN-INDEX</div>
+        <div class="m-card" onclick="openModal('VNINDEX')">
+            <div class="m-label">VN-INDEX 🔍</div>
             <div class="m-val {{ market_data.vnindex.cls }}">{{ market_data.vnindex.price }}</div>
             <div class="m-change {{ market_data.vnindex.cls }}">{{ market_data.vnindex.change_str }}</div>
         </div>
-        <div class="m-card">
-            <div class="m-label">VN30</div>
+        <div class="m-card" onclick="openModal('VN30')">
+            <div class="m-label">VN30 🔍</div>
             <div class="m-val {{ market_data.vn30.cls }}">{{ market_data.vn30.price }}</div>
             <div class="m-change {{ market_data.vn30.cls }}">{{ market_data.vn30.change_str }}</div>
+        </div>
+    </div>
+
+    {% if market_data.vnindex.chart_html %}
+    <div id="modal-VNINDEX" class="modal-overlay" onclick="closeModal(event, 'VNINDEX')">
+        <div class="modal-box">
+            <div class="modal-header"><div class="modal-title">VN-INDEX</div><button class="modal-close" onclick="closeModalById('VNINDEX')">✕</button></div>
+            <div class="chart-container">{{ market_data.vnindex.chart_html | safe }}</div>
+            <div class="chart-note">Biến động 6 tháng</div>
+        </div>
+    </div>
+    {% endif %}
+    {% if market_data.vn30.chart_html %}
+    <div id="modal-VN30" class="modal-overlay" onclick="closeModal(event, 'VN30')">
+        <div class="modal-box">
+            <div class="modal-header"><div class="modal-title">VN30</div><button class="modal-close" onclick="closeModalById('VN30')">✕</button></div>
+            <div class="chart-container">{{ market_data.vn30.chart_html | safe }}</div>
+            <div class="chart-note">Biến động 6 tháng</div>
         </div>
     </div>
     {% endif %}
@@ -1247,26 +1275,62 @@ EOD_HTML_TEMPLATE = r"""
     <div class="section-card">
         {% for s in user_stocks %}
         <div class="p-item">
-            <div>
+            <div class="p-left">
                 <div class="p-sym">{{ s.symbol }}</div>
                 <div class="p-market">HOSE</div>
             </div>
-            <div style="text-align: right;">
-                <div class="line-top">
+            <div class="p-right">
+                <div class="p-price-row">
                     <span class="p-price {{ s.text_cls }}">{{ s.price }}</span>
                     <span class="p-badge {{ s.bg_cls }}">{{ s.pct }}%</span>
+                    {% if s.chart_html %}<button class="btn-chart" onclick="openModal('{{ s.symbol }}')">📉</button>{% endif %}
                 </div>
-                <div class="line-bottom">
-                    <span>KL: {{ s.vol_str }}</span>
-                    <span>💰 <span class="val-text">{{ s.val_str }}</span></span>
-                </div>
+                <div class="val-row">Vol: {{ s.vol_str }} • 💰 {{ s.val_str }}</div>
             </div>
         </div>
+        
+        {% if s.chart_html %}
+        <div id="modal-{{ s.symbol }}" class="modal-overlay" onclick="closeModal(event, '{{ s.symbol }}')">
+            <div class="modal-box">
+                <div class="modal-header"><div class="modal-title">{{ s.symbol }}</div><button class="modal-close" onclick="closeModalById('{{ s.symbol }}')">✕</button></div>
+                <div class="chart-container">{{ s.chart_html | safe }}</div>
+                <div class="chart-note">Giá: {{ s.price }} | Vol: {{ s.vol_str }}</div>
+            </div>
+        </div>
+        {% endif %}
         {% endfor %}
     </div>
 
     <button class="footer-btn" onclick="Telegram.WebApp.close()">Đóng</button>
-    <script>Telegram.WebApp.expand();</script>
+
+    <script>
+        Telegram.WebApp.expand();
+        window.addEventListener('load', function() { document.body.classList.add('loaded'); });
+
+        function openModal(id) {
+            const modal = document.getElementById('modal-' + id);
+            if (modal) {
+                modal.classList.add('active');
+                
+                // 🔥 FIX CHÍNH: Trigger resize cho Plotly khi modal hiện ra
+                // Delay 50ms để đảm bảo CSS transition đã bắt đầu và container có kích thước
+                setTimeout(() => {
+                    const chartDiv = modal.querySelector('.plotly-graph-div');
+                    if (chartDiv && window.Plotly) {
+                        Plotly.Plots.resize(chartDiv);
+                    }
+                }, 50);
+            }
+        }
+
+        function closeModal(event, id) {
+            if (event.target === event.currentTarget) closeModalById(id);
+        }
+        
+        function closeModalById(id) {
+            document.getElementById('modal-' + id).classList.remove('active');
+        }
+    </script>
 </body>
 </html>
 """
