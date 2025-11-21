@@ -14,31 +14,19 @@ DIGEST_HTML_TEMPLATE = """
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
             --accent-color: #007aff;
-            --brand-gold: #D97706;
-            --brand-gold-bg: #FFFBEB;
         }
         
-        /* --- HIỆU ỨNG SMOOTH LOADING --- */
         body { 
             font-family: 'Inter', sans-serif; 
             background-color: var(--bg-color); 
             color: var(--text-color); 
             margin: 0; padding: 20px 16px 40px 16px; 
             font-size: 14px; line-height: 1.5;
-            
-            /* Ẩn nội dung lúc đầu để tránh giật layout */
-            visibility: hidden;
-            opacity: 0;
-            transition: opacity 0.3s ease-in-out;
+            visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
         }
-        
-        /* Class này sẽ được JS thêm vào khi tải xong */
-        body.loaded {
-            visibility: visible;
-            opacity: 1;
-        }
+        body.loaded { visibility: visible; opacity: 1; }
 
-        /* ... (Giữ nguyên các CSS cũ: header, card, badge...) ... */
+        /* CSS Cũ giữ nguyên (rút gọn để tập trung vào phần mới) */
         .header { text-align: center; margin-bottom: 32px; }
         .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 12px; }
         .header-title { font-size: 32px; font-weight: 800; margin: 0; background: linear-gradient(135deg, #007aff 0%, #af52de 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -49,34 +37,54 @@ DIGEST_HTML_TEMPLATE = """
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
         
-        .list-item { padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); display: block; text-decoration: none; color: inherit; }
+        /* --- SỬA ĐỔI: List Item giờ là div có cursor pointer --- */
+        .list-item { padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); display: block; text-decoration: none; color: inherit; cursor: pointer; }
+        .list-item:active { background-color: rgba(0,0,0,0.05); }
+        
         .list-item:last-child { border-bottom: none; }
         .item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
         .badge { background: rgba(0,0,0,0.05); font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; }
         .item-title { font-size: 15px; font-weight: 500; line-height: 1.4; }
         .item-meta { font-size: 12px; color: var(--hint-color); margin-top: 4px; }
 
-        /* Locked Item Styles */
+        /* ... (Giữ nguyên CSS Locked, Table, Utilities cũ) ... */
         .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, #f9f9f9 10px, #f9f9f9 20px); }
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
         .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
         .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; transform: translateY(2px); }
-        
-        /* Stock Table */
         .stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .stock-table th { text-align: left; padding: 10px 16px; color: var(--hint-color); font-weight: 600; font-size: 11px; }
         .stock-table td { padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
         .score-badge { background: #5856d6; color: white; padding: 4px 8px; border-radius: 8px; font-weight: 700; font-size: 12px; }
-        
-        /* Footer Upsell */
         .premium-card { background: linear-gradient(135deg, #007aff 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
         .premium-btn { display: block; width: 100%; padding: 15px; background-color: #fff; color: #007aff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
-
-        /* Utilities */
         .hidden-item { display: none; }
         .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
         .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
-        .btn-toggle:active { opacity: 0.7; }
+
+        /* --- CSS MỚI CHO NEWS READER (MODAL) --- */
+        .news-modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #fff; z-index: 9999;
+            display: flex; flex-direction: column;
+            transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .news-modal.active { transform: translateY(0); }
+        
+        .modal-header {
+            padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;
+            background: rgba(255,255,255,0.95); border-bottom: 1px solid rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+        }
+        .close-news-btn {
+            background: rgba(0,0,0,0.05); border: none; width: 32px; height: 32px; border-radius: 50%;
+            font-size: 18px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+        }
+        .open-ext-btn {
+            color: var(--accent-color); font-weight: 600; font-size: 13px; text-decoration: none;
+        }
+        .news-iframe { flex: 1; border: none; width: 100%; height: 100%; background: #fff; }
+        
     </style>
 </head>
 <body>
@@ -155,11 +163,11 @@ DIGEST_HTML_TEMPLATE = """
                         <div class="lock-overlay"><button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Mở khóa {{ item.symbol }}</button></div>
                     </div>
                     {% else %}
-                    <a href="{{ item.link }}" target="_blank" class="list-item">
+                    <div class="list-item" onclick="viewNews('{{ item.link }}')">
                         <div class="item-header"><span class="badge">{{ item.symbol }}</span></div>
                         <div class="item-title">{{ item.title }}</div>
                         {% if item.time %}<div class="item-meta">🕒 {{ item.time }}</div>{% endif %}
-                    </a>
+                    </div>
                     {% endif %}
                 </div>
             {% endfor %}
@@ -177,9 +185,9 @@ DIGEST_HTML_TEMPLATE = """
         <div class="card-header"><div class="card-icon" style="color:#ff9500; background:rgba(255,149,0,0.1)">🏢</div><div class="card-title">Tin Doanh Nghiệp</div></div>
         <div class="list-container">
             {% for item in data.specialized %}
-            <a href="{{ item.link }}" target="_blank" class="list-item {% if loop.index > 3 %}hidden-item{% endif %}">
+            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
                 <div class="item-title">{{ item.title }}</div>
-            </a>
+            </div>
             {% endfor %}
         </div>
         {% if data.specialized|length > 3 %}
@@ -195,9 +203,9 @@ DIGEST_HTML_TEMPLATE = """
         <div class="card-header"><div class="card-icon" style="color:#af52de; background:rgba(175,82,222,0.1)">🌍</div><div class="card-title">Vĩ Mô & Chính Sách</div></div>
         <div class="list-container">
             {% for item in data.macro %}
-            <a href="{{ item.link }}" target="_blank" class="list-item {% if loop.index > 3 %}hidden-item{% endif %}">
+            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
                 <div class="item-title">{{ item.title }}</div>
-            </a>
+            </div>
             {% endfor %}
         </div>
         {% if data.macro|length > 3 %}
@@ -224,18 +232,52 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <script>
-        // Mở rộng Web App ngay lập tức
-        Telegram.WebApp.expand();
+    <div id="newsModal" class="news-modal">
+        <div class="modal-header">
+            <button class="close-news-btn" onclick="closeNews()">✕</button>
+            <span style="font-weight:600; font-size:14px;">Xem tin tức</span>
+            <a id="extLink" href="#" target="_blank" class="open-ext-btn">Mở Web ↗️</a>
+        </div>
+        <iframe id="newsFrame" class="news-iframe" src=""></iframe>
+    </div>
 
-        // Đợi toàn bộ tài nguyên (ảnh, font) tải xong
+    <script>
+        Telegram.WebApp.expand();
         window.addEventListener('load', function() {
-            // 1. Hiện giao diện
             document.body.classList.add('loaded');
-            // 2. Báo cho Telegram biết là "Tôi đã sẵn sàng"
             Telegram.WebApp.ready();
         });
 
+        // --- HÀM XEM TIN MỚI ---
+        function viewNews(url) {
+            const modal = document.getElementById('newsModal');
+            const frame = document.getElementById('newsFrame');
+            const extLink = document.getElementById('extLink');
+            
+            // Set link cho iframe và nút mở ngoài
+            frame.src = url;
+            extLink.href = url;
+            extLink.onclick = function() { Telegram.WebApp.openLink(url); return false; }; // Dùng SDK để mở ngoài an toàn hơn
+            
+            // Hiện modal
+            modal.classList.add('active');
+            Telegram.WebApp.BackButton.show();
+            Telegram.WebApp.BackButton.onClick(closeNews);
+        }
+
+        function closeNews() {
+            const modal = document.getElementById('newsModal');
+            const frame = document.getElementById('newsFrame');
+            
+            modal.classList.remove('active');
+            // Xóa src để dừng load/âm thanh nếu có
+            setTimeout(() => { frame.src = ''; }, 300);
+            
+            Telegram.WebApp.BackButton.hide();
+            Telegram.WebApp.BackButton.offClick(closeNews);
+        }
+
+        // Hàm toggle cũ
         function toggleSection(cardId, btn, total, limit) {
             const card = document.getElementById(cardId);
             const hiddenItems = card.querySelectorAll('.hidden-item');

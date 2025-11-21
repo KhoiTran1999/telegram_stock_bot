@@ -6668,8 +6668,8 @@ async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Dữ liệu Reports (Chỉ hiện nếu là Pro)
         "reports": [
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://trading.vietcap.com.vn/iq/report-detail/vi/fpt-da-phuc-hoi-doanh-thu-ky-moi-cua-mang-cntt-nuoc-ngoai-du-kien-se-duoc-duy-tri-sau-quy-3-bao-cao-kqkd-gap-go-ndt", "time": "08:30 19/11"},
+            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://trading.vietcap.com.vn/iq/report-detail/vi/mwg-doanh-so-mang-dien-tu-tang-toc-loi-nhuan-mang-tap-hoa-cai-thien-bao-cao-kqkd", "time": "08:30 19/11"},
             {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
             {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
             {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
@@ -6686,8 +6686,8 @@ async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TY
 
         ],
         "macro": [
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://vneconomy.vn/viet-nam-se-xay-dung-co-so-du-lieu-carbon-xanh-quoc-gia-lo-trinh-giam-phat-thai-tu-carbon-xanh.htm"},
+            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://vietstock.vn/2025/11/bo-chinh-tri-nhat-tri-voi-de-an-tieu-chuan-don-vi-hanh-chinh-phan-loai-do-thi-761-1373788.htm"},
             {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
             {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
             {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
