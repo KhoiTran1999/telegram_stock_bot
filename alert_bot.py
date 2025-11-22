@@ -227,6 +227,111 @@ def call_gemini_safe(model_id: str, contents: str, config: dict = None) -> str:
     log.error(f"[{INSTANCE_ID}] ❌ TẤT CẢ GEMINI KEYS ĐỀU THẤT BẠI.")
     raise last_error
 
+async def summarize_daily_news_with_ai(news_items: list) -> dict | None:
+    """
+    Phiên bản 'Hint & Verify': Sử dụng phân loại từ Code làm gợi ý đầu vào cho AI.
+    """
+    if not news_items:
+        return None
+
+    # 1. Chuẩn bị dữ liệu thô (Kèm NHÃN GỢI Ý từ Code)
+    items_to_process = news_items[:80]
+    raw_text = ""
+    for i, item in enumerate(items_to_process, 1):
+        # item['source'] sẽ là "Vĩ mô" hoặc "Doanh nghiệp" được truyền từ loop
+        source_hint = f"[{item.get('source', 'N/A').upper()}]"
+        raw_text += f"{i}. {source_hint} {item['title']} -- Link: {item['link']}\n"
+
+    # 2. Prompt "Thẩm định lại"
+    prompt = f"""
+Bạn là một Chuyên gia Phân tích Chiến lược Thị trường & Vĩ mô (Senior Market Strategist) với 20 năm kinh nghiệm.
+Nhiệm vụ của bạn là lọc nhiễu thông tin và tạo ra một bản báo cáo "Market Intelligence" từ danh sách tin tức thô.
+
+DỮ LIỆU ĐẦU VÀO:
+{raw_text}
+
+QUY TRÌNH TƯ DUY (THỰC HIỆN BÊN TRONG, KHÔNG XUẤT RA):
+1. **Thẩm định (Scoring):** Đọc từng tiêu đề, chấm điểm tác động lên thị trường (1-10).
+   - Loại bỏ thẳng tay các tin rác, tin PR, tin vô thưởng vô phạt (Score < 6).
+   - Giữ lại các tin trọng yếu: Chính sách vĩ mô, BCTC đột biến, M&A, Lãnh đạo, Tỷ giá/Lãi suất.
+2. **Khử trùng (De-duplicate):** Nếu 5 báo cùng đăng "Giá xăng tăng", chỉ giữ 1 ý và chọn Link uy tín nhất.
+3. **Tổng hợp (Synthesize):** Viết lại nội dung tóm tắt sao cho ngắn gọn, sắc sảo, dùng thuật ngữ tài chính.
+
+QUY TẮC PHÂN LOẠI KHẮC KHE (ĐỌC KỸ):
+1. **TIN DOANH NGHIỆP (Corporate):**
+   - **ĐIỀU KIỆN KIÊN QUYẾT:** Chỉ chọn tin về các công ty ĐANG NIÊM YẾT trên sàn (có mã 3 chữ cái) hoặc Tập đoàn tư nhân đầu ngành (Vingroup, Masan, Sun Group...).
+   - **CẤM TUYỆT ĐỐI:** + KHÔNG đưa tin về Tỉnh/Thành phố/Bộ ngành (VD: "Hải Phòng đầu tư...", "Bộ Xây dựng..."). -> Đưa sang Vĩ mô.
+     + KHÔNG đưa tin về doanh nghiệp nhỏ, thẩm mỹ viện, vụ án lừa đảo cá nhân. -> Loại bỏ.
+
+   👉 **VÍ DỤ PHÂN LOẠI:**
+   - "Hải Phòng cấp vốn 700 tỷ cho dự án cầu đường" -> **VĨ MÔ** (Sai nếu để Doanh nghiệp).
+   - "Hòa Phát (HPG) xuất khẩu 700 tấn thép" -> **DOANH NGHIỆP** (Đúng).
+   - "TP.HCM gỡ vướng pháp lý BĐS" -> **VĨ MÔ** (Sai nếu để Doanh nghiệp).
+   - "VNDIRECT bị phạt" -> **DOANH NGHIỆP** (Đúng).
+
+2. **TRÍCH XUẤT MÃ CHỨNG KHOÁN (TICKER):**
+   - Hãy suy luận mã chứng khoán từ tên công ty nếu chắc chắn 100%.
+   - Ví dụ: "Hòa Phát" -> `HPG`, "Vingroup" -> `VIC`, "Đất Xanh" -> `DXG`.
+   - Nếu không chắc chắn hoặc công ty chưa niêm yết, hãy để `null`. Đừng đoán mò.
+
+YÊU CẦU ĐẦU RA (JSON FORMAT BẮT BUỘC):
+Hãy trả về một JSON object duy nhất tuân thủ cấu trúc sau:
+
+{{
+  "headline": [
+    // BẮT BUỘC: Chọn đúng 3 tin quan trọng nhất (Score 9-10)
+    {{ 
+      "text": "Nội dung tóm tắt...", 
+      "link": "URL_GOC",
+      "tag": "HOT" 
+    }}
+  ],
+  "macro": [
+    // BẮT BUỘC: Chọn tối đa 5 tin vĩ mô quan trọng nhất (Sắp xếp theo độ quan trọng giảm dần)
+    {{ "text": "Nội dung...", "link": "URL_GOC" }}
+  ],
+  "corporate": [
+    // BẮT BUỘC: Chọn tối đa 8 tin doanh nghiệp tiêu biểu nhất.
+    // Ưu tiên các tin có mã cổ phiếu rõ ràng.
+    {{ 
+      "ticker": "ABC", // Nếu không có mã, để trống string ""
+      "text": "Nội dung sự kiện (viết lại giọng văn khách quan, bỏ từ ngữ giật tít)", 
+      "link": "URL_GOC" 
+    }}
+  ],
+  "sentiment_score": 7,
+  "comment": "Nhận định..."
+}}
+
+LƯU Ý QUAN TRỌNG:
+1. **SỐ LƯỢNG:** Tuyệt đối không vượt quá số lượng quy định (Headline: 3, Macro: 5, Corporate: 8). Hãy lọc bỏ các tin điểm thấp hơn để đạt số lượng này.
+2. **VĂN PHONG:** Viết lại tiêu đề sao cho ngắn gọn, súc tích (dưới 15 từ/tin).
+"""
+
+    # 3. Gọi Gemini
+    try:
+        # Cấu hình ép kiểu JSON
+        config = {"response_mime_type": "application/json"}
+        
+        json_str = await asyncio.to_thread(
+            call_gemini_safe,
+            model_id="gemini-2.5-flash", 
+            contents=prompt,
+            config=config
+        )
+        
+        # Xử lý an toàn chuỗi JSON trả về
+        # Đôi khi AI thêm ```json ở đầu/cuối, cần gỡ bỏ
+        clean_json_str = json_str.replace("```json", "").replace("```", "").strip()
+        
+        import json
+        data = json.loads(clean_json_str)
+        return data
+
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] Lỗi tóm tắt JSON AI: {e}")
+        return None
+
 # Lấy Token bảo mật của SePay từ .env
 SEPAY_TOKEN = os.getenv("SEPAY_TOKEN")
 if not SEPAY_TOKEN:
@@ -800,7 +905,7 @@ async def call_gemini_eod_insight(market_data: dict) -> str:
         # SỬ DỤNG call_gemini_safe TRONG THREAD
         text = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-flash-lite",
+            model_id="gemini-2.5-flash",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -4382,10 +4487,12 @@ async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}] Lỗi ghim Digest mới cho {chat_id}: {e}")
 
+# --- DÁN ĐÈ LÊN HÀM daily_user_digest_loop CŨ TRONG alert_bot.py ---
+
 async def daily_user_digest_loop():
     """
     Gửi bản tin tổng hợp (Digest) 7:00 sáng.
-    Đã tích hợp: Value Screener (Pro), BCTC (Pro), Báo cáo (Pro), Tin tức (All).
+    Đã tích hợp: Value Screener, BCTC, Báo cáo, Tin tức AI (JSON).
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -4405,8 +4512,7 @@ async def daily_user_digest_loop():
         log.info(f"{loop_label} Đang chờ đến {target_7am.strftime('%Y-%m-%d %H:%M')} (VN).")
         await sleep_until(target_7am, vn_tz)
 
-        if not BOT_ACTIVE:
-            continue
+        if not BOT_ACTIVE: continue
         
         log.info(f"{loop_label} 07:00! Bắt đầu build digest...")
 
@@ -4415,7 +4521,6 @@ async def daily_user_digest_loop():
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             since_utc = now_utc - datetime.timedelta(hours=24)
 
-            # Gọi song song tất cả các nguồn dữ liệu
             (
                 bctc_rows,
                 report_rows,
@@ -4423,7 +4528,7 @@ async def daily_user_digest_loop():
                 spec_rows,
                 all_watch,
                 pro_chat_ids,
-                screener_data,  # <-- Dữ liệu Value Screener mới
+                screener_data,
             ) = await asyncio.gather(
                 asyncio.to_thread(get_recent_bctc_notified, since_utc),
                 asyncio.to_thread(get_recent_analysis_reports, since_utc),
@@ -4431,7 +4536,6 @@ async def daily_user_digest_loop():
                 asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
                 asyncio.to_thread(get_all_watch),
                 asyncio.to_thread(get_all_pro_chat_ids),
-                # Lấy Top Value (All) cho ngày hôm nay
                 asyncio.to_thread(run_value_screener_from_api, 'all'), 
             )
             
@@ -4442,212 +4546,163 @@ async def daily_user_digest_loop():
             await asyncio.sleep(600) 
             continue
 
-        # 3️⃣ Xử lý dữ liệu Value Screener (Lấy Top 5-7 mã điểm cao nhất)
+        # ============================================================
+        # 🔥 XỬ LÝ TIN TỨC AI (PHẦN MỚI THÊM)
+        # ============================================================
+        ai_news_data = None # Biến chứa JSON để lưu vào Web App
+        ai_telegram_text = "" # Biến chứa Text để gửi tin nhắn
+
+        # 1. Gom tin
+        all_news_items = []
+        for row in macro_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Vĩ mô"})
+        for row in spec_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Doanh nghiệp"})
+
+        # 2. Gọi AI (Chỉ gọi nếu có tin)
+        if all_news_items:
+            log.info(f"{loop_label} 🤖 Đang gọi AI tóm tắt {len(all_news_items)} tin tức...")
+            # Gọi hàm JSON mà bạn đã copy trước đó
+            ai_news_data = await summarize_daily_news_with_ai(all_news_items)
+
+        # 3. Format Text cho Telegram (Hàm con nội bộ)
+        def _format_ai_news_for_tele(data):
+            if not data: return "_Không có tin nổi bật trong 24h qua._"
+            lines = []
+            
+            # Tiêu điểm
+            if data.get('headline'):
+                lines.append("⚡ *TIÊU ĐIỂM THỊ TRƯỜNG*")
+                for item in data['headline']:
+                    tag = f" `[{item.get('tag','HOT')}]`" if item.get('tag') else ""
+                    lines.append(f"• [{item['text']}]({item['link']}){tag}")
+                lines.append("") 
+            
+            # Vĩ mô
+            if data.get('macro'):
+                lines.append("🌊 *CHUYỂN ĐỘNG VĨ MÔ*")
+                for item in data['macro']:
+                    lines.append(f"• [{item['text']}]({item['link']})")
+                lines.append("")
+
+            # Doanh nghiệp
+            if data.get('corporate'):
+                lines.append("🏢 *TIN DOANH NGHIỆP*")
+                for item in data['corporate']:
+                    prefix = f"*{item['ticker']}*: " if item.get('ticker') else ""
+                    lines.append(f"• {prefix}[{item['text']}]({item['link']})")
+                lines.append("")
+
+            # Nhận định
+            if data.get('comment'):
+                score = data.get('sentiment_score', 5)
+                icon = "🟢" if score >= 7 else "🔴" if score <= 4 else "🟡"
+                lines.append(f"🧠 *Góc nhìn AI ({score}/10):* {icon} _{data['comment']}_")
+            
+            return "\n".join(lines)
+
+        # Tạo nội dung sẵn
+        ai_telegram_text = _format_ai_news_for_tele(ai_news_data)
+
+        # ============================================================
+        # XỬ LÝ DỮ LIỆU KHÁC (GIỮ NGUYÊN LOGIC CŨ)
+        # ============================================================
+        
+        # Value Screener
         top_value_stocks = []
         if screener_data and "industries" in screener_data:
-            # Flatten: Gom tất cả mã từ tất cả ngành vào 1 list
             all_candidates = []
             for ind in screener_data["industries"]:
                 for row in ind.get("rows", []):
-                    # Thêm tên ngành vào row để hiển thị
-                    row_copy = row.copy()
-                    row_copy["industry"] = ind["industry"]
+                    row_copy = row.copy(); row_copy["industry"] = ind["industry"]
                     all_candidates.append(row_copy)
-            
-            # Sắp xếp theo Value Score giảm dần
             all_candidates.sort(key=lambda x: x.get("value_score", 0), reverse=True)
-            
-            # Lấy Top 5
             for item in all_candidates[:5]:
                 top_value_stocks.append({
-                    "symbol": item["symbol"],
-                    "industry": item["industry"],
-                    "pe": f"{item.get('pe', 0):.1f}",
-                    "roe": f"{item.get('roe', 0) * 100:.1f}", # roe decimal -> %
+                    "symbol": item["symbol"], "industry": item["industry"],
+                    "pe": f"{item.get('pe', 0):.1f}", "roe": f"{item.get('roe', 0) * 100:.1f}",
                     "score": f"{item.get('value_score', 0):.2f}"
                 })
 
-        # 4️⃣ Xử lý các dữ liệu khác (Giữ nguyên logic cũ)
-        bctc_by_sym: dict[str, tuple] = {}
-        for (symbol, year, quarter, notified_at) in bctc_rows:
-            bctc_by_sym[str(symbol).upper()] = (year, quarter, notified_at)
-
-        reports_by_sym: dict[str, list] = {}
-        for (symbol, title, link, published_at, created_at) in report_rows:
-            sym_u = str(symbol).upper()
-            reports_by_sym.setdefault(sym_u, []).append((title, link, published_at))
-
-        watch_to_chats: dict[str, list[int]] = {}
-        users_map: dict[int, set[str]] = {}
-
+        # BCTC & Report & Mapping (Logic cũ giữ nguyên để tiết kiệm dòng)
+        bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
+        reports_by_sym = {}
+        for (s, t, l, p, c) in report_rows: reports_by_sym.setdefault(str(s).upper(), []).append((t, l, p))
+        
+        watch_to_chats = {}
         for chat_key, user_block in all_watch.items():
-            try:
-                chat_id = int(chat_key)
+            try: chat_id = int(chat_key)
             except: continue
-            watch_list = user_block.get("list", []) or []
-            users_map[chat_id] = set()
-            for sym in watch_list:
-                s = str(sym).upper().strip()
-                if s:
-                    users_map[chat_id].add(s)
-                    watch_to_chats.setdefault(s, []).append(chat_id)
+            for sym in user_block.get("list", []) or []:
+                watch_to_chats.setdefault(str(sym).upper().strip(), []).append(chat_id)
 
-        spec_patterns: dict[str, re.Pattern] = {}
-        for sym in watch_to_chats.keys():
-            keywords = all_keywords.get(sym, [sym])
-            combined = "|".join(re.escape(k) for k in keywords if k)
-            if combined:
-                spec_patterns[sym] = re.compile(rf"\b({combined})\b", re.IGNORECASE)
-
-        # 5️⃣ Tạo Payload riêng cho từng User
-        digest_payloads: dict[int, dict] = {}
-
+        # Hàm Helper tạo payload
+        digest_payloads = {}
         def _get_payload(cid):
             if cid not in digest_payloads:
-                is_pro = (cid in pro_chat_ids or cid == ADMIN_ID)
                 digest_payloads[cid] = {
-                    "is_pro": is_pro, # Flag quan trọng để hiển thị Badge Pro / Upsell Card
-                    "value_stocks": [], 
-                    "bctc": [],
-                    "reports": [],
-                    "specialized": [],
-                    "macro": []
+                    "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
+                    "ai_news": ai_news_data, # <--- 🔥 QUAN TRỌNG: Gắn JSON tin tức vào đây
+                    "value_stocks": [], "bctc": [], "reports": []
                 }
             return digest_payloads[cid]
 
-        # --- A. Value Screener (CHỈ CHO PRO & ADMIN) ---
+        # Fill dữ liệu vào payload (Value, BCTC, Report)
+        # (Phần này giống logic cũ, chỉ viết gọn lại)
         if top_value_stocks:
-            for cid in users_map.keys():
-                if cid in pro_chat_ids or cid == ADMIN_ID:
-                    _get_payload(cid)["value_stocks"] = top_value_stocks
+            for cid in all_watch.keys():
+                try: cid = int(cid)
+                except: continue
+                if cid in pro_chat_ids or cid == ADMIN_ID: _get_payload(cid)["value_stocks"] = top_value_stocks
 
-        # --- B. BCTC (Pro) ---
         if bctc_rows:
-            for sym, (year, quarter, notified_at) in bctc_by_sym.items():
-                chat_ids_impacted = watch_to_chats.get(sym, [])
-                for cid in chat_ids_impacted:
-                    payload = _get_payload(cid)
-                    
-                    # Lấy thời gian
-                    t_str = notified_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
-                    
-                    if payload["is_pro"]:
-                        # PRO: Thấy full
-                        payload["bctc"].append({
-                            "symbol": sym, "year": year, "quarter": quarter, "time": t_str,
-                            "is_locked": False
-                        })
-                    else:
-                        # FREE: Thấy bị khóa (Upsell)
-                        # Chỉ thêm 1 lần cho mỗi mã để tránh spam nếu có nhiều quý
-                        if not any(x['symbol'] == sym for x in payload["bctc"]):
-                            payload["bctc"].append({
-                                "symbol": sym, 
-                                "year": year, "quarter": quarter, 
-                                "time": t_str,
-                                "is_locked": True # <--- CỜ KHÓA
-                            })
+            for sym, (y, q, t) in bctc_by_sym.items():
+                t_str = t.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                for cid in watch_to_chats.get(sym, []):
+                    pl = _get_payload(cid)
+                    is_locked = not pl["is_pro"]
+                    if not is_locked or not any(x['symbol'] == sym for x in pl["bctc"]):
+                        pl["bctc"].append({"symbol": sym, "year": y, "quarter": q, "time": t_str, "is_locked": is_locked})
 
-        # --- C. Reports (Pro) ---
         if report_rows:
-            for sym, reports_list in reports_by_sym.items():
-                chat_ids_impacted = watch_to_chats.get(sym, [])
-                for cid in chat_ids_impacted:
-                    payload = _get_payload(cid)
-                    
-                    # Lấy báo cáo mới nhất làm đại diện
-                    last_rep = reports_list[0]
-                    title = last_rep[0]
-                    link = last_rep[1]
-                    pub_at = last_rep[2]
-                    
-                    time_str = ""
-                    if pub_at:
-                         if getattr(pub_at, 'tzinfo', None) is None:
-                             pub_at = pub_at.replace(tzinfo=datetime.timezone.utc)
-                         time_str = pub_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
-
-                    if payload["is_pro"]:
-                        # PRO: Thêm hết
-                        for (t, l, p) in reports_list:
-                             # ... (xử lý time cho từng item như cũ)
-                             # Ở đây mình viết gọn lại logic loop:
-                             t_str_item = "" 
-                             if p: 
-                                 if getattr(p, 'tzinfo', None) is None: p = p.replace(tzinfo=datetime.timezone.utc)
-                                 t_str_item = p.astimezone(vn_tz).strftime("%H:%M %d/%m")
-                                 
-                             payload["reports"].append({
-                                "symbol": sym, "title": t, "link": l, "time": t_str_item,
-                                "is_locked": False
-                            })
+            for sym, r_list in reports_by_sym.items():
+                for cid in watch_to_chats.get(sym, []):
+                    pl = _get_payload(cid)
+                    # Lấy report mới nhất
+                    last = r_list[0]; t_str = last[2].astimezone(vn_tz).strftime("%H:%M %d/%m") if last[2] else ""
+                    if pl["is_pro"]:
+                        for (title, link, pub) in r_list:
+                            ts = pub.astimezone(vn_tz).strftime("%H:%M %d/%m") if pub else ""
+                            pl["reports"].append({"symbol": sym, "title": title, "link": link, "time": ts, "is_locked": False})
                     else:
-                        # FREE: Chỉ hiện 1 dòng teaser bị khóa
-                        if not any(x['symbol'] == sym and x.get('is_locked') for x in payload["reports"]):
-                            payload["reports"].append({
-                                "symbol": sym, 
-                                "title": "Báo cáo phân tích chuyên sâu", # Ẩn tiêu đề thật
-                                "link": "#",
-                                "time": time_str,
-                                "is_locked": True # <--- CỜ KHÓA
-                            })
+                        if not any(x['symbol'] == sym for x in pl["reports"]):
+                            pl["reports"].append({"symbol": sym, "title": "Báo cáo phân tích (Pro)", "link": "#", "time": t_str, "is_locked": True})
 
-        # --- D. Tin Chuyên Ngành (All) ---
-        if spec_rows and spec_patterns:
-            for (title, link, pub, created_at) in spec_rows:
-                text_for_match = title or ""
-                matched_symbols = set()
-                for sym, pat in spec_patterns.items():
-                    if pat.search(text_for_match): matched_symbols.add(sym)
-                
-                if matched_symbols:
-                    item = {"title": title, "link": link} # Đã bỏ thời gian
-                    chat_ids_impacted = set()
-                    for sym in matched_symbols:
-                        chat_ids_impacted.update(watch_to_chats.get(sym, []))
-                    for cid in chat_ids_impacted:
-                        _get_payload(cid)["specialized"].append(item)
-
-        # --- E. Tin Vĩ Mô (All) ---
-        if macro_rows:
-            for (title, link, pub, created_at) in macro_rows:
-                item = {"title": title, "link": link}
-                for cid in users_map.keys():
-                    _get_payload(cid)["macro"].append(item)
-
-        # 6️⃣ Gửi tin
-        if not digest_payloads:
-            log.info(f"{loop_label} Không có dữ liệu.")
-            continue
-
+        # 4️⃣ GỬI TIN NHẮN (LOOP CUỐI CÙNG)
         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
         tasks = []
         sent_count = 0
 
         for chat_id, data in digest_payloads.items():
-            # Dù rỗng cũng gửi nếu là Pro, hoặc ít nhất có Macro
-            # Nhưng để an toàn, chỉ gửi nếu có ít nhất 1 mục
-            has_content = (
-                data["value_stocks"] or data["bctc"] or data["reports"] or 
-                data["specialized"] or data["macro"]
-            )
-            
-            if not has_content: continue
-
+            # Tạo Link Web App
             digest_id = uuid.uuid4().hex
             await asyncio.to_thread(save_digest_to_redis, digest_id, data)
             web_app_url = f"{base_url}/digest/{digest_id}"
             
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Bản Tin Sáng 🌅", web_app=WebAppInfo(url=web_app_url))]])
-            text = f"🌅 *Bản tin sáng {now_local.strftime('%d/%m')}*\nTổng hợp thị trường và danh mục của bạn.\n👉 Nhấn nút bên dưới để xem chi tiết."
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Chi Tiết (Web App) 🚀", web_app=WebAppInfo(url=web_app_url))]])
             
-            tasks.append(send_digest_with_pin(tg_app.bot, chat_id, text, kb))
+            # Nội dung tin nhắn: Tiêu đề + AI Text
+            msg_text = (
+                f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
+                f"{ai_telegram_text}\n\n"
+                f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
+            )
+            
+            tasks.append(send_digest_with_pin(tg_app.bot, chat_id, msg_text, kb))
             sent_count += 1
         
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
             
-        log.info(f"{loop_label} Hoàn tất gửi cho {sent_count} user.")
+        log.info(f"{loop_label} Hoàn tất gửi Digest cho {sent_count} user.")
 
 #-------------------------------------------
 async def restore_reminder_loop():
@@ -6922,112 +6977,126 @@ async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAUL
     # Gọi hàm lõi (truyền update vào để nhận phản hồi)
     asyncio.create_task(execute_weekly_report(admin_update=update))
 
+# --- DÁN ĐÈ LÊN HÀM cmd_admin_test_digest CŨ ---
+
 async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (Admin) Test nhanh tính năng Web App Digest.
-    Cách dùng: 
-    - /test_digest (mặc định xem bản Pro)
-    - /test_digest free (xem bản Free)
+    (Admin) Test quy trình News AI: Fetch RSS thật (Live) -> Tóm tắt AI -> Hiển thị kết quả.
     """
-    
-    # 1. Check Admin
     if update.effective_user.id != ADMIN_ID:
         return
 
-    # 2. Xác định chế độ test (Pro hay Free)
-    mode = "pro"
-    if context.args and context.args[0].lower() == "free":
-        mode = "free"
+    status_msg = await reply_md(update, "🧪 **Bắt đầu Test News AI...**\n⏳ Đang cào dữ liệu RSS mới nhất từ các nguồn...")
 
-    is_pro_flag = (mode == "pro")
-
-    # 3. Tạo dữ liệu giả (Mock Data)
-    mock_data = {
-        "is_pro": is_pro_flag,  # <--- QUAN TRỌNG: Cờ này quyết định giao diện
+    # 1. Thu thập dữ liệu RSS thật (Live Fetching)
+    try:
+        # Gom toàn bộ URL từ cấu hình (Vĩ mô + Chuyên ngành)
+        test_urls = RSS_FEEDS_MACRO[:]
+        for k, v in RSS_FEEDS_SPECIALIZED.items():
+            test_urls.extend(v)
         
-        # Dữ liệu Value Stocks (Chỉ hiện nếu là Pro)
-        "value_stocks": [
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-            {"symbol": "TCB", "industry": "Ngân hàng", "pe": "6.5", "roe": "22.0", "score": "9.8"},
-     
-        ] if is_pro_flag else [],
+        # Gọi hàm crawl (Chạy trong thread để không block bot)
+        # Lưu ý: fetch_rss_entries_for_urls đã có sẵn trong alert_bot.py
+        raw_entries = await asyncio.to_thread(fetch_rss_entries_for_urls, test_urls)
+        
+        # Sắp xếp theo thời gian giảm dần (Mới nhất lên đầu)
+        # Dùng datetime.min làm fallback nếu không có field 'published'
+        raw_entries.sort(key=lambda x: x.get('published') or datetime.datetime.min, reverse=True)
+        
+        # Lấy 40 bài báo mới nhất để test (Số lượng vừa đủ cho context window)
+        top_entries = raw_entries[:40]
 
-        # Dữ liệu BCTC (Chỉ hiện nếu là Pro)
-        "bctc": [
-            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
-            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
-            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
-            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
-            {"symbol": "HPG", "year": 2025, "quarter": 1, "time": "Vừa xong"},
-    
-        ] if is_pro_flag else [],
+        if not top_entries:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=status_msg.message_id,
+                text="❌ Không cào được tin nào từ RSS (List rỗng). Kiểm tra lại mạng hoặc URL."
+            )
+            return
 
-        # Dữ liệu Reports (Chỉ hiện nếu là Pro)
-        "reports": [
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://trading.vietcap.com.vn/iq/report-detail/vi/fpt-da-phuc-hoi-doanh-thu-ky-moi-cua-mang-cntt-nuoc-ngoai-du-kien-se-duoc-duy-tri-sau-quy-3-bao-cao-kqkd-gap-go-ndt", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://trading.vietcap.com.vn/iq/report-detail/vi/mwg-doanh-so-mang-dien-tu-tang-toc-loi-nhuan-mang-tap-hoa-cai-thien-bao-cao-kqkd", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-            {"symbol": "SSI", "title": "Báo cáo test: Triển vọng ngành 2025", "link": "https://google.com", "time": "08:30 19/11"},
-        ] if is_pro_flag else [],
+        # Map dữ liệu sang format chuẩn cho hàm AI
+        news_items = []
+        for e in top_entries:
+            news_items.append({
+                "title": e['title'],
+                "link": e['link'],
+                "source": e.get('source', 'RSS Test')
+            })
+            
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            text=f"✅ Đã lấy {len(news_items)} tin mới nhất.\n🧠 Đang gửi cho Gemini phân tích..."
+        )
 
-        # Tin tức (Hiện cho cả 2)
-        "specialized": [
-            {"title": "Tin test: Doanh nghiệp X đạt lợi nhuận kỷ lục", "link": "https://google.com", "time": "09:00"},
-             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
-             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
-             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
-             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
-             {"title": "Tin test: Cổ phiếu Y tăng trần", "link": "https://google.com", "time": "10:00"},
+    except Exception as e:
+        await reply_md(update, f"❌ Lỗi Crawl dữ liệu: {e}")
+        return
 
-        ],
-        "macro": [
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://vneconomy.vn/viet-nam-se-xay-dung-co-so-du-lieu-carbon-xanh-quoc-gia-lo-trinh-giam-phat-thai-tu-carbon-xanh.htm"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://vietstock.vn/2025/11/bo-chinh-tri-nhat-tri-voi-de-an-tieu-chuan-don-vi-hanh-chinh-phan-loai-do-thi-761-1373788.htm"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-            {"title": "Tin test: GDP tăng trưởng vượt bậc", "link": "https://google.com"},
-        ]
+    # 2. Gọi AI Tóm tắt
+    try:
+        # Gọi hàm xử lý AI bạn vừa thêm
+        ai_data = await summarize_daily_news_with_ai(news_items)
+        
+        if not ai_data:
+            await reply_md(update, "❌ AI trả về rỗng. Có thể do lỗi API Key hoặc Prompt.")
+            return
+
+    except Exception as e:
+        await reply_md(update, f"❌ Lỗi khi gọi AI: {e}")
+        return
+
+    # 3. Format hiển thị Telegram (Mô phỏng hàm trong digest loop)
+    def _format_test_msg(data):
+        if not data: return "_No Data_"
+        lines = []
+        if data.get('headline'):
+            lines.append("⚡ *TIÊU ĐIỂM*")
+            for i in data['headline']:
+                tag = f" `[{i.get('tag','HOT')}]`" if i.get('tag') else ""
+                lines.append(f"• [{i['text']}]({i['link']}){tag}")
+            lines.append("")
+        if data.get('macro'):
+            lines.append("🌊 *VĨ MÔ*")
+            for i in data['macro']: lines.append(f"• [{i['text']}]({i['link']})")
+            lines.append("")
+        if data.get('corporate'):
+            lines.append("🏢 *DOANH NGHIỆP*")
+            for i in data['corporate']:
+                p = f"*{i['ticker']}*: " if i.get('ticker') else ""
+                lines.append(f"• {p}[{i['text']}]({i['link']})")
+            lines.append("")
+        if data.get('comment'):
+            score = data.get('sentiment_score', 5)
+            icon = "🟢" if score >= 7 else "🔴" if score <= 4 else "🟡"
+            lines.append(f"🧠 *AI ({score}/10):* {icon} _{data['comment']}_")
+        return "\n".join(lines)
+
+    tele_text = _format_test_msg(ai_data)
+
+    # 4. Tạo Payload cho Web App (Để test giao diện đẹp)
+    mock_payload = {
+        "is_pro": True, # Giả lập user Pro
+        "generated_at": datetime.datetime.now().strftime("%H:%M %d/%m (Test Mode)"),
+        "ai_news": ai_data, # <--- Dữ liệu thật từ AI
+        # Các phần khác để rỗng để tập trung test tin tức
+        "value_stocks": [], "bctc": [], "reports": []
     }
 
-    # 4. Lưu vào Redis & Tạo Link
-    try:
-        digest_id = uuid.uuid4().hex
-        
-        # Lưu Redis (chạy trong thread để không block)
-        await asyncio.to_thread(save_digest_to_redis, digest_id, mock_data)
-        
-        # Lấy URL (Render hoặc fallback google)
-        base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
-        web_app_url = f"{base_url}/digest/{digest_id}"
-
-        # 5. Gửi nút Web App
-        btn_text = "👑 Xem Bản Tin Pro (Test)" if is_pro_flag else "🆓 Xem Bản Tin Free (Test)"
-        
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                text=btn_text, 
-                web_app=WebAppInfo(url=web_app_url)
-            )]
-        ])
-        
-        msg_text = (
-            f"👇 Đây là bản tin test chế độ: *{mode.upper()}*\n"
-            f"_Gõ `/test_digest free` để xem giao diện người dùng miễn phí._"
-        )
-        
-        await reply_md(update, msg_text, reply_markup=kb)
-        
-    except Exception as e:
-        await reply_md(update, f"❌ Lỗi test digest: {e}")
+    # 5. Lưu Redis & Gửi kết quả
+    digest_id = uuid.uuid4().hex
+    await asyncio.to_thread(save_digest_to_redis, digest_id, mock_payload)
+    
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    web_url = f"{base_url}/digest/{digest_id}"
+    
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Xem Kết Quả Trên Web App", web_app=WebAppInfo(url=web_url))]])
+    
+    # Xóa tin nhắn loading
+    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
+    
+    # Gửi kết quả
+    await reply_md(update, f"✅ **KẾT QUẢ TEST AI (LIVE DATA):**\n\n{tele_text}", reply_markup=kb)
 
 async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

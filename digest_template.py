@@ -67,6 +67,73 @@ DIGEST_HTML_TEMPLATE = """
         {% if data.is_pro %}<span class="pro-badge">PRO MEMBER 👑</span>{% endif %}
     </div>
 
+    {% if data.ai_news %}
+    <div class="section-card">
+        <div class="card-header">
+            <div class="card-icon">🧠</div>
+            <div class="card-title">AI Market Briefing</div>
+            {% if data.ai_news.sentiment_score >= 7 %}
+                <span class="st-badge act-buy" style="margin-left:auto">Tích cực 🟢</span>
+            {% elif data.ai_news.sentiment_score <= 4 %}
+                <span class="st-badge act-sell" style="margin-left:auto">Tiêu cực 🔴</span>
+            {% else %}
+                <span class="st-badge act-hold" style="margin-left:auto">Thận trọng 🟡</span>
+            {% endif %}
+        </div>
+        
+        <div style="padding: 16px;">
+            <div style="background: rgba(0,122,255,0.05); border-radius: 12px; padding: 12px; margin-bottom: 16px;">
+                <div style="font-weight:700; color:#007aff; margin-bottom:8px; font-size:12px; text-transform: uppercase;">⚡ Tiêu điểm nóng</div>
+                {% for item in data.ai_news.headline %}
+                <div style="margin-bottom:8px; font-size:14px; font-weight:600; line-height:1.4;">
+                    <a href="{{ item.link }}" style="text-decoration:none; color:inherit;">
+                        • {{ item.text }} <span style="color:#007aff; font-size:12px;">↗</span>
+                    </a>
+                </div>
+                {% endfor %}
+            </div>
+
+            {% if data.ai_news.corporate %}
+            <div style="margin-top: 20px;">
+                <div style="font-weight:800; color:#555; margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid #eee; padding-bottom: 6px; display:flex; align-items:center; gap:6px;">
+                    <span>🏢</span> TIN DOANH NGHIỆP
+                </div>
+                
+                <div class="list-container">
+                    {% for item in data.ai_news.corporate %}
+                    <div class="list-item" onclick="viewNews('{{ item.link }}')" style="padding: 10px 0; border-bottom: 1px solid #f0f0f0; display: flex; align-items: flex-start; gap: 10px;">
+                        <div style="margin-top: 4px; min-width: 6px; height: 6px; background-color: #007aff; border-radius: 50%;"></div>
+                        
+                        <div style="flex: 1;">
+                            <div style="font-size:14px; line-height: 1.5; color: var(--text-color);">
+                                {% if item.ticker %}
+                                    <span style="background-color: #eef2ff; color: #007aff; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 4px; border: 1px solid rgba(0,122,255,0.2);">{{ item.ticker }}</span>
+                                {% endif %}
+                                {{ item.text }}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            
+            {% if data.ai_news.macro %}
+            <div style="font-weight:700; color:#555; margin:16px 0 8px 0; font-size:12px; text-transform: uppercase;">🌊 Vĩ mô & Chính sách</div>
+            {% for item in data.ai_news.macro %}
+            <div style="margin-bottom:6px; font-size:13px;">
+                <a href="{{ item.link }}" style="text-decoration:none; color:#333;">• {{ item.text }}</a>
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            <div style="margin-top: 16px; font-style: italic; color: #666; font-size: 13px; border-top: 1px solid #eee; padding-top: 12px; background:#fafafa; padding:12px; border-radius:8px;">
+                "{{ data.ai_news.comment }}"
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     {% if data.value_stocks %}
     <div class="section-card" id="stocks-card">
         <div class="card-header"><div class="card-icon">💎</div><div class="card-title">Top Value Hôm Nay</div></div>
