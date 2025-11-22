@@ -2484,8 +2484,8 @@ def compute_value_screener(
 
     df["value_score"] = (
         df["pe_rel"] * 0.4 +
-        df["pb_rel"] * 0.3 +
-        df["roe_rel"] * 0.3
+        df["pb_rel"] * 0.4 +
+        df["roe_rel"] * 0.2
     ).round(2)
 
     # Top từng ngành
@@ -4356,21 +4356,17 @@ async def analysis_report_loop():
 
 async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
     """
-    [UPDATED] Sáng: Tháo ghim TẤT CẢ tin cũ (Digest + EOD) -> Gửi tin mới -> Ghim tin mới.
+    [UPDATED] Sáng: Tháo ghim TOÀN BỘ tin cũ (Digest + EOD) -> Gửi tin mới -> Ghim tin mới.
+    Dùng unpin_all_chat_messages để đảm bảo không còn tin rác cũ đọng lại.
     """
-    # 1. Tháo ghim các loại tin cũ để làm sạch buổi sáng
-    msg_types_to_unpin = ['DAILY_DIGEST', 'EOD_SUMMARY']
-    
-    for m_type in msg_types_to_unpin:
-        try:
-            old_msg_id = await asyncio.to_thread(get_latest_bot_message_id, chat_id, m_type)
-            if old_msg_id:
-                try:
-                    await bot.unpin_chat_message(chat_id=chat_id, message_id=old_msg_id)
-                except Exception:
-                    pass # Bỏ qua nếu tin đã bị user xóa hoặc tháo ghim thủ công
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] Lỗi tháo ghim {m_type} cũ cho {chat_id}: {e}")
+    # 1. Tháo ghim TOÀN BỘ các tin cũ trong chat để làm sạch bảng tin
+    try:
+        # Lệnh này sẽ gỡ ghim Digest cũ, EOD cũ và mọi tin ghim khác
+        await bot.unpin_all_chat_messages(chat_id=chat_id)
+    except Exception as e:
+        # Bỏ qua lỗi nếu chat chưa có tin ghim nào hoặc bot không đủ quyền (hiếm gặp)
+        # log.warning(f"[{INSTANCE_ID}] Lỗi unpin_all cho {chat_id}: {e}")
+        pass
 
     # 2. Gửi tin mới (Lưu ý: msg_type='DAILY_DIGEST')
     msg = await send_md(bot, chat_id, text, msg_type='DAILY_DIGEST', reply_markup=reply_markup)
