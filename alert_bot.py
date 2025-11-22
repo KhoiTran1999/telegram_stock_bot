@@ -227,107 +227,90 @@ def call_gemini_safe(model_id: str, contents: str, config: dict = None) -> str:
     log.error(f"[{INSTANCE_ID}] ❌ TẤT CẢ GEMINI KEYS ĐỀU THẤT BẠI.")
     raise last_error
 
+# --- DÁN ĐÈ LÊN HÀM summarize_daily_news_with_ai CŨ ---
+
 async def summarize_daily_news_with_ai(news_items: list) -> dict | None:
     """
-    Phiên bản 'Hint & Verify': Sử dụng phân loại từ Code làm gợi ý đầu vào cho AI.
+    Phiên bản ULTIMATE: Tối ưu hóa tư duy nhà đầu tư, dynamic tags và chống trùng lặp.
     """
     if not news_items:
         return None
 
     # 1. Chuẩn bị dữ liệu thô (Kèm NHÃN GỢI Ý từ Code)
-    items_to_process = news_items[:80]
+    # Tăng nhẹ giới hạn lên 90 tin để bao phủ rộng hơn
+    items_to_process = news_items[:90]
     raw_text = ""
     for i, item in enumerate(items_to_process, 1):
-        # item['source'] sẽ là "Vĩ mô" hoặc "Doanh nghiệp" được truyền từ loop
         source_hint = f"[{item.get('source', 'N/A').upper()}]"
         raw_text += f"{i}. {source_hint} {item['title']} -- Link: {item['link']}\n"
 
-    # 2. Prompt "Thẩm định lại"
+    # 2. PROMPT "ULTIMATE"
     prompt = f"""
-Bạn là một Chuyên gia Phân tích Chiến lược Thị trường & Vĩ mô (Senior Market Strategist) với 20 năm kinh nghiệm.
-Nhiệm vụ của bạn là lọc nhiễu thông tin và tạo ra một bản báo cáo "Market Intelligence" từ danh sách tin tức thô.
+Bạn là Giám đốc Chiến lược (Chief Strategy Officer) của một quỹ đầu tư lớn tại Việt Nam.
+Nhiệm vụ: Soạn thảo bản tin "Market Intelligence" gửi cho các nhà đầu tư VIP vào đầu ngày.
 
-DỮ LIỆU ĐẦU VÀO:
+DỮ LIỆU ĐẦU VÀO (Kèm gợi ý [TAG] từ robot thu thập):
 {raw_text}
 
-QUY TRÌNH TƯ DUY (THỰC HIỆN BÊN TRONG, KHÔNG XUẤT RA):
-1. **Thẩm định (Scoring):** Đọc từng tiêu đề, chấm điểm tác động lên thị trường (1-10).
-   - Loại bỏ thẳng tay các tin rác, tin PR, tin vô thưởng vô phạt (Score < 6).
-   - Giữ lại các tin trọng yếu: Chính sách vĩ mô, BCTC đột biến, M&A, Lãnh đạo, Tỷ giá/Lãi suất.
-2. **Khử trùng (De-duplicate):** Nếu 5 báo cùng đăng "Giá xăng tăng", chỉ giữ 1 ý và chọn Link uy tín nhất.
-3. **Tổng hợp (Synthesize):** Viết lại nội dung tóm tắt sao cho ngắn gọn, sắc sảo, dùng thuật ngữ tài chính.
+---
+### 🧠 QUY TRÌNH TƯ DUY XỬ LÝ (Chain-of-Thought):
 
-QUY TẮC PHÂN LOẠI KHẮC KHE (ĐỌC KỸ):
-1. **TIN DOANH NGHIỆP (Corporate):**
-   - **ĐIỀU KIỆN KIÊN QUYẾT:** Chỉ chọn tin về các công ty ĐANG NIÊM YẾT trên sàn (có mã 3 chữ cái) hoặc Tập đoàn tư nhân đầu ngành (Vingroup, Masan, Sun Group...).
-   - **CẤM TUYỆT ĐỐI:** + KHÔNG đưa tin về Tỉnh/Thành phố/Bộ ngành (VD: "Hải Phòng đầu tư...", "Bộ Xây dựng..."). -> Đưa sang Vĩ mô.
-     + KHÔNG đưa tin về doanh nghiệp nhỏ, thẩm mỹ viện, vụ án lừa đảo cá nhân. -> Loại bỏ.
+1.  **THẨM ĐỊNH & SÀNG LỌC (Strict Filtering):**
+    * **Loại bỏ ngay:** Tin rác, tin quảng cáo, tin đời sống/pháp luật (vụ án, thẩm mỹ viện, tai nạn), tin trùng lặp.
+    * **Phân loại lại (Re-classify):** Đừng tin hoàn toàn vào [TAG] của robot.
+        * Tin về *Tỉnh/Thành phố, Bộ ngành, Lãi suất, Giá vàng/Dầu* -> Bắt buộc là **MACRO**.
+        * Tin về *Công ty niêm yết, Tập đoàn lớn* -> Bắt buộc là **CORPORATE**.
 
-   👉 **VÍ DỤ PHÂN LOẠI:**
-   - "Hải Phòng cấp vốn 700 tỷ cho dự án cầu đường" -> **VĨ MÔ** (Sai nếu để Doanh nghiệp).
-   - "Hòa Phát (HPG) xuất khẩu 700 tấn thép" -> **DOANH NGHIỆP** (Đúng).
-   - "TP.HCM gỡ vướng pháp lý BĐS" -> **VĨ MÔ** (Sai nếu để Doanh nghiệp).
-   - "VNDIRECT bị phạt" -> **DOANH NGHIỆP** (Đúng).
+2.  **CHẤM ĐIỂM TÁC ĐỘNG (Impact Scoring):**
+    * Chỉ chọn tin có khả năng làm giá cổ phiếu biến động (Score >= 6).
 
-2. **TRÍCH XUẤT MÃ CHỨNG KHOÁN (TICKER):**
-   - Hãy suy luận mã chứng khoán từ tên công ty nếu chắc chắn 100%.
-   - Ví dụ: "Hòa Phát" -> `HPG`, "Vingroup" -> `VIC`, "Đất Xanh" -> `DXG`.
-   - Nếu không chắc chắn hoặc công ty chưa niêm yết, hãy để `null`. Đừng đoán mò.
+3.  **VIẾT NỘI DUNG (Investor Style):**
+    * Không viết kiểu báo chí ("cho biết", "theo đó"). Viết kiểu dân tài chính: Ngắn, trực diện, tập trung vào con số/kết quả.
+    * Ví dụ: Thay vì "VNM công bố trả cổ tức", viết "VNM chốt quyền cổ tức 15% tiền mặt".
 
-YÊU CẦU ĐẦU RA (JSON FORMAT BẮT BUỘC):
-Hãy trả về một JSON object duy nhất tuân thủ cấu trúc sau:
+---
+### 📝 YÊU CẦU ĐẦU RA (JSON FORMAT):
 
 {{
   "headline": [
-    // BẮT BUỘC: Chọn đúng 3 tin quan trọng nhất (Score 9-10)
-    {{ 
-      "text": "Nội dung tóm tắt...", 
-      "link": "URL_GOC",
-      "tag": "HOT" 
-    }}
+    // Chọn ĐÚNG 3 tin chấn động nhất thị trường (Score 9-10).
+    // Yêu cầu: Dynamic Tag (VD: "Vĩ mô", "Bank", "BĐS", "Thế giới"). KHÔNG dùng tag "HOT" chung chung.
+    {{ "text": "Nội dung tóm tắt...", "link": "URL", "tag": "Tên Nhóm Tin" }}
   ],
-  "macro": [
-    // BẮT BUỘC: Chọn tối đa 5 tin vĩ mô quan trọng nhất (Sắp xếp theo độ quan trọng giảm dần)
-    {{ "text": "Nội dung...", "link": "URL_GOC" }}
-  ],
+  
   "corporate": [
-    // BẮT BUỘC: Chọn tối đa 8 tin doanh nghiệp tiêu biểu nhất.
-    // Ưu tiên các tin có mã cổ phiếu rõ ràng.
+    // Tối đa 8 tin doanh nghiệp tiêu biểu nhất.
+    // QUAN TRỌNG: Không lặp lại tin đã đưa vào mục "headline".
     {{ 
-      "ticker": "ABC", // Nếu không có mã, để trống string ""
-      "text": "Nội dung sự kiện (viết lại giọng văn khách quan, bỏ từ ngữ giật tít)", 
-      "link": "URL_GOC" 
+      "ticker": "ABC", // BẮT BUỘC suy luận mã 3 chữ cái (VD: HPG, VHM, STB). Nếu không chắc chắn 100%, để null.
+      "text": "Nội dung tóm tắt (tập trung KQKD, Cổ tức, Dự án)", 
+      "link": "URL" 
     }}
   ],
-  "sentiment_score": 7,
-  "comment": "Nhận định..."
+  
+  "macro": [
+    // Tối đa 5 tin vĩ mô quan trọng nhất.
+    // QUAN TRỌNG: Không lặp lại tin đã đưa vào mục "headline".
+    {{ "text": "Nội dung tóm tắt...", "link": "URL" }}
+  ],
+  
+  "sentiment_score": 7, // Thang điểm: 1-3 (Tiêu cực), 4-6 (Thận trọng/Trung lập), 7-10 (Tích cực/Hưng phấn).
+  "comment": "Nhận định xu hướng dòng tiền và tâm lý thị trường dựa trên các tin trên (dưới 20 từ)."
 }}
-
-LƯU Ý QUAN TRỌNG:
-1. **SỐ LƯỢNG:** Tuyệt đối không vượt quá số lượng quy định (Headline: 3, Macro: 5, Corporate: 8). Hãy lọc bỏ các tin điểm thấp hơn để đạt số lượng này.
-2. **VĂN PHONG:** Viết lại tiêu đề sao cho ngắn gọn, súc tích (dưới 15 từ/tin).
 """
 
-    # 3. Gọi Gemini
+    # 3. Gọi Gemini (Giữ nguyên)
     try:
-        # Cấu hình ép kiểu JSON
         config = {"response_mime_type": "application/json"}
-        
         json_str = await asyncio.to_thread(
             call_gemini_safe,
             model_id="gemini-2.5-flash", 
             contents=prompt,
             config=config
         )
-        
-        # Xử lý an toàn chuỗi JSON trả về
-        # Đôi khi AI thêm ```json ở đầu/cuối, cần gỡ bỏ
         clean_json_str = json_str.replace("```json", "").replace("```", "").strip()
-        
         import json
-        data = json.loads(clean_json_str)
-        return data
-
+        return json.loads(clean_json_str)
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] Lỗi tóm tắt JSON AI: {e}")
         return None
@@ -1699,7 +1682,7 @@ LƯU Ý QUAN TRỌNG:
     try:
         # GỌI HÀM WRAPPER TRỰC TIẾP (Vì hàm này đã chạy trong to_thread ở lớp ngoài)
         return call_gemini_safe(
-            model_id="gemini-2.5-flash-lite",
+            model_id="gemini-2.5-flash",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
