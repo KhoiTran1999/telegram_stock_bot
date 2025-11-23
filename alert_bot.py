@@ -6,6 +6,7 @@ import asyncio
 import pytz
 import requests
 import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 import math
 import uuid
 import logging
@@ -23,6 +24,7 @@ from digest_template import (
     LOCKED_FEATURE_TEMPLATE,
     EOD_HTML_TEMPLATE, 
     EOD_404_TEMPLATE,
+    FLASH_VIEW_HTML_TEMPLATE,
 )
 from telegram import (
     BotCommand,
@@ -87,7 +89,9 @@ from db_utils import (
     save_bot_message,
     get_messages_to_cleanup,
     delete_bot_log_record,
-    get_latest_bot_message_id
+    get_latest_bot_message_id,
+    save_historical_valuation_to_redis,
+    get_historical_valuation_from_redis
 )
 import psutil
 import time
@@ -119,7 +123,6 @@ from pathlib import Path
 from google import genai
 import uuid
 import hmac
-from digest_template import FLASH_VIEW_HTML_TEMPLATE
 from chart_utils import (
     get_flash_view_data,
     draw_line_chart_fixed_ui,
@@ -656,6 +659,101 @@ def load_industry_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, s
 def get_state_for_all():
     return ALERT_STATE
 
+# --- HELPER CHO SCREENER MEAN REVERSION ---
+def _clean_vnstock_columns(df):
+    """Chuẩn hóa tên cột vnstock (MultiIndex) -> tên đơn giản."""
+    new_columns = []
+    for col in df.columns:
+        if isinstance(col, tuple): col_name = col[-1]
+        else: col_name = str(col)
+        clean_name = col_name.lower().strip().replace('/', '').replace(' ', '_').replace('(', '').replace(')', '')
+        new_columns.append(clean_name)
+    df.columns = new_columns
+    return df
+
+async def calculate_historical_valuation_task():
+    """
+    TÁC VỤ NẶNG: Tính trung bình P/E, P/B 5 năm cho toàn thị trường.
+    Nên chạy 1 lần/ngày vào buổi sáng (ví dụ 7:00).
+    """
+    log.info(f"[{INSTANCE_ID}] 🧮 Bắt đầu tính toán định giá lịch sử (Mean Reversion)...")
+    
+    try:
+        # 1. Lấy danh sách mã (Lọc sơ bộ để giảm tải)
+        # Lấy toàn bộ mã từ Screener trước
+        screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
+        
+        # Lọc: Vốn hóa > 1000 tỷ & Có thanh khoản (tránh tính rác)
+        # Lưu ý: Tên cột screener là 'market_cap', 'total_trading_value' (hoặc tương tự)
+        # Ta chỉ cần lấy list ticker để loop
+        valid_tickers = screener[screener['market_cap'] > 1000]['ticker'].tolist()
+        
+        log.info(f"[{INSTANCE_ID}] Tìm thấy {len(valid_tickers)} mã đủ điều kiện tính toán.")
+        
+        history_data = {}
+        
+        # 2. Loop và tính toán (Chạy tuần tự hoặc chia batch nhỏ để không DDOS API)
+        # Vì đây là task chạy ngầm, chậm chút không sao.
+        count = 0
+        consecutive_errors = 0 # Đếm số lỗi liên tiếp
+
+        for i, sym in enumerate(valid_tickers):
+            # 🔥 [RATE LIMIT] Nghỉ dài hơn sau mỗi 20 mã để server "thở"
+            if i > 0 and i % 20 == 0:
+                log.info(f"[{INSTANCE_ID}] 💤 Đã xử lý {i} mã. Nghỉ 3s để tránh Rate Limit...")
+                await asyncio.sleep(3)
+
+            # 🔥 [RATE LIMIT] Nếu gặp lỗi liên tiếp > 5 lần (bị chặn IP), nghỉ cực lâu
+            if consecutive_errors > 5:
+                log.warning(f"[{INSTANCE_ID}] ⚠️ Phát hiện bị chặn liên tục. Ngủ 60s để cooldown...")
+                await asyncio.sleep(60)
+                consecutive_errors = 0 # Reset bộ đếm
+
+            try:
+                # Gọi Finance lấy dữ liệu năm
+                fin_df = await asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi'))
+                
+                if fin_df is not None and not fin_df.empty:
+                    fin_df = _clean_vnstock_columns(fin_df)
+                    df_5y = fin_df.head(5) # 5 năm gần nhất
+                    
+                    # Ép kiểu số
+                    pe_series = pd.to_numeric(df_5y['pe'], errors='coerce')
+                    pb_series = pd.to_numeric(df_5y['pb'], errors='coerce')
+                    
+                    # Lọc bỏ giá trị âm/0 (lỗ)
+                    pe_series = pe_series[pe_series > 0]
+                    pb_series = pb_series[pb_series > 0]
+                    
+                    # Chỉ tính nếu có ít nhất 3 năm dữ liệu dương
+                    if len(pe_series) >= 3 and len(pb_series) >= 3:
+                        history_data[sym] = {
+                            'pe_avg': pe_series.mean(),
+                            'pb_avg': pb_series.mean()
+                        }
+                        count += 1
+                        consecutive_errors = 0 # Reset lỗi nếu thành công
+                
+                # 🔥 [RATE LIMIT] Tăng delay cơ bản từ 0.1s -> 3.0s
+                # Chậm nhưng chắc, vì đây là task chạy ngầm
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                consecutive_errors += 1
+                log.warning(f"Lỗi tính toán {sym}: {e}")
+                # Nếu lỗi từng mã lẻ tẻ, nghỉ 5s rồi thử mã kế tiếp
+                await asyncio.sleep(5.0)
+                continue
+        
+        # 3. Lưu vào Redis
+        if history_data:
+            await asyncio.to_thread(save_historical_valuation_to_redis, history_data)
+            log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất tính toán. Đã lưu dữ liệu lịch sử cho {count} mã.")
+        else:
+            log.warning(f"[{INSTANCE_ID}] ⚠️ Không tính được dữ liệu lịch sử nào.")
+            
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] ❌ Lỗi task tính toán định giá: {e}")
 
 def save_state_for_all(all_state):
     global ALERT_STATE
@@ -4470,8 +4568,6 @@ async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
         except Exception as e:
             log.warning(f"[{INSTANCE_ID}] Lỗi ghim Digest mới cho {chat_id}: {e}")
 
-# --- DÁN ĐÈ LÊN HÀM daily_user_digest_loop CŨ TRONG alert_bot.py ---
-
 async def daily_user_digest_loop():
     """
     Gửi bản tin tổng hợp (Digest) 7:00 sáng.
@@ -4498,6 +4594,9 @@ async def daily_user_digest_loop():
         if not BOT_ACTIVE: continue
         
         log.info(f"{loop_label} 07:00! Bắt đầu build digest...")
+
+        # 🔥 [THÊM MỚI] Chạy tính toán định giá lịch sử
+        asyncio.create_task(calculate_historical_valuation_task())
 
         # 2️⃣ Thu thập dữ liệu (Song song)
         try:
@@ -4675,7 +4774,6 @@ async def daily_user_digest_loop():
             # Nội dung tin nhắn: Tiêu đề + AI Text
             msg_text = (
                 f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
-                f"{ai_telegram_text}\n\n"
                 f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
             )
             
@@ -5985,7 +6083,8 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    (UX PRO) Bộ lọc Value với Progress Bar.
+    (PREMIUM) Bộ lọc Định giá (Mean Reversion).
+    Kết hợp dữ liệu Realtime (Screener) + Lịch sử 5 năm (Redis Cache).
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
@@ -5993,99 +6092,122 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     chat_id = update.effective_chat.id
     
-    # 1. Kiểm tra Paywall (Dùng hàm check có sẵn)
+    # 1. Kiểm tra Paywall
     if not await check_pro_access(update, context): return
 
     # Log
     try: await asyncio.to_thread(log_command_usage, chat_id, "/screener_value", ADMIN_ID)
     except: pass
 
-    # Mặc định dùng 'all' vì WebApp sẽ lo phần chuyển tab
-    screener_type = 'all' 
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-    screener_url = f"{base_url}/screener?type=all&chat_id={chat_id}"
+    # 2. Lấy dữ liệu Lịch sử từ Redis
+    hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
     
-    # A. Check Cache (Nhanh)
-    cached = await asyncio.to_thread(load_value_screener_from_redis, screener_type)
-    if cached is not None:
-        # Cache Hit -> Gửi nút ngay (không cần progress bar vì quá nhanh)
-        kb = [[InlineKeyboardButton("🚀 Mở Bộ Lọc (WebApp)", web_app=WebAppInfo(url=screener_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        await reply_md(
-            update,
-            "💎 **Bộ Lọc Cổ Phiếu Giá Trị**\n\n"
-            "Nhấn nút bên dưới để mở giao diện lọc cổ phiếu realtime (P/E, P/B, ROE...)",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+    # Nếu chưa có cache (ví dụ sáng sớm chưa chạy xong, hoặc bot mới restart),
+    # ta kích hoạt tính toán ngay lập tức và báo user đợi.
+    if not hist_data:
+        await reply_md(update, "⏳ Hệ thống đang khởi tạo dữ liệu định giá lịch sử (lần đầu trong ngày). Vui lòng thử lại sau 2-3 phút.")
+        asyncio.create_task(calculate_historical_valuation_task())
         return
-    
-    # B. Cache Miss -> CHẠY TIẾN TRÌNH (Vì gọi API mất ~10s)
-    
-    # B1. Khởi tạo
-    progress_msg = await reply_md(
-        update, 
-        f"⏳ **Khởi động Market Scanner...**\n"
-        f"`[{make_progress_bar(10)}] 10%`"
-    )
+
+    # Gửi loading
+    progress_msg = await reply_md(update, f"💎 **Đang phân tích định giá thị trường...**\n`[{make_progress_bar(20)}] 20%`")
 
     try:
-        # B2. Đang quét (50%)
-        await asyncio.sleep(0.5)
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"📡 **Đang quét dữ liệu toàn thị trường...**\n`[{make_progress_bar(50)}] 50%`",
-            parse_mode="Markdown"
-        )
+        # 3. Lấy dữ liệu Hiện tại (Snapshot Realtime)
+        # Lấy exchangeName rộng để bao phủ
+        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
-        # --- GỌI HÀM NẶNG ---
-        result = await asyncio.to_thread(run_value_screener_from_api, screener_type)
-        if result:
-            await asyncio.to_thread(save_value_screener_to_redis, result, screener_type)
-        # --------------------
-
-        if not result or not result.get("industries"):
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text="⚠️ Không lấy được dữ liệu thị trường. Vui lòng thử lại sau.",
-                parse_mode="Markdown"
-            )
-            return
-
-        # B3. Hoàn tất
         await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"✅ **Xử lý hoàn tất!**\n`[{make_progress_bar(100)}] 100%`",
-            parse_mode="Markdown"
+            chat_id=chat_id, message_id=progress_msg.message_id,
+            text=f"📊 **Đang so sánh với dữ liệu quá khứ...**\n`[{make_progress_bar(60)}] 60%`", parse_mode="Markdown"
         )
-        await asyncio.sleep(0.5)
 
-        # Xóa loading & Gửi kết quả
+        # 4. Xử lý & Ghép dữ liệu
+        processed_items = []
+        
+        for index, row in screener_df.iterrows():
+            sym = row['ticker']
+            
+            # Chỉ xử lý nếu có trong data lịch sử
+            if sym not in hist_data: continue
+            
+            pe_cur = float(row['pe'])
+            pb_cur = float(row['pb'])
+            pe_avg = hist_data[sym]['pe_avg']
+            pb_avg = hist_data[sym]['pb_avg']
+            
+            if pe_avg <= 0 or pb_avg <= 0: continue # Skip lỗi
+
+            # Tính toán
+            pe_discount = (pe_cur - pe_avg) / pe_avg
+            pb_discount = (pb_cur - pb_avg) / pb_avg
+            avg_discount = (pe_discount + pb_discount) / 2
+            
+            # UI Helpers (Logic y hệt file test)
+            def get_ui_meta(discount):
+                pct_val = abs(discount) * 100
+                if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
+                elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
+                else: 
+                    sign = "▲" if discount > 0 else "▼"
+                    return "", f"{sign} {pct_val:.1f}%"
+
+            pe_class, pe_diff_str = get_ui_meta(pe_discount)
+            pb_class, pb_diff_str = get_ui_meta(pb_discount)
+            
+            if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
+            elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
+            else: signal_class, signal_text = "sig-fair", "Hợp lý"
+
+            processed_items.append({
+                'symbol': sym,
+                'pe_cur': pe_cur, 'pe_avg': pe_avg,
+                'pe_class': pe_class, 'pe_diff_str': pe_diff_str,
+                'pb_cur': pb_cur, 'pb_avg': pb_avg,
+                'pb_class': pb_class, 'pb_diff_str': pb_diff_str,
+                'signal_class': signal_class, 'signal_text': signal_text,
+                'avg_discount': avg_discount
+            })
+
+        # 5. Sắp xếp (Rẻ nhất lên đầu) & Lấy Top 50
+        processed_items.sort(key=lambda x: x['avg_discount'])
+        top_items = processed_items[:50] # Lấy top 50 mã rẻ nhất để hiển thị
+
+        # 6. Lưu vào Redis (cache HTML data) để WebApp render
+        digest_id = uuid.uuid4().hex
+        vn_tz = pytz.timezone(TIMEZONE)
+        payload = {
+            "items": top_items,
+            "generated_time": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
+        }
+        # Dùng hàm save_digest_to_redis có sẵn (Lưu ý: dùng key prefix khác cho screener nếu muốn, hoặc dùng chung)
+        # Ở đây mình dùng chung cơ chế digest cho tiện: key = "digest_web:screener_val:{digest_id}"
+        r = get_redis()
+        r.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600) # TTL 1h
+
+        # 7. Gửi kết quả
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        # Tạo route mới hoặc dùng route cũ nhưng handle logic
+        # Để đơn giản, ta sẽ tạo route mới /screener_result/<id> trong bước tiếp theo
+        # Hoặc tái sử dụng route /screener với tham số
+        web_url = f"{base_url}/screener_result/{digest_id}"
+        
         await context.bot.delete_message(chat_id, progress_msg.message_id)
         
-        kb = [[InlineKeyboardButton("🚀 Mở Bộ Lọc (WebApp)", web_app=WebAppInfo(url=screener_url))],
+        kb = [[InlineKeyboardButton("🚀 Xem Bảng Xếp Hạng (Top 50)", web_app=WebAppInfo(url=web_url))],
               [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
 
         await reply_md(
             update,
-            "💎 **Bộ Lọc Cổ Phiếu Giá Trị**\n\n"
-            "Dữ liệu đã được cập nhật mới nhất từ thị trường.\n"
-            "Nhấn nút bên dưới để mở giao diện lọc.",
+            f"💎 **Định Giá Cổ Phiếu (Mean Reversion)**\n\n"
+            f"✅ Đã quét xong {len(processed_items)} mã.\n"
+            f"👉 Nhấn nút bên dưới để xem Top cổ phiếu rẻ nhất thị trường.",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
     except Exception as e:
-        log.error(f"Lỗi /screener: {e}")
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"⚠️ Lỗi kỹ thuật. Vui lòng thử lại.",
-                parse_mode="Markdown"
-            )
-        except: pass
+        log.error(f"Lỗi /screener_value: {e}")
+        await context.bot.edit_message_text(chat_id, progress_msg.message_id, text="⚠️ Lỗi hệ thống. Vui lòng thử lại sau.")
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -7530,59 +7652,6 @@ async def view_report(cache_key): # <--- Đổi thành async
         is_pro=True 
     )
 
-@flask_app.route("/screener")
-def view_screener():
-    """
-    Route hiển thị Web App Screener.
-    Query params: ?type=all&chat_id=123
-    """
-    screener_type = request.args.get("type", "all").lower()
-
-    # Logic chặn Free User
-    chat_id_str = request.args.get("chat_id")
-    is_pro = False
-    if chat_id_str:
-        try:
-            cid = int(chat_id_str)
-            is_pro = is_user_pro(cid) or (cid == ADMIN_ID)
-        except: pass
-    
-    if not is_pro:
-        # [NỘI DUNG RIÊNG CHO SCREENER]
-        return render_template_string(
-            LOCKED_FEATURE_TEMPLATE,
-            icon="💎",
-            title="Bộ Lọc Giá Trị Realtime",
-            desc="Lọc cổ phiếu định giá rẻ (P/E, P/B) và hiệu quả cao (ROE) ngay trong phiên giao dịch."
-        ), 403
-    
-    # A. Check Redis
-    cached = load_value_screener_from_redis(screener_type)
-    data = None
-    
-    if cached:
-        data = cached
-    else:
-        # B. Gọi API (nếu miss cache)
-        try:
-            data = run_value_screener_from_api(screener_type)
-            if data:
-                save_value_screener_to_redis(data, screener_type)
-        except Exception as e:
-            log.error(f"[WEBAPP SCREENER] Error fetching data: {e}")
-
-    error_msg = None
-    if not data or not data.get("industries"):
-        error_msg = f"Không lấy được dữ liệu cho tiêu chí {screener_type.upper()}."
-
-    return render_template_string(
-        SCREENER_HTML_TEMPLATE,
-        data=data,
-        current_type=screener_type,
-        chat_id=chat_id_str,
-        error=error_msg
-    )
-
 @flask_app.route("/eod/<eod_id>")
 def view_eod(eod_id):
     """Route hiển thị Web App Tổng kết cuối phiên (EOD)"""
@@ -7640,6 +7709,29 @@ async def view_chart(symbol: str):
         rsi_msg=data['rsi_msg'],
         volume_str=data['volume_str']
     )
+
+@flask_app.route("/screener_result/<id>")
+def view_screener_result(id):
+    """Route hiển thị kết quả Screener Value (Mean Reversion)"""
+    try:
+        r = get_redis()
+        raw = r.get(f"digest_web:screener_val:{id}")
+        
+        if not raw:
+            # Nếu không tìm thấy data, báo lỗi đơn giản
+            return "<h3>Dữ liệu đã hết hạn hoặc không tồn tại. Vui lòng tạo lại lệnh /screener_value</h3>", 404
+            
+        data = json.loads(raw)
+        
+        # Render HTML mới
+        return render_template_string(
+            SCREENER_HTML_TEMPLATE, 
+            items=data['items'], 
+            generated_time=data['generated_time']
+        )
+    except Exception as e:
+        log.error(f"Lỗi render screener_result: {e}")
+        return f"Lỗi server: {e}", 500
 
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)

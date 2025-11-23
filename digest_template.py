@@ -93,6 +93,15 @@ DIGEST_HTML_TEMPLATE = """
                 {% endfor %}
             </div>
 
+            {% if data.ai_news.macro %}
+            <div style="font-weight:700; color:#555; margin:16px 0 8px 0; font-size:12px; text-transform: uppercase;">🌊 Vĩ mô & Chính sách</div>
+            {% for item in data.ai_news.macro %}
+            <div style="margin-bottom:6px; font-size:13px;">
+                <a href="{{ item.link }}" style="text-decoration:none; color:#333;">• {{ item.text }}</a>
+            </div>
+            {% endfor %}
+            {% endif %}
+
             {% if data.ai_news.corporate %}
             <div style="margin-top: 20px;">
                 <div style="font-weight:800; color:#555; margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid #eee; padding-bottom: 6px; display:flex; align-items:center; gap:6px;">
@@ -117,43 +126,11 @@ DIGEST_HTML_TEMPLATE = """
                 </div>
             </div>
             {% endif %}
-            
-            {% if data.ai_news.macro %}
-            <div style="font-weight:700; color:#555; margin:16px 0 8px 0; font-size:12px; text-transform: uppercase;">🌊 Vĩ mô & Chính sách</div>
-            {% for item in data.ai_news.macro %}
-            <div style="margin-bottom:6px; font-size:13px;">
-                <a href="{{ item.link }}" style="text-decoration:none; color:#333;">• {{ item.text }}</a>
-            </div>
-            {% endfor %}
-            {% endif %}
 
             <div style="margin-top: 16px; font-style: italic; color: #666; font-size: 13px; border-top: 1px solid #eee; padding-top: 12px; background:#fafafa; padding:12px; border-radius:8px;">
                 "{{ data.ai_news.comment }}"
             </div>
         </div>
-    </div>
-    {% endif %}
-
-    {% if data.value_stocks %}
-    <div class="section-card" id="stocks-card">
-        <div class="card-header"><div class="card-icon">💎</div><div class="card-title">Top Value Hôm Nay</div></div>
-        <table class="stock-table">
-            <thead><tr><th>Mã</th><th style="text-align:right">Chỉ Số</th><th style="text-align:right">Điểm</th></tr></thead>
-            <tbody>
-                {% for item in data.value_stocks %}
-                <tr class="{% if loop.index > 5 %}hidden-item{% endif %}">
-                    <td><b>{{ item.symbol }}</b><br><span style="font-size:11px; color:#8e8e93;">{{ item.industry }}</span></td>
-                    <td style="text-align:right">P/E: {{ item.pe }}<br>ROE: {{ item.roe }}%</td>
-                    <td style="text-align:right"><span class="score-badge">{{ item.score }}</span></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% if data.value_stocks|length > 5 %}
-        <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('stocks-card', this, {{ data.value_stocks|length }}, 5)">Xem thêm {{ data.value_stocks|length - 5 }} mã ↓</button>
-        </div>
-        {% endif %}
     </div>
     {% endif %}
 
@@ -233,6 +210,29 @@ DIGEST_HTML_TEMPLATE = """
         {% if data.specialized|length > 3 %}
         <div class="action-area">
             <button class="btn-toggle" onclick="toggleSection('specialized-card', this, {{ data.specialized|length }}, 3)">Xem thêm {{ data.specialized|length - 3 }} tin ↓</button>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if data.value_stocks %}
+    <div class="section-card" id="stocks-card">
+        <div class="card-header"><div class="card-icon">💎</div><div class="card-title">Top Value Hôm Nay</div></div>
+        <table class="stock-table">
+            <thead><tr><th>Mã</th><th style="text-align:right">Chỉ Số</th><th style="text-align:right">Điểm</th></tr></thead>
+            <tbody>
+                {% for item in data.value_stocks %}
+                <tr class="{% if loop.index > 5 %}hidden-item{% endif %}">
+                    <td><b>{{ item.symbol }}</b><br><span style="font-size:11px; color:#8e8e93;">{{ item.industry }}</span></td>
+                    <td style="text-align:right">P/E: {{ item.pe }}<br>ROE: {{ item.roe }}%</td>
+                    <td style="text-align:right"><span class="score-badge">{{ item.score }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if data.value_stocks|length > 5 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('stocks-card', this, {{ data.value_stocks|length }}, 5)">Xem thêm {{ data.value_stocks|length - 5 }} mã ↓</button>
         </div>
         {% endif %}
     </div>
@@ -891,234 +891,132 @@ REPORT_404_TEMPLATE = """
 
 SCREENER_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="vi" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Bộ Lọc Cổ Phiếu</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>Định Giá Cổ Phiếu</title>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
-            --text-color: var(--tg-theme-text-color, #000);
-            --hint-color: var(--tg-theme-hint-color, #8e8e93);
-            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
-            --button-color: var(--tg-theme-button-color, #007aff);
-            
-            --brand-gradient: linear-gradient(135deg, #007aff 0%, #af52de 100%);
-            --pro-gradient: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
-            
-            --color-success: #34c759; --color-success-bg: rgba(52, 199, 89, 0.1);
-            --color-danger: #ff3b30;
-            
-            --border-radius: 16px;
-            --shadow-sm: 0 2px 8px rgba(0,0,0,0.04);
+            --bg-color: #f8f9fa; --card-bg: #ffffff; --text-primary: #111827; --text-secondary: #6b7280;
+            --metric-bg: rgba(249, 250, 251, 1); --metric-border: rgba(0,0,0,0.04);
+            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
+            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
+            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
+            --success-text: #059669; --success-bg: #d1fae5;
+            --danger-text: #dc2626;  --danger-bg: #fee2e2;
+            --warning-text: #d97706; --warning-bg: #fef3c7;
+            --brand-gradient: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+            --pro-gradient: linear-gradient(135deg, #F59E0B 0%, #FCD34D 100%);
         }
-
-        /* --- SMOOTH LOADING --- */
-        body { 
-            font-family: 'Inter', sans-serif; 
-            background-color: var(--bg-color); 
-            color: var(--text-color); 
-            margin: 0; padding: 16px 16px 40px 16px;
-            -webkit-font-smoothing: antialiased; 
-            visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
+        [data-theme="dark"] {
+            --bg-color: #121212; --card-bg: #1e1e1e; --text-primary: #f9fafb; --text-secondary: #9ca3af;
+            --metric-bg: rgba(255, 255, 255, 0.05); --metric-border: rgba(255, 255, 255, 0.1);
+            --r1-bg: linear-gradient(160deg, #1e1e1e 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
+            --r2-bg: linear-gradient(160deg, #1e1e1e 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
+            --r3-bg: linear-gradient(160deg, #1e1e1e 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
+            --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
+            --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
+            --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
         }
-        body.loaded { visibility: visible; opacity: 1; }
-        
-        /* HEADER */
-        .header { text-align: center; margin-bottom: 24px; }
-        
-        .header-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 4px; }
-        
-        .header-title { 
-            font-size: 28px; font-weight: 800; margin: 0; letter-spacing: -1px; line-height: 1.2;
-            background: var(--brand-gradient); 
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
-            background-clip: text; color: var(--button-color);
-        }
-        
-        .pro-badge { 
-            background: var(--pro-gradient); color: white; font-size: 11px; font-weight: 800; 
-            padding: 4px 8px; border-radius: 8px; display: inline-flex; align-items: center; 
-            transform: translateY(-2px); 
-        }
-
-        .header-desc { font-size: 13px; color: var(--hint-color); margin-top: 6px; font-weight: 500; }
-        .header-time { font-size: 11px; color: var(--hint-color); margin-top: 4px; font-weight: 500; opacity: 0.8; }
-
-        /* TABS */
-        .tabs-wrapper { overflow-x: auto; scrollbar-width: none; margin: 0 -8px 20px -8px; padding: 0 8px; text-align: center; }
-        .tabs-wrapper::-webkit-scrollbar { display: none; }
-        
-        .tabs { display: inline-flex; gap: 8px; background: rgba(118, 118, 128, 0.12); padding: 4px; border-radius: 12px; }
-        
-        .tab { 
-            padding: 6px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; 
-            color: var(--text-color); text-decoration: none; transition: all 0.2s; border: none; white-space: nowrap;
-        }
-        .tab.active { background: var(--card-bg); color: var(--button-color); box-shadow: 0 3px 8px rgba(0,0,0,0.12); }
-
-        /* CARDS */
-        .section-card { 
-            background-color: var(--card-bg); border-radius: var(--border-radius); 
-            margin-bottom: 16px; box-shadow: var(--shadow-sm); overflow: hidden; 
-            animation: fadeInUp 0.4s ease;
-        }
-
-        .card-header { padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; }
-        .industry-title { font-size: 15px; font-weight: 700; color: var(--text-color); }
-        .industry-stat { font-size: 11px; color: var(--hint-color); font-weight: 500; background: var(--bg-color); padding: 4px 8px; border-radius: 6px; }
-
-        /* TABLE */
-        .stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .stock-table th { text-align: right; color: var(--hint-color); font-weight: 600; font-size: 11px; padding: 10px 12px 8px 4px; text-transform: uppercase; }
-        .stock-table th:first-child { text-align: left; padding-left: 16px; }
-        .stock-table th:last-child { padding-right: 16px; }
-
-        .stock-table td { padding: 12px 12px 12px 4px; border-bottom: 1px solid rgba(0,0,0,0.05); vertical-align: middle; color: var(--text-color); }
-        .stock-table tr:last-child td { border-bottom: none; }
-        .stock-table td:first-child { padding-left: 16px; }
-        .stock-table td:last-child { padding-right: 16px; }
-
-        .sym-box { font-weight: 700; font-size: 14px; color: var(--button-color); }
-        .val-good { color: var(--color-success); font-weight: 600; }
-        .val-bad { color: var(--color-danger); }
-        
-        .score-badge { background: var(--color-success-bg); color: var(--color-success); padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 12px; min-width: 32px; display: inline-block; text-align: center; }
-
-        /* EXPAND BUTTON */
-        .row-hidden { display: none; }
-        .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
-        .btn-toggle { background: none; border: none; color: var(--hint-color); font-size: 12px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
-        .btn-toggle:active { opacity: 0.7; }
-
-        /* FOOTER */
-        .footer-btn { display: block; width: 100%; padding: 14px; background: var(--brand-gradient); color: #fff; text-align: center; border-radius: 16px; border: none; font-size: 15px; font-weight: 700; margin-top: 24px; cursor: pointer; box-shadow: 0 8px 20px rgba(0,122,255, 0.25); }
-
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        body { font-family: 'Manrope', sans-serif; background-color: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px 16px 40px 16px; transition: all 0.3s ease; -webkit-font-smoothing: antialiased; }
+        .theme-toggle { position: absolute; top: 20px; right: 20px; background: var(--card-bg); border: 1px solid var(--text-secondary); color: var(--text-primary); padding: 6px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; cursor: pointer; opacity: 0.7; }
+        .header { text-align: center; margin-bottom: 28px; margin-top: 10px;}
+        .header-title { font-size: 26px; font-weight: 800; margin: 0; letter-spacing: -0.5px; background: var(--brand-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display:inline-block; }
+        .pro-badge { background: var(--pro-gradient); color: #fff; font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 12px; display: inline-flex; align-items: center; transform: translateY(-4px); box-shadow: 0 4px 10px rgba(245, 158, 11, 0.3); margin-left: 6px; }
+        .header-subtitle { font-size: 13px; color: var(--text-secondary); font-weight: 500; margin-top: 4px; }
+        .timestamp-badge { display: inline-block; margin-top: 8px; padding: 4px 10px; background: var(--metric-bg); border-radius: 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--metric-border); }
+        .card { background: var(--card-bg); border-radius: 20px; padding: 18px; margin-bottom: 16px; position: relative; border: 1px solid var(--metric-border); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02); transition: transform 0.2s; }
+        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 10px 25px -5px var(--r1-shadow); transform: scale(1.02); z-index: 10; }
+        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.5); font-size: 18px; width: 36px; height: 36px; border: 2px solid #fff; }
+        .card-rank-1::before { content: '👑'; position: absolute; top: -14px; left: 10px; font-size: 24px; transform: rotate(-15deg); z-index: 20; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
+        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 10px 25px -5px var(--r2-shadow); }
+        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.4); font-size: 16px; width: 32px; height: 32px; border: 2px solid #fff; color: #374151; }
+        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 10px 25px -5px var(--r3-shadow); }
+        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); font-size: 16px; width: 32px; height: 32px; border: 2px solid #fff; }
+        .rank-other { background: var(--metric-bg); color: var(--text-secondary); font-size: 12px; border-radius: 8px; width: 24px; height: 24px; font-family: 'Manrope', sans-serif; font-weight: 800; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
+        .symbol-wrap { display: flex; align-items: center; gap: 12px; }
+        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 10px; font-family: 'Oswald', sans-serif; font-weight: 700; color: #fff; }
+        .symbol { font-size: 20px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }
+        .signal-badge { font-size: 11px; font-weight: 700; padding: 5px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .sig-cheap { background: var(--success-bg); color: var(--success-text); }
+        .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
+        .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--metric-border); }
+        .m-label { font-size: 10px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
+        .m-curr { font-size: 16px; font-weight: 800; color: var(--text-primary); }
+        .m-avg { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+        .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
+        .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
+        .hidden-item { display: none; }
+        .btn-expand { display: block; width: 100%; padding: 14px; background: var(--card-bg); color: var(--text-secondary); border: 1px solid var(--text-secondary); border-radius: 16px; font-size: 13px; font-weight: 700; margin-top: 24px; cursor: pointer; opacity: 0.6; }
+        .algo-explain { margin-top: 40px; padding: 24px; background: var(--card-bg); border-radius: 20px; border: 1px solid var(--metric-border); }
+        .algo-title { font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--text-primary); }
+        .algo-text { font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+        .algo-formula { background: var(--metric-bg); padding: 10px 14px; border-radius: 10px; font-family: monospace; font-weight: 700; font-size: 12px; color: var(--text-primary); margin: 12px 0; display: block; border-left: 4px solid #3b82f6; }
     </style>
 </head>
 <body>
     <div class="header">
-        <div class="header-title-row">
-            <h1 class="header-title">Bộ Lọc Cổ Phiếu</h1>
-            <span class="pro-badge">PRO 👑</span>
-        </div>
-        <div class="header-desc">Dữ liệu realtime từ thị trường</div>
-        {% if data.as_of %}
-        <div class="header-time">🕒 Cập nhật: {{ data.as_of }}</div>
-        {% endif %}
+        <div><span class="header-title">Định Giá Cổ Phiếu</span><span class="pro-badge">PRO 👑</span></div>
+        <div class="header-subtitle">Top cổ phiếu định giá Rẻ nhất so với Lịch sử</div>
+        <div class="timestamp-badge">🕒 Cập nhật: {{ generated_time }}</div>
     </div>
 
-    <div class="tabs-wrapper">
-        <div class="tabs">
-            <a href="?type=all&chat_id={{ chat_id }}" class="tab {% if current_type == 'all' %}active{% endif %}">Tổng hợp</a>
-            <a href="?type=pe&chat_id={{ chat_id }}" class="tab {% if current_type == 'pe' %}active{% endif %}">P/E Thấp</a>
-            <a href="?type=pb&chat_id={{ chat_id }}" class="tab {% if current_type == 'pb' %}active{% endif %}">P/B Thấp</a>
-            <a href="?type=roe&chat_id={{ chat_id }}" class="tab {% if current_type == 'roe' %}active{% endif %}">ROE Cao</a>
+    {% for item in items %}
+    <div class="card {% if loop.index == 1 %}card-rank-1{% elif loop.index == 2 %}card-rank-2{% elif loop.index == 3 %}card-rank-3{% endif %} {% if loop.index > 10 %}hidden-item{% endif %}">
+        <div class="card-header">
+            <div class="symbol-wrap">
+                <div class="rank-badge {% if loop.index > 3 %}rank-other{% endif %}">{{ loop.index }}</div>
+                <div class="symbol">{{ item.symbol }}</div>
+            </div>
+            <div class="signal-badge {{ item.signal_class }}">{{ item.signal_text }}</div>
+        </div>
+        <div class="metrics-grid">
+            <div class="metric-box">
+                <div class="m-label">P/E Ratio</div>
+                <div class="m-row"><span class="m-curr">{{ "%.1f"|format(item.pe_cur) }}x</span><span class="m-avg">TB: {{ "%.1f"|format(item.pe_avg) }}</span></div>
+                <div class="m-diff {{ item.pe_class }}">{{ item.pe_diff_str }}</div>
+            </div>
+            <div class="metric-box">
+                <div class="m-label">P/B Ratio</div>
+                <div class="m-row"><span class="m-curr">{{ "%.1f"|format(item.pb_cur) }}x</span><span class="m-avg">TB: {{ "%.1f"|format(item.pb_avg) }}</span></div>
+                <div class="m-diff {{ item.pb_class }}">{{ item.pb_diff_str }}</div>
+            </div>
         </div>
     </div>
+    {% endfor %}
 
-    {% if error %}
-        <div style="text-align:center; color: var(--hint-color); margin-top: 60px;">
-            <div style="font-size: 48px; margin-bottom: 10px; opacity: 0.5;">📉</div>
-            <b>{{ error }}</b>
-        </div>
-    {% else %}
-        {% for industry in data.industries %}
-        <div class="section-card" id="card-{{ loop.index }}">
-            <div class="card-header">
-                <div class="industry-title">{{ industry.industry }}</div>
-                {% if current_type == 'all' %}
-                    <div class="industry-stat">P/E Ngành: {{ "%.1f"|format(industry.rows[0].pe_industry) }}</div>
-                {% endif %}
-            </div>
-            
-            <table class="stock-table">
-                <thead>
-                    <tr>
-                        <th>Mã</th>
-                        <th>P/E</th>
-                        <th>P/B</th>
-                        <th>ROE</th>
-                        {% if current_type == 'all' %}<th>Điểm</th>{% endif %}
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for stock in industry.rows %}
-                    <tr class="stock-row-expandable {% if loop.index > 5 %}row-hidden{% endif %}">
-                        <td><div class="sym-box">{{ stock.symbol }}</div></td>
-                        <td style="text-align:right">
-                            {% if stock.pe < 10 %}<span class="val-good">{{ "%.1f"|format(stock.pe) }}</span>
-                            {% else %}{{ "%.1f"|format(stock.pe) }}{% endif %}
-                        </td>
-                        <td style="text-align:right">
-                            {% if stock.pb < 1.5 %}<span class="val-good">{{ "%.1f"|format(stock.pb) }}</span>
-                            {% else %}{{ "%.1f"|format(stock.pb) }}{% endif %}
-                        </td>
-                        <td style="text-align:right">
-                            {% if stock.roe > 0.15 %}<span class="val-good">{{ "%.0f"|format(stock.roe * 100) }}%</span>
-                            {% else %}{{ "%.0f"|format(stock.roe * 100) }}%{% endif %}
-                        </td>
-                        {% if current_type == 'all' %}
-                        <td style="text-align:right"><span class="score-badge">{{ "%.1f"|format(stock.value_score) }}</span></td>
-                        {% endif %}
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            
-            {% if industry.rows|length > 5 %}
-            <div class="action-area">
-                <button class="btn-toggle" 
-                        data-expanded="false" 
-                        data-total="{{ industry.rows|length }}"
-                        onclick="toggleRows('card-{{ loop.index }}', this)">
-                    Xem thêm {{ industry.rows|length - 5 }} mã ↓
-                </button>
-            </div>
-            {% endif %}
-        </div>
-        {% endfor %}
+    {% if items|length > 10 %}
+    <button id="btnToggle" class="btn-expand" onclick="toggleExpand()">Xem thêm {{ items|length - 10 }} mã ↓</button>
     {% endif %}
 
-    <div style="padding: 0 16px;">
-        <button class="footer-btn" onclick="Telegram.WebApp.close()">Đóng</button>
+    <div class="algo-explain">
+        <div class="algo-title">ℹ️ Nguyên lý xếp hạng (Mean Reversion)</div>
+        <div class="algo-text">
+            Hệ thống tự động tìm kiếm các cổ phiếu đang có định giá <b>Rẻ hơn so với chính nó</b> trong quá khứ (trung bình 5 năm).
+            <span class="algo-formula">Discount = (Giá trị hiện tại - Trung bình 5 năm) / Trung bình</span>
+            Xếp hạng dựa trên <b>Trung bình cộng</b> của độ lệch P/E và P/B (Trọng số 50:50).
+        </div>
     </div>
 
     <script>
         Telegram.WebApp.expand();
-        
-        window.addEventListener('load', function() {
-            document.body.classList.add('loaded');
-            Telegram.WebApp.ready();
-        });
-
-        function toggleRows(cardId, btn) {
-            const card = document.getElementById(cardId);
-            const hiddenRows = card.querySelectorAll('.stock-row-expandable');
-            const isExpanded = btn.getAttribute('data-expanded') === 'true';
-            const total = btn.getAttribute('data-total');
-            const hiddenCount = parseInt(total) - 5;
-
-            if (!isExpanded) {
-                hiddenRows.forEach((row, index) => {
-                    row.classList.remove('row-hidden');
-                    if (index >= 5) row.style.animation = 'fadeInUp 0.3s ease';
-                });
-                btn.innerHTML = 'Thu gọn ↑';
-                btn.setAttribute('data-expanded', 'true');
-            } else {
-                hiddenRows.forEach((row, index) => {
-                    if (index >= 5) row.classList.add('row-hidden');
-                });
-                btn.innerHTML = 'Xem thêm ' + hiddenCount + ' mã ↓';
-                btn.setAttribute('data-expanded', 'false');
-                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
+        function toggleExpand() {
+            document.querySelectorAll('.hidden-item').forEach(i => { i.style.display = 'block'; i.style.animation = 'fadeIn 0.5s ease'; });
+            document.getElementById('btnToggle').style.display = 'none';
         }
+        function toggleTheme() {
+            const html = document.documentElement;
+            html.setAttribute('data-theme', html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+        }
+        const style = document.createElement('style');
+        style.innerHTML = `@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`;
+        document.head.appendChild(style);
     </script>
 </body>
 </html>
@@ -1429,9 +1327,6 @@ EOD_404_TEMPLATE = r"""
 
 
 #------------------------------------
-
-
-# [DÁN VÀO digest_template.py]
 
 FLASH_VIEW_HTML_TEMPLATE = r"""
 <!DOCTYPE html>

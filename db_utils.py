@@ -3,6 +3,7 @@ import os
 import json
 import datetime
 import time
+import pytz
 
 from psycopg import rows
 from psycopg_pool import ConnectionPool
@@ -1693,5 +1694,41 @@ def get_latest_bot_message_id(chat_id: int, msg_type: str) -> int | None:
             row = cur.fetchone()
     return row[0] if row else None
 
+# --------------------------------------
 
+def save_historical_valuation_to_redis(data: dict):
+    """
+    Lưu dữ liệu định giá lịch sử (Avg PE/PB 5 năm) vào Redis.
+    TTL: 24 giờ (vì dữ liệu này chỉ tính 1 lần/ngày).
+    """
+    try:
+        r = get_redis()
+        # Key theo ngày để đảm bảo tươi mới
+        vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
+        today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
+        key = f"screener:history:{today}"
+        
+        # Lưu JSON
+        r.set(key, json.dumps(data), ex=86400)
+        redis_debug_log(f"Đã lưu {len(data)} mã định giá lịch sử vào Redis: {key}")
+    except Exception as e:
+        redis_debug_log(f"Lỗi lưu historical valuation: {e}")
+
+def get_historical_valuation_from_redis() -> dict | None:
+    """
+    Lấy dữ liệu định giá lịch sử từ Redis.
+    """
+    try:
+        r = get_redis()
+        vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
+        today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
+        key = f"screener:history:{today}"
+        
+        raw = r.get(key)
+        if raw:
+            return json.loads(raw)
+        return None
+    except Exception as e:
+        redis_debug_log(f"Lỗi đọc historical valuation: {e}")
+        return None
 
