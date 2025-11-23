@@ -147,18 +147,8 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
-# === VALUE SCREENER (API) CONFIG ===
-VALUE_SCREENER_REDIS_KEY_PREFIX = "value_screener_api"
-VALUE_SCREENER_MIN_LIQUIDITY = 50_000_000_000      # 50 tỷ
-VALUE_SCREENER_MIN_ASSET = 5_000_000_000_000       # 5000 tỷ
-
 # 🗂 Thư mục tạm dùng chung cho backup/restore (tự động phù hợp Windows / Linux)
 TMP_DIR = tempfile.gettempdir()
-
-# Cấu hình batch cho screener Value
-VALUE_BATCH_SIZE = 20       # 20 mã / batch
-VALUE_BATCH_SLEEP = 2       # nghỉ 2 giây giữa các batch
-MIN_PENNY_PRICE = 15000      # Giá tối thiểu (VND) để KHÔNG bị coi là penny
 
 # 🧠 Application Telegram dùng chung cho webhook
 tg_app = None
@@ -1708,127 +1698,126 @@ async def notify_admin_report_error_once(
 # HELPER CHO AI REPORT: INJECT REALTIME DATA TỪ REDIS
 # =====================================================
 
-def build_stock_metrics_map(redis_data):
+async def get_financial_context_string(symbols: list[str]) -> str:
     """
-    Biến đổi dữ liệu Redis (Phân cấp) -> Dictionary (Phẳng) để tra cứu O(1).
-    Format lại số liệu cho đẹp luôn.
+    [MỚI] Tạo dữ liệu đầu vào cho AI dựa trên chiến lược Mean Reversion.
+    Kết hợp:
+    1. Dữ liệu hiện tại (Screener API Realtime)
+    2. Dữ liệu lịch sử (Redis Cache - Mean Reversion)
     """
-    metrics_map = {}
+    if not symbols:
+        return ""
+
+    # 1. Lấy dữ liệu Lịch sử (Redis)
+    hist_data = await asyncio.to_thread(get_historical_valuation_from_redis) or {}
     
-    if not redis_data or "industries" not in redis_data:
-        return {}
+    # 2. Lấy dữ liệu Hiện tại (Snapshot Screener - Lấy toàn thị trường 1 lần cho nhanh)
+    try:
+        # Lấy snapshot realtime
+        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
+    except Exception as e:
+        log.warning(f"[{INSTANCE_ID}] Lỗi lấy Screener cho AI context: {e}")
+        screener_df = None
 
-    industries = redis_data.get("industries", [])
-    for ind_block in industries:
-        # Tên ngành
-        industry_name = ind_block.get("industry", "Khác")
+    lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH & ĐỊNH GIÁ (REALTIME vs LỊCH SỬ 5 NĂM):**"]
+    lines.append("(Hãy sử dụng số liệu dưới đây để nhận định cổ phiếu đang ĐẮT hay RẺ so với chính nó trong quá khứ)")
+    lines.append("-" * 60)
+
+    # Tạo map để tra cứu nhanh
+    current_data_map = {}
+    if screener_df is not None and not screener_df.empty:
+        # Chuẩn hóa ticker thành upper case để map
+        screener_df['ticker'] = screener_df['ticker'].astype(str).str.upper().str.strip()
+        current_data_map = screener_df.set_index('ticker').to_dict('index')
+
+    for sym in symbols:
+        sym_u = sym.upper()
+        lines.append(f"📌 **{sym_u}**:")
         
-        for row in ind_block.get("rows", []):
-            sym = row.get("symbol", "").upper()
-            
-            # Helper format số
-            def fmt(val, is_percent=False):
-                if val is None: return "N/A"
-                if is_percent:
-                    return f"{val * 100:.1f}%" # 0.225 -> 22.5%
-                return f"{val:.1f}x"       # 10.5 -> 10.5x
-
-            # Xây dựng chuỗi dữ liệu STOCK
-            stock_str = (
-                f"P/E={fmt(row.get('pe'))}, "
-                f"P/B={fmt(row.get('pb'))}, "
-                f"ROE={fmt(row.get('roe'), True)}"
-            )
-
-            # Xây dựng chuỗi dữ liệu NGÀNH
-            ind_str = (
-                f"TB Ngành ({industry_name}): "
-                f"P/E={fmt(row.get('pe_industry'))}, "
-                f"P/B={fmt(row.get('pb_industry'))}, "
-                f"ROE={fmt(row.get('roe_industry'), True)}"
-            )
-
-            metrics_map[sym] = {
-                "full_context": f"   + Chỉ số hiện tại: {stock_str}\n   + {ind_str}"
-            }
-            
-    return metrics_map
-
-def generate_injected_prompt(user_symbols, metrics_map):
-    """
-    Tạo đoạn text 'Context' để nhét vào Prompt của Gemini.
-    """
-    lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH THỰC TẾ (REALTIME) & SO SÁNH NGÀNH:**"]
-    lines.append("(BẮT BUỘC sử dụng số liệu dưới đây để đánh giá đắt/rẻ trong bài phân tích)")
-    lines.append("-" * 50)
-
-    for sym in user_symbols:
-        sym = sym.upper()
-        lines.append(f"📌 **{sym}**:")
+        # Lấy data
+        curr = current_data_map.get(sym_u, {})
+        hist = hist_data.get(sym_u, {})
         
-        if sym in metrics_map:
-            # Trường hợp CÓ dữ liệu (Trong bộ lọc)
-            context = metrics_map[sym]["full_context"]
-            lines.append(context)
+        # Chỉ số Hiện tại
+        pe_cur = float(curr.get('pe', 0) or 0)
+        pb_cur = float(curr.get('pb', 0) or 0)
+        roe_cur = float(curr.get('roe', 0) or 0) * 100 # ROE screener thường là 0.15 -> 15%
+        market_cap = float(curr.get('market_cap', 0) or 0) / 1000 # Tỷ đồng
+
+        # Chỉ số Lịch sử (Mean Reversion)
+        pe_avg = float(hist.get('pe_avg', 0) or 0)
+        pb_avg = float(hist.get('pb_avg', 0) or 0)
+
+        # Format text cho AI đọc
+        info_parts = []
+        
+        # 1. Đánh giá P/E
+        if pe_cur > 0 and pe_avg > 0:
+            diff_pe = (pe_cur - pe_avg) / pe_avg * 100
+            status_pe = "RẺ HƠN" if diff_pe < 0 else "ĐẮT HƠN"
+            info_parts.append(f"   - P/E hiện tại: {pe_cur:.1f}x (Trung bình 5 năm: {pe_avg:.1f}x) -> {status_pe} lịch sử {abs(diff_pe):.1f}%")
+        elif pe_cur > 0:
+            info_parts.append(f"   - P/E hiện tại: {pe_cur:.1f}x (Chưa có dữ liệu lịch sử)")
+        
+        # 2. Đánh giá P/B
+        if pb_cur > 0 and pb_avg > 0:
+            diff_pb = (pb_cur - pb_avg) / pb_avg * 100
+            status_pb = "RẺ HƠN" if diff_pb < 0 else "ĐẮT HƠN"
+            info_parts.append(f"   - P/B hiện tại: {pb_cur:.1f}x (Trung bình 5 năm: {pb_avg:.1f}x) -> {status_pb} lịch sử {abs(diff_pb):.1f}%")
+        
+        # 3. Hiệu quả & Quy mô
+        if roe_cur > 0:
+            info_parts.append(f"   - ROE hiện tại: {roe_cur:.1f}%")
+        if market_cap > 0:
+            info_parts.append(f"   - Vốn hóa: {market_cap:,.0f} tỷ VNĐ")
+
+        if info_parts:
+            lines.extend(info_parts)
         else:
-            # Trường hợp KHÔNG có dữ liệu (Penny, thanh khoản thấp...)
-            lines.append("   ⚠️ Dữ liệu thực: Không khả dụng trong bộ lọc Value (Do thanh khoản thấp hoặc lỗ).")
-            lines.append("   👉 AI tự đánh giá dựa trên kiến thức nội tại.")
-        
-        lines.append("") # Dòng trống
+            lines.append("   ⚠️ (Thiếu dữ liệu định giá, có thể là cổ phiếu lỗ hoặc mới lên sàn)")
 
-    lines.append("-" * 50)
+    lines.append("-" * 60)
     return "\n".join(lines)
 
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
     """
-    (PHIÊN BẢN JSON - DATA INJECTION - MULTI-KEY)
-    Gọi Gemini tạo báo cáo danh mục, tự động chuyển key nếu lỗi.
+    (PHIÊN BẢN MỚI - MEAN REVERSION CONTEXT)
+    Gọi Gemini tạo báo cáo danh mục với dữ liệu so sánh lịch sử.
     """
     if not GEMINI_KEYS:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
 
+    # Giới hạn số mã để đảm bảo tốc độ
     if len(symbols) > 6:
         symbols = symbols[:6]
 
-    # --- 1. LẤY DỮ LIỆU SCREENER (REDIS HOẶC API) ---
-    screener_data = load_value_screener_from_redis('all')
+    # --- 1. TẠO CONTEXT (Dùng hàm async mới viết ở trên) ---
+    # Vì hàm call_chatgpt_for_report thường được gọi trong to_thread (sync wrapper),
+    # nên ta cần chạy hàm async này trong event loop hiện tại hoặc loop mới.
     
-    if not screener_data:
-        log.info(f"[{INSTANCE_ID}] Redis screener miss. Fetching fresh data for report context...")
-        try:
-            # Gọi API lấy dữ liệu mới nhất nếu cache rỗng
-            screener_data = run_value_screener_from_api('all')
-            if screener_data:
-                save_value_screener_to_redis(screener_data, 'all')
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] Lỗi fetch screener context: {e}")
-            screener_data = None
+    try:
+        # Cách gọi async function từ trong hàm sync (chạy trong thread)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        context_str = loop.run_until_complete(get_financial_context_string(symbols))
+        loop.close()
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] Lỗi tạo context tài chính cho AI: {e}")
+        context_str = ""
 
-    # --- 2. TẠO CONTEXT STRING ---
-    context_str = ""
-    if screener_data:
-        try:
-            metrics_map = build_stock_metrics_map(screener_data)
-            context_str = generate_injected_prompt(symbols, metrics_map)
-        except Exception as e:
-            log.error(f"[{INSTANCE_ID}] Lỗi map data context: {e}")
-
-    # --- 3. CHUẨN BỊ PROMPT ---
+    # --- 2. CHUẨN BỊ PROMPT ---
     symbols_str = ", ".join(symbols)
     vn_tz = pytz.timezone(TIMEZONE)
     date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
 
     prompt = f"""
-Bạn là chuyên gia phân tích chứng khoán Việt Nam theo chiến lược đầu tư tăng trưởng & giá trị.
-Hãy phân tích danh mục đầu tư trung–dài hạn (3–12 tháng) cho các mã sau: {symbols_str} (Ngày báo cáo: {date_str}).
+Bạn là chuyên gia phân tích chứng khoán Việt Nam theo trường phái **Mean Reversion** (Đầu tư giá trị dựa trên sự đảo chiều về trung bình).
+Hãy phân tích danh mục đầu tư: {symbols_str} (Ngày báo cáo: {date_str}).
 
 {context_str}
 
-YÊU CẦU FORMAT OUTPUT:
-Trả về kết quả dưới định dạng **JSON thuần**.
-Cấu trúc JSON bắt buộc:
+YÊU CẦU FORMAT OUTPUT (JSON THUẦN):
 {{
   "general_market_comment": "Đoạn văn (khoảng 3-4 câu) tổng quan về thị trường và định hướng danh mục.",
   "portfolio_health_score": 8.5, 
@@ -1838,30 +1827,28 @@ Cấu trúc JSON bắt buộc:
       "industry": "Tên ngành",
       "action": "Mua / Nắm giữ / Hạ tỷ trọng / Theo dõi",
       "analysis": "Phân tích chi tiết (1000-1200 ký tự). BẮT BUỘC trình bày thành các ý gạch đầu dòng (•), mỗi ý xuống dòng (\\n) riêng biệt. Nội dung phải bao hàm các khía cạnh sau:\\n• KQKD & Lợi thế: Tăng trưởng doanh thu/LN, thị phần, biên lợi nhuận...\\n• Động lực (Catalyst): Dự án mới, game M&A, chính sách ủng hộ...\\n• Định giá: So sánh P/E, P/B với trung bình ngành (đã cung cấp ở trên) để kết luận Đắt/Rẻ.\\n• Rủi ro: Pháp lý, tỷ giá, chi phí đầu vào...",
-      "key_metrics": "Điền các chỉ số P/E, P/B, ROE từ dữ liệu đã cung cấp. Ví dụ: 'P/E 10.5x (Ngành 15.2x), ROE 22%'."
+      "key_metrics": "Tóm tắt chỉ số (VD: P/E 10.x (TB 15.x)"
     }}
   ]
 }}
 
-LƯU Ý QUAN TRỌNG:
-1. Trường `portfolio_health_score` là số thực từ 1.0 đến 10.0.
+LƯU Ý:
+1. **QUAN TRỌNG:** Nếu P/E hoặc P/B thấp hơn trung bình 5 năm > 10%, hãy coi đó là tín hiệu tích cực (Rẻ). Ngược lại là rủi ro (Đắt).
 2. Trường `analysis` là MỘT CHUỖI VĂN BẢN (String) chứa các ký tự xuống dòng (\\n) để tách ý, KHÔNG được là object JSON.
-3. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU TÀI CHÍNH'.
-4. Giọng văn chuyên nghiệp, khách quan, sắc sảo.
+3. Giọng văn: Khách quan, sắc sảo, dựa trên số liệu.
+4. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU TÀI CHÍNH'.
 """
 
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Multi-Key) cho báo cáo: {symbols_str}")
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Mean Reversion): {symbols_str}")
 
     try:
-        # GỌI HÀM WRAPPER TRỰC TIẾP (Vì hàm này đã chạy trong to_thread ở lớp ngoài)
         return call_gemini_safe(
             model_id="gemini-2.5-flash",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
-
     except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report JSON (All keys failed): {e}")
+        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report: {e}")
         raise e
 
 # ==============================================
@@ -2379,239 +2366,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
 # =====================================================================
 
-def build_value_df_from_screener(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Chuẩn hoá DataFrame từ Screener().stock(...) về dạng:
-    symbol, floor, industry, pe, pb, roe, liquidity_proxy, asset_proxy
-    """
-    df = df_raw.copy()
-
-    df["symbol"] = df["ticker"].astype(str).str.upper().str.strip()
-
-    def map_floor(exchange: str) -> str:
-        if not isinstance(exchange, str):
-            return "UNKNOWN"
-        ex = exchange.upper()
-        if ex in ("HOSE", "HSX"):
-            return "HOSE"
-        if ex == "HNX":
-            return "HNX"
-        if ex == "UPCOM":
-            return "UPCOM"
-        return "UNKNOWN"
-
-    df["floor"] = df["exchange"].apply(map_floor)
-    df["industry"] = df["industry"].fillna("Khác").astype(str)
-
-    # PE / PB / ROE
-    for col in ["pe", "pb", "roe"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Thanh khoản (tỷ → VND)
-    if "avg_trading_value_20d" in df.columns:
-        df["liquidity_proxy"] = (
-            pd.to_numeric(df["avg_trading_value_20d"], errors="coerce").fillna(0) * 1e9
-        )
-    else:
-        df["liquidity_proxy"] = (
-            pd.to_numeric(df["total_trading_value"], errors="coerce").fillna(0) * 1e9
-        )
-
-    # Tài sản (market_cap tỷ → VND)
-    df["asset_proxy"] = (
-        pd.to_numeric(df["market_cap"], errors="coerce").fillna(0) * 1e9
-    )
-
-    return df[[
-        "symbol",
-        "floor",
-        "industry",
-        "pe",
-        "pb",
-        "roe",
-        "liquidity_proxy",
-        "asset_proxy",
-    ]]
-
-
-def run_value_screener_on_value_df(df: pd.DataFrame, screener_type: str) -> Optional[dict]:
-    """
-    Hàm logic cốt lõi (đã test).
-    Chạy logic screener (pe, pb, roe, all) từ DataFrame đã chuẩn hoá.
-    """
-    df_clean = df.copy()
-
-    # --- BƯỚC 1: BỘ LỌC CƠ SỞ (Áp dụng cho TẤT CẢ) ---
-    
-    # Lọc sàn
-    df_clean = df_clean[df_clean['floor'].isin(['HOSE', 'HNX'])]
-    
-    # Lọc thanh khoản và vốn hóa
-    df_clean = df_clean[df_clean['liquidity_proxy'] >= VALUE_SCREENER_MIN_LIQUIDITY]
-    df_clean = df_clean[df_clean['asset_proxy'] >= VALUE_SCREENER_MIN_ASSET]
-    
-    # Lọc logic (Thống nhất 1: Loại bỏ NaN và các giá trị <= 0)
-    df_clean = df_clean.dropna(subset=['pe', 'pb', 'roe'])
-    df_clean = df_clean[(df_clean['pe'] > 0) & (df_clean['pb'] > 0) & (df_clean['roe'] > 0)]
-
-    total_all = len(df) # Tổng số mã nhận vào (trước khi lọc)
-    after_base_filter = len(df_clean) # Số mã còn lại sau lọc cơ sở
-
-    if df_clean.empty:
-        log.warning("[VALUE_SCREENER_API] Không còn mã nào sau khi qua lọc cơ sở.")
-        return None # Trả về None nếu không có mã nào pass
-
-    # Chuẩn hoá ROE về decimal (chỉ dùng cho 'all' và format)
-    df_clean['roe_decimal'] = df_clean['roe'] / 100.0
-
-    # --- BƯỚC 2: LOGIC XẾP HẠNG (Tùy theo loại) ---
-    
-    industries_data = [] # List cuối cùng chứa kết quả
-    sort_column = ""
-    sort_ascending = True
-
-    if screener_type == 'all':
-        # Logic 'all' cũ: Cần tính value_score
-        industry_stats = df_clean.groupby("industry").agg(
-            pe_industry=("pe", "mean"),
-            pb_industry=("pb", "mean"),
-            roe_industry=("roe_decimal", "mean"),
-        ).reset_index()
-
-        df_clean = df_clean.merge(industry_stats, on="industry", how="left")
-        
-        # Thống nhất 2: Nếu ngành không có ROE > 0 thì cũng bỏ
-        df_clean = df_clean[df_clean["roe_industry"] > 0]
-
-        if not df_clean.empty:
-            df_clean["pe_rel"] = df_clean["pe_industry"] / df_clean["pe"]
-            df_clean["pb_rel"] = df_clean["pb_industry"] / df_clean["pb"]
-            df_clean["roe_rel"] = df_clean["roe_decimal"] / df_clean["roe_industry"]
-
-            df_clean["value_score"] = (
-                df_clean["pe_rel"] * 0.4 +
-                df_clean["pb_rel"] * 0.3 +
-                df_clean["roe_rel"] * 0.3
-            ).round(2)
-        
-        sort_column = "value_score"
-        sort_ascending = False # Điểm cao tốt hơn
-
-    elif screener_type == 'pe':
-        sort_column = "pe"
-        sort_ascending = True # P/E thấp tốt hơn
-
-    elif screener_type == 'pb':
-        sort_column = "pb"
-        sort_ascending = True # P/B thấp tốt hơn
-
-    elif screener_type == 'roe':
-        sort_column = "roe" # Dùng cột % (22.0) thay vì decimal (0.22)
-        sort_ascending = False # ROE cao tốt hơn
-    
-    # --- BƯỚC 3: GROUP BY NGÀNH VÀ LẤY TOP 5 ---
-    
-    if sort_column not in df_clean.columns:
-        # Xảy ra khi 'all' không tính được value_score (ví dụ df_clean rỗng)
-        log.warning(f"[VALUE_SCREENER_API] Lỗi: Cột sắp xếp '{sort_column}' không tồn tại.")
-        return None
-
-    # Sắp xếp toàn bộ df trước
-    df_clean = df_clean.sort_values(by=sort_column, ascending=sort_ascending)
-
-    # Lặp qua các ngành
-    for industry, group in df_clean.groupby('industry'):
-        top_20_rows = group.head(20) # Lấy top 20 để có nhiều lựa chọn hơn
-        
-        if top_20_rows.empty:
-            continue
-            
-        rows_list = []
-        for _, r in top_20_rows.iterrows():
-            # Thêm tất cả data cần thiết cho 4 chế độ format
-            rows_list.append({
-                "symbol": r["symbol"],
-                "pe": float(r["pe"]),
-                "pb": float(r["pb"]),
-                "roe": float(r["roe_decimal"]), # Luôn dùng decimal cho thống nhất
-                "value_score": float(r.get("value_score", 0.0)),
-                # 3 field cho format 'all'
-                "pe_industry": float(r.get("pe_industry", 0.0)),
-                "pb_industry": float(r.get("pb_industry", 0.0)),
-                "roe_industry": float(r.get("roe_industry", 0.0)),
-            })
-
-        industries_data.append({
-            "industry": industry,
-            "rows": rows_list,
-            # Dùng best_score để sort các ngành (cho 'all')
-            "best_score": rows_list[0].get(sort_column, 0.0)
-        })
-
-    # Chỉ sort các ngành theo điểm khi là 'all' hoặc 'roe' (cao -> thấp)
-    if screener_type in ['all', 'roe']:
-        industries_data.sort(key=lambda x: x["best_score"], reverse=True)
-    else:
-        # PE, PB (thấp -> cao)
-        industries_data.sort(key=lambda x: x["best_score"], reverse=False)
-
-    # Giới hạn số ngành (giữ nguyên)
-    industries_data = industries_data[:19]
-
-    # (Phần Top 5 toàn thị trường của 'all' không còn cần thiết,
-    # vì 'all' giờ là một loại screener riêng)
-
-    vn_tz = pytz.timezone(TIMEZONE)
-    as_of = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M")
-
-    return {
-        "as_of": as_of,
-        "screener_type": screener_type, # Quan trọng: Thêm loại vào kết quả
-        "stats": {
-            "total_all": total_all,
-            "after_base_filter": after_base_filter,
-        },
-        "industries": industries_data,
-        "top_all": [] # Tạm thời không dùng
-    }
-
-
-def run_value_screener_from_api(screener_type: str) -> Optional[dict]:
-    """
-    Hàm pipeline đầy đủ: Gọi API -> Chuẩn hóa -> Chạy Logic.
-    """
-    log.info(f"[VALUE_SCREENER_API] Gọi vnstock Screener() (loại: {screener_type})...")
-    try:
-        df_raw = Screener().stock(
-            params={"exchangeName": "HOSE,HNX,UPCOM"},
-            limit=1700,
-        )
-    except Exception as e:
-        log.exception(f"[VALUE_SCREENER_API] Lỗi gọi API: {e}")
-        return None
-
-    if df_raw is None or len(df_raw) == 0:
-        return None
-
-    # Chạy chuẩn hóa
-    value_df = build_value_df_from_screener(df_raw)
-    
-    # Chạy logic
-    return run_value_screener_on_value_df(value_df, screener_type)
-
 # -------------------------- Redis Helper --------------------------
-
-def _value_screener_key_today(screener_type: str) -> str:
-    """
-    Tạo key Redis theo ngày VÀ theo loại.
-    Ví dụ: value_screener_api:2025-11-16:pe
-           value_screener_api:2025-11-16:all
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
-    stype = screener_type.strip().lower()
-    return f"{VALUE_SCREENER_REDIS_KEY_PREFIX}:{today}:{stype}"
-
 
 def _ttl_until_midnight() -> int:
     vn_tz = pytz.timezone(TIMEZONE)
@@ -2620,191 +2375,6 @@ def _ttl_until_midnight() -> int:
         hour=0, minute=0, second=3, microsecond=0
     )
     return max(60, int((midnight - now).total_seconds()))
-
-
-def load_value_screener_from_redis(screener_type: str) -> Optional[dict]:
-    """Lấy cache từ Redis (đã nhận screener_type)."""
-    try:
-        r = get_redis()
-        # Key mới đã bao gồm screener_type
-        key = _value_screener_key_today(screener_type)
-        raw = r.get(key)
-        if not raw:
-            return None
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        return json.loads(raw)
-    except Exception:
-        return None
-
-
-def save_value_screener_to_redis(result: dict, screener_type: str):
-    """Lưu cache vào Redis (đã nhận screener_type)."""
-    try:
-        r = get_redis()
-        # Key mới đã bao gồm screener_type
-        key = _value_screener_key_today(screener_type)
-        
-        # Thêm screener_type vào payload để hàm format tự nhận diện
-        result_to_save = result.copy()
-        result_to_save['screener_type'] = screener_type
-        
-        r.set(
-            key, 
-            json.dumps(result_to_save, ensure_ascii=False), 
-            ex=_ttl_until_midnight()
-        )
-        log.info(f"[VALUE_SCREENER_API] Đã lưu cache (loại: {screener_type}) trong ngày.")
-    except Exception as e:
-        log.warning(f"[VALUE_SCREENER_API] Lỗi lưu Redis (loại: {screener_type}): {e}")
-
-
-def compute_value_screener(
-    top_per_industry: int = 5,
-    max_industries: int = 19,
-):
-    """
-    So sánh cổ phiếu (đã tính toán trước) và tính điểm value_score.
-    (ĐÃ SỬA: Dùng bộ lọc nghiêm ngặt, loại bỏ None/NaN/<=0)
-    """
-    rows = load_stock_value_cache()
-    if not rows:
-        return None
-
-    df = pd.DataFrame(rows)
-    
-    required_cols = {
-        "symbol", "industry", "pe", "pb", "roe", "floor",
-        "asset_proxy", "liquidity_proxy"
-    }
-    if not required_cols.issubset(df.columns):
-        log.error(
-            f"[{INSTANCE_ID}][VALUE] Dữ liệu cache thiếu cột. Columns: {df.columns.tolist()}"
-        )
-        return None
-
-    df["symbol"] = df["symbol"].astype(str).str.upper()
-
-    try:
-        industry_map = load_industry_map_from_csv("ssi_master_list.csv")
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi load ssi_master_list.csv: {e}")
-        industry_map = {}
-
-    if industry_map:
-        before = len(df)
-        df = df[df["symbol"].isin(industry_map.keys())]
-        log.info(
-            f"[{INSTANCE_ID}][VALUE] Lọc theo industry_map: {before} -> {len(df)} mã."
-        )
-        if df.empty:
-            log.warning(f"[{INSTANCE_ID}][VALUE] Không còn mã sau khi lọc industry_map.")
-            return None
-        df["industry"] = df["symbol"].map(industry_map).fillna(df["industry"])
-
-    # ❗️ BỘ LỌC NGHIÊM NGẶT
-    # 1. Loại bỏ BẤT KỲ hàng nào có None (NaN)
-    df = df.dropna(
-        subset=[
-            "pe", "pb", "roe", "industry", "floor",
-            "asset_proxy", "liquidity_proxy"
-        ]
-    )
-
-    # 2. Loại bỏ BẤT KỲ hàng nào có chỉ số <= 0
-    df = df[(df["pe"] > 0) & (df["pb"] > 0) & (df["roe"] > 0)]
-
-    if df.empty:
-        log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không còn mã nào sau khi lọc nghiêm ngặt (dropna và > 0)."
-        )
-        return None
-
-    # Chuẩn hoá ROE về decimal
-    df["roe_decimal"] = df["roe"] / 100.0
-
-    # Tính trung bình ngành
-    industry_stats = df.groupby("industry").agg(
-        pe_industry=("pe", "mean"),
-        pb_industry=("pb", "mean"),
-        roe_industry=("roe_decimal", "mean"),
-    ).reset_index()
-
-    df = df.merge(industry_stats, on="industry", how="left")
-
-    # Loại ngành ROE ngành <= 0
-    df = df[df["roe_industry"] > 0]
-    if df.empty:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Không còn mã sau khi lọc theo ROE ngành > 0.")
-        return None
-
-    # Tính tương đối so với ngành
-    df["pe_rel"] = df["pe_industry"] / df["pe"]
-    df["pb_rel"] = df["pb_industry"] / df["pb"]
-    df["roe_rel"] = df["roe_decimal"] / df["roe_industry"]
-
-    df["value_score"] = (
-        df["pe_rel"] * 0.4 +
-        df["pb_rel"] * 0.4 +
-        df["roe_rel"] * 0.2
-    ).round(2)
-
-    # Top từng ngành
-    industries_data = []
-    for industry, g in df.groupby("industry"):
-        rows = g.sort_values("value_score", ascending=False).head(top_per_industry)
-        if rows.empty:
-            continue
-
-        rows_list = []
-        for _, r in rows.iterrows():
-            rows_list.append({
-                "symbol": r["symbol"],
-                "pe": float(r["pe"]),
-                "pb": float(r["pb"]),
-                "roe": float(r["roe_decimal"]),     # decimal
-                "value_score": float(r["value_score"]),
-
-                # 3 FIELD BẮT BUỘC CHO FORMATTER CŨ
-                "pe_industry": float(r["pe_industry"]) if pd.notna(r["pe_industry"]) else None,
-                "pb_industry": float(r["pb_industry"]) if pd.notna(r["pb_industry"]) else None,
-                "roe_industry": float(r["roe_industry"]) if pd.notna(r["roe_industry"]) else None,
-            })
-
-        industries_data.append({
-            "industry": industry,
-            "rows": rows_list,
-            "best_score": rows_list[0]["value_score"],
-        })
-
-    industries_data.sort(key=lambda x: x["best_score"], reverse=True)
-    industries_data = industries_data[:max_industries]
-
-    # Top toàn thị trường
-    top_all = df.sort_values("value_score", ascending=False).head(5)
-    top_all_list = []
-    for _, r in top_all.iterrows():
-        top_all_list.append({
-            "symbol": r["symbol"],
-            "industry": r["industry"],
-            "pe": float(r["pe"]),
-            "pb": float(r["pb"]),
-            "roe": float(r["roe_decimal"]),
-            "value_score": float(r["value_score"]),
-        })
-
-    vn_tz = pytz.timezone(TIMEZONE)
-    as_of = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d %H:%M")
-
-    return {
-        "as_of": as_of,
-        "stats": {
-            "total_all": len(df),
-        },
-        "industries": industries_data,
-        "top_all": top_all_list,
-    }
-
 
 def seconds_until_next_weekday_screener():
     """
@@ -2830,110 +2400,6 @@ def seconds_until_next_weekday_screener():
         )
 
     return max((target - now).total_seconds(), 0)
-
-def format_screener_report_text(result: dict) -> str | None:
-    """
-    Từ kết quả (đã bao gồm screener_type), format ra tin nhắn Markdown.
-    (ĐÃ GỠ BỎ logic truncating/rút gọn. Sẽ trả về text đầy đủ)
-    """
-    if not result or not result.get("industries"):
-        log.warning(f"[{INSTANCE_ID}][SCREENER] Không có dữ liệu để format báo cáo.")
-        return None
-
-    as_of = result.get("as_of")
-    industries = result.get("industries", [])
-    
-    screener_type = result.get("screener_type", "all")
-
-    lines: list[str] = []
-
-    # --- 1. Tùy chỉnh Tiêu đề và Mô tả ---
-    if screener_type == 'all':
-        lines.append("💰 *Top 5 cổ phiếu Value (Tổng hợp) theo ngành*")
-        lines.append("_Dựa trên điểm Value Score (P/E, P/B, ROE so với ngành)_")
-    elif screener_type == 'pe':
-        lines.append("💰 *Top 5 cổ phiếu P/E Thấp nhất (theo ngành)*")
-        lines.append("_Đã lọc P/E > 0_")
-    elif screener_type == 'pb':
-        lines.append("💰 *Top 5 cổ phiếu P/B Thấp nhất (theo ngành)*")
-        lines.append("_Đã lọc P/B > 0_")
-    elif screener_type == 'roe':
-        lines.append("💰 *Top 5 cổ phiếu ROE Cao nhất (theo ngành)*")
-        lines.append("_Đã lọc ROE > 0_")
-
-    if as_of:
-        lines.append(f"_Cập nhật đến: {as_of}_")
-    
-    lines.append("")
-    lines.append("📊 *Tiêu chí lọc cơ sở (áp dụng cho mọi loại):*")
-    lines.append("• Chỉ lấy các cổ phiếu sàn HOSE/HNX")
-    lines.append("• Thanh khoản TB > 50 tỷ/ngày")
-    lines.append("• Vốn hóa > 5,000 tỷ")
-    lines.append("• P/E > 0, P/B > 0, và ROE > 0")
-    lines.append("")
-
-    # --- 2. Tùy chỉnh vòng lặp hiển thị ---
-    for industry_block in industries:
-        industry_name = industry_block["industry"] or "Khác"
-        display_industry = industry_name
-        
-        first_row = industry_block["rows"][0]
-
-        # A. Dòng tiêu đề Ngành
-        if screener_type == 'all':
-            pe_avg = first_row["pe_industry"]
-            pb_avg = first_row["pb_industry"]
-            roe_avg = first_row["roe_industry"]
-            lines.append(
-                f"🏷 *Ngành: {display_industry}* "
-                f"(P/E TB: {pe_avg:.1f} | P/B TB: {pb_avg:.1f} | ROE TB: {format_roe_pct(roe_avg)})"
-            )
-        else:
-            lines.append(f"🏷 *Ngành: {display_industry}*")
-
-        # B. Dòng chi tiết Cổ phiếu
-        for idx, r in enumerate(industry_block["rows"], start=1):
-            if screener_type == 'all':
-                lines.append(
-                    f"{idx}️⃣ *{r['symbol']}* – "
-                    f"Score {r['value_score']:.2f} | "
-                    f"P/E {r['pe']:.1f} | "
-                    f"P/B {r['pb']:.1f} | "
-                    f"ROE {format_roe_pct(r['roe'])}"
-                )
-            elif screener_type == 'pe':
-                lines.append(
-                    f"{idx}️⃣ *{r['symbol']}* – "
-                    f"P/E *{r['pe']:.1f}* | "
-                    f"P/B {r['pb']:.1f} | "
-                    f"ROE {format_roe_pct(r['roe'])}"
-                )
-            elif screener_type == 'pb':
-                lines.append(
-                    f"{idx}️⃣ *{r['symbol']}* – "
-                    f"P/B *{r['pb']:.1f}* | "
-                    f"P/E {r['pe']:.1f} | "
-                    f"ROE {format_roe_pct(r['roe'])}"
-                )
-            elif screener_type == 'roe':
-                 lines.append(
-                    f"{idx}️⃣ *{r['symbol']}* – "
-                    f"ROE *{format_roe_pct(r['roe'])}* | "
-                    f"P/E {r['pe']:.1f} | "
-                    f"P/B {r['pb']:.1f}"
-                )
-
-        lines.append("")
-
-    lines.append(
-        "_Lưu ý: Đây là bảng xếp hạng định lượng, nhà đầu tư nên kết hợp phân tích cơ bản & kỹ thuật để ra quyết định._"
-    )
-
-    text = "\n".join(lines)
-    
-    # === GỠ BỎ KHỐI TRUNCATE (if len(text) > 3900) TẠI ĐÂY ===
-    
-    return text
 
 def format_roe_pct(roe_decimal: float | None) -> str:
     """
@@ -4686,8 +4152,18 @@ async def daily_user_digest_loop():
         
         log.info(f"{loop_label} 07:00! Bắt đầu build digest...")
 
-        # 🔥 [THÊM MỚI] Chạy tính toán định giá lịch sử
-        asyncio.create_task(calculate_historical_valuation_task())
+        # 🔥 [FIX]: Đợi tính toán xong (tối đa 5 phút) để đảm bảo có dữ liệu
+        # Nếu Redis đã có dữ liệu hôm nay thì hàm này sẽ chạy rất nhanh (logic kiểm tra bên trong)
+        # Nhưng ở đây ta gọi hàm calculate trực tiếp để force update đầu ngày
+        log.info(f"{loop_label} Đang tính toán định giá Mean Reversion (chờ tối đa 180s)...")
+        try:
+            await asyncio.wait_for(calculate_historical_valuation_task(), timeout=180.0)
+        except asyncio.TimeoutError:
+            log.warning(f"{loop_label} Tính toán định giá quá lâu, bỏ qua để gửi Digest kịp giờ.")
+        except Exception as e:
+            log.error(f"{loop_label} Lỗi tính toán định giá: {e}")
+
+        log.info(f"{loop_label} Bắt đầu thu thập dữ liệu gửi đi...")
 
         # 2️⃣ Thu thập dữ liệu (Song song)
         try:
@@ -6249,55 +5725,33 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    [NEW] Force refresh snapshot screener value từ vnstock và ghi đè cache Redis hôm nay.
+    [UPDATED] Force refresh dữ liệu Mean Reversion (Lịch sử 5 năm).
+    Dùng khi Admin muốn cập nhật lại cache định giá ngay lập tức.
     """
-    chat_id = update.effective_chat.id if update.effective_chat else None
-    log_id = uuid.uuid4().hex[:8]
-    log_prefix = f"[{log_id}][/screener_value_clear]"
-
+    chat_id = update.effective_chat.id
     if chat_id != ADMIN_ID:
         await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
         return
 
-    log.info("%s Admin %s gọi /screener_value_clear (refetch vnstock Screener)", log_prefix, chat_id)
-
-    # Thông báo cho admin
     await reply_md(
         update,
-        "⏳ *Đang làm mới dữ liệu Value Screener từ vnstock...*\n"
-        "_Lệnh này sẽ gọi lại API Screener, tính toán lại và ghi đè cache Redis trong ngày._"
+        "⏳ *Đang tính toán lại định giá Mean Reversion (P/E, P/B 5 năm)...*\n"
+        "_Quá trình này mất khoảng 2-5 phút tùy số lượng mã._"
     )
 
-    # Gọi API + tính toán lại (Mặc định làm mới loại 'all')
     try:
-        result = await asyncio.to_thread(run_value_screener_from_api, 'all')
-    except Exception as e:
-        log.exception("%s Lỗi khi gọi run_value_screener_from_api: %s", log_prefix, e)
-        await reply_md(update, f"⚠️ Lỗi khi gọi API Screener: `{e}`")
-        return
-
-    if result is None:
+        # Gọi trực tiếp task tính toán (chờ nó chạy xong)
+        # Lưu ý: calculate_historical_valuation_task là hàm async, ta await nó
+        await calculate_historical_valuation_task()
+        
         await reply_md(
             update,
-            "⚠️ Không thể làm mới dữ liệu Value Screener.\n"
-            "_Có thể do API vnstock trả về rỗng hoặc lỗi._"
+            "✅ *Hoàn tất làm mới dữ liệu Mean Reversion.*\n"
+            "Dữ liệu mới đã được lưu vào Redis. Bạn có thể kiểm tra bằng `/screener_value`."
         )
-        return
-
-    # [ĐÃ SỬA] Ghi đè cache Redis (Thêm tham số 'all')
-    await asyncio.to_thread(save_value_screener_to_redis, result, 'all')
-    
-    stats = result.get("stats", {})
-    total_all = stats.get("total_all", "N/A")
-    after_base = stats.get("after_base_filter", "N/A")
-
-    await reply_md(
-        update,
-        "✅ *Đã làm mới dữ liệu Value Screener (ALL) từ vnstock và ghi đè cache Redis.*\n\n"
-        f"📔 Tổng mã ban đầu: *{total_all}*\n"
-        f"📘 Sau lọc cơ sở: *{after_base}*\n\n"
-        f"Bạn có thể dùng `/screener_value` để xem báo cáo mới nhất."
-    )
+    except Exception as e:
+        log.error(f"Lỗi screener_value_clear: {e}")
+        await reply_md(update, f"⚠️ Lỗi: {e}")
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
