@@ -5726,32 +5726,40 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     [UPDATED] Force refresh dữ liệu Mean Reversion (Lịch sử 5 năm).
-    Dùng khi Admin muốn cập nhật lại cache định giá ngay lập tức.
+    CHẠY NGẦM (Background) để tránh Timeout do tác vụ quá dài.
     """
     chat_id = update.effective_chat.id
     if chat_id != ADMIN_ID:
         await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
         return
 
+    # 1. Thông báo xác nhận lệnh đã nhận
     await reply_md(
         update,
-        "⏳ *Đang tính toán lại định giá Mean Reversion (P/E, P/B 5 năm)...*\n"
-        "_Quá trình này mất khoảng 2-5 phút tùy số lượng mã._"
+        "⏳ *Đã kích hoạt tác vụ làm mới dữ liệu Mean Reversion (Chạy ngầm)...*\n"
+        "_Bot sẽ thông báo lại khi hoàn tất (dự kiến 10-15 phút)._"
     )
 
-    try:
-        # Gọi trực tiếp task tính toán (chờ nó chạy xong)
-        # Lưu ý: calculate_historical_valuation_task là hàm async, ta await nó
-        await calculate_historical_valuation_task()
-        
-        await reply_md(
-            update,
-            "✅ *Hoàn tất làm mới dữ liệu Mean Reversion.*\n"
-            "Dữ liệu mới đã được lưu vào Redis. Bạn có thể kiểm tra bằng `/screener_value`."
-        )
-    except Exception as e:
-        log.error(f"Lỗi screener_value_clear: {e}")
-        await reply_md(update, f"⚠️ Lỗi: {e}")
+    # 2. Định nghĩa hàm wrapper để chạy ngầm và báo cáo kết quả sau
+    async def _background_runner():
+        try:
+            start_time = time.time()
+            # Gọi task nặng
+            await calculate_historical_valuation_task()
+            duration = time.time() - start_time
+            
+            # Gửi tin nhắn báo cáo thành công
+            await send_md(
+                context.bot, 
+                chat_id, 
+                f"✅ *Hoàn tất làm mới dữ liệu Screener!*\n⏱ Thời gian chạy: {duration/60:.1f} phút."
+            )
+        except Exception as e:
+            log.error(f"Lỗi background screener_value_clear: {e}")
+            await send_md(context.bot, chat_id, f"⚠️ Lỗi tác vụ ngầm Screener: {e}")
+
+    # 3. Đẩy vào Event Loop chạy ngầm (Không await)
+    asyncio.create_task(_background_runner())
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
