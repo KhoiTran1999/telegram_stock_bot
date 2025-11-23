@@ -183,42 +183,6 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    {% if data.macro %}
-    <div class="section-card" id="macro-card">
-        <div class="card-header"><div class="card-icon" style="color:#af52de; background:rgba(175,82,222,0.1)">🌍</div><div class="card-title">Vĩ Mô & Chính Sách</div></div>
-        <div class="list-container">
-            {% for item in data.macro %}
-            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
-                <div class="item-title">{{ item.title }}</div>
-            </div>
-            {% endfor %}
-        </div>
-        {% if data.macro|length > 3 %}
-        <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('macro-card', this, {{ data.macro|length }}, 3)">Xem thêm {{ data.macro|length - 3 }} tin ↓</button>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-
-    {% if data.specialized %}
-    <div class="section-card" id="specialized-card">
-        <div class="card-header"><div class="card-icon" style="color:#ff9500; background:rgba(255,149,0,0.1)">🏢</div><div class="card-title">Tin Doanh Nghiệp</div></div>
-        <div class="list-container">
-            {% for item in data.specialized %}
-            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
-                <div class="item-title">{{ item.title }}</div>
-            </div>
-            {% endfor %}
-        </div>
-        {% if data.specialized|length > 3 %}
-        <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('specialized-card', this, {{ data.specialized|length }}, 3)">Xem thêm {{ data.specialized|length - 3 }} tin ↓</button>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-
     {% if data.bctc %}
     <div class="section-card" id="bctc-card">
         <div class="card-header"><div class="card-icon" style="color:#34c759; background:rgba(52,199,89,0.1)">📊</div><div class="card-title">Báo Cáo Tài Chính</div></div>
