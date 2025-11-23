@@ -51,6 +51,17 @@ def init_db():
     """Tạo bảng nếu chưa có."""
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Bảng lưu thông tin chi tiết user (để hiển thị trên Admin Dashboard)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    chat_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    full_name TEXT,
+                    joined_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_active_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
             # Bảng lưu danh sách mã theo dõi của từng user
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_watch (
@@ -204,6 +215,56 @@ def init_db():
             """)
 
         conn.commit()
+
+# --- ADMIN DASHBOARD HELPERS ---
+
+def upsert_user_info(chat_id: int, username: str | None, full_name: str | None):
+    """Cập nhật thông tin user mỗi khi họ tương tác"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (chat_id, username, full_name, last_active_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (chat_id) DO UPDATE 
+                SET username = EXCLUDED.username,
+                    full_name = EXCLUDED.full_name,
+                    last_active_at = NOW()
+            """, (chat_id, username, full_name))
+        conn.commit()
+
+def get_admin_dashboard_data():
+    """
+    Lấy dữ liệu tổng hợp cho Admin Dashboard:
+    - User Info (từ bảng users)
+    - Pro Status (từ bảng paid_users)
+    - Watchlist Count (từ bảng bot_watch)
+    """
+    with get_conn() as conn:
+        # Trả về dạng Dict để dễ xử lý JSON
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute("""
+                SELECT 
+                    u.chat_id as id,
+                    COALESCE(u.full_name, u.username, 'User ' || u.chat_id) as name,
+                    u.username,
+                    
+                    -- Thông tin Pro
+                    p.expiry_date,
+                    CASE WHEN p.expiry_date > NOW() THEN true ELSE false END as is_pro,
+                    CASE WHEN p.expiry_date <= NOW() THEN true ELSE false END as is_expired,
+                    
+                    -- Tính số ngày còn lại (hoặc số ngày đã quá hạn)
+                    EXTRACT(DAY FROM (p.expiry_date - NOW()))::int as days_left,
+                    
+                    -- Watchlist (Lấy mảng JSON)
+                    COALESCE(w.watch_list, '[]'::jsonb) as watchlist
+                    
+                FROM users u
+                LEFT JOIN paid_users p ON u.chat_id = p.chat_id
+                LEFT JOIN bot_watch w ON u.chat_id = w.chat_id
+                ORDER BY u.last_active_at DESC
+            """)
+            return cur.fetchall()
 
 # ==========================================
 # WATCHLIST
@@ -472,6 +533,46 @@ def get_command_stats():
             }
         )
     return stats
+
+def get_user_logs(chat_id: int, limit: int = 10):
+    """Lấy nhật ký lệnh gần nhất của user"""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute("""
+                SELECT command, used_at
+                FROM command_log
+                WHERE chat_id = %s
+                ORDER BY used_at DESC
+                LIMIT %s
+            """, (chat_id, limit))
+            return cur.fetchall()
+
+def get_user_configs(chat_id: int):
+    """Lấy cài đặt cá nhân (VN30, News...)"""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            # 1. Lấy cấu hình VN30
+            cur.execute("SELECT settings FROM bot_user_settings WHERE chat_id = %s", (chat_id,))
+            s_row = cur.fetchone()
+            vn30_enabled = False
+            if s_row and s_row.get('settings'):
+                vn30_enabled = s_row['settings'].get('vn30f1m_enabled', False)
+
+            # 2. Lấy cấu hình Tin tức (News Pref)
+            # (Mặc định là True nếu chưa có record)
+            cur.execute("SELECT enable_specialized, enable_macro FROM news_pref WHERE chat_id = %s", (chat_id,))
+            n_row = cur.fetchone()
+            
+            news_enabled = True # Mặc định
+            if n_row:
+                # Nếu tắt cả 2 thì coi như tắt News
+                if not n_row['enable_specialized'] and not n_row['enable_macro']:
+                    news_enabled = False
+
+            return {
+                "vn30": vn30_enabled,
+                "news": news_enabled
+            }
 
 # ==========================================
 # LOG TIN NHẮN BOT ĐÃ GỬI
@@ -1359,8 +1460,6 @@ def remove_paid_user(chat_id: int) -> int:
         conn.commit()
     return deleted_rows
 
-# Dán hàm này vào file db_utils.py
-
 def get_all_pro_chat_ids() -> set[int]:
     """
     Lấy MỘT TẬP (set) chứa chat_id của tất cả user
@@ -1653,6 +1752,19 @@ def cleanup_old_pending_orders(days_old: int = 3):
         print(f"[DB_UTILS] Lỗi khi dọn dẹp bot_orders: {e}")
         return 0
     
+def get_user_orders(chat_id: int):
+    """Lấy 5 đơn hàng gần nhất của user"""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute("""
+                SELECT order_id, amount, status, created_at
+                FROM bot_orders
+                WHERE chat_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5
+            """, (chat_id,))
+            return cur.fetchall()
+
 #-------------------------------------------------
 def get_messages_to_cleanup(target_types: list[str], older_than_minutes: int = 0):
     """

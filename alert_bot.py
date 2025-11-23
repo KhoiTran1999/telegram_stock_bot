@@ -25,6 +25,7 @@ from digest_template import (
     EOD_HTML_TEMPLATE, 
     EOD_404_TEMPLATE,
     FLASH_VIEW_HTML_TEMPLATE,
+    ADMIN_MOBILE_TEMPLATE,
 )
 from telegram import (
     BotCommand,
@@ -45,7 +46,7 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from telegram.request import HTTPXRequest
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
@@ -91,7 +92,12 @@ from db_utils import (
     delete_bot_log_record,
     get_latest_bot_message_id,
     save_historical_valuation_to_redis,
-    get_historical_valuation_from_redis
+    get_historical_valuation_from_redis,
+    upsert_user_info,
+    get_admin_dashboard_data,
+    get_user_orders,
+    get_user_logs,
+    get_user_configs,
 )
 import psutil
 import time
@@ -129,6 +135,7 @@ from chart_utils import (
     draw_orderbook_fixed_ui,
     generate_chart_html,
 )
+from decimal import Decimal
 
 # --- HÀM HELPER VẼ THANH TIẾN TRÌNH ---
 def make_progress_bar(percent: int, width: int = 8) -> str:
@@ -1032,6 +1039,20 @@ async def broadcast_to_all_watchers(text: str, target_audience: str = 'pro', msg
 
     log.info(f"[{INSTANCE_ID}][NOTICE] Đã gửi thông báo tới {count} user (Target: {target_audience}).")
 
+# Hàm helper để cập nhật info user
+async def track_user_activity(update: Update):
+    """Lưu thông tin user vào DB mỗi khi họ tương tác"""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    if user:
+        # Chạy trong thread để không block bot
+        await asyncio.to_thread(
+            upsert_user_info, 
+            chat_id, 
+            user.username, 
+            user.full_name
+        )
+
 # ==============================================
 # EOD SUMMARY MỚI (WEB APP + AI)
 # ==============================================
@@ -1176,9 +1197,6 @@ async def fetch_full_eod_data(symbols):
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
-# alert_bot.py
-
-# ... Import thêm ...
 from chart_utils import generate_mini_chart
 
 async def send_eod_summary():
@@ -4779,58 +4797,42 @@ def load_seen_news_from_redis(feed_type: str, limit: int = 10) -> list[dict[str,
     items.sort(key=lambda x: x["published"], reverse=True)
     return items[:limit]
 
-def _fetch_price_board_with_fallback(trading, batch_syms, log, INSTANCE_ID):
-    """
-    Cố gắng gọi price_board theo batch; nếu lỗi (RetryError/TypeError/...), fallback gọi từng mã.
-    Trả về DataFrame đã concat hoặc None nếu rỗng.
-    """
-    import time
-    import pandas as pd
-
-    pb_df = None
-    try:
-        pb_df = trading.price_board(batch_syms)
-        if pb_df is not None and not pb_df.empty:
-            return pb_df
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi price_board batch (sẽ fallback từng mã): {type(e).__name__}: {e}")
-
-    # Fallback từng mã để không mất dữ liệu
-    rows = []
-    for s in batch_syms:
-        try:
-            _df = trading.price_board([s])
-            if _df is not None and not _df.empty:
-                rows.append(_df)
-            else:
-                log.debug(f"[{INSTANCE_ID}][VALUE] price_board rỗng cho {s}")
-        except Exception as e1:
-            log.debug(f"[{INSTANCE_ID}][VALUE] Lỗi price_board({s}): {type(e1).__name__}: {e1}")
-        time.sleep(0.15)  # throttle nhẹ để đỡ bị chặn
-
-    if rows:
-        try:
-            return pd.concat(rows, axis=0, ignore_index=True)
-        except Exception as e2:
-            log.warning(f"[{INSTANCE_ID}][VALUE] Không ghép được pb_df fallback: {type(e2).__name__}: {e2}")
-
-    return None
-
-
 # ==============================================
 # COMMAND HANDLERS
 # ==============================================
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mở Admin Dashboard Web App"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return # Silent ignore
+
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    # Tạo link kèm admin_id để xác thực đơn giản
+    web_app_url = f"{base_url}/admin/dashboard?admin_id={user_id}"
+
+    kb = [[InlineKeyboardButton("👑 Mở Admin Dashboard", web_app=WebAppInfo(url=web_app_url))]]
+    
+    await reply_md(update, "👇 Bấm bên dưới để vào trang quản trị:", reply_markup=InlineKeyboardMarkup(kb))
+
+# (Nhớ thêm tg_app.add_handler(CommandHandler("admin", cmd_admin)) vào main)
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Hiển thị Dashboard chính với các nút bấm tiện lợi.
+    (ĐÃ CẬP NHẬT: Lưu thông tin user vào bảng users)
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
     
+    # --- [MỚI] Lưu thông tin user vào DB ---
+    await track_user_activity(update) 
+    # ---------------------------------------
+
     chat_id = update.effective_chat.id
     
-    # Log và khởi tạo DB nếu user mới (giữ nguyên logic cũ)
+    # Log và khởi tạo DB nếu user mới
     try:
         await asyncio.to_thread(log_command_usage, chat_id, "/start", ADMIN_ID)
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
@@ -4846,11 +4848,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     screener_url = f"{base_url}/screener?chat_id={chat_id}"
 
     # --- TẠO DASHBOARD MENU ---
-    # Layout:
-    # [ 📋 Danh mục ] [ ➕ Thêm mã ]
-    # [ 💎 Lọc Cổ Phiếu ] [ 📊 AI Report ]
-    # [ ⚙️ Cài đặt / Pro ] [ ❓ Hướng dẫn ]
-    
     kb = [
         [
             InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"),
@@ -4858,7 +4855,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
-            InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")
+            InlineKeyboardButton("💎 Lọc Cổ Phiếu", web_app=WebAppInfo(url=screener_url))
         ],
         [
             InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
@@ -5079,21 +5076,17 @@ async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAUL
 
     await reply_md(update, "\n".join(lines))
 
-# (Hãy chắc chắn rằng bạn đã import 'is_user_pro' từ db_utils.py ở đầu file)
-# from db_utils import (
-#     ...
-#     is_user_pro,
-#     ...
-# )
-
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ 
-    (ĐÃ SỬA - SMART MODE) Thêm mã vào watchlist.
-    Sử dụng fetch_data_smart để tránh lỗi VCI.
+    (ĐÃ SỬA - SMART MODE + TRACKING) Thêm mã vào watchlist.
     """
     if not BOT_ACTIVE:
         await reply_md(update,"⚙️ Bot đang bảo trì.")
         return
+
+    # --- [MỚI] Cập nhật thông tin user ---
+    await track_user_activity(update)
+    # -------------------------------------
 
     chat_id = update.effective_chat.id
     await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID)
@@ -5118,43 +5111,36 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, "⚠️ Mã không hợp lệ. Chỉ hỗ trợ mã 3 chữ cái (VD: HPG).")
         return
 
-    # --- GỌI SMART FETCHER (Thay vì gọi trực tiếp Trading VCI) ---
+    # --- GỌI SMART FETCHER ---
     try:
-        # Hàm này đã bao gồm logic: Thử VCI -> Lỗi -> Qua TCBS -> Lỗi -> None
         data = await fetch_data_smart([symbol])
     except Exception as e:
         log.warning(f"[{INSTANCE_ID}] [ADD] Lỗi fetch_data_smart {symbol}: {e}")
         await reply_md(update, f"⚠️ Lỗi hệ thống khi lấy dữ liệu *{symbol}*. Vui lòng thử lại sau.")
         return
 
-    # Kiểm tra dữ liệu trả về
     if not data or symbol not in data:
-        await reply_md(update,
-            f"⚠️ Không tìm thấy dữ liệu cho mã *{symbol}*.\n"
-            "Vui lòng kiểm tra lại mã hoặc thử lại sau (có thể do lỗi nguồn dữ liệu)."
-        )
+        await reply_md(update, f"⚠️ Không tìm thấy dữ liệu cho mã *{symbol}*.")
         return
 
-    # Parse dữ liệu từ Smart Fetcher
+    # Parse dữ liệu
     info = data[symbol]
     price = info.get('price')
     pct = info.get('pct')
     
-    # Kiểm tra giá
     if price is None or price == 0:
-         await reply_md(update, f"⚠️ Dữ liệu giá của *{symbol}* đang bị lỗi (0 hoặc None).")
+         await reply_md(update, f"⚠️ Dữ liệu giá của *{symbol}* đang bị lỗi.")
          return
 
     # Lấy watchlist cũ
     lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
     
-    # Kiểm tra đã tồn tại chưa
     if symbol in lst:
         symbols_text = ", ".join(lst) if lst else "—"
         await reply_md(update, f"ℹ️ *{symbol}* đã có trong danh sách theo dõi rồi.\n\n📋 Danh mục hiện tại: {symbols_text}")
         return
 
-    # Kiểm tra Paywall (User Free chỉ 1 mã)
+    # Kiểm tra Paywall
     is_pro = await asyncio.to_thread(is_user_pro, chat_id)
     is_admin = (chat_id == ADMIN_ID)
     
@@ -5171,15 +5157,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Format tin nhắn phản hồi
     symbols_text = ", ".join(lst)
-    
-    # Format số liệu
     price_str = f"{price:,.0f}".replace(",", ".")
-    
     pct_sign = "+" if pct > 0 else ""
     pct_str = f"{pct_sign}{pct:.2f}%" if pct is not None else "—"
     
-    # Tính thay đổi tuyệt đối (ước lượng từ % và giá hiện tại vì Smart Fetcher không trả về change_abs)
-    # Công thức: ref = price / (1 + pct/100) -> change = price - ref
     try:
         ref_price = price / (1 + pct/100)
         change_abs = price - ref_price
@@ -5405,193 +5386,6 @@ from db_utils import (
     # ...
     get_all_paid_users_expiry
 )
-
-# ...
-
-# (Dán vào file alert_bot.py, thay thế hàm cmd_allwatch cũ)
-
-async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O + THÊM STATUS PRO + SORT 5 NHÓM + RELATIVE TIME) """
-    if ADMIN_ID is None:
-        await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
-
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update,"⛔ Không có quyền.")
-        return
-
-    try:
-        await context.bot.send_chat_action(
-            chat_id=ADMIN_ID, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass
-
-    # 0. Lấy ADMIN_ID dưới dạng string để so sánh
-    admin_id_str = str(ADMIN_ID) if ADMIN_ID else None
-
-    # 1. Lấy dữ liệu (Watchlist & Pro Expiry)
-    all_watch = await asyncio.to_thread(get_all_watch)
-    expiry_map_int_key = await asyncio.to_thread(get_all_paid_users_expiry)
-    
-    # Chuyển key sang string để tra cứu nhanh
-    expiry_map_str_key = {str(k): v for k, v in expiry_map_int_key.items()}
-
-    if not all_watch:
-        await reply_md(update,"📭 Chưa có user nào lưu danh sách theo dõi.")
-        return
-
-    await reply_md(update, f"🔎 Đang tổng hợp, vui lòng đợi...")
-
-    # 2. Chuẩn bị (Biến đếm, Thời gian, và 5 "Xô" phân loại)
-    symbol_counts = {}
-    
-    # Năm "xô" để chứa các dòng text đã định dạng (theo thứ tự ưu tiên MỚI)
-    admin_lines = []
-    active_pro_safe_lines = []      # (còn > 24h)
-    active_pro_expiring_lines = []  # (còn <= 24h)
-    expired_pro_lines = []          # (đã hết hạn)
-    free_user_lines = []            # (free)
-    
-    # Biến đếm (5 nhóm)
-    total_admin_count = 0
-    total_active_safe_count = 0
-    total_active_expiring_count = 0
-    total_expired_pro_count = 0
-    total_free_count = 0
-    
-    vn_tz = pytz.timezone(TIMEZONE)
-    now_aware = datetime.datetime.now(pytz.utc) # Giả định DB lưu UTC
-    SECONDS_IN_A_DAY = 86400
-
-    # 3. Vòng lặp Phân loại & Xử lý
-    for chat_key, block in all_watch.items():
-        lst = block.get("list", []) or []
-        
-        # Đếm symbol (luôn chạy)
-        for sym in lst:
-            symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
-            
-        list_str = ", ".join(lst) if lst else "(trống)"
-
-        # === Logic Phân loại (5 nhóm) ===
-
-        # NHÓM 1: ADMIN
-        if chat_key == admin_id_str:
-            total_admin_count += 1
-            line_text = f"😎 {chat_key} Admin : {list_str}"
-            admin_lines.append(line_text)
-            continue # Xong, đi user tiếp theo
-
-        # NHÓM 2, 3, 4: Pro / Free
-        if chat_key in expiry_map_str_key:
-            # Đây là user Pro
-            expiry_date_utc = expiry_map_str_key[chat_key]
-            delta_seconds = (expiry_date_utc - now_aware).total_seconds()
-
-            if delta_seconds > SECONDS_IN_A_DAY:
-                # 👑 NHÓM 2: Pro (An toàn, còn > 24h)
-                total_active_safe_count += 1
-                days_remaining = int(delta_seconds // SECONDS_IN_A_DAY)
-                date_str = f"còn {days_remaining} ngày"
-                
-                line_text = f"👑 {chat_key} ({date_str}): {list_str}"
-                active_pro_safe_lines.append(line_text) # Bỏ vào xô 2
-
-            elif delta_seconds > 0:
-                # ⚠️ NHÓM 3: Pro (Sắp hết hạn, còn <= 24h)
-                total_active_expiring_count += 1
-                hours_remaining = int(delta_seconds // 3600)
-                if hours_remaining <= 0:
-                    date_str = "còn <1 giờ"
-                else:
-                    date_str = f"còn {hours_remaining} giờ"
-                
-                line_text = f"⚠️ {chat_key} ({date_str}): {list_str}" # Icon ⚠️ như bạn yêu cầu
-                active_pro_expiring_lines.append(line_text) # Bỏ vào xô 3
-                
-            else:
-                # 🆓 NHÓM 4: Pro (Đã hết hạn)
-                total_expired_pro_count += 1
-                days_past = int(abs(delta_seconds) // SECONDS_IN_A_DAY)
-                
-                if days_past == 0:
-                    date_str = "hết <1 ngày"
-                else:
-                    date_str = f"hết {days_past} ngày"
-                line_text = f"🆓 {chat_key} ({date_str}): {list_str}" 
-                expired_pro_lines.append(line_text) # Bỏ vào xô 4
-        else:
-            # 🆓 NHÓM 5: User Free
-            total_free_count += 1
-            line_text = f"🆓 {chat_key}: {list_str}"
-            free_user_lines.append(line_text) # Bỏ vào xô 5
-
-    # 4. Thống kê mã (giữ nguyên)
-    stats_lines = []
-    for sym, cnt in sorted(symbol_counts.items()):
-        stats_lines.append(f"{sym}: {cnt} user")
-
-    # 5. Thống kê lệnh (giữ nguyên)
-    cmd_stats = await asyncio.to_thread(get_command_stats)
-    cmd_stats = [s for s in cmd_stats if not s["command"].startswith("unknown:")]
-    
-    if cmd_stats:
-        cmd_summary = "📊 *Thống kê lệnh được sử dụng:*\n"
-        for row in cmd_stats:
-            cmd_name = escape_markdown_v2(row["command"])
-            day = escape_markdown_v2(row["day"])
-            month = escape_markdown_v2(row["month"])
-            total = escape_markdown_v2(row["total"])
-            cmd_summary += (
-                f"{cmd_name}: {day} hôm nay | {month} tháng này | {total} tổng cộng\n"
-            )
-        cmd_summary += "\n"
-    else:
-        cmd_summary = "📊 *Chưa có dữ liệu lệnh được sử dụng.*\n\n"
-
-
-    # 6. Cập nhật Header (thêm 2 nhóm Pro)
-    header = (
-        cmd_summary +
-        "📌 *Thống kê theo mã:*\n"
-        + "\n".join(stats_lines) +
-        f"\n🏷️ Tổng số mã khác nhau: {len(symbol_counts)}\n\n"
-        +"📋 *Tổng hợp danh sách users*\n"
-        f"👥 Tổng số user: {len(all_watch)}\n"
-        f"😎 Admin: {total_admin_count}\n"
-        f"👑 Pro (còn hạn): {total_active_safe_count}\n"
-        f"⚠️ Pro (sắp hết hạn): {total_active_expiring_count}\n" # <-- MỚI
-        f"🆓 Pro (đã hết hạn): {total_expired_pro_count}\n"
-        f"🆓 Free Users: {total_free_count}\n"
-        + "\n📌 *Chi tiết theo từng user (chatId):*"
-    )
-
-    # 7. Gửi tin nhắn (Nối 5 "xô" theo thứ tự)
-    
-    # Nối 5 danh sách theo thứ tự ưu tiên MỚI của bạn
-    all_detail_lines = (
-        admin_lines + 
-        active_pro_safe_lines + 
-        active_pro_expiring_lines + 
-        expired_pro_lines + 
-        free_user_lines
-    )
-
-    max_len = 3500
-    parts = []
-    current = header
-    
-    for line in all_detail_lines: # Dùng danh sách đã được sắp xếp
-        if len(current) + len(line) + 1 > max_len:
-            parts.append(current)
-            current = line
-        else:
-            current += "\n" + line
-    parts.append(current)
-
-    for part in parts:
-        await reply_md(update, part)
 
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -7249,6 +7043,206 @@ def view_screener_result(id):
         return f"Lỗi server: {e}", 500
 
 # ==============================================
+# 👑 ADMIN DASHBOARD ROUTES
+# ==============================================
+
+@flask_app.route("/admin/dashboard")
+def admin_dashboard():
+    """Trang chủ Admin Dashboard (Đã thêm tính doanh thu)"""
+    req_admin_id = request.args.get("admin_id")
+    
+    # 1. Check quyền Admin
+    if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+        return "⛔ Access Denied. Chỉ Admin mới được truy cập.", 403
+
+    try:
+        # 2. Lấy dữ liệu từ DB
+        raw_data = get_admin_dashboard_data()
+        
+        # --- TÍNH DOANH THU GIẢ LẬP ---
+        # (Đếm số user Pro * 99k)
+        pro_count = sum(1 for u in raw_data if u.get('is_pro'))
+        est_revenue = pro_count * 99000
+        # Format thành dạng: 4.500.000
+        revenue_str = "{:,.0f}".format(est_revenue).replace(",", ".")
+        
+        # 3. Hàm xử lý dữ liệu an toàn (Date, Decimal...)
+        def safe_serializer(obj):
+            if isinstance(obj, (datetime.datetime, datetime.date)):
+                return obj.isoformat()
+            if isinstance(obj, datetime.timedelta):
+                return str(obj)
+            if hasattr(obj, '__str__'): 
+                return str(obj)
+            return str(obj)
+
+        # 4. Chuyển thành chuỗi JSON
+        users_json = json.dumps(raw_data, default=safe_serializer, ensure_ascii=False)
+        
+    except Exception as e:
+        log.error(f"Lỗi load dashboard data: {e}")
+        users_json = "[]"
+        revenue_str = "0"
+
+    # 5. Render Template và truyền biến
+    return render_template_string(
+        ADMIN_MOBILE_TEMPLATE, 
+        admin_id=ADMIN_ID,
+        initial_data=users_json,
+        total_revenue=revenue_str  # <--- Truyền doanh thu sang HTML
+    )
+
+@flask_app.route("/api/admin/users")
+def api_admin_users():
+    """API trả về danh sách user JSON (Kèm Logs + Config)"""
+    req_admin_id = request.args.get("admin_id")
+    try:
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"error": "Unauthorized"}), 403
+    except:
+        return jsonify({"error": "Invalid Admin ID"}), 403
+
+    try:
+        data = get_admin_dashboard_data()
+        
+        # Loop từng user để lấy thêm dữ liệu chi tiết
+        for row in data:
+            uid = row['id']
+            
+            # 1. Lấy Orders (Code cũ)
+            orders = get_user_orders(uid)
+            for o in orders:
+                if isinstance(o.get('created_at'), (datetime.datetime, datetime.date)):
+                    o['created_at'] = o['created_at'].isoformat()
+            row['orders'] = orders
+
+            # 2. [MỚI] Lấy Logs hoạt động
+            logs = get_user_logs(uid, limit=10)
+            for l in logs:
+                if isinstance(l.get('used_at'), (datetime.datetime, datetime.date)):
+                    l['used_at'] = l['used_at'].isoformat()
+            row['logs'] = logs
+
+            # 3. [MỚI] Lấy Cấu hình
+            row['config'] = get_user_configs(uid)
+
+            # 4. Xử lý datetime chung cho user object
+            for key, val in row.items():
+                if isinstance(val, (datetime.datetime, datetime.date)):
+                    row[key] = val.isoformat()
+            
+            if isinstance(row.get('watchlist'), str):
+                try: row['watchlist'] = json.loads(row['watchlist'])
+                except: row['watchlist'] = []
+
+        # Serialize an toàn
+        def safe_serializer(obj):
+            if isinstance(obj, (datetime.datetime, datetime.date)):
+                return obj.isoformat()
+            if isinstance(obj, Decimal):
+                return float(obj)
+            if hasattr(obj, '__str__'):
+                return str(obj)
+            return str(obj)
+
+        json_str = json.dumps(data, default=safe_serializer, ensure_ascii=False)
+        return Response(json_str, mimetype='application/json')
+
+    except Exception as e:
+        log.error(f"[ADMIN_API] Users Error: {e}")
+        return jsonify({"error": "Server Error", "message": str(e)}), 500
+
+@flask_app.route("/api/admin/user/extend", methods=["POST"])
+def api_admin_extend():
+    """API Gia hạn user"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = data.get("target_id")
+        days = data.get("days")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        # Gọi hàm gia hạn có sẵn
+        add_paid_user(int(target_id), int(days))
+        
+        # Gửi thông báo cho user qua Telegram
+        # Lưu ý: Cần dùng run_coroutine_threadsafe vì Flask chạy khác thread với Bot
+        if tg_app and MAIN_LOOP:
+            msg_text = f"🎁 TÀI KHOẢN ĐƯỢC GIA HẠN!\nAdmin vừa cộng thêm *{days} ngày* Pro cho bạn. Hạn dùng mới đã được cập nhật."
+            asyncio.run_coroutine_threadsafe(
+                send_md(tg_app.bot, int(target_id), msg_text),
+                MAIN_LOOP
+            )
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Extend Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/user/deactivate", methods=["POST"])
+def api_admin_deactivate_user():
+    """API Ngưng kích hoạt gói Pro"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = data.get("target_id")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        # Gọi hàm DB để set ngày hết hạn về quá khứ
+        rows = deactivate_paid_user(int(target_id))
+        
+        if rows > 0:
+            # Gửi thông báo cho user
+            if tg_app and MAIN_LOOP:
+                msg_text = "⚠️ **Thông báo:** Gói Pro của bạn đã bị ngưng kích hoạt bởi Admin.\nVui lòng liên hệ hỗ trợ nếu có thắc mắc."
+                asyncio.run_coroutine_threadsafe(
+                    send_md(tg_app.bot, int(target_id), msg_text),
+                    MAIN_LOOP
+                )
+            return jsonify({"ok": True})
+        else:
+            return jsonify({"ok": False, "message": "User này chưa kích hoạt Pro."}), 400
+
+    except Exception as e:
+        log.error(f"[ADMIN_API] Deactivate Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/user/message", methods=["POST"])
+def api_admin_send_message():
+    """API Gửi tin nhắn trực tiếp cho user"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = data.get("target_id")
+        text = data.get("text")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+        
+        if not text:
+            return jsonify({"ok": False, "message": "Nội dung trống"}), 400
+
+        # Gửi qua Bot
+        if tg_app and MAIN_LOOP:
+            # Thêm prefix để user biết là từ Admin
+            final_text = f"💌 **Tin nhắn từ Admin:**\n\n{text}"
+            asyncio.run_coroutine_threadsafe(
+                send_md(tg_app.bot, int(target_id), final_text),
+                MAIN_LOOP
+            )
+            return jsonify({"ok": True})
+        
+        return jsonify({"ok": False, "message": "Bot not ready"}), 500
+
+    except Exception as e:
+        log.error(f"[ADMIN_API] Send Message Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+# ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
 # Đây là phần code đã sửa lỗi hoàn toàn
 # ==============================================
@@ -7431,6 +7425,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
             ("test_digest", "(admin) Gửi bản tin test Web App ngay lập tức"),
+            ("admin", "(admin) Mở Dashboard Admin"),
         ]
         
 
@@ -7585,7 +7580,6 @@ async def main():
     tg_app.add_handler(CommandHandler("off", cmd_off))
     tg_app.add_handler(CommandHandler("status", cmd_status))
     tg_app.add_handler(CommandHandler("announce", cmd_announce))
-    tg_app.add_handler(CommandHandler("allwatch", cmd_allwatch))
     tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
     tg_app.add_handler(CommandHandler("backup_core", cmd_backup_core))
@@ -7595,6 +7589,7 @@ async def main():
     tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
     tg_app.add_handler(CommandHandler("cmd_run_weekly_report_now", cmd_run_weekly_report_now))
     tg_app.add_handler(CommandHandler("test_digest", cmd_admin_test_digest))
+    tg_app.add_handler(CommandHandler("admin", cmd_admin))
     tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
     tg_app.add_handler(CallbackQueryHandler(handle_quick_button))
 

@@ -1448,4 +1448,365 @@ FLASH_VIEW_HTML_TEMPLATE = r"""
 </html>
 """
 
+#-------------------------------------
+
+ADMIN_MOBILE_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Admin StockBot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Manrope', sans-serif; background-color: #F8FAFC; -webkit-tap-highlight-color: transparent; }
+        [x-cloak] { display: none !important; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="text-slate-800" x-data="mobileApp()">
+
+    <div x-show="isLoading" class="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm" x-cloak>
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+    </div>
+
+    <div class="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 pb-2">
+        <div class="px-4 pt-4 pb-2 flex justify-between items-center">
+            <h1 class="text-xl font-extrabold text-slate-800">StockBot<span class="text-blue-600">.Admin</span></h1>
+            <div class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-mono" x-text="'Admin: ' + adminId"></div>
+        </div>
+        
+        <div class="px-4 mt-1">
+            <div class="relative">
+                <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                <input type="text" x-model="searchQuery" placeholder="Tìm tên, ID, SĐT..." 
+                       class="w-full pl-10 pr-4 py-2.5 bg-slate-100 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm">
+            </div>
+        </div>
+
+        <div class="mt-3 pl-4 flex gap-2 overflow-x-auto no-scrollbar pb-1">
+            <template x-for="tab in tabs">
+                <button @click="filterStatus = tab.id"
+                        class="whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-bold transition-all border flex items-center gap-1"
+                        :class="filterStatus === tab.id ? 'bg-slate-800 text-white scale-105 shadow-md' : 'bg-white text-slate-500 border-slate-200'">
+                    <span x-text="tab.label"></span>
+                    <span class="text-[10px] opacity-80" x-text="'(' + getCount(tab.id) + ')'"></span>
+                </button>
+            </template>
+        </div>
+    </div>
+
+    <div class="p-4 pb-24 space-y-3 min-h-screen">
+        
+        <div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 snap-x">
+            <div class="snap-center shrink-0 w-36 p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl text-white shadow-lg shadow-blue-200">
+                <div class="text-xs opacity-80 mb-1 font-medium">Tổng User</div>
+                <div class="text-2xl font-bold" x-text="users.length"></div>
+                <div class="text-[10px] bg-white/20 inline-block px-1.5 rounded mt-1">+ Active</div>
+            </div>
+            <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
+                <div class="text-xs text-slate-400 mb-1 font-bold">Doanh thu</div>
+                <div class="text-lg font-extrabold text-slate-800">{{ total_revenue }}</div>
+                <div class="text-[10px] text-green-500 mt-1 font-bold">↑ Tạm tính</div>
+            </div>
+            <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
+                <div class="text-xs text-slate-400 mb-1 font-bold">Sắp hết hạn</div>
+                <div class="text-xl font-bold text-red-500" x-text="getCount('expiring')"></div>
+            </div>
+        </div>
+
+        <template x-for="user in filteredUsers" :key="user.id">
+            <div @click="openSheet(user)" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-transform cursor-pointer relative overflow-hidden group">
+                <div x-show="user.is_pro && !user.is_expired" class="absolute left-0 top-0 bottom-0 w-1 bg-yellow-400"></div>
+                <div class="flex justify-between items-start">
+                    <div class="flex gap-3 w-full">
+                        <div class="relative shrink-0">
+                            <img :src="`https://ui-avatars.com/api/?name=${user.name}&background=random&size=64`" class="w-11 h-11 rounded-full object-cover border border-slate-100">
+                            <div x-show="user.is_pro && !user.is_expired" class="absolute -bottom-1 -right-1 bg-yellow-400 text-white text-[8px] p-0.5 rounded-full border-2 border-white">
+                                <i class="fa-solid fa-crown"></i>
+                            </div>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h3 class="font-bold text-slate-800 text-sm truncate" x-text="user.name"></h3>
+                            <div class="flex items-center gap-2 mt-0.5">
+                                <div class="text-xs text-slate-400 font-mono" x-text="user.id"></div>
+                                <button @click.stop="copyId(user.id)" class="text-slate-300 hover:text-blue-500 transition active:scale-90 p-1">
+                                    <i class="fa-regular fa-copy text-xs"></i>
+                                </button>
+                            </div>
+                            <div class="flex gap-1.5 mt-2 flex-wrap">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wide"
+                                      :class="getStatusClass(user)" x-text="getStatusLabel(user)"></span>
+                                <span x-show="user.days_left > 0 && user.days_left <= 3" 
+                                      class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-500 border border-red-100 flex items-center animate-pulse">
+                                    <i class="fa-regular fa-clock mr-1"></i>Còn <span x-text="user.days_left"></span> ngày
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex items-center h-full"><i class="fa-solid fa-chevron-right text-xs text-slate-300"></i></div>
+                </div>
+            </div>
+        </template>
+        
+        <div x-show="filteredUsers.length === 0" class="py-10 text-center" x-cloak>
+            <div class="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
+                <i class="fa-solid fa-filter text-slate-300 text-xl"></i>
+            </div>
+            <p class="text-slate-400 text-sm">Không tìm thấy user nào.</p>
+        </div>
+    </div>
+
+    <div x-show="sheetOpen" class="relative z-50" x-cloak>
+        <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300"
+             x-show="sheetOpen" x-transition.opacity @click="sheetOpen = false"></div>
+             
+        <div class="fixed bottom-0 left-0 right-0 bg-white rounded-t-3xl h-[85vh] flex flex-col shadow-2xl transform transition-transform duration-300"
+             x-show="sheetOpen" x-transition:enter-start="translate-y-full" x-transition:enter-end="translate-y-0"
+             x-transition:leave-start="translate-y-0" x-transition:leave-end="translate-y-full">
+            
+            <div class="w-full flex justify-center pt-3 pb-1" @click="sheetOpen = false"><div class="w-12 h-1.5 bg-slate-200 rounded-full"></div></div>
+            
+            <div class="px-6 py-3 flex justify-between items-center border-b border-slate-50 pb-4">
+                <div>
+                    <h2 class="text-xl font-bold text-slate-800 truncate max-w-[200px]" x-text="selectedUser?.name"></h2>
+                    <div class="text-xs text-slate-400 font-mono" x-text="'ID: ' + selectedUser?.id"></div>
+                </div>
+                <button @click="sheetOpen = false" class="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-200">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-[#F8FAFC]">
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-4">Gói Cước</h3>
+                    <div class="flex items-center gap-4 mb-5">
+                        <div class="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shadow-sm border border-slate-50"
+                             :class="selectedUser?.is_pro && !selectedUser?.is_expired ? 'bg-gradient-to-br from-yellow-400 to-yellow-600 text-white' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-crown"></i>
+                        </div>
+                        <div>
+                            <div class="text-lg font-bold text-slate-800" 
+                                 x-text="selectedUser?.is_pro ? (selectedUser?.is_expired ? 'ĐÃ HẾT HẠN' : 'GÓI PRO') : 'GÓI FREE'"></div>
+                            <div class="text-sm" :class="selectedUser?.is_expired ? 'text-red-500 font-medium' : 'text-slate-500'">
+                                <i class="fa-regular fa-calendar mr-1"></i>
+                                <span x-text="selectedUser?.expiry_date ? 'Hết hạn: ' + formatDate(selectedUser.expiry_date) : 'Vô thời hạn'"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button class="py-3 bg-slate-900 text-white rounded-xl text-sm font-bold shadow-lg shadow-slate-200 active:scale-95 transition" @click="extendUser(30)">+30 Ngày</button>
+                        <button class="py-3 bg-white border border-slate-200 text-slate-700 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-slate-50" @click="extendUser(7)">+7 Ngày</button>
+                        <button class="py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100" @click="extendUser(-7)">-7 Ngày</button>
+                        <button class="py-3 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-red-100" @click="deactivateUser()"><i class="fa-solid fa-ban mr-1"></i> Hủy Gói</button>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
+                             :class="selectedUser?.config?.vn30 ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-chart-line"></i>
+                        </div>
+                        <div>
+                            <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Cảnh báo VN30F1M</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vn30 ? 'ĐANG BẬT' : 'ĐANG TẮT'"></div>
+                        </div>
+                    </div>
+                    <div class="h-3 w-3 rounded-full" 
+                         :class="selectedUser?.config?.vn30 ? 'bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-slate-300'"></div>
+                </div>
+
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3 flex justify-between">
+                        <span>Đang theo dõi</span>
+                        <span class="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px]" x-text="selectedUser?.watchlist ? selectedUser.watchlist.length : 0"></span>
+                    </h3>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="sym in selectedUser?.watchlist">
+                            <span class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-lg text-sm font-bold" x-text="sym"></span>
+                        </template>
+                        <template x-if="!selectedUser?.watchlist || selectedUser?.watchlist.length === 0">
+                            <span class="text-sm text-slate-400 italic w-full text-center py-2">Danh mục trống</span>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div class="bg-slate-50 px-4 py-3 border-b border-slate-100 flex justify-between items-center">
+                        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wide">Nhật ký hoạt động (10 lệnh)</h3>
+                        <i class="fa-solid fa-list-ul text-slate-300 text-xs"></i>
+                    </div>
+                    <div class="max-h-48 overflow-y-auto">
+                        <table class="w-full text-left text-sm">
+                            <tbody class="divide-y divide-slate-50">
+                                <template x-for="log in selectedUser?.logs">
+                                    <tr class="hover:bg-slate-50 transition">
+                                        <td class="px-4 py-2.5 font-mono text-xs text-blue-600 font-medium bg-blue-50/30 w-1/3" x-text="log.command"></td>
+                                        <td class="px-4 py-2.5 text-slate-500 text-xs text-right" x-text="formatDate(log.used_at) + ' ' + new Date(log.used_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})"></td>
+                                    </tr>
+                                </template>
+                                <template x-if="!selectedUser?.logs || selectedUser?.logs.length === 0">
+                                    <tr><td colspan="2" class="px-4 py-6 text-center text-slate-400 text-xs italic">Chưa có hoạt động nào</td></tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3 px-1">Giao dịch gần đây</h3>
+                    <div class="space-y-2">
+                        <template x-for="order in selectedUser?.orders">
+                            <div class="bg-white p-3 rounded-xl border border-slate-100 flex justify-between items-center"
+                                 :class="order.status === 'PENDING' ? 'opacity-70' : ''">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs"
+                                         :class="order.status === 'PAID' ? 'bg-green-100 text-green-600' : 'bg-yellow-100 text-yellow-600'">
+                                        <i :class="order.status === 'PAID' ? 'fa-solid fa-check' : 'fa-solid fa-hourglass'"></i>
+                                    </div>
+                                    <div>
+                                        <div class="text-sm font-bold" x-text="formatMoney(order.amount)"></div>
+                                        <div class="text-[10px] text-slate-400" x-text="formatDate(order.created_at)"></div>
+                                    </div>
+                                </div>
+                                <span class="text-xs font-bold px-2 py-1 rounded"
+                                      :class="order.status === 'PAID' ? 'text-green-600 bg-green-50' : 'text-yellow-600 bg-yellow-50'"
+                                      x-text="order.status"></span>
+                            </div>
+                        </template>
+                        <template x-if="!selectedUser?.orders || selectedUser?.orders.length === 0">
+                            <div class="text-center text-sm text-slate-400 italic py-4">Chưa có giao dịch nào.</div>
+                        </template>
+                    </div>
+                </div>
+                
+                <div class="h-6"></div> </div>
+
+            <div class="p-4 border-t border-slate-100 bg-white pb-8">
+                <button @click="sendMessage()" class="w-full py-3.5 rounded-xl bg-blue-600 text-white font-bold shadow-lg shadow-blue-200 active:scale-95 transition flex items-center justify-center gap-2">
+                    <i class="fa-brands fa-telegram"></i> Nhắn tin trực tiếp
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div x-show="toast.visible" x-cloak 
+         class="fixed top-4 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur text-white px-4 py-2.5 rounded-full text-sm font-medium shadow-xl z-[60] flex items-center gap-2 transition-all"
+         x-transition:enter="transform -translate-y-10 opacity-0"
+         x-transition:enter-end="transform translate-y-0 opacity-100"
+         x-transition:leave="transform -translate-y-10 opacity-0">
+        <i class="fa-solid fa-circle-check text-green-400"></i>
+        <span x-text="toast.message"></span>
+    </div>
+
+    <script>
+        function mobileApp() {
+            return {
+                isLoading: false,
+                searchQuery: '',
+                filterStatus: 'all',
+                sheetOpen: false,
+                selectedUser: null,
+                toast: { visible: false, message: '' },
+                users: {{ initial_data | safe }},
+                adminId: '{{ admin_id }}',
+
+                tabs: [
+                    { id: 'all', label: 'Tất cả' },
+                    { id: 'pro', label: 'Pro' },
+                    { id: 'expiring', label: 'Sắp hết' },
+                    { id: 'free', label: 'Free' }
+                ],
+
+                getCount(tabId) {
+                    if (tabId === 'all') return this.users.length;
+                    if (tabId === 'pro') return this.users.filter(u => u.is_pro && !u.is_expired).length;
+                    if (tabId === 'expiring') return this.users.filter(u => u.is_pro && !u.is_expired && u.days_left <= 3).length;
+                    if (tabId === 'free') return this.users.filter(u => !u.is_pro).length;
+                    return 0;
+                },
+
+                get filteredUsers() {
+                    return this.users.filter(user => {
+                        const s = this.searchQuery.toLowerCase();
+                        const uName = user.name ? user.name.toLowerCase() : '';
+                        const uId = String(user.id);
+                        if (!(!s || uId.includes(s) || uName.includes(s))) return false;
+                        if (this.filterStatus === 'pro') return user.is_pro && !user.is_expired;
+                        if (this.filterStatus === 'expiring') return user.is_pro && !user.is_expired && user.days_left <= 3;
+                        if (this.filterStatus === 'free') return !user.is_pro;
+                        return true;
+                    });
+                },
+
+                async sendMessage() {
+                    const msg = prompt(`Gửi tin nhắn cho ${this.selectedUser.name}:`);
+                    if (!msg) return;
+                    
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch('/api/admin/user/message', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, text: msg })
+                        });
+                        const text = await res.text();
+                        let result; try { result = JSON.parse(text); } catch { throw new Error("Server trả về HTML lỗi."); }
+
+                        if (result.ok) this.showToast('📩 Đã gửi tin nhắn!');
+                        else alert('❌ Lỗi: ' + result.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                async extendUser(days) {
+                    const actionName = days > 0 ? `Cộng thêm ${days} ngày` : `TRỪ ĐI ${Math.abs(days)} ngày`;
+                    if (!confirm(`Xác nhận: ${actionName} cho ${this.selectedUser.name}?`)) return;
+                    this.callApi('/api/admin/user/extend', { days: days }, '✅ Đã cập nhật!');
+                },
+
+                async deactivateUser() {
+                    if (!confirm(`⚠️ NGUY HIỂM: NGƯNG KÍCH HOẠT gói Pro của ${this.selectedUser.name}?`)) return;
+                    this.callApi('/api/admin/user/deactivate', {}, '🚫 Đã hủy gói thành công!');
+                },
+
+                async callApi(url, body, successMsg) {
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch(url, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, ...body })
+                        });
+                        const text = await res.text();
+                        let result; try { result = JSON.parse(text); } catch { throw new Error("Server lỗi HTML."); }
+
+                        if (result.ok) {
+                            this.showToast(successMsg);
+                            this.sheetOpen = false;
+                        } else {
+                            alert('❌ Lỗi: ' + result.message);
+                        }
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                copyId(id) { navigator.clipboard.writeText(id); this.showToast('Đã sao chép ID: ' + id); },
+                showToast(msg) { this.toast.message = msg; this.toast.visible = true; setTimeout(() => this.toast.visible = false, 2500); },
+                openSheet(user) { this.selectedUser = user; this.sheetOpen = true; },
+                getStatusLabel(user) { return !user.is_pro ? 'FREE' : (user.is_expired ? 'EXPIRED' : 'PRO'); },
+                getStatusClass(user) { return !user.is_pro ? 'bg-slate-100 text-slate-500' : (user.is_expired ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'); },
+                formatDate(isoStr) { if (!isoStr) return '—'; try { return new Date(isoStr).toLocaleDateString('vi-VN'); } catch { return isoStr; } },
+                formatMoney(num) { return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(num); }
+            }
+        }
+    </script>
+</body>
+</html>
+"""
 
