@@ -333,6 +333,8 @@ BOT_ACTIVE = None  # Sẽ được load từ DB trong main()
 
 initial_active = None  # Trạng thái bot lúc khởi động (dùng trong lifespan)
 
+_last_weekly_run_date = None
+
 ALERT_STATE = {}
 
 # Thời gian giãn cách giữa 2 lần báo cho cùng 1 mã (giây)
@@ -3561,50 +3563,66 @@ async def execute_weekly_report(admin_update: Update | None = None):
 
 async def weekly_report_loop():
     """
-    (Đã sửa) Gửi báo cáo danh mục (CHỈ LÊN LỊCH)
-    vào 09:00 sáng Chủ Nhật hằng tuần.
+    Gửi báo cáo danh mục vào 09:00 sáng Chủ Nhật.
+    Đã fix lỗi gửi kép bằng cách kiểm tra ngày chạy (_last_weekly_run_date).
     """
+    global _last_weekly_run_date
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
 
+    log.info(f"[{INSTANCE_ID}][WEEKLY] Khởi động loop báo cáo tuần (09:00 CN).")
+
     while True:
         loop_id += 1
-        instance_label = f"[{INSTANCE_ID}][WEEKLY {loop_id}]"
+        # 1. Tính thời gian ngủ tới 09:00 CN tiếp theo
+        wait_sec = seconds_until_next_weekly_report()
+        
+        # Log nhẹ để biết bao lâu nữa chạy
+        next_run_dt = datetime.datetime.now(vn_tz) + datetime.timedelta(seconds=wait_sec)
+        log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ {wait_sec/3600:.1f}h tới {next_run_dt.strftime('%H:%M %d/%m')}")
+        
+        await asyncio.sleep(wait_sec)
 
+        # 2. Thức dậy! Kiểm tra điều kiện
         if not BOT_ACTIVE:
-            log.info(f"{instance_label} Bot đang TẮT, sleep 60s.")
+            log.info(f"[{INSTANCE_ID}][WEEKLY] Thức dậy nhưng Bot TẮT. Bỏ qua.")
             await asyncio.sleep(60)
             continue
 
-        if not GEMINI_API_KEY:
-            log.warning(
-                f"{instance_label} Chưa có GEMINI_API_KEY, bỏ qua báo cáo tuần."
-            )
+        now = datetime.datetime.now(vn_tz)
+        today_str = now.strftime("%Y-%m-%d")
+
+        # Điều kiện 1: Phải là Chủ Nhật (0=T2, 6=CN)
+        if now.weekday() != 6:
+            log.warning(f"[{INSTANCE_ID}][WEEKLY] Thức dậy nhưng không phải Chủ Nhật? (Now: {now})")
+            await asyncio.sleep(60)
+            continue
+
+        # Điều kiện 2: Phải đúng giờ (trong khoảng 09:00 - 09:59) để tránh chạy sai giờ
+        if now.hour != 9:
+             log.warning(f"[{INSTANCE_ID}][WEEKLY] Thức dậy nhưng sai giờ (Now: {now.hour}h). Bỏ qua.")
+             await asyncio.sleep(60)
+             continue
+
+        # 🔥 [FIX LỖI GỬI KÉP]: Kiểm tra xem hôm nay đã chạy chưa?
+        if _last_weekly_run_date == today_str:
+            log.info(f"[{INSTANCE_ID}][WEEKLY] Hôm nay ({today_str}) đã chạy rồi. Không chạy lại.")
+            # Ngủ 1 tiếng để chắc chắn qua khỏi khung giờ 9h
             await asyncio.sleep(3600)
             continue
 
-        wait_sec = seconds_until_next_weekly_report()
-        log.info(
-            f"{instance_label} Ngủ tới 09:00 Chủ Nhật, còn {wait_sec:.0f}s"
-        )
-        await asyncio.sleep(wait_sec)
-
-        if not BOT_ACTIVE:
-            log.info(f"{instance_label} Thức dậy nhưng bot TẮT, bỏ qua.")
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-        if now.weekday() != 6:
-            log.info(f"{instance_label} Không phải Chủ Nhật, bỏ qua.")
-            continue
-
+        # 3. Chạy báo cáo
         try:
-            # Chỉ cần gọi hàm lõi (không truyền admin_update)
-            log.info(f"{instance_label} 09:00 Chủ Nhật, bắt đầu chạy execute_weekly_report() theo lịch.")
+            log.info(f"[{INSTANCE_ID}][WEEKLY] 🚀 Bắt đầu chạy Weekly Report cho ngày {today_str}...")
+            
+            # Gọi hàm thực thi
             await execute_weekly_report(admin_update=None)
             
+            # ✅ Đánh dấu là đã chạy hôm nay
+            _last_weekly_run_date = today_str
+            
         except Exception as e:
-            log.error(f"{instance_label} Lỗi nghiêm trọng khi gọi execute_weekly_report: {e}")
+            log.error(f"[{INSTANCE_ID}][WEEKLY] ❌ Lỗi nghiêm trọng: {e}")
             await asyncio.sleep(300)
 
 # ===============================================================
