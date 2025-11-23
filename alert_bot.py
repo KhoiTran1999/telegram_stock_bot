@@ -1701,84 +1701,61 @@ async def notify_admin_report_error_once(
 async def get_financial_context_string(symbols: list[str]) -> str:
     """
     [MỚI] Tạo dữ liệu đầu vào cho AI dựa trên chiến lược Mean Reversion.
-    Kết hợp:
-    1. Dữ liệu hiện tại (Screener API Realtime)
-    2. Dữ liệu lịch sử (Redis Cache - Mean Reversion)
+    Kết hợp: Screener API Realtime + Redis Cache Lịch sử 5 năm.
     """
-    if not symbols:
-        return ""
+    if not symbols: return ""
 
     # 1. Lấy dữ liệu Lịch sử (Redis)
     hist_data = await asyncio.to_thread(get_historical_valuation_from_redis) or {}
     
-    # 2. Lấy dữ liệu Hiện tại (Snapshot Screener - Lấy toàn thị trường 1 lần cho nhanh)
+    # 2. Lấy dữ liệu Hiện tại (Snapshot Screener)
     try:
-        # Lấy snapshot realtime
         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] Lỗi lấy Screener cho AI context: {e}")
+        log.warning(f"[{INSTANCE_ID}] Lỗi lấy Screener context: {e}")
         screener_df = None
 
-    lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH & ĐỊNH GIÁ (REALTIME vs LỊCH SỬ 5 NĂM):**"]
-    lines.append("(Hãy sử dụng số liệu dưới đây để nhận định cổ phiếu đang ĐẮT hay RẺ so với chính nó trong quá khứ)")
+    lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH (REALTIME vs TRUNG BÌNH 5 NĂM):**"]
+    lines.append("(Sử dụng số liệu dưới đây để đánh giá Đắt/Rẻ theo Mean Reversion)")
     lines.append("-" * 60)
 
-    # Tạo map để tra cứu nhanh
-    current_data_map = {}
+    # Map dữ liệu để tra cứu nhanh
+    curr_map = {}
     if screener_df is not None and not screener_df.empty:
-        # Chuẩn hóa ticker thành upper case để map
         screener_df['ticker'] = screener_df['ticker'].astype(str).str.upper().str.strip()
-        current_data_map = screener_df.set_index('ticker').to_dict('index')
+        curr_map = screener_df.set_index('ticker').to_dict('index')
 
     for sym in symbols:
         sym_u = sym.upper()
         lines.append(f"📌 **{sym_u}**:")
         
-        # Lấy data
-        curr = current_data_map.get(sym_u, {})
+        curr = curr_map.get(sym_u, {})
         hist = hist_data.get(sym_u, {})
         
-        # Chỉ số Hiện tại
+        # Chỉ số
         pe_cur = float(curr.get('pe', 0) or 0)
         pb_cur = float(curr.get('pb', 0) or 0)
-        roe_cur = float(curr.get('roe', 0) or 0) * 100 # ROE screener thường là 0.15 -> 15%
-        market_cap = float(curr.get('market_cap', 0) or 0) / 1000 # Tỷ đồng
-
-        # Chỉ số Lịch sử (Mean Reversion)
         pe_avg = float(hist.get('pe_avg', 0) or 0)
         pb_avg = float(hist.get('pb_avg', 0) or 0)
 
-        # Format text cho AI đọc
-        info_parts = []
-        
-        # 1. Đánh giá P/E
+        info = []
         if pe_cur > 0 and pe_avg > 0:
-            diff_pe = (pe_cur - pe_avg) / pe_avg * 100
-            status_pe = "RẺ HƠN" if diff_pe < 0 else "ĐẮT HƠN"
-            info_parts.append(f"   - P/E hiện tại: {pe_cur:.1f}x (Trung bình 5 năm: {pe_avg:.1f}x) -> {status_pe} lịch sử {abs(diff_pe):.1f}%")
-        elif pe_cur > 0:
-            info_parts.append(f"   - P/E hiện tại: {pe_cur:.1f}x (Chưa có dữ liệu lịch sử)")
+            diff = (pe_cur - pe_avg) / pe_avg * 100
+            state = "RẺ HƠN" if diff < 0 else "ĐẮT HƠN"
+            info.append(f"   - P/E: {pe_cur:.1f}x (TB 5 năm: {pe_avg:.1f}x) -> {state} {abs(diff):.1f}%")
         
-        # 2. Đánh giá P/B
         if pb_cur > 0 and pb_avg > 0:
-            diff_pb = (pb_cur - pb_avg) / pb_avg * 100
-            status_pb = "RẺ HƠN" if diff_pb < 0 else "ĐẮT HƠN"
-            info_parts.append(f"   - P/B hiện tại: {pb_cur:.1f}x (Trung bình 5 năm: {pb_avg:.1f}x) -> {status_pb} lịch sử {abs(diff_pb):.1f}%")
-        
-        # 3. Hiệu quả & Quy mô
-        if roe_cur > 0:
-            info_parts.append(f"   - ROE hiện tại: {roe_cur:.1f}%")
-        if market_cap > 0:
-            info_parts.append(f"   - Vốn hóa: {market_cap:,.0f} tỷ VNĐ")
+            diff = (pb_cur - pb_avg) / pb_avg * 100
+            state = "RẺ HƠN" if diff < 0 else "ĐẮT HƠN"
+            info.append(f"   - P/B: {pb_cur:.1f}x (TB 5 năm: {pb_avg:.1f}x) -> {state} {abs(diff):.1f}%")
 
-        if info_parts:
-            lines.extend(info_parts)
+        if not info:
+            lines.append("   ⚠️ (Thiếu dữ liệu lịch sử hoặc lỗ)")
         else:
-            lines.append("   ⚠️ (Thiếu dữ liệu định giá, có thể là cổ phiếu lỗ hoặc mới lên sàn)")
+            lines.extend(info)
 
     lines.append("-" * 60)
     return "\n".join(lines)
-
 
 def call_chatgpt_for_report(symbols: list[str]) -> str:
     """
@@ -1842,11 +1819,13 @@ LƯU Ý:
     log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Mean Reversion): {symbols_str}")
 
     try:
-        return call_gemini_safe(
+        raw_text = call_gemini_safe(
             model_id="gemini-2.5-flash",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
+        # 🔥 FIX QUAN TRỌNG: Xóa markdown fences
+        return raw_text.replace("```json", "").replace("```", "").strip()
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report: {e}")
         raise e
@@ -2992,7 +2971,7 @@ async def execute_weekly_report(admin_update: Update | None = None):
             # === GỬI TIN NHẮN WEB APP ===
             if json_text:
                 try:
-                    web_app_url = f"{base_url}/report/view/{cache_key}"
+                    web_app_url = f"{base_url}/report/view/{cache_key}?chat_id={chat_id}"
                     
                     kb = InlineKeyboardMarkup([[
                         InlineKeyboardButton("📊 Xem Báo Cáo Tuần", web_app=WebAppInfo(url=web_app_url))
@@ -7115,11 +7094,11 @@ async def view_profile(symbol: str): # <--- Đổi thành async
     )
 
 @flask_app.route("/report/view/<cache_key>")
-async def view_report(cache_key): # <--- Đổi thành async
+async def view_report(cache_key):
     """
-    Route hiển thị Web App Report (JSON Mode + Mini Charts).
+    Route hiển thị Web App Report (ĐÃ FIX ASYNC & LOG).
     """
-    # 1. Check Pro (Giữ nguyên logic cũ)
+    # 1. Check Pro (Giữ nguyên)
     chat_id_str = request.args.get("chat_id")
     is_pro = False
     if chat_id_str:
@@ -7131,44 +7110,44 @@ async def view_report(cache_key): # <--- Đổi thành async
     if not is_pro:
         return render_template_string(LOCKED_FEATURE_TEMPLATE, icon="📊", title="AI Phân Tích Danh Mục", desc="..."), 403
 
-    # 2. Lấy Cache (Giữ nguyên)
-    cached = get_report_from_redis(cache_key)
+    # 2. Lấy Cache (FIX ASYNC REDIS)
+    try:
+        # Chạy trong thread để không block Flask async loop
+        cached = await asyncio.to_thread(get_report_from_redis, cache_key)
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}][VIEW] Lỗi đọc Redis: {e}")
+        cached = None
+
     if not cached:
+        # Log debug để biết tại sao 404
+        log.warning(f"[{INSTANCE_ID}][VIEW] Cache MISS key: '{cache_key}' -> 404")
         return render_template_string(REPORT_404_TEMPLATE), 404
 
     text_json, generated_at, is_error, wait_sec = cached
+    
     if is_error:
         return f"<h3>Đang gặp lỗi: {text_json}</h3>", 500
 
     try:
-        data = json.loads(text_json)
+        # Clean lần nữa cho chắc
+        clean_text = text_json.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_text)
     except Exception as e:
-        log.error(f"Lỗi parse JSON report: {e}")
-        return "Lỗi dữ liệu báo cáo", 500
+        log.error(f"[{INSTANCE_ID}][VIEW] Lỗi parse JSON: {e}")
+        return "Lỗi dữ liệu báo cáo (JSON Format)", 500
 
-    # 3. [MỚI] TẠO BIỂU ĐỒ SONG SONG
+    # 3. Tạo Chart (Giữ nguyên)
     if 'stocks' in data and data['stocks']:
         try:
-            # Tạo danh sách task vẽ chart cho từng mã
             tasks = [generate_mini_chart(stock['symbol']) for stock in data['stocks']]
-            
-            # Chạy song song -> Rất nhanh
             charts = await asyncio.gather(*tasks)
-            
-            # Gán HTML chart vào từng object stock
             for i, stock in enumerate(data['stocks']):
                 stock['chart_html'] = charts[i]
-                
-        except Exception as e:
-            log.error(f"Lỗi tạo mini charts: {e}")
+        except: pass
 
-    # 4. Format thời gian & Render (Giữ nguyên)
+    # 4. Render
     vn_tz = pytz.timezone(TIMEZONE)
-    time_str = "Vừa xong"
-    if generated_at:
-        if generated_at.tzinfo is None:
-             generated_at = generated_at.replace(tzinfo=datetime.timezone.utc)
-        time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
+    time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y") if generated_at else ""
 
     return render_template_string(
         REPORT_HTML_TEMPLATE, 
@@ -7273,107 +7252,84 @@ IS_PRODUCTION = os.getenv("RENDER") == "true" or ENV_MODE == "production"
 async def set_telegram_webhook():
     """
     Hàm này CHỈ thực hiện VIỆC set/update webhook.
-    Nó sẽ được gọi bởi 'lifespan.startup' SAU KHI server đã mở port.
     """
     global tg_app, log, INSTANCE_ID
 
     webhook_url = None
     
+    # Ưu tiên 1: Production Render URL
     if IS_PRODUCTION:
-        # Chế độ Production: Lấy URL từ Render
-        log.info(f"[{INSTANCE_ID}] [Lifespan] Chế độ PRODUCTION, đang lấy URL từ Render...")
-        webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
-        log.info(f"[{INSTANCE_ID}] [Khôi Trần] check xem đúng được link có /webhook chưa: {webhook_url}")
-        if not webhook_url:
-            host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-            if host:
-                webhook_url = f"https://{host}/webhook"
-    else:
-        # # Chế độ Local: Lấy URL từ .env (biến NGROK_URL)
-        # log.info(f"[{INSTANCE_ID}] [Lifespan] Chế độ LOCAL, đang lấy URL từ .env (NGROK_URL)...")
-        # # Thay vì hardcode URL ngrok, hãy đọc từ file .env
-        # webhook_url = os.getenv("NGROK_URL") 
-        # if webhook_url and not webhook_url.endswith("/webhook"):
-        #     webhook_url += "/webhook"
+        webhook_url = os.getenv("RENDER_EXTERNAL_URL")
+        if webhook_url and not webhook_url.endswith("/webhook"):
+            webhook_url += "/webhook"
+    
+    # Ưu tiên 2: Local Ngrok URL (Nếu không phải Production)
+    elif os.getenv("NGROK_URL"):
+        webhook_url = os.getenv("NGROK_URL")
+        if webhook_url and not webhook_url.endswith("/webhook"):
+            webhook_url += "/webhook"
 
-        # 🛠️ LOCAL: Dùng polling thủ công để chia sẻ event loop với các loop khác
-        log.info(f"[{INSTANCE_ID}] [LOCAL] Bắt đầu chạy Polling (updater.start_polling)...")
-
-        # Đảm bảo không còn webhook nào đang set
-        await tg_app.bot.delete_webhook(drop_pending_updates=True)
-
-        # 🔄 Bật polling (không block event loop, chỉ start fetcher)
-        await tg_app.updater.start_polling(drop_pending_updates=True)
-
-        log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start, chờ update từ Telegram...")
-
-        return  # Không cần set webhook trong local polling
-
-            # -----------------------------------------------------------------
-
+    # --- NẾU KHÔNG CÓ URL -> KHÔNG LÀM GÌ (ĐỂ POLLING LO) ---
     if not webhook_url:
-        log.error(
-            f"[{INSTANCE_ID}] ⚠️ [Lifespan] KHÔNG THỂ SET WEBHOOK. "
-            "Không tìm thấy RENDER_EXTERNAL_URL (production) hoặc NGROK_URL (local)."
-        )
+        log.info(f"[{INSTANCE_ID}] [Lifespan] Không tìm thấy URL Webhook. Sẽ chuyển sang chế độ Polling.")
         return
 
-    # Thực hiện gọi API set webhook (lấy từ code cũ của bạn)
+    # --- THỰC HIỆN SET WEBHOOK ---
+    log.info(f"[{INSTANCE_ID}] [Lifespan] Đang set webhook tới: {webhook_url}")
     try:
         success = await tg_app.bot.set_webhook(
             url=webhook_url,
             drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
         )
         if success:
-            log.info(f"[{INSTANCE_ID}] ✅ [Lifespan] Webhook đã set thành công: {webhook_url}")
+            log.info(f"[{INSTANCE_ID}] ✅ [Lifespan] Webhook đã set thành công!")
         else:
             log.error(f"[{INSTANCE_ID}] ❌ [Lifespan] API set_webhook trả về 'False'.")
-    except TelegramError as e:
-        log.error(
-            f"[{INSTANCE_ID}] ❌ [Lifespan] SET WEBHOOK THẤT BẠI (TelegramError)!"
-            f" URL: {webhook_url} | Lỗi: {e}"
-        )
     except Exception as e:
-        log.error(
-            f"[{INSTANCE_ID}] ❌ [Lifespan] SET WEBHOOK THẤT BẠI (Lỗi chung)!"
-            f" URL: {webhook_url} | Lỗi: {e}"
-        )
+        log.error(f"[{INSTANCE_ID}] ❌ [Lifespan] Lỗi set webhook: {e}")
 
 async def run_telegram_processing():
     """
-    Khởi chạy và duy trì các tiến trình nội bộ của thư viện python-telegram-bot.
-    (Đây là phần tg_app.start() và logic Polling)
+    Quyết định chạy Polling hay chờ Webhook.
     """
     global tg_app, log, INSTANCE_ID, IS_PRODUCTION
     
     await tg_app.initialize()
     await tg_app.start()
     
-    # Nếu chạy local mà KHÔNG CÓ NGROK_URL -> Chuyển sang POLLING
-    # (Code Polling của bạn đã bị comment, tôi kích hoạt lại nó ở đây)
-    if not IS_PRODUCTION and not os.getenv("NGROK_URL"):
-        log.info(f"[{INSTANCE_ID}] [LOCAL] Không tìm thấy NGROK_URL, "
-                 "chuyển sang chạy Polling (xóa webhook)...")
-        await tg_app.bot.delete_webhook(drop_pending_updates=True)
-        await tg_app.updater.start_polling(drop_pending_updates=True)
-        log.info(f"[{INSTANCE_ID}] [LOCAL] Polling đã start.")
-    else:
-        log.info(f"[{INSTANCE_ID}] Bot đang chạy ở chế độ Webhook. "
-                 "`run_telegram_processing` đang duy trì tiến trình...")
+    # Kiểm tra xem có URL webhook không
+    has_webhook_url = False
+    if IS_PRODUCTION and os.getenv("RENDER_EXTERNAL_URL"):
+        has_webhook_url = True
+    elif os.getenv("NGROK_URL"):
+        has_webhook_url = True
+
+    # --- TRƯỜNG HỢP 1: CHẠY POLLING (Local không Ngrok) ---
+    if not has_webhook_url:
+        log.info(f"[{INSTANCE_ID}] [MODE] Không có Webhook URL -> Chuyển sang chạy POLLING...")
         
-    # Giữ cho các task của tg_app (như job_queue) được chạy
-    # Đây là nơi đúng để dùng Event().wait()
-    # await asyncio.Event().wait() 
+        # Xóa webhook cũ để tránh xung đột
+        await tg_app.bot.delete_webhook(drop_pending_updates=True)
+        
+        # Bật Polling
+        await tg_app.updater.start_polling(
+            drop_pending_updates=True, 
+            allowed_updates=Update.ALL_TYPES
+        )
+        log.info(f"[{INSTANCE_ID}] [MODE] Polling đã bắt đầu.")
+        
+        # Giữ cho task này sống mãi mãi
+        await asyncio.Event().wait()
+
+    # --- TRƯỜNG HỢP 2: CHẠY WEBHOOK (Production hoặc Local + Ngrok) ---
+    else:
+        log.info(f"[{INSTANCE_ID}] [MODE] Đang chạy chế độ WEBHOOK. `run_telegram_processing` sẽ ngủ để duy trì background tasks.")
+        # Chỉ cần ngủ để giữ task không bị đóng
+        await asyncio.Event().wait()
 
 async def asgi_wrapper_app(scope, receive, send):
-    """
-    Ứng dụng ASGI "vỏ bọc" chính.
-    - Xử lý 'lifespan' (startup/shutdown).
-    - Chuyển tiếp 'http' cho Flask.
-    """
     global wsgi_app, log, tg_app, IS_PRODUCTION
-
-    # 🚀 BIẾN MỚI: Khai báo để sử dụng
     global BACKGROUND_TASKS, MAIN_LOOP
     global ADMIN_ID, initial_active, INSTANCE_ID
  
@@ -7381,32 +7337,30 @@ async def asgi_wrapper_app(scope, receive, send):
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
-                log.info("[Lifespan] Server startup. Đang chuẩn bị set webhook...")
+                log.info("[Lifespan] Server startup...")
                 
-                if IS_PRODUCTION or os.getenv("NGROK_URL"):
-                    await set_telegram_webhook() 
+                # 1. Cố gắng set webhook (nếu có URL)
+                await set_telegram_webhook()
                 
-                # 1. Báo cho Hypercorn biết là đã startup xong
+                # 2. Báo cho Hypercorn biết là startup xong (QUAN TRỌNG)
                 await send({"type": "lifespan.startup.complete"})
                 
-                # 2. 🚦 MÁY CHỦ ĐÃ SỐNG! BÂY GIỜ MỚI CHẠY TÁC VỤ NỀN
-                log.info("[Lifespan] Startup complete. Server is live. Starting background tasks...")
-   
-                # (Lấy toàn bộ các loop từ hàm main() chuyển lên đây)
+                # 3. Khởi động các tác vụ nền
+                log.info("[Lifespan] Starting background tasks...")
+                
+                # ... (Giữ nguyên phần list BACKGROUND_TASKS của bạn) ...
+                # Chú ý: Đảm bảo list BACKGROUND_TASKS của bạn đã đầy đủ như file cũ
+                
                 BACKGROUND_TASKS = [
-                    #----------------alert_loop---------------
                     MAIN_LOOP.create_task(alert_loop()),
-                    MAIN_LOOP.create_task(stock_price_fetcher_loop()), # Fetcher (15s)
-                    MAIN_LOOP.create_task(stock_broadcast_loop()),   # Broadcaster (chờ queue)
-                    #-------------- vn30f1m_alert_loop ------------
-                    MAIN_LOOP.create_task(vn30f1m_alert_loop()),      # Ticker (5s)
-                    MAIN_LOOP.create_task(vn30f1m_price_fetcher_loop()), # Fetcher (61s)
-                    MAIN_LOOP.create_task(vn30f1m_broadcast_loop()),   # Broadcaster (chờ queue)
-                    #-------------- News_loop ------------
+                    MAIN_LOOP.create_task(stock_price_fetcher_loop()),
+                    MAIN_LOOP.create_task(stock_broadcast_loop()),
+                    MAIN_LOOP.create_task(vn30f1m_alert_loop()),
+                    MAIN_LOOP.create_task(vn30f1m_price_fetcher_loop()),
+                    MAIN_LOOP.create_task(vn30f1m_broadcast_loop()),
                     MAIN_LOOP.create_task(news_specialized_loop()),
                     MAIN_LOOP.create_task(news_macro_loop()),
                     MAIN_LOOP.create_task(news_cleanup_loop()),
-                    #--------------------------------------
                     MAIN_LOOP.create_task(session_notice_loop()),
                     MAIN_LOOP.create_task(weekly_report_loop()),
                     MAIN_LOOP.create_task(analysis_report_loop()),
@@ -7419,20 +7373,9 @@ async def asgi_wrapper_app(scope, receive, send):
                 log.info(f"[Lifespan] Đã khởi động {len(BACKGROUND_TASKS)} tác vụ nền.")
             
             elif message["type"] == "lifespan.shutdown":
-                log.info("[Lifespan] Server shutdown. Cancelling background tasks...")
-                
-                # 3. Dọn dẹp các tác vụ nền khi tắt
+                log.info("[Lifespan] Server shutdown.")
                 for task in BACKGROUND_TASKS:
                     task.cancel()
-                    
-                # log.info("[Lifespan] Đang xóa webhook...")
-                # try:
-                #     if IS_PRODUCTION: 
-                #         await tg_app.bot.delete_webhook(drop_pending_updates=True)
-                #         log.info("[Lifespan] Đã xóa webhook.")
-                # except Exception as e:
-                #     log.warning(f"[Lifespan] Lỗi khi xóa webhook: {e}")
-                
                 await send({"type": "lifespan.shutdown.complete"})
                 break
     
