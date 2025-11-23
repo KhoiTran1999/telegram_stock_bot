@@ -755,6 +755,79 @@ async def calculate_historical_valuation_task():
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] ❌ Lỗi task tính toán định giá: {e}")
 
+# --- TRONG FILE alert_bot.py ---
+
+async def get_top_mean_reversion_stocks(limit=5):
+    """
+    Lấy Top cổ phiếu rẻ nhất theo chiến lược Mean Reversion cho Digest.
+    Trả về danh sách các dict chứa đầy đủ thông tin định dạng cho UI.
+    """
+    try:
+        # 1. Lấy dữ liệu lịch sử từ Redis
+        hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+        if not hist_data:
+            log.warning(f"[{INSTANCE_ID}] Digest: Chưa có dữ liệu định giá lịch sử. Đang kích hoạt tính toán...")
+            asyncio.create_task(calculate_historical_valuation_task())
+            return []
+
+        # 2. Lấy dữ liệu hiện tại từ Screener API (Snapshot toàn thị trường)
+        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
+        
+        processed_items = []
+        
+        for index, row in screener_df.iterrows():
+            sym = row['ticker']
+            if sym not in hist_data: continue
+            
+            pe_cur = float(row['pe'])
+            pb_cur = float(row['pb'])
+            pe_avg = hist_data[sym]['pe_avg']
+            pb_avg = hist_data[sym]['pb_avg']
+            
+            if pe_avg <= 0 or pb_avg <= 0: continue
+
+            # --- TÍNH TOÁN LOGIC (Giống hệt cmd_screener_value) ---
+            pe_discount = (pe_cur - pe_avg) / pe_avg
+            pb_discount = (pb_cur - pb_avg) / pb_avg
+            avg_discount = (pe_discount + pb_discount) / 2
+            
+            # Helper định dạng UI
+            def get_ui_meta(discount):
+                pct_val = abs(discount) * 100
+                if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
+                elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
+                else: 
+                    sign = "▲" if discount > 0 else "▼"
+                    return "", f"{sign} {pct_val:.1f}%"
+
+            pe_class, pe_diff_str = get_ui_meta(pe_discount)
+            pb_class, pb_diff_str = get_ui_meta(pb_discount)
+            
+            if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
+            elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
+            else: signal_class, signal_text = "sig-fair", "Hợp lý"
+            
+            # --- ĐÓNG GÓI DỮ LIỆU CHO TEMPLATE ---
+            processed_items.append({
+                "symbol": sym,
+                # Dữ liệu thô để sort
+                "avg_discount_raw": avg_discount,
+                # Dữ liệu đã format sẵn cho UI
+                "pe_cur": f"{pe_cur:.1f}", "pe_avg": f"{pe_avg:.1f}",
+                "pe_class": pe_class, "pe_diff_str": pe_diff_str,
+                "pb_cur": f"{pb_cur:.1f}", "pb_avg": f"{pb_avg:.1f}",
+                "pb_class": pb_class, "pb_diff_str": pb_diff_str,
+                "signal_class": signal_class, "signal_text": signal_text
+            })
+
+        # 3. Sắp xếp (Rẻ nhất lên đầu) và lấy Top
+        processed_items.sort(key=lambda x: x['avg_discount_raw'])
+        return processed_items[:limit]
+
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] Lỗi get_top_mean_reversion_stocks: {e}")
+        return []
+
 def save_state_for_all(all_state):
     global ALERT_STATE
     ALERT_STATE = all_state
@@ -4610,7 +4683,7 @@ async def daily_user_digest_loop():
                 spec_rows,
                 all_watch,
                 pro_chat_ids,
-                screener_data,
+                top_value_stocks,
             ) = await asyncio.gather(
                 asyncio.to_thread(get_recent_bctc_notified, since_utc),
                 asyncio.to_thread(get_recent_analysis_reports, since_utc),
@@ -4618,7 +4691,7 @@ async def daily_user_digest_loop():
                 asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
                 asyncio.to_thread(get_all_watch),
                 asyncio.to_thread(get_all_pro_chat_ids),
-                asyncio.to_thread(run_value_screener_from_api, 'all'), 
+                get_top_mean_reversion_stocks(limit=5),
             )
             
             all_keywords = COMPANY_KEYWORDS
@@ -4632,7 +4705,6 @@ async def daily_user_digest_loop():
         # 🔥 XỬ LÝ TIN TỨC AI (PHẦN MỚI THÊM)
         # ============================================================
         ai_news_data = None # Biến chứa JSON để lưu vào Web App
-        ai_telegram_text = "" # Biến chứa Text để gửi tin nhắn
 
         # 1. Gom tin
         all_news_items = []
@@ -4645,64 +4717,9 @@ async def daily_user_digest_loop():
             # Gọi hàm JSON mà bạn đã copy trước đó
             ai_news_data = await summarize_daily_news_with_ai(all_news_items)
 
-        # 3. Format Text cho Telegram (Hàm con nội bộ)
-        def _format_ai_news_for_tele(data):
-            if not data: return "_Không có tin nổi bật trong 24h qua._"
-            lines = []
-            
-            # Tiêu điểm
-            if data.get('headline'):
-                lines.append("⚡ *TIÊU ĐIỂM THỊ TRƯỜNG*")
-                for item in data['headline']:
-                    tag = f" `[{item.get('tag','HOT')}]`" if item.get('tag') else ""
-                    lines.append(f"• [{item['text']}]({item['link']}){tag}")
-                lines.append("") 
-            
-            # Vĩ mô
-            if data.get('macro'):
-                lines.append("🌊 *CHUYỂN ĐỘNG VĨ MÔ*")
-                for item in data['macro']:
-                    lines.append(f"• [{item['text']}]({item['link']})")
-                lines.append("")
-
-            # Doanh nghiệp
-            if data.get('corporate'):
-                lines.append("🏢 *TIN DOANH NGHIỆP*")
-                for item in data['corporate']:
-                    prefix = f"*{item['ticker']}*: " if item.get('ticker') else ""
-                    lines.append(f"• {prefix}[{item['text']}]({item['link']})")
-                lines.append("")
-
-            # Nhận định
-            if data.get('comment'):
-                score = data.get('sentiment_score', 5)
-                icon = "🟢" if score >= 7 else "🔴" if score <= 4 else "🟡"
-                lines.append(f"🧠 *Góc nhìn AI ({score}/10):* {icon} _{data['comment']}_")
-            
-            return "\n".join(lines)
-
-        # Tạo nội dung sẵn
-        ai_telegram_text = _format_ai_news_for_tele(ai_news_data)
-
         # ============================================================
         # XỬ LÝ DỮ LIỆU KHÁC (GIỮ NGUYÊN LOGIC CŨ)
         # ============================================================
-        
-        # Value Screener
-        top_value_stocks = []
-        if screener_data and "industries" in screener_data:
-            all_candidates = []
-            for ind in screener_data["industries"]:
-                for row in ind.get("rows", []):
-                    row_copy = row.copy(); row_copy["industry"] = ind["industry"]
-                    all_candidates.append(row_copy)
-            all_candidates.sort(key=lambda x: x.get("value_score", 0), reverse=True)
-            for item in all_candidates[:5]:
-                top_value_stocks.append({
-                    "symbol": item["symbol"], "industry": item["industry"],
-                    "pe": f"{item.get('pe', 0):.1f}", "roe": f"{item.get('roe', 0) * 100:.1f}",
-                    "score": f"{item.get('value_score', 0):.2f}"
-                })
 
         # BCTC & Report & Mapping (Logic cũ giữ nguyên để tiết kiệm dòng)
         bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
@@ -4729,11 +4746,14 @@ async def daily_user_digest_loop():
 
         # Fill dữ liệu vào payload (Value, BCTC, Report)
         # (Phần này giống logic cũ, chỉ viết gọn lại)
+        # Fill dữ liệu vào payload
         if top_value_stocks:
             for cid in all_watch.keys():
                 try: cid = int(cid)
                 except: continue
-                if cid in pro_chat_ids or cid == ADMIN_ID: _get_payload(cid)["value_stocks"] = top_value_stocks
+                if cid in pro_chat_ids or cid == ADMIN_ID: 
+                    # Gán trực tiếp danh sách đã xử lý
+                    _get_payload(cid)["value_stocks"] = top_value_stocks
 
         if bctc_rows:
             for sym, (y, q, t) in bctc_by_sym.items():
@@ -7082,126 +7102,151 @@ async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAUL
     # Gọi hàm lõi (truyền update vào để nhận phản hồi)
     asyncio.create_task(execute_weekly_report(admin_update=update))
 
-# --- DÁN ĐÈ LÊN HÀM cmd_admin_test_digest CŨ ---
-
 async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (Admin) Test quy trình News AI: Fetch RSS thật (Live) -> Tóm tắt AI -> Hiển thị kết quả.
+    (Admin) Test trọn vẹn quy trình Daily Digest.
+    CÓ CƠ CHẾ MOCK DATA: Nếu không có dữ liệu thật, tự động tạo dữ liệu giả để test UI.
     """
     if update.effective_user.id != ADMIN_ID:
         return
 
-    status_msg = await reply_md(update, "🧪 **Bắt đầu Test News AI...**\n⏳ Đang cào dữ liệu RSS mới nhất từ các nguồn...")
+    chat_id = update.effective_chat.id
+    vn_tz = pytz.timezone(TIMEZONE)
+    
+    # 1. Thông báo bắt đầu
+    status_msg = await reply_md(update, "🧪 **Bắt đầu Test Full Digest...**\nWait: Đang lấy dữ liệu thật (hoặc tạo Mock data)...")
 
-    # 1. Thu thập dữ liệu RSS thật (Live Fetching)
     try:
-        # Gom toàn bộ URL từ cấu hình (Vĩ mô + Chuyên ngành)
-        test_urls = RSS_FEEDS_MACRO[:]
-        for k, v in RSS_FEEDS_SPECIALIZED.items():
-            test_urls.extend(v)
-        
-        # Gọi hàm crawl (Chạy trong thread để không block bot)
-        # Lưu ý: fetch_rss_entries_for_urls đã có sẵn trong alert_bot.py
-        raw_entries = await asyncio.to_thread(fetch_rss_entries_for_urls, test_urls)
-        
-        # Sắp xếp theo thời gian giảm dần (Mới nhất lên đầu)
-        # Dùng datetime.min làm fallback nếu không có field 'published'
-        raw_entries.sort(key=lambda x: x.get('published') or datetime.datetime.min, reverse=True)
-        
-        # Lấy 40 bài báo mới nhất để test (Số lượng vừa đủ cho context window)
-        top_entries = raw_entries[:40]
+        # 2. Khung thời gian 24h
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        since_utc = now_utc - datetime.timedelta(hours=24)
 
-        if not top_entries:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=status_msg.message_id,
-                text="❌ Không cào được tin nào từ RSS (List rỗng). Kiểm tra lại mạng hoặc URL."
-            )
-            return
-
-        # Map dữ liệu sang format chuẩn cho hàm AI
-        news_items = []
-        for e in top_entries:
-            news_items.append({
-                "title": e['title'],
-                "link": e['link'],
-                "source": e.get('source', 'RSS Test')
-            })
-            
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_msg.message_id,
-            text=f"✅ Đã lấy {len(news_items)} tin mới nhất.\n🧠 Đang gửi cho Gemini phân tích..."
+        # 3. Thu thập dữ liệu THẬT
+        (
+            bctc_rows,
+            report_rows,
+            macro_rows,
+            spec_rows,
+            top_value_stocks,
+        ) = await asyncio.gather(
+            asyncio.to_thread(get_recent_bctc_notified, since_utc),
+            asyncio.to_thread(get_recent_analysis_reports, since_utc),
+            asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
+            asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
+            get_top_mean_reversion_stocks(limit=5),
         )
 
-    except Exception as e:
-        await reply_md(update, f"❌ Lỗi Crawl dữ liệu: {e}")
-        return
-
-    # 2. Gọi AI Tóm tắt
-    try:
-        # Gọi hàm xử lý AI bạn vừa thêm
-        ai_data = await summarize_daily_news_with_ai(news_items)
+        # --- 4. XỬ LÝ TIN TỨC & AI (MOCK NẾU THIẾU) ---
+        all_news_items = []
+        # Gom tin thật
+        for row in macro_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Vĩ mô"})
+        for row in spec_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Doanh nghiệp"})
         
-        if not ai_data:
-            await reply_md(update, "❌ AI trả về rỗng. Có thể do lỗi API Key hoặc Prompt.")
-            return
+        # Nếu không có tin thật, tạo tin giả để test AI (hoặc bỏ qua AI)
+        using_mock_news = False
+        if not all_news_items:
+            using_mock_news = True
+            all_news_items = [
+                {"title": "FED giữ nguyên lãi suất, chứng khoán Mỹ lập đỉnh mới (Mock)", "link": "https://google.com", "source": "Vĩ mô"},
+                {"title": "HPG công bố sản lượng thép tháng 10 tăng trưởng 20% (Mock)", "link": "https://google.com", "source": "Doanh nghiệp"},
+                {"title": "VHM khởi công dự án 5 tỷ USD tại Long An (Mock)", "link": "https://google.com", "source": "Doanh nghiệp"}
+            ]
+
+        ai_news_data = None
+        ai_telegram_text = "_Chưa có dữ liệu AI_"
+
+        # Gọi AI (Dù tin thật hay giả)
+        if all_news_items:
+            try:
+                ai_news_data = await summarize_daily_news_with_ai(all_news_items)
+                if ai_news_data:
+                    lines = []
+                    if ai_news_data.get('headline'):
+                        lines.append("⚡ *TIÊU ĐIỂM*")
+                        for i in ai_news_data['headline']: lines.append(f"• {i['text']}")
+                    if ai_news_data.get('comment'):
+                        lines.append(f"\n🧠 *AI:* {ai_news_data['comment']}")
+                    ai_telegram_text = "\n".join(lines)
+                    if using_mock_news: ai_telegram_text += "\n_(Dữ liệu tin tức giả lập để test)_"
+            except Exception as e:
+                log.error(f"Lỗi AI Test: {e}")
+
+        # --- 5. BUILD PAYLOAD WEB APP (MOCK DỮ LIỆU THIẾU) ---
+        payload = {
+            "is_pro": True,
+            "ai_news": ai_news_data,
+            "value_stocks": top_value_stocks,
+            "bctc": [],
+            "reports": [],
+            "specialized": [],
+            "macro": []
+        }
+
+        # A. Xử lý BCTC (Real + Mock)
+        if bctc_rows:
+            for (sym, y, q, t) in bctc_rows:
+                payload["bctc"].append({"symbol": sym, "year": y, "quarter": q, "time": t.astimezone(vn_tz).strftime("%H:%M"), "is_locked": False})
+        else:
+            # Mock BCTC
+            payload["bctc"].append({"symbol": "HPG (Test)", "year": 2024, "quarter": 3, "time": "08:30", "is_locked": False})
+            payload["bctc"].append({"symbol": "VNM (Test)", "year": 2024, "quarter": 3, "time": "09:15", "is_locked": False})
+
+        # B. Xử lý Reports (Real + Mock)
+        if report_rows:
+            for (sym, title, link, pub, created) in report_rows:
+                payload["reports"].append({"symbol": sym, "title": title, "link": link, "time": pub.astimezone(vn_tz).strftime("%d/%m"), "is_locked": False})
+        else:
+            # Mock Report
+            payload["reports"].append({"symbol": "FPT", "title": "Khuyến nghị MUA: Tăng trưởng bền vững (Test)", "link": "#", "time": "Hôm nay", "is_locked": False})
+            payload["reports"].append({"symbol": "MWG", "title": "Báo cáo cập nhật: Phục hồi mạnh mẽ (Test)", "link": "#", "time": "Hôm qua", "is_locked": False})
+
+        # C. Xử lý News List (Real + Mock)
+        # Tin Vĩ mô
+        if macro_rows:
+            payload["macro"] = [{"title": r[0], "link": r[1]} for r in macro_rows[:5]]
+        else:
+            payload["macro"] = [
+                {"title": "GDP Việt Nam dự báo tăng trưởng 6.5% năm 2025 (Test)", "link": "#"},
+                {"title": "Ngân hàng Nhà nước tiếp tục hút ròng qua tín phiếu (Test)", "link": "#"}
+            ]
+        
+        # Tin Doanh nghiệp
+        if spec_rows:
+            payload["specialized"] = [{"title": r[0], "link": r[1]} for r in spec_rows[:5]]
+        else:
+            payload["specialized"] = [
+                {"title": "VHM: Doanh số bán hàng tháng 10 đạt kỷ lục (Test)", "link": "#"},
+                {"title": "GAS: Chốt quyền chia cổ tức bằng tiền mặt 20% (Test)", "link": "#"}
+            ]
+
+        # 6. Lưu Redis & Tạo Link
+        digest_id = uuid.uuid4().hex
+        await asyncio.to_thread(save_digest_to_redis, digest_id, payload)
+        
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        web_url = f"{base_url}/digest/{digest_id}"
+        
+        # 7. Gửi kết quả
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Xem Bản Tin (Web App)", web_app=WebAppInfo(url=web_url))]])
+        
+        final_msg = (
+            f"🌅 *BẢN TIN SÁNG (TEST MODE)*\n\n"
+            f"{ai_telegram_text}\n\n"
+            f"👉 Nhấn nút dưới để xem chi tiết Top Cổ Phiếu & Tin tức.\n"
+            f"_(Lưu ý: Các mục có chữ 'Test' là dữ liệu giả lập do DB đang rỗng)_"
+        )
+
+        await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
+        sent_msg = await send_md(context.bot, chat_id, final_msg, reply_markup=kb)
+        
+        # Ghim thử để check
+        if sent_msg:
+            try: await context.bot.pin_chat_message(chat_id=chat_id, message_id=sent_msg.message_id)
+            except: pass
 
     except Exception as e:
-        await reply_md(update, f"❌ Lỗi khi gọi AI: {e}")
-        return
-
-    # 3. Format hiển thị Telegram (Mô phỏng hàm trong digest loop)
-    def _format_test_msg(data):
-        if not data: return "_No Data_"
-        lines = []
-        if data.get('headline'):
-            lines.append("⚡ *TIÊU ĐIỂM*")
-            for i in data['headline']:
-                tag = f" `[{i.get('tag','HOT')}]`" if i.get('tag') else ""
-                lines.append(f"• [{i['text']}]({i['link']}){tag}")
-            lines.append("")
-        if data.get('macro'):
-            lines.append("🌊 *VĨ MÔ*")
-            for i in data['macro']: lines.append(f"• [{i['text']}]({i['link']})")
-            lines.append("")
-        if data.get('corporate'):
-            lines.append("🏢 *DOANH NGHIỆP*")
-            for i in data['corporate']:
-                p = f"*{i['ticker']}*: " if i.get('ticker') else ""
-                lines.append(f"• {p}[{i['text']}]({i['link']})")
-            lines.append("")
-        if data.get('comment'):
-            score = data.get('sentiment_score', 5)
-            icon = "🟢" if score >= 7 else "🔴" if score <= 4 else "🟡"
-            lines.append(f"🧠 *AI ({score}/10):* {icon} _{data['comment']}_")
-        return "\n".join(lines)
-
-    tele_text = _format_test_msg(ai_data)
-
-    # 4. Tạo Payload cho Web App (Để test giao diện đẹp)
-    mock_payload = {
-        "is_pro": True, # Giả lập user Pro
-        "generated_at": datetime.datetime.now().strftime("%H:%M %d/%m (Test Mode)"),
-        "ai_news": ai_data, # <--- Dữ liệu thật từ AI
-        # Các phần khác để rỗng để tập trung test tin tức
-        "value_stocks": [], "bctc": [], "reports": []
-    }
-
-    # 5. Lưu Redis & Gửi kết quả
-    digest_id = uuid.uuid4().hex
-    await asyncio.to_thread(save_digest_to_redis, digest_id, mock_payload)
-    
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-    web_url = f"{base_url}/digest/{digest_id}"
-    
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Xem Kết Quả Trên Web App", web_app=WebAppInfo(url=web_url))]])
-    
-    # Xóa tin nhắn loading
-    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
-    
-    # Gửi kết quả
-    await reply_md(update, f"✅ **KẾT QUẢ TEST AI (LIVE DATA):**\n\n{tele_text}", reply_markup=kb)
+        log.error(f"Lỗi Test Digest: {e}")
+        await reply_md(update, f"❌ Lỗi: {e}")
 
 async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """

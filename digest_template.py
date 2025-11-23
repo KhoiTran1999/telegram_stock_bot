@@ -7,6 +7,7 @@ DIGEST_HTML_TEMPLATE = """
     <title>StockBot Digest</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-color: var(--tg-theme-bg-color, #f2f2f7);
@@ -58,6 +59,54 @@ DIGEST_HTML_TEMPLATE = """
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
         .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
         .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; transform: translateY(2px); }
+
+        /* --- CSS CHO THẺ ĐỊNH GIÁ (Ported from Screener) --- */
+        /* Định nghĩa thêm biến màu nếu chưa có */
+        :root {
+            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
+            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
+            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
+            --metric-bg: #f9fafb; --metric-border: rgba(0,0,0,0.04);
+        }
+        [data-theme="dark"] {
+            --r1-bg: linear-gradient(160deg, #1e1e1e 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
+            --r2-bg: linear-gradient(160deg, #1e1e1e 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
+            --r3-bg: linear-gradient(160deg, #1e1e1e 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
+            --metric-bg: rgba(255, 255, 255, 0.05); --metric-border: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Styles cho thẻ */
+        .screener-card {
+            border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
+            border: 1px solid var(--metric-border); box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            background: var(--card-bg);
+        }
+        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 8px 20px -5px var(--r1-shadow); z-index: 2; }
+        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4); border: 2px solid #fff; color: #fff;}
+        .card-rank-1::before { content: '👑'; position: absolute; top: -12px; left: 8px; font-size: 20px; transform: rotate(-15deg); z-index: 3; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1)); }
+        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 8px 20px -5px var(--r2-shadow); }
+        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.3); border: 2px solid #fff; color: #374151; }
+        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 8px 20px -5px var(--r3-shadow); }
+        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid #fff; color: #fff;}
+
+        .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
+        .symbol-wrap { display: flex; align-items: center; gap: 10px; }
+        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 8px; font-family: 'Oswald', sans-serif; font-weight: 700; width: 28px; height: 28px; font-size: 14px;}
+        .rank-other { background: var(--metric-bg); color: var(--text-secondary); font-family: 'Manrope', sans-serif; }
+        .symbol-name { font-size: 18px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }
+        .signal-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
+        .sig-cheap { background: var(--success-bg); color: var(--success-text); }
+        .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
+        .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
+
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--metric-border); }
+        .m-label { font-size: 10px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
+        .m-row { display: flex; justify-content: space-between; align-items: baseline; }
+        .m-curr { font-size: 15px; font-weight: 800; color: var(--text-primary); }
+        .m-avg { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+        .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
+        .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
     </style>
 </head>
 <body>
@@ -134,6 +183,42 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
+    {% if data.macro %}
+    <div class="section-card" id="macro-card">
+        <div class="card-header"><div class="card-icon" style="color:#af52de; background:rgba(175,82,222,0.1)">🌍</div><div class="card-title">Vĩ Mô & Chính Sách</div></div>
+        <div class="list-container">
+            {% for item in data.macro %}
+            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
+                <div class="item-title">{{ item.title }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% if data.macro|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('macro-card', this, {{ data.macro|length }}, 3)">Xem thêm {{ data.macro|length - 3 }} tin ↓</button>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if data.specialized %}
+    <div class="section-card" id="specialized-card">
+        <div class="card-header"><div class="card-icon" style="color:#ff9500; background:rgba(255,149,0,0.1)">🏢</div><div class="card-title">Tin Doanh Nghiệp</div></div>
+        <div class="list-container">
+            {% for item in data.specialized %}
+            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
+                <div class="item-title">{{ item.title }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% if data.specialized|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" onclick="toggleSection('specialized-card', this, {{ data.specialized|length }}, 3)">Xem thêm {{ data.specialized|length - 3 }} tin ↓</button>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     {% if data.bctc %}
     <div class="section-card" id="bctc-card">
         <div class="card-header"><div class="card-icon" style="color:#34c759; background:rgba(52,199,89,0.1)">📊</div><div class="card-title">Báo Cáo Tài Chính</div></div>
@@ -197,62 +282,42 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    {% if data.specialized %}
-    <div class="section-card" id="specialized-card">
-        <div class="card-header"><div class="card-icon" style="color:#ff9500; background:rgba(255,149,0,0.1)">🏢</div><div class="card-title">Tin Doanh Nghiệp</div></div>
-        <div class="list-container">
-            {% for item in data.specialized %}
-            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
-                <div class="item-title">{{ item.title }}</div>
-            </div>
-            {% endfor %}
-        </div>
-        {% if data.specialized|length > 3 %}
-        <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('specialized-card', this, {{ data.specialized|length }}, 3)">Xem thêm {{ data.specialized|length - 3 }} tin ↓</button>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-
     {% if data.value_stocks %}
-    <div class="section-card" id="stocks-card">
-        <div class="card-header"><div class="card-icon">💎</div><div class="card-title">Top Value Hôm Nay</div></div>
-        <table class="stock-table">
-            <thead><tr><th>Mã</th><th style="text-align:right">Chỉ Số</th><th style="text-align:right">Điểm</th></tr></thead>
-            <tbody>
-                {% for item in data.value_stocks %}
-                <tr class="{% if loop.index > 5 %}hidden-item{% endif %}">
-                    <td><b>{{ item.symbol }}</b><br><span style="font-size:11px; color:#8e8e93;">{{ item.industry }}</span></td>
-                    <td style="text-align:right">P/E: {{ item.pe }}<br>ROE: {{ item.roe }}%</td>
-                    <td style="text-align:right"><span class="score-badge">{{ item.score }}</span></td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% if data.value_stocks|length > 5 %}
-        <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('stocks-card', this, {{ data.value_stocks|length }}, 5)">Xem thêm {{ data.value_stocks|length - 5 }} mã ↓</button>
+    <div class="section-card">
+        <div class="card-header">
+            <div class="card-icon">💎</div>
+            <div class="card-title">Top Định Giá Rẻ (Mean Reversion)</div>
         </div>
-        {% endif %}
-    </div>
-    {% endif %}
-
-    {% if data.macro %}
-    <div class="section-card" id="macro-card">
-        <div class="card-header"><div class="card-icon" style="color:#af52de; background:rgba(175,82,222,0.1)">🌍</div><div class="card-title">Vĩ Mô & Chính Sách</div></div>
-        <div class="list-container">
-            {% for item in data.macro %}
-            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}" onclick="viewNews('{{ item.link }}')">
-                <div class="item-title">{{ item.title }}</div>
+        
+        <div style="padding: 0 16px 16px 16px;">
+            {% for item in data.value_stocks %}
+            <div class="screener-card {% if loop.index == 1 %}card-rank-1{% elif loop.index == 2 %}card-rank-2{% elif loop.index == 3 %}card-rank-3{% endif %}">
+                <div class="screener-card-header">
+                    <div class="symbol-wrap">
+                        <div class="rank-badge {% if loop.index > 3 %}rank-other{% endif %}">{{ loop.index }}</div>
+                        <div class="symbol-name">{{ item.symbol }}</div>
+                    </div>
+                    <div class="signal-badge {{ item.signal_class }}">{{ item.signal_text }}</div>
+                </div>
+                <div class="metrics-grid">
+                    <div class="metric-box">
+                        <div class="m-label">P/E Ratio</div>
+                        <div class="m-row"><span class="m-curr">{{ item.pe_cur }}x</span><span class="m-avg">TB: {{ item.pe_avg }}</span></div>
+                        <div class="m-diff {{ item.pe_class }}">{{ item.pe_diff_str }}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="m-label">P/B Ratio</div>
+                        <div class="m-row"><span class="m-curr">{{ item.pb_cur }}x</span><span class="m-avg">TB: {{ item.pb_avg }}</span></div>
+                        <div class="m-diff {{ item.pb_class }}">{{ item.pb_diff_str }}</div>
+                    </div>
+                </div>
             </div>
             {% endfor %}
         </div>
-        {% if data.macro|length > 3 %}
-        <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('macro-card', this, {{ data.macro|length }}, 3)">Xem thêm {{ data.macro|length - 3 }} tin ↓</button>
+        
+        <div style="padding: 12px; font-size: 11px; color: var(--text-secondary); text-align: center; background: var(--bg-color); border-bottom-left-radius: 20px; border-bottom-right-radius: 20px; opacity: 0.8;">
+            *Xếp hạng dựa trên trung bình độ lệch P/E & P/B so với lịch sử 5 năm.
         </div>
-        {% endif %}
     </div>
     {% endif %}
 
