@@ -675,17 +675,36 @@ async def calculate_historical_valuation_task():
         # Lấy toàn bộ mã từ Screener trước
         screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
-        # Lọc: Vốn hóa > 1000 tỷ & Có thanh khoản (tránh tính rác)
-        # Lưu ý: Tên cột screener là 'market_cap', 'total_trading_value' (hoặc tương tự)
-        # Ta chỉ cần lấy list ticker để loop
-        valid_tickers = screener[screener['market_cap'] > 1000]['ticker'].tolist()
+        # --- 🔥 [FIX] BỘ LỌC CỐT LÕI ---
+        # market_cap: Đơn vị Tỷ VNĐ
+        # total_trading_value: Đơn vị Tỷ VNĐ (trong Screener của vnstock)
         
-        log.info(f"[{INSTANCE_ID}] Tìm thấy {len(valid_tickers)} mã đủ điều kiện tính toán.")
+        MIN_MARKET_CAP = 5000  # 5000 Tỷ
+        MIN_TRADING_VAL = 10   # 10 Tỷ/phiên (TB 20 phiên hoặc phiên gần nhất)
+        
+        # Ép kiểu số để tránh lỗi so sánh
+        screener['market_cap'] = pd.to_numeric(screener['market_cap'], errors='coerce').fillna(0)
+        
+        # Kiểm tra tên cột thanh khoản (có thể là 'total_trading_value' hoặc 'avg_trading_value_20d')
+        liq_col = 'total_trading_value'
+        if 'avg_trading_value_20d' in screener.columns:
+            liq_col = 'avg_trading_value_20d' # Ưu tiên dùng TB 20 phiên cho chuẩn
+            
+        screener[liq_col] = pd.to_numeric(screener[liq_col], errors='coerce').fillna(0)
+
+        # Lọc: Vốn hóa > 5000 tỷ & Thanh khoản > 10 tỷ
+        valid_df = screener[
+            (screener['market_cap'] >= MIN_MARKET_CAP) & 
+            (screener[liq_col] >= MIN_TRADING_VAL)
+        ]
+        
+        valid_tickers = valid_df['ticker'].tolist()
+        
+        log.info(f"[{INSTANCE_ID}] Tìm thấy {len(valid_tickers)} mã đủ tiêu chuẩn (Vốn hóa > {MIN_MARKET_CAP} tỷ, GTGD > {MIN_TRADING_VAL} tỷ).")
         
         history_data = {}
         
-        # 2. Loop và tính toán (Chạy tuần tự hoặc chia batch nhỏ để không DDOS API)
-        # Vì đây là task chạy ngầm, chậm chút không sao.
+        # 2. Loop và tính toán (ĐÃ TĂNG DELAY AN TOÀN)
         count = 0
         consecutive_errors = 0 # Đếm số lỗi liên tiếp
 
@@ -726,7 +745,7 @@ async def calculate_historical_valuation_task():
                         count += 1
                         consecutive_errors = 0 # Reset lỗi nếu thành công
                 
-                # 🔥 [RATE LIMIT] Tăng delay cơ bản từ 0.1s -> 3.0s
+                # 🔥 [RATE LIMIT] Tăng delay cơ bản từ 0.1s -> 1.0s
                 # Chậm nhưng chắc, vì đây là task chạy ngầm
                 await asyncio.sleep(1)
                 
@@ -747,8 +766,6 @@ async def calculate_historical_valuation_task():
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] ❌ Lỗi task tính toán định giá: {e}")
 
-# --- TRONG FILE alert_bot.py ---
-
 async def get_top_mean_reversion_stocks(limit=5):
     """
     Lấy Top cổ phiếu rẻ nhất theo chiến lược Mean Reversion cho Digest.
@@ -762,7 +779,7 @@ async def get_top_mean_reversion_stocks(limit=5):
             asyncio.create_task(calculate_historical_valuation_task())
             return []
 
-        # 2. Lấy dữ liệu hiện tại từ Screener API (Snapshot toàn thị trường)
+        # 2. Lấy dữ liệu hiện tại từ Screener API
         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
         
         processed_items = []
@@ -771,14 +788,19 @@ async def get_top_mean_reversion_stocks(limit=5):
             sym = row['ticker']
             if sym not in hist_data: continue
             
-            pe_cur = float(row['pe'])
-            pb_cur = float(row['pb'])
+            try:
+                pe_cur = float(row['pe'])
+                pb_cur = float(row['pb'])
+            except: continue
+
             pe_avg = hist_data[sym]['pe_avg']
             pb_avg = hist_data[sym]['pb_avg']
             
+            # 🔥 [FIX]: Loại bỏ cổ phiếu lỗ (PE âm) hoặc lỗi dữ liệu (<= 0)
+            if pe_cur <= 0 or pb_cur <= 0: continue
             if pe_avg <= 0 or pb_avg <= 0: continue
 
-            # --- TÍNH TOÁN LOGIC (Giống hệt cmd_screener_value) ---
+            # --- TÍNH TOÁN LOGIC ---
             pe_discount = (pe_cur - pe_avg) / pe_avg
             pb_discount = (pb_cur - pb_avg) / pb_avg
             avg_discount = (pe_discount + pb_discount) / 2
@@ -799,12 +821,9 @@ async def get_top_mean_reversion_stocks(limit=5):
             elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
             else: signal_class, signal_text = "sig-fair", "Hợp lý"
             
-            # --- ĐÓNG GÓI DỮ LIỆU CHO TEMPLATE ---
             processed_items.append({
                 "symbol": sym,
-                # Dữ liệu thô để sort
                 "avg_discount_raw": avg_discount,
-                # Dữ liệu đã format sẵn cho UI
                 "pe_cur": f"{pe_cur:.1f}", "pe_avg": f"{pe_avg:.1f}",
                 "pe_class": pe_class, "pe_diff_str": pe_diff_str,
                 "pb_cur": f"{pb_cur:.1f}", "pb_avg": f"{pb_avg:.1f}",
@@ -812,7 +831,7 @@ async def get_top_mean_reversion_stocks(limit=5):
                 "signal_class": signal_class, "signal_text": signal_text
             })
 
-        # 3. Sắp xếp (Rẻ nhất lên đầu) và lấy Top
+        # 3. Sắp xếp (Rẻ nhất lên đầu)
         processed_items.sort(key=lambda x: x['avg_discount_raw'])
         return processed_items[:limit]
 
@@ -2021,8 +2040,8 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     
     elif data == "menu_screener":
-        # Gọi hàm screener mặc định (hiện menu chọn loại)
-        context.args = [] # Xóa args cũ để nó hiện menu chọn
+        # Gọi lệnh /screener_value (Logic Mean Reversion mới)
+        # Không cần xóa context.args vì hàm mới không dùng tham số
         await cmd_screener_value(update, context)
         
     elif data == "menu_report":
@@ -4839,7 +4858,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
-            InlineKeyboardButton("💎 Lọc Cổ Phiếu", web_app=WebAppInfo(url=screener_url))
+            InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")
         ],
         [
             InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
@@ -5577,7 +5596,7 @@ async def cmd_allwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     (PREMIUM) Bộ lọc Định giá (Mean Reversion).
-    Kết hợp dữ liệu Realtime (Screener) + Lịch sử 5 năm (Redis Cache).
+    Kết hợp dữ liệu Realtime + Lịch sử 5 năm.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
@@ -5588,26 +5607,20 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 1. Kiểm tra Paywall
     if not await check_pro_access(update, context): return
 
-    # Log
     try: await asyncio.to_thread(log_command_usage, chat_id, "/screener_value", ADMIN_ID)
     except: pass
 
-    # 2. Lấy dữ liệu Lịch sử từ Redis
+    # 2. Lấy dữ liệu Lịch sử
     hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
-    
-    # Nếu chưa có cache (ví dụ sáng sớm chưa chạy xong, hoặc bot mới restart),
-    # ta kích hoạt tính toán ngay lập tức và báo user đợi.
     if not hist_data:
-        await reply_md(update, "⏳ Hệ thống đang khởi tạo dữ liệu định giá lịch sử (lần đầu trong ngày). Vui lòng thử lại sau 2-3 phút.")
+        await reply_md(update, "⏳ Hệ thống đang khởi tạo dữ liệu định giá lịch sử. Vui lòng thử lại sau 2-3 phút.")
         asyncio.create_task(calculate_historical_valuation_task())
         return
 
-    # Gửi loading
     progress_msg = await reply_md(update, f"💎 **Đang phân tích định giá thị trường...**\n`[{make_progress_bar(20)}] 20%`")
 
     try:
-        # 3. Lấy dữ liệu Hiện tại (Snapshot Realtime)
-        # Lấy exchangeName rộng để bao phủ
+        # 3. Lấy dữ liệu Hiện tại
         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
         await context.bot.edit_message_text(
@@ -5620,23 +5633,25 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         for index, row in screener_df.iterrows():
             sym = row['ticker']
-            
-            # Chỉ xử lý nếu có trong data lịch sử
             if sym not in hist_data: continue
             
-            pe_cur = float(row['pe'])
-            pb_cur = float(row['pb'])
+            try:
+                pe_cur = float(row['pe'])
+                pb_cur = float(row['pb'])
+            except: continue
+
             pe_avg = hist_data[sym]['pe_avg']
             pb_avg = hist_data[sym]['pb_avg']
             
-            if pe_avg <= 0 or pb_avg <= 0: continue # Skip lỗi
+            # 🔥 [FIX]: Loại bỏ cổ phiếu lỗ hoặc không có chỉ số hợp lệ
+            if pe_cur <= 0 or pb_cur <= 0: continue
+            if pe_avg <= 0 or pb_avg <= 0: continue
 
             # Tính toán
             pe_discount = (pe_cur - pe_avg) / pe_avg
             pb_discount = (pb_cur - pb_avg) / pb_avg
             avg_discount = (pe_discount + pb_discount) / 2
             
-            # UI Helpers (Logic y hệt file test)
             def get_ui_meta(discount):
                 pct_val = abs(discount) * 100
                 if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
@@ -5662,45 +5677,41 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 'avg_discount': avg_discount
             })
 
-        # 5. Sắp xếp (Rẻ nhất lên đầu) & Lấy Top 50
+        # 5. Sắp xếp & Lưu Cache
         processed_items.sort(key=lambda x: x['avg_discount'])
-        top_items = processed_items[:50] # Lấy top 50 mã rẻ nhất để hiển thị
+        top_items = processed_items[:50]
 
-        # 6. Lưu vào Redis (cache HTML data) để WebApp render
         digest_id = uuid.uuid4().hex
         vn_tz = pytz.timezone(TIMEZONE)
         payload = {
             "items": top_items,
             "generated_time": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
         }
-        # Dùng hàm save_digest_to_redis có sẵn (Lưu ý: dùng key prefix khác cho screener nếu muốn, hoặc dùng chung)
-        # Ở đây mình dùng chung cơ chế digest cho tiện: key = "digest_web:screener_val:{digest_id}"
+        
         r = get_redis()
-        r.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600) # TTL 1h
+        r.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600)
 
-        # 7. Gửi kết quả
         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        # Tạo route mới hoặc dùng route cũ nhưng handle logic
-        # Để đơn giản, ta sẽ tạo route mới /screener_result/<id> trong bước tiếp theo
-        # Hoặc tái sử dụng route /screener với tham số
         web_url = f"{base_url}/screener_result/{digest_id}"
         
         await context.bot.delete_message(chat_id, progress_msg.message_id)
         
-        kb = [[InlineKeyboardButton("🚀 Xem Bảng Xếp Hạng (Top 50)", web_app=WebAppInfo(url=web_url))],
+        kb = [[InlineKeyboardButton("🚀 Xem Bảng Xếp Hạng", web_app=WebAppInfo(url=web_url))],
               [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
 
         await reply_md(
             update,
             f"💎 **Định Giá Cổ Phiếu (Mean Reversion)**\n\n"
-            f"✅ Đã quét xong {len(processed_items)} mã.\n"
-            f"👉 Nhấn nút bên dưới để xem Top cổ phiếu rẻ nhất thị trường.",
+            f"✅ Đã lọc được {len(processed_items)} mã tiềm năng.\n"
+            f"👉 Nhấn nút bên dưới để xem Top cổ phiếu rẻ nhất.",
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
     except Exception as e:
         log.error(f"Lỗi /screener_value: {e}")
-        await context.bot.edit_message_text(chat_id, progress_msg.message_id, text="⚠️ Lỗi hệ thống. Vui lòng thử lại sau.")
+        try:
+            await context.bot.edit_message_text(chat_id, progress_msg.message_id, text="⚠️ Lỗi hệ thống. Vui lòng thử lại sau.")
+        except: pass
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """

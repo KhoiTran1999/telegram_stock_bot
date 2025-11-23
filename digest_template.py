@@ -965,8 +965,7 @@ SCREENER_HTML_TEMPLATE = r"""
         .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.4); font-size: 16px; width: 32px; height: 32px; border: 2px solid #fff; color: #374151; }
         .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 10px 25px -5px var(--r3-shadow); }
         .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); font-size: 16px; width: 32px; height: 32px; border: 2px solid #fff; }
-        .rank-other { background: var(--metric-bg); color: var(--text-secondary); font-size: 12px; border-radius: 8px; width: 24px; height: 24px; font-family: 'Manrope', sans-serif; font-weight: 800; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
+        .rank-other { background: #e5e7eb; color: #374151; font-size: 12px; border-radius: 8px; width: 24px; height: 24px; font-family: 'Manrope', sans-serif; font-weight: 800; }        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
         .symbol-wrap { display: flex; align-items: center; gap: 12px; }
         .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 10px; font-family: 'Oswald', sans-serif; font-weight: 700; color: #fff; }
         .symbol { font-size: 20px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }
