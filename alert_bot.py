@@ -4890,7 +4890,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # Dành cho User Cũ / Pro / Admin -> Gọn gàng, đi thẳng vào vấn đề
         welcome_msg = (
-        "*Người Canh Bảng* 🧑‍💻 đây\n\n"
         "⚖️ *Người Canh Bảng* 🧑‍💻 _là công cụ hỗ trợ dữ liệu. Mọi thông tin chỉ mang tính tham khảo, nhà đầu tư tự chịu trách nhiệm với quyết định của mình._\n\n"
         "👇 *Chọn nhanh tính năng bên dưới:*"
     )
@@ -4913,8 +4912,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         "1️⃣ **Quản lý Danh mục (Cực nhanh)**\n"
         "• **Thêm mã:** Chỉ cần gõ mã 3 chữ cái (VD: `HPG`, `FPT`) vào chat -> Bot sẽ hiện nút thêm.\n"
-        "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]** trên Dashboard (/start).\n\n"
-        "• 🔔 Theo dõi biến động giá cổ phiếu.\n"
+        "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]** trên Dashboard (/start).\n"
+        "• 🔔 Theo dõi biến động giá cổ phiếu.\n\n"
 
         "2️⃣ **Công cụ Pro**\n"
         "• 💎 Lọc cổ phiếu giá trị (Realtime).\n"
