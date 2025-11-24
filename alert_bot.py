@@ -4881,7 +4881,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🚀 **Tôi giúp gì cho bạn?**\n"
             "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
             "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
-            "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n\n"
+            "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n"
+            "• **Báo cáo Tự động:** Gửi bản tin Sáng (7h), Chiều (15h) & Tuần (CN).\n\n"
             "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
             "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay.\n\n"
             "----------------\n\n"
@@ -4908,25 +4909,30 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
 
     help_text = (
-        "📘 **HƯỚNG DẪN SỬ DỤNG NHANH**\n\n"
+        "📘 ***HƯỚNG DẪN SỬ DỤNG NHANH***\n\n"
         
-        "1️⃣ **Quản lý Danh mục (Cực nhanh)**\n"
-        "• **Thêm mã:** Chỉ cần gõ mã 3 chữ cái (VD: `HPG`, `FPT`) vào chat -> Bot sẽ hiện nút thêm.\n"
-        "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]** trên Dashboard (/start).\n"
-        "• 🔔 Theo dõi biến động giá cổ phiếu.\n\n"
+        "1️⃣ ***Quản lý Danh mục (Cực nhanh)***\n"
+        "• Gõ mã 3 chữ cái (VD: `HPG`, `FPT`) vào chat để thêm nhanh hoặc Soi hồ sơ.\n"
+        "• Bấm nút **[📋 Danh mục]** trên Dashboard để quản lý.\n\n"
 
-        "2️⃣ **Công cụ Pro**\n"
-        "• 💎 Lọc cổ phiếu giá trị (Realtime).\n"
-        "• 📉 Bật cảnh báo phái sinh (biến động ±5 điểm).\n"
-        "• 📊 AI phân tích sức khỏe toàn bộ danh mục.\n"
-        "• 📄 Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n\n"
+        "2️⃣ ***Công cụ Phân tích AI (PRO)***\n"
+        "• 📊 AI khám sức khỏe toàn bộ danh mục.\n"
+        "• 📄 Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n"
+        "• 💎 Lọc cổ phiếu Rẻ/Đắt (Mean Reversion).\n\n"
 
-        "3️⃣ **Hệ thống**\n"
-        "• [⚙️ Tài khoản]: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
-        "• [🏠 Dashboard]: Mở lại Bảng điều khiển chính (Dashboard).\n\n"
+        "3️⃣ ***Báo cáo Tự động (PRO)***\n"
+        "Bot sẽ tự động gửi thông tin đến bạn (không cần gõ lệnh):\n"
+        "• 🌅 **07:00 Hằng ngày:** Bản tin sáng (Tin tức + BCTC + Định giá cổ phiếu).\n"
+        "• 🌆 **15:00 Hằng ngày:** Tổng kết cuối phiên.\n"
+        "• 📅 **09:00 Chủ Nhật:** Báo cáo chuyên sâu danh mục tuần.\n\n"
 
-        "⚠️ **Lưu ý quan trọng:**\n"
-        "_Các phân tích từ Bot được tạo tự động bởi thuật toán và AI. thị trường chứng khoán luôn tiềm ẩn rủi ro, vui lòng cân nhắc kỹ trước khi xuống tiền._"
+        "4️⃣ ***Hệ thống***\n"
+        "• ⚙️*Tài khoản*: Kiểm tra hạn dùng Pro & Cài đặt thông báo.\n"
+        "• Nhấn /start: Về trang chủ.\n\n"
+
+        "⚠️ ***Miễn trừ trách nhiệm:***\n"
+        "_Các phân tích từ Bot được tạo tự động bởi thuật toán và AI dựa trên dữ liệu quá khứ. "
+        "Thị trường tài chính luôn tiềm ẩn rủi ro, đây là thông tin tham khảo, không phải lời khuyên đầu tư._"
     )
 
     # Tạo bàn phím điều hướng
@@ -5433,6 +5439,7 @@ async def cmd_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚀 **KÍCH HOẠT THÀNH CÔNG!**\n\n"
             f"Bạn đã nhận được **{TRIAL_DAYS} ngày** trải nghiệm Full tính năng Pro:\n\n"
             f"💎 **Các đặc quyền đã được mở khóa:**\n"
+            f"• 📨 **Auto Report:** Tự động gửi bản tin Sáng (07:00), EOD (15:00) & Tuần (09:00 CN).\n"
             f"• 📊 **AI Report:** Phân tích sâu sức khỏe danh mục & khuyến nghị hành động.\n"
             f"• 🔍 **Screener:** Lọc cổ phiếu Rẻ/Đắt theo định giá lịch sử.\n"
             f"• 🏢 **Soi Hồ Sơ:** Phân tích mô hình kinh doanh, lợi thế cạnh tranh & rủi ro.\n"
