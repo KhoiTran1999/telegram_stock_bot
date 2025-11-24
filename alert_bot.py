@@ -2109,31 +2109,44 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await reply_md(update, reply_text, reply_markup=InlineKeyboardMarkup(kb_fallback))
 
+# --- TRONG FILE alert_bot.py ---
+
 @anti_spam_check
 async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Xử lý toàn bộ các nút bấm (CallbackQuery).
+    Được bảo vệ bởi @anti_spam_check.
+    """
     query = update.callback_query
     data = query.data
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
+    # Kiểm tra bảo trì
     if not BOT_ACTIVE:
         await query.answer("⚙️ Hệ thống đang bảo trì.", show_alert=True)
         return
 
-    # --- XỬ LÝ CÁC NÚT CHỨC NĂNG ---
-
+    # --- NHÓM 1: CÁC NÚT ĐÓNG / HỦY ---
     if data == "close_msg":
         await query.delete_message()
         return
+    
+    if data == "close_list":
+        await query.delete_message()
+        return
 
-    # 1. MENU LIST (DANH MỤC) - Sửa tin nhắn hiện tại thay vì gửi mới
-    elif data == "menu_list":
+    # --- NHÓM 2: CÁC NÚT ĐIỀU HƯỚNG GIAO DIỆN (Dùng safe_edit_message) ---
+
+    # 2.1. MENU DANH MỤC (LIST)
+    elif data == "menu_list" or data == "back_to_list":
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
         
         if not lst:
             msg = "📭 Danh mục trống. Dùng `/add <MÃ>` để thêm."
             kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
         else:
-            msg = "📋 **Quản lý danh mục**\nBấm vào mã để xem tùy chọn:"
+            msg = "📋 **Quản lý danh mục**\n👇 Bấm vào mã để xem tùy chọn:"
             keyboard = []
             row = []
             for sym in lst:
@@ -2147,39 +2160,42 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             keyboard.append([InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")])
             kb = keyboard
 
-        # 🔥 DÙNG HÀM AN TOÀN
         await safe_edit_message(query, msg, InlineKeyboardMarkup(kb))
 
-    # 2. MENU ADD (THÊM MÃ)
+    # 2.2. MENU THÊM MÃ (ADD INSTRUCTION)
     elif data == "menu_add":
         kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
         await safe_edit_message(
             query, 
-            "➕ Để thêm mã, bạn hãy gõ trực tiếp mã 3 chữ cái (VD: `HPG`) vào ô chat.\nHoặc gõ lệnh: `/add <MÃ>`", 
+            "➕ Để thêm mã, bạn hãy gõ trực tiếp mã 3 chữ cái (VD: `HPG`, `FPT`) vào ô chat.\nHoặc gõ lệnh: `/add <MÃ>`", 
             InlineKeyboardMarkup(kb)
         )
 
-    # 3. MENU SETTING (TÀI KHOẢN) - Chuyển từ cmd_setting sang edit tại chỗ
+    # 2.3. MENU TÀI KHOẢN (SETTING)
     elif data == "menu_setting":
-        # Copy logic lấy dữ liệu từ cmd_setting
         vn_tz = pytz.timezone(TIMEZONE)
         now = datetime.datetime.now(vn_tz)
         
+        # Lấy dữ liệu
         expiry_date = await asyncio.to_thread(get_user_pro_expiry, chat_id)
         mp = await asyncio.to_thread(get_vn30f1m_enabled_map)
         vn30_enabled = bool(mp.get(chat_id, False))
 
+        # Build Text
         lines = ["⚙️ *CÀI ĐẶT & TRẠNG THÁI TÀI KHOẢN* ⚙️\n"]
         if chat_id == ADMIN_ID:
             lines.append("👤 *Gói cước:* 😎 *ADMIN*")
         elif expiry_date and expiry_date.astimezone(vn_tz) > now:
             exp_str = expiry_date.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
-            lines.append(f"👤 *Gói cước:* 👑 *PRO* (Hết hạn: {exp_str})")
+            lines.append(f"👤 *Gói cước:* 👑 *PRO*")
+            lines.append(f"⏳ *Hết hạn:* {exp_str}")
         else:
             lines.append("👤 *Gói cước:* 🆓 *FREE*")
+            lines.append("_Giới hạn: 1 mã theo dõi, không có AI Report & Screener._")
 
         lines.append("\n📈 *Cảnh báo VN30F1M:* " + ("✅ BẬT" if vn30_enabled else "❌ TẮT"))
         
+        # Nút đảo chiều
         vn30_btn_text = "🔴 Tắt VN30F1M" if vn30_enabled else "🟢 Bật VN30F1M"
         vn30_callback = "set_vn30_off" if vn30_enabled else "set_vn30_on"
 
@@ -2189,39 +2205,9 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]
         ]
         
-        # 🔥 DÙNG HÀM AN TOÀN
         await safe_edit_message(query, "\n".join(lines), InlineKeyboardMarkup(kb))
 
-    # 4. QUAY VỀ DASHBOARD (BACK)
-    elif data == "back_to_start":
-        # Tái tạo nội dung Dashboard
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        # Sửa lại Logic Screener URL: Gọi callback chứ không mở link
-        
-        kb = [
-            [InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"), InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")],
-            [InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"), InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")],
-            [InlineKeyboardButton("📊 AI Report", callback_data="menu_report"), InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")],
-            [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
-        ]
-        
-        msg = (
-            "👋 *Bảng Điều Khiển Chính*\n"
-            "Chọn tính năng bên dưới:"
-        )
-        # 🔥 DÙNG HÀM AN TOÀN
-        await safe_edit_message(query, msg, InlineKeyboardMarkup(kb))
-
-    # 5. MENU SCREENER (LỌC CỔ PHIẾU)
-    elif data == "menu_screener":
-        # Lệnh này gửi tin nhắn MỚI (vì nó nặng và có kết quả dài), nên giữ nguyên await
-        await cmd_screener_value(update, context)
-
-    # 6. MENU REPORT (AI)
-    elif data == "menu_report":
-        await cmd_report(update, context)
-
-    # 7. MENU INFO (HỒ SƠ - CHỌN MÃ)
+    # 2.4. MENU HỒ SƠ (INFO SELECTION)
     elif data == "menu_info":
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
         keyboard = []
@@ -2235,38 +2221,46 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             if row: keyboard.append(row)
         
         keyboard.append([InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")])
-        msg = "📄 **Tra cứu Hồ sơ Doanh nghiệp**\nChọn mã hoặc gõ `/info <MÃ>`:"
+        msg = "📄 **Tra cứu Hồ sơ Doanh nghiệp**\n👇 Chọn mã hoặc gõ `/info <MÃ>`:"
         
         await safe_edit_message(query, msg, InlineKeyboardMarkup(keyboard))
 
-    # 8. INFO TỪNG MÃ
-    elif data.startswith("btn_info_"):
-        symbol = data.split("_")[2]
-        context.args = [symbol]
-        await cmd_info(update, context)
+    # 2.5. MENU HƯỚNG DẪN (HELP)
+    elif data == "menu_help":
+        help_text = (
+            "📘 **HƯỚNG DẪN SỬ DỤNG NHANH**\n\n"
+            "1️⃣ **Quản lý Danh mục**\n"
+            "• **Thêm mã:** Gõ mã 3 chữ cái (VD: `HPG`) vào chat.\n"
+            "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]**.\n\n"
+            "2️⃣ **Phân tích & Dữ liệu AI**\n"
+            "• 📊 **AI Report:** Phân tích sức khỏe danh mục.\n"
+            "• 📄 **Hồ sơ:** Soi lợi thế, rủi ro doanh nghiệp.\n"
+            "• 💎 **Lọc Cổ Phiếu:** Tìm mã định giá rẻ (Realtime).\n\n"
+            "3️⃣ **Hệ thống**\n"
+            "• `/setting`: Kiểm tra hạn Pro & Cài đặt.\n"
+            "• `/start`: Mở lại Dashboard."
+        )
+        kb = [
+            [
+                InlineKeyboardButton("🏠 Dashboard", callback_data="back_to_start"),
+                InlineKeyboardButton("💎 Nâng cấp Pro", callback_data="btn_upgrade")
+            ],
+            [InlineKeyboardButton("💬 Liên hệ Admin", url="https://t.me/KhoiTran99")]
+        ]
+        await safe_edit_message(query, help_text, InlineKeyboardMarkup(kb))
 
-    # 9. CÁC LOGIC CON CỦA DANH MỤC (Xóa, Back to list...)
-    elif data == "back_to_list":
-        # Gọi lại logic menu_list nhưng copy paste code vào đây để tránh đệ quy phức tạp
-        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-        if not lst:
-            msg = "📭 Danh mục trống."
-            kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
-        else:
-            msg = "📋 **Quản lý danh mục**\nBấm vào mã để tùy chọn:"
-            keyboard = []
-            row = []
-            for sym in lst:
-                row.append(InlineKeyboardButton(f"{sym}", callback_data=f"mgr_{sym}"))
-                if len(row) == 3:
-                    keyboard.append(row)
-                    row = []
-            if row: keyboard.append(row)
-            keyboard.append([InlineKeyboardButton("❌ Đóng", callback_data="close_list")])
-            kb = keyboard
-        
+    # 2.6. QUAY VỀ DASHBOARD (START)
+    elif data == "back_to_start":
+        kb = [
+            [InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"), InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")],
+            [InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"), InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")],
+            [InlineKeyboardButton("📊 AI Report", callback_data="menu_report"), InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")],
+            [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
+        ]
+        msg = "👋 *Bảng Điều Khiển Chính*\nChọn tính năng bên dưới:"
         await safe_edit_message(query, msg, InlineKeyboardMarkup(kb))
 
+    # 2.7. QUẢN LÝ TỪNG MÃ (MANAGER)
     elif data.startswith("mgr_"):
         symbol = data.split("_")[1]
         kb = [
@@ -2275,7 +2269,89 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         await safe_edit_message(query, f"⚙️ **Tùy chọn cho {symbol}**:", InlineKeyboardMarkup(kb))
 
-    # ... (Giữ lại các logic btn_del_, set_vn30_on/off khác, nhưng nhớ dùng safe_edit_message cho phần vẽ lại giao diện)
+    # 2.8. XỬ LÝ BẬT/TẮT VN30 (IN-PLACE UPDATE)
+    elif data in ("set_vn30_on", "set_vn30_off"):
+        want_turn_on = (data == "set_vn30_on")
+        
+        # Check Paywall nếu bật
+        if want_turn_on:
+            is_pro = await asyncio.to_thread(is_user_pro, chat_id)
+            is_admin = (chat_id == ADMIN_ID)
+            if not is_pro and not is_admin:
+                await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
+                return
+
+        await asyncio.to_thread(set_vn30f1m_enabled, chat_id, want_turn_on)
+        reload_vn30f1m_enabled_cache()
+        
+        status_toast = "✅ Đã BẬT" if want_turn_on else "🚫 Đã TẮT"
+        await query.answer(f"{status_toast} cảnh báo phái sinh!")
+        
+        # Gọi lại logic menu_setting để vẽ lại nút bấm
+        # (Copy logic từ mục 2.3 xuống đây hoặc gọi hàm chung nếu có)
+        # Ở đây để đơn giản, ta ép nó gọi lại callback menu_setting giả lập:
+        query.data = "menu_setting" 
+        await handle_quick_button(update, context) 
+
+    # 2.9. XÓA MÃ KHỎI DANH MỤC (DELETE)
+    elif data.startswith("btn_del_"):
+        symbol = data.split("_")[2]
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        
+        if symbol in lst:
+            lst.remove(symbol)
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
+            await query.answer(f"🗑️ Đã xóa {symbol}!")
+        else:
+            await query.answer("⚠️ Mã không tồn tại.", show_alert=False)
+            
+        # Quay về danh sách
+        query.data = "menu_list"
+        await handle_quick_button(update, context)
+
+    # 2.10. THÊM MÃ NHANH (ADD QUICK)
+    elif data.startswith("btn_add_"):
+        symbol = data.split("_")[2]
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        
+        if symbol in lst:
+            await query.answer(f"⚠️ {symbol} đã có rồi!", show_alert=True)
+        else:
+            # Check Pro Limit
+            is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+            if not is_pro and len(lst) >= 1:
+                await query.answer("⚠️ Bản Free max 1 mã. Nâng cấp ngay!", show_alert=True)
+                return
+
+            lst.append(symbol)
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
+            await query.answer(f"✅ Đã thêm {symbol}!")
+        
+        # Chuyển sang View Danh Mục
+        query.data = "menu_list"
+        await handle_quick_button(update, context)
+
+
+    # --- NHÓM 3: CÁC TÁC VỤ NẶNG (GỌI HÀM CMD_...) ---
+    # (Các hàm này sẽ gửi tin nhắn MỚI, không sửa tin cũ)
+
+    elif data == "menu_screener":
+        # Gọi hàm tính toán định giá
+        await cmd_screener_value(update, context)
+
+    elif data == "menu_report":
+        # Gọi hàm AI Report
+        await cmd_report(update, context)
+
+    elif data.startswith("btn_info_"):
+        # Gọi hàm Info cho từng mã
+        symbol = data.split("_")[2]
+        context.args = [symbol]
+        await cmd_info(update, context)
+
+    elif data == "btn_upgrade":
+        # Gọi hàm thanh toán
+        await cmd_upgrade(update, context)
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
