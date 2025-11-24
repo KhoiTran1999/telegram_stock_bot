@@ -1548,6 +1548,15 @@ ADMIN_MOBILE_TEMPLATE = r"""
                                       class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-500 border border-red-100 flex items-center animate-pulse">
                                     <i class="fa-regular fa-clock mr-1"></i>Còn <span x-text="user.days_left"></span> ngày
                                 </span>
+                                <span x-show="user.has_used_trial && (!user.is_pro || user.is_expired) && (user.plan_name === 'trial' || !user.plan_name)" 
+                                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-100">
+                                    <i class="fa-solid fa-flask mr-1"></i>Hết Trial
+                                </span>
+
+                                <span x-show="(!user.is_pro || user.is_expired) && user.plan_name === 'pro'" 
+                                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-50 text-orange-600 border border-orange-100">
+                                    <i class="fa-solid fa-gem mr-1"></i>Hết hạn Pro
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -1764,6 +1773,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 tabs: [
                     { id: 'all', label: 'Tất cả' },
                     { id: 'pro', label: 'Pro' },
+                    { id: 'churned', label: 'Tiềm năng' },
                     { id: 'expiring', label: 'Sắp hết' },
                     { id: 'free', label: 'Free' }
                 ],
@@ -1771,20 +1781,35 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 getCount(tabId) {
                     if (tabId === 'all') return this.users.length;
                     if (tabId === 'pro') return this.users.filter(u => u.is_pro && !u.is_expired).length;
+                    
+                    // [MỚI] Đếm số user đã dùng Trial nhưng giờ không phải Pro
+                    if (tabId === 'churned') return this.users.filter(u => u.has_used_trial && (!u.is_pro || u.is_expired)).length;
+                    
                     if (tabId === 'expiring') return this.users.filter(u => u.is_pro && !u.is_expired && u.days_left <= 3).length;
                     if (tabId === 'free') return this.users.filter(u => !u.is_pro).length;
                     return 0;
                 },
-
                 get filteredUsers() {
                     return this.users.filter(user => {
                         const s = this.searchQuery.toLowerCase();
                         const uName = user.name ? user.name.toLowerCase() : '';
                         const uId = String(user.id);
+                        
+                        // Search logic
                         if (!(!s || uId.includes(s) || uName.includes(s))) return false;
+                        
+                        // Tab logic
                         if (this.filterStatus === 'pro') return user.is_pro && !user.is_expired;
+                        
+                        // [MỚI] Logic lọc Tiềm năng
+                        if (this.filterStatus === 'churned') {
+                            const isExpired = !user.is_pro || user.is_expired;
+                            // Lấy: (Đã dùng trial và hết hạn) HOẶC (Là gói Pro và hết hạn)
+                            return isExpired && (user.has_used_trial || user.plan_name === 'pro');
+                        }                        
                         if (this.filterStatus === 'expiring') return user.is_pro && !user.is_expired && user.days_left <= 3;
                         if (this.filterStatus === 'free') return !user.is_pro;
+                        
                         return true;
                     });
                 },

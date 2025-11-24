@@ -235,15 +235,14 @@ def upsert_user_info(chat_id: int, username: str | None, full_name: str | None):
             """, (chat_id, username, full_name))
         conn.commit()
 
+# db_utils.py
+
 def get_admin_dashboard_data():
     """
-    Lấy dữ liệu tổng hợp cho Admin Dashboard:
-    - User Info (từ bảng users)
-    - Pro Status (từ bảng paid_users)
-    - Watchlist Count (từ bảng bot_watch)
+    Lấy dữ liệu tổng hợp cho Admin Dashboard.
+    (ĐÃ CẬP NHẬT: Lấy thêm has_used_trial)
     """
     with get_conn() as conn:
-        # Trả về dạng Dict để dễ xử lý JSON
         with conn.cursor(row_factory=rows.dict_row) as cur:
             cur.execute("""
                 SELECT 
@@ -253,15 +252,19 @@ def get_admin_dashboard_data():
                     u.admin_note,
                     COALESCE(u.is_banned, FALSE) as is_banned,
                     
+                    -- [MỚI] Lấy trạng thái đã dùng thử hay chưa
+                    COALESCE(u.has_used_trial, FALSE) as has_used_trial,
+                    
                     -- Thông tin Pro
                     p.expiry_date,
+                    p.plan_name, -- Lấy thêm plan_name để biết là gói 'trial' hay 'pro'
                     CASE WHEN p.expiry_date > NOW() THEN true ELSE false END as is_pro,
                     CASE WHEN p.expiry_date <= NOW() THEN true ELSE false END as is_expired,
                     
-                    -- Tính số ngày còn lại (hoặc số ngày đã quá hạn)
+                    -- Tính số ngày còn lại
                     EXTRACT(DAY FROM (p.expiry_date - NOW()))::int as days_left,
                     
-                    -- Watchlist (Lấy mảng JSON)
+                    -- Watchlist
                     COALESCE(w.watch_list, '[]'::jsonb) as watchlist
                     
                 FROM users u
