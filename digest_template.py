@@ -1687,10 +1687,18 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 
                 <div class="h-6"></div> </div>
 
-            <div class="p-4 border-t border-slate-100 bg-white pb-8">
-                <button @click="sendMessage()" class="w-full py-3.5 rounded-xl bg-blue-600 text-white font-bold shadow-lg shadow-blue-200 active:scale-95 transition flex items-center justify-center gap-2">
-                    <i class="fa-brands fa-telegram"></i> Nhắn tin trực tiếp
+            <div class="p-4 border-t border-slate-100 bg-white pb-8 grid grid-cols-2 gap-3">
+                
+                <button @click="sendMessage()" 
+                        class="w-full py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-md shadow-blue-200 active:scale-95 transition flex items-center justify-center gap-1.5">
+                    <i class="fa-brands fa-telegram text-sm"></i> BOT CHAT
                 </button>
+
+                <button @click="requestContact(selectedUser)" 
+                        class="w-full py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold active:scale-95 transition flex items-center justify-center gap-1.5 hover:bg-slate-50">
+                    <i class="fa-regular fa-comments text-sm"></i> ADMIN CHAT
+                </button>
+                
             </div>
         </div>
     </div>
@@ -1762,6 +1770,38 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         else alert('❌ Lỗi: ' + result.message);
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
                     finally { this.isLoading = false; }
+                },
+
+                // Hàm xử lý mở chat thông minh
+                async requestContact(user) {
+                    this.isLoading = true;
+                    try {
+                        // 1. Gọi API
+                        await fetch('/api/admin/user/contact', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                admin_id: this.adminId, 
+                                target_id: user.id,
+                                target_name: user.name,
+                                username: user.username 
+                            })
+                        });
+                        
+                        // 2. Đóng Web App (Fix lỗi 'Telegram is not defined')
+                        // Kiểm tra xem object Telegram có tồn tại không trước khi gọi
+                        if (window.Telegram && window.Telegram.WebApp) {
+                            window.Telegram.WebApp.close();
+                        } else {
+                            console.warn("Không tìm thấy Telegram SDK. Đang chạy trên trình duyệt?");
+                            alert("✅ Đã gửi link chat về bot! Bạn hãy kiểm tra tin nhắn.");
+                        }
+                        
+                    } catch (e) {
+                        alert('Lỗi kết nối: ' + e.message);
+                    } finally {
+                        this.isLoading = false;
+                    }
                 },
 
                 async extendUser(days) {

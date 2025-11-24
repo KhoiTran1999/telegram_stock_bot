@@ -60,6 +60,7 @@ from db_utils import (
     set_bot_active,
     log_command_usage,
     get_command_stats,
+    cleanup_old_pending_orders,
     save_bot_message,
     get_bot_messages_in_range,
     delete_bot_messages_in_range,
@@ -3285,26 +3286,34 @@ async def news_macro_loop():
 
 async def news_cleanup_loop():
     """
-    Loop dọn bảng news_seen trong Postgres:
-
-    - Mỗi 24h xoá các bản ghi cũ hơn ~6 tháng (180 ngày).
-    - Redis vẫn tự xoá theo TTL riêng, không cần dọn ở đây.
+    Loop dọn dẹp định kỳ mỗi 24h:
+    1. Xoá news_seen cũ (> 180 ngày).
+    2. Xoá đơn hàng PENDING treo (> 3 ngày).
     """
-    RETENTION_DAYS = 180
+    RETENTION_DAYS_NEWS = 180
+    RETENTION_DAYS_ORDERS = 3  # Xóa đơn treo sau 3 ngày
     INTERVAL_SECONDS = 24 * 60 * 60  # 24 giờ
 
     while True:
         try:
-            # Chạy cleanup trong thread riêng để không block event loop
-            deleted = await asyncio.to_thread(
+            # 1. Dọn News (Code cũ)
+            deleted_news = await asyncio.to_thread(
                 cleanup_old_news_seen,
-                RETENTION_DAYS,
+                RETENTION_DAYS_NEWS,
             )
-            log.info(
-                f"[NEWS_CLEANUP] Đã xoá {deleted} bản ghi news_seen cũ hơn {RETENTION_DAYS} ngày."
+            if deleted_news > 0:
+                log.info(f"[MAINTENANCE] Đã xoá {deleted_news} bản ghi news_seen cũ.")
+
+            # 2. 🔥 [MỚI] Dọn đơn hàng PENDING quá hạn
+            deleted_orders = await asyncio.to_thread(
+                cleanup_old_pending_orders,
+                RETENTION_DAYS_ORDERS
             )
+            if deleted_orders > 0:
+                log.info(f"[MAINTENANCE] 🧹 Đã xóa {deleted_orders} đơn hàng PENDING quá hạn (> {RETENTION_DAYS_ORDERS} ngày).")
+
         except Exception as e:
-            log.warning(f"[NEWS_CLEANUP] Lỗi khi dọn news_seen: {e}")
+            log.warning(f"[MAINTENANCE] Lỗi khi dọn dẹp DB: {e}")
 
         await asyncio.sleep(INTERVAL_SECONDS)
 
@@ -7037,13 +7046,59 @@ def view_screener_result(id):
         log.error(f"Lỗi render screener_result: {e}")
         return f"Lỗi server: {e}", 500
 
+@flask_app.route("/api/admin/user/contact", methods=["POST"])
+def api_admin_request_contact():
+    """API gửi link chat (Markdown) về cho admin rồi đóng webapp"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = data.get("target_id")
+        target_name = data.get("target_name")
+        username = data.get("username")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        # Tạo nội dung tin nhắn
+        if username:
+            # Case 1: Có username -> Dùng link t.me chuẩn
+            display_link = f"https://t.me/{username}"
+            msg_text = (
+                f"👤 **Contact:** {target_name}\n"
+                f"🔗 Link: {display_link}\n\n"
+                f"👉 [Bấm vào đây để chat với @{username}]({display_link})"
+            )
+        else:
+            # Case 2: Không có username -> Dùng Markdown Link với ID
+            # Cú pháp: [Text hiển thị](tg://user?id=123456) <- Đây là cách duy nhất hoạt động ổn định
+            deep_link = f"tg://user?id={target_id}"
+            msg_text = (
+                f"👤 **Contact:** {target_name} (ID: `{target_id}`)\n"
+                f"⚠️ User này chưa đặt Username.\n\n"
+                f"👉 [Bấm vào đây để mở chat riêng]({deep_link})"
+            )
+
+        # Gửi tin nhắn
+        if tg_app and MAIN_LOOP:
+            asyncio.run_coroutine_threadsafe(
+                send_md(tg_app.bot, int(req_admin_id), msg_text),
+                MAIN_LOOP
+            )
+            return jsonify({"ok": True})
+        
+        return jsonify({"ok": False, "message": "Bot not ready"}), 500
+
+    except Exception as e:
+        log.error(f"[ADMIN_API] Request Contact Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
 # ==============================================
 # 👑 ADMIN DASHBOARD ROUTES
 # ==============================================
 
 @flask_app.route("/admin/dashboard")
 def admin_dashboard():
-    """Trang chủ Admin Dashboard (Đã thêm tính doanh thu)"""
+    """Trang chủ Admin Dashboard (Đã cập nhật: Full dữ liệu Logs + Orders + Settings)"""
     req_admin_id = request.args.get("admin_id")
     
     # 1. Check quyền Admin
@@ -7051,14 +7106,49 @@ def admin_dashboard():
         return "⛔ Access Denied. Chỉ Admin mới được truy cập.", 403
 
     try:
-        # 2. Lấy dữ liệu từ DB
+        # 2. Lấy dữ liệu cơ bản từ DB
         raw_data = get_admin_dashboard_data()
         
+        # --- 🔥 [PHẦN MỚI THÊM VÀO] BỔ SUNG DỮ LIỆU CHI TIẾT ---
+        for row in raw_data:
+            uid = row['id']
+            
+            # A. Lấy Nhật ký hoạt động (Command Logs)
+            try:
+                logs = get_user_logs(uid, limit=10)
+                # Convert datetime sang ISO string để JSON hiểu được
+                for l in logs:
+                    if isinstance(l.get('used_at'), (datetime.datetime, datetime.date)):
+                        l['used_at'] = l['used_at'].isoformat()
+                row['logs'] = logs
+            except Exception:
+                row['logs'] = []
+
+            # B. Lấy Lịch sử giao dịch (Orders)
+            try:
+                orders = get_user_orders(uid)
+                for o in orders:
+                    if isinstance(o.get('created_at'), (datetime.datetime, datetime.date)):
+                        o['created_at'] = o['created_at'].isoformat()
+                row['orders'] = orders
+            except Exception:
+                row['orders'] = []
+
+            # C. Lấy Cấu hình (VN30F1M, News...)
+            try:
+                row['config'] = get_user_configs(uid)
+            except Exception:
+                row['config'] = {"vn30": False, "news": True}
+            
+            # D. Parse Watchlist từ JSON string (nếu cần)
+            if isinstance(row.get('watchlist'), str):
+                try: row['watchlist'] = json.loads(row['watchlist'])
+                except: row['watchlist'] = []
+        # -------------------------------------------------------
+
         # --- TÍNH DOANH THU GIẢ LẬP ---
-        # (Đếm số user Pro * 99k)
         pro_count = sum(1 for u in raw_data if u.get('is_pro'))
         est_revenue = pro_count * 99000
-        # Format thành dạng: 4.500.000
         revenue_str = "{:,.0f}".format(est_revenue).replace(",", ".")
         
         # 3. Hàm xử lý dữ liệu an toàn (Date, Decimal...)
@@ -7067,6 +7157,8 @@ def admin_dashboard():
                 return obj.isoformat()
             if isinstance(obj, datetime.timedelta):
                 return str(obj)
+            if isinstance(obj, Decimal):
+                return float(obj)
             if hasattr(obj, '__str__'): 
                 return str(obj)
             return str(obj)
@@ -7084,7 +7176,7 @@ def admin_dashboard():
         ADMIN_MOBILE_TEMPLATE, 
         admin_id=ADMIN_ID,
         initial_data=users_json,
-        total_revenue=revenue_str  # <--- Truyền doanh thu sang HTML
+        total_revenue=revenue_str
     )
 
 @flask_app.route("/api/admin/users")
