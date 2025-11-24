@@ -99,6 +99,10 @@ from db_utils import (
     get_user_orders,
     get_user_logs,
     get_user_configs,
+    get_vn30f1m_enabled_map,
+    set_vn30f1m_enabled,
+    get_stock_alert_enabled_map,
+    set_stock_alert_enabled
 )
 import psutil
 import time
@@ -232,6 +236,28 @@ PORT = int(os.getenv("PASSENGER_PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# --- State trong RAM (Global)
+_vn30f1m_anchor: float | None = None
+_vn30f1m_ref_price: float | None = None
+_vn30f1m_date: datetime.date | None = None
+
+# Cache danh sách User BẬT tính năng
+_vn30f1m_enabled_cache: set[int] = set() 
+_stock_alert_enabled_cache: set[int] = set() # <--- MỚI: Cache Stock Alert
+
+def reload_vn30f1m_enabled_cache():
+    """Load lại tập chat_id đang bật nhận tin VN30 từ DB vào RAM."""
+    global _vn30f1m_enabled_cache
+    mp = get_vn30f1m_enabled_map()
+    _vn30f1m_enabled_cache = {cid for cid, en in mp.items() if en}
+
+def reload_stock_alert_enabled_cache():
+    """Load lại tập chat_id đang bật nhận tin Stock Alert vào RAM."""
+    global _stock_alert_enabled_cache
+    mp = get_stock_alert_enabled_map()
+    # Lưu ý: Logic ở DB là mặc định True, nên cache này sẽ chứa hầu hết user
+    _stock_alert_enabled_cache = {cid for cid, en in mp.items() if en}
 
 # 🗂 Thư mục tạm dùng chung cho backup/restore (tự động phù hợp Windows / Linux)
 TMP_DIR = tempfile.gettempdir()
@@ -2110,44 +2136,34 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await reply_md(update, reply_text, reply_markup=InlineKeyboardMarkup(kb_fallback))
 
-# --- TRONG FILE alert_bot.py ---
 
 @anti_spam_check
 async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Xử lý toàn bộ các nút bấm (CallbackQuery).
-    Được bảo vệ bởi @anti_spam_check.
     """
     query = update.callback_query
     data = query.data
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
+    
     # Kiểm tra bảo trì
     if not BOT_ACTIVE:
         await query.answer("⚙️ Hệ thống đang bảo trì.", show_alert=True)
         return
 
     # --- NHÓM 1: CÁC NÚT ĐÓNG / HỦY ---
-    if data == "close_msg":
-        await query.delete_message()
-        return
-    
-    if data == "close_list":
+    if data in ["close_msg", "close_list", "close_setting"]:
         await query.delete_message()
         return
 
-    # --- NHÓM 2: CÁC NÚT ĐIỀU HƯỚNG GIAO DIỆN (Dùng safe_edit_message) ---
-
-    # 2.1. MENU DANH MỤC (LIST)
-    elif data == "menu_list" or data == "back_to_list":
+    # --- NHÓM 2: MENU LIST, ADD, HELP, INFO, BACK ---
+    # (Giữ nguyên logic cũ cho các nút này - Copy từ file cũ nếu cần hoặc dùng đoạn dưới)
+    if data == "menu_list" or data == "back_to_list":
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-        
         if not lst:
-            msg = "📭 Danh mục trống. Dùng `/add <MÃ>` để thêm."
             kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
+            await safe_edit_message(query, "📭 Danh mục trống.", InlineKeyboardMarkup(kb))
         else:
-            msg = "📋 **Quản lý danh mục**\n👇 Bấm vào mã để xem tùy chọn:"
             keyboard = []
             row = []
             for sym in lst:
@@ -2156,203 +2172,95 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
                     keyboard.append(row)
                     row = []
             if row: keyboard.append(row)
-            
             keyboard.append([InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")])
             keyboard.append([InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")])
-            kb = keyboard
-
-        await safe_edit_message(query, msg, InlineKeyboardMarkup(kb))
-
-    # 2.2. MENU THÊM MÃ (ADD INSTRUCTION)
+            await safe_edit_message(query, "📋 **Quản lý danh mục**", InlineKeyboardMarkup(keyboard))
+            
     elif data == "menu_add":
         kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
-        await safe_edit_message(
-            query, 
-            "➕ Để thêm mã, bạn hãy gõ trực tiếp mã 3 chữ cái (VD: `HPG`, `FPT`) vào ô chat.\nHoặc gõ lệnh: `/add <MÃ>`", 
-            InlineKeyboardMarkup(kb)
-        )
+        await safe_edit_message(query, "➕ Gõ mã 3 chữ cái (VD: `HPG`) vào ô chat để thêm.", InlineKeyboardMarkup(kb))
 
-    # 2.3. MENU TÀI KHOẢN (SETTING)
-    elif data == "menu_setting":
-        vn_tz = pytz.timezone(TIMEZONE)
-        now = datetime.datetime.now(vn_tz)
-        
-        # Lấy dữ liệu
-        expiry_date = await asyncio.to_thread(get_user_pro_expiry, chat_id)
-        mp = await asyncio.to_thread(get_vn30f1m_enabled_map)
-        vn30_enabled = bool(mp.get(chat_id, False))
-
-        # Build Text
-        lines = ["⚙️ *CÀI ĐẶT & TRẠNG THÁI TÀI KHOẢN* ⚙️\n"]
-        if chat_id == ADMIN_ID:
-            lines.append("👤 *Gói cước:* 😎 *ADMIN*")
-        elif expiry_date and expiry_date.astimezone(vn_tz) > now:
-            exp_str = expiry_date.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
-            lines.append(f"👤 *Gói cước:* 👑 *PRO*")
-            lines.append(f"⏳ *Hết hạn:* {exp_str}")
-        else:
-            lines.append("👤 *Gói cước:* 🆓 *FREE*")
-            lines.append("_Giới hạn: 1 mã theo dõi, không có AI Report & Screener._")
-
-        lines.append("\n📈 *Cảnh báo VN30F1M:* " + ("✅ BẬT" if vn30_enabled else "❌ TẮT"))
-        
-        # Nút đảo chiều
-        vn30_btn_text = "🔴 Tắt VN30F1M" if vn30_enabled else "🟢 Bật VN30F1M"
-        vn30_callback = "set_vn30_off" if vn30_enabled else "set_vn30_on"
-
-        kb = [
-            [InlineKeyboardButton("💎 Nâng cấp / Gia hạn", callback_data="btn_upgrade")],
-            [InlineKeyboardButton(vn30_btn_text, callback_data=vn30_callback)],
-            [InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]
-        ]
-        
-        await safe_edit_message(query, "\n".join(lines), InlineKeyboardMarkup(kb))
-
-    # 2.4. MENU HỒ SƠ (INFO SELECTION)
-    elif data == "menu_info":
-        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-        keyboard = []
-        if lst:
-            row = []
-            for sym in lst:
-                row.append(InlineKeyboardButton(sym, callback_data=f"btn_info_{sym}"))
-                if len(row) == 3: 
-                    keyboard.append(row)
-                    row = []
-            if row: keyboard.append(row)
-        
-        keyboard.append([InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")])
-        msg = "📄 **Tra cứu Hồ sơ Doanh nghiệp**\n👇 Chọn mã hoặc gõ `/info <MÃ>`:"
-        
-        await safe_edit_message(query, msg, InlineKeyboardMarkup(keyboard))
-
-    # 2.5. MENU HƯỚNG DẪN (HELP)
     elif data == "menu_help":
-        help_text = (
-            "📘 **HƯỚNG DẪN SỬ DỤNG NHANH**\n\n"
-            "1️⃣ **Quản lý Danh mục**\n"
-            "• **Thêm mã:** Gõ mã 3 chữ cái (VD: `HPG`) vào chat.\n"
-            "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]**.\n\n"
-            "2️⃣ **Phân tích & Dữ liệu AI**\n"
-            "• 📊 **AI Report:** Phân tích sức khỏe danh mục.\n"
-            "• 📄 **Hồ sơ:** Soi lợi thế, rủi ro doanh nghiệp.\n"
-            "• 💎 **Lọc Cổ Phiếu:** Tìm mã định giá rẻ (Realtime).\n\n"
-            "3️⃣ **Hệ thống**\n"
-            "• `/setting`: Kiểm tra hạn Pro & Cài đặt.\n"
-            "• `/start`: Mở lại Dashboard."
-        )
-        kb = [
-            [
-                InlineKeyboardButton("🏠 Dashboard", callback_data="back_to_start"),
-                InlineKeyboardButton("💎 Nâng cấp Pro", callback_data="btn_upgrade")
-            ],
-            [InlineKeyboardButton("💬 Liên hệ Admin", url="https://t.me/KhoiTran99")]
-        ]
-        await safe_edit_message(query, help_text, InlineKeyboardMarkup(kb))
+        await cmd_help(update, context)
 
-    # 2.6. QUAY VỀ DASHBOARD (START)
     elif data == "back_to_start":
-        kb = [
-            [InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"), InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")],
-            [InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"), InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")],
-            [InlineKeyboardButton("📊 AI Report", callback_data="menu_report"), InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")],
-            [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
-        ]
-        msg = "👋 *Bảng Điều Khiển Chính*\nChọn tính năng bên dưới:"
-        await safe_edit_message(query, msg, InlineKeyboardMarkup(kb))
+        await cmd_start(update, context) # Gọi lại hàm start để vẽ lại menu
+        await query.delete_message()
 
-    # 2.7. QUẢN LÝ TỪNG MÃ (MANAGER)
-    elif data.startswith("mgr_"):
-        symbol = data.split("_")[1]
-        kb = [
-            [InlineKeyboardButton("📄 Soi hồ sơ", callback_data=f"btn_info_{symbol}"), InlineKeyboardButton("🗑️ Xóa", callback_data=f"btn_del_{symbol}")],
-            [InlineKeyboardButton("🔙 Quay lại danh sách", callback_data="back_to_list")]
-        ]
-        await safe_edit_message(query, f"⚙️ **Tùy chọn cho {symbol}**:", InlineKeyboardMarkup(kb))
+    elif data == "menu_setting":
+        await cmd_setting(update, context) # Gọi hàm setting mới cập nhật ở trên
 
-    # 2.8. XỬ LÝ BẬT/TẮT VN30 (IN-PLACE UPDATE)
+    # --- NHÓM 3: XỬ LÝ BẬT/TẮT (SETTING) ---
+    
+    # 3.1. VN30F1M
     elif data in ("set_vn30_on", "set_vn30_off"):
-        want_turn_on = (data == "set_vn30_on")
+        want_on = (data == "set_vn30_on")
         
-        # Check Paywall nếu bật
-        if want_turn_on:
-            is_pro = await asyncio.to_thread(is_user_pro, chat_id)
-            is_admin = (chat_id == ADMIN_ID)
-            if not is_pro and not is_admin:
+        # Check Pro
+        if want_on:
+            is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+            if not is_pro:
                 await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
                 return
 
-        await asyncio.to_thread(set_vn30f1m_enabled, chat_id, want_turn_on)
+        await asyncio.to_thread(set_vn30f1m_enabled, chat_id, want_on)
         reload_vn30f1m_enabled_cache()
         
-        status_toast = "✅ Đã BẬT" if want_turn_on else "🚫 Đã TẮT"
-        await query.answer(f"{status_toast} cảnh báo phái sinh!")
+        # Hiển thị thông báo nhỏ (Toast)
+        await query.answer(f"{'✅ Đã BẬT' if want_on else '🚫 Đã TẮT'} VN30F1M!")
         
-        # Gọi lại logic menu_setting để vẽ lại nút bấm
-        # (Copy logic từ mục 2.3 xuống đây hoặc gọi hàm chung nếu có)
-        # Ở đây để đơn giản, ta ép nó gọi lại callback menu_setting giả lập:
-        query.data = "menu_setting" 
-        await handle_quick_button(update, context) 
+        # 🔥 GỌI HÀM cmd_setting ĐỂ UPDATE GIAO DIỆN TẠI CHỖ 🔥
+        # (Vì update có callback_query nên cmd_setting sẽ tự biết là cần edit message)
+        await cmd_setting(update, context) 
 
-    # 2.9. XÓA MÃ KHỎI DANH MỤC (DELETE)
-    elif data.startswith("btn_del_"):
-        symbol = data.split("_")[2]
-        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+    # 3.2. STOCK ALERT (MỚI)
+    elif data in ("set_stock_on", "set_stock_off"):
+        want_on = (data == "set_stock_on")
         
-        if symbol in lst:
-            lst.remove(symbol)
-            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
-            await query.answer(f"🗑️ Đã xóa {symbol}!")
-        else:
-            await query.answer("⚠️ Mã không tồn tại.", show_alert=False)
-            
-        # Quay về danh sách
-        query.data = "menu_list"
-        await handle_quick_button(update, context)
-
-    # 2.10. THÊM MÃ NHANH (ADD QUICK)
-    elif data.startswith("btn_add_"):
-        symbol = data.split("_")[2]
-        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        await asyncio.to_thread(set_stock_alert_enabled, chat_id, want_on)
+        reload_stock_alert_enabled_cache() 
         
-        if symbol in lst:
-            await query.answer(f"⚠️ {symbol} đã có rồi!", show_alert=True)
-        else:
-            # Check Pro Limit
-            is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-            if not is_pro and len(lst) >= 1:
-                await query.answer("⚠️ Bản Free max 1 mã. Nâng cấp ngay!", show_alert=True)
-                return
-
-            lst.append(symbol)
-            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
-            await query.answer(f"✅ Đã thêm {symbol}!")
+        await query.answer(f"{'✅ Đã BẬT' if want_on else '🚫 Đã TẮT'} Cảnh báo Stock!")
         
-        # Chuyển sang View Danh Mục
-        query.data = "menu_list"
-        await handle_quick_button(update, context)
+        # 🔥 GỌI HÀM cmd_setting ĐỂ UPDATE GIAO DIỆN TẠI CHỖ 🔥
+        await cmd_setting(update, context)
 
-
-    # --- NHÓM 3: CÁC TÁC VỤ NẶNG (GỌI HÀM CMD_...) ---
-    # (Các hàm này sẽ gửi tin nhắn MỚI, không sửa tin cũ)
-
-    elif data == "menu_screener":
-        # Gọi hàm tính toán định giá
-        await cmd_screener_value(update, context)
-
-    elif data == "menu_report":
-        # Gọi hàm AI Report
-        await cmd_report(update, context)
-
+    # --- NHÓM 4: CÁC TÁC VỤ KHÁC (Report, Info, Screener, Upgrade...) ---
+    # (Copy logic cũ của bạn vào đây để không bị mất các tính năng đó)
+    elif data == "menu_report": await cmd_report(update, context)
+    elif data == "menu_screener": await cmd_screener_value(update, context)
+    elif data == "menu_info": await cmd_info(update, context) # Mở menu info chung
     elif data.startswith("btn_info_"):
-        # Gọi hàm Info cho từng mã
         symbol = data.split("_")[2]
         context.args = [symbol]
         await cmd_info(update, context)
-
-    elif data == "btn_upgrade":
-        # Gọi hàm thanh toán
-        await cmd_upgrade(update, context)
+    elif data == "btn_upgrade": await cmd_upgrade(update, context)
+    elif data.startswith("btn_add_"):
+        # Logic add nhanh
+        symbol = data.split("_")[2]
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        if symbol in lst: await query.answer("Đã có rồi!", show_alert=True)
+        else:
+            lst.append(symbol)
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
+            await query.answer(f"✅ Đã thêm {symbol}")
+            query.data = "menu_list"
+            await handle_quick_button(update, context)
+    elif data.startswith("mgr_"):
+        # Menu quản lý mã
+        symbol = data.split("_")[1]
+        kb = [[InlineKeyboardButton("📄 Soi hồ sơ", callback_data=f"btn_info_{symbol}"), InlineKeyboardButton("🗑️ Xóa", callback_data=f"btn_del_{symbol}")], [InlineKeyboardButton("🔙 Quay lại", callback_data="back_to_list")]]
+        await safe_edit_message(query, f"⚙️ **{symbol}**", InlineKeyboardMarkup(kb))
+    elif data.startswith("btn_del_"):
+        # Logic xóa
+        symbol = data.split("_")[2]
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        if symbol in lst:
+            lst.remove(symbol)
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
+            await query.answer(f"🗑️ Đã xóa {symbol}")
+        query.data = "menu_list"
+        await handle_quick_button(update, context)
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
@@ -2673,13 +2581,16 @@ async def alert_loop():
     (TÁC VỤ 2 - TICKER - FIXED)
     - Mốc so sánh ban đầu LUÔN LÀ 0.0 (Giá tham chiếu).
     - Báo khi giá thay đổi >= 2% so với mốc gần nhất.
+    - Đã thêm logic: Giới hạn Free User (1 mã) & Check Bật/Tắt Setting.
     """
     vn_tz = pytz.timezone(TIMEZONE)
 
     log.info(f"[{INSTANCE_ID}][TICKER_STOCK] Bắt đầu. Mốc khởi tạo = GIÁ THAM CHIẾU (0%).")
+    
+    # Load cache setting lần đầu khi khởi động loop
+    reload_stock_alert_enabled_cache()
 
     while True:
-
         now = datetime.datetime.now(vn_tz)
 
         # 1. Kiểm tra điều kiện chạy
@@ -2700,6 +2611,12 @@ async def alert_loop():
                 await asyncio.sleep(TICKER_INTERVAL_SECONDS)
                 continue
 
+            # Lấy danh sách Pro mới nhất để check quyền hạn
+            try:
+                pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
+            except Exception:
+                pro_chat_ids = set()
+
             for chat_key, user_block in all_watch.items():
                 try:
                     chat_id = int(chat_key)
@@ -2710,13 +2627,25 @@ async def alert_loop():
                 if not watch_list:
                     continue
 
+                # === 🔥 LOGIC 1: PHÂN QUYỀN & CẮT DANH SÁCH 🔥 ===
+                # Nếu là Pro hoặc Admin -> Dùng full danh sách
+                # Nếu là Free -> Chỉ lấy mã đầu tiên (watch_list[:1])
+                is_pro = (chat_id in pro_chat_ids) or (chat_id == ADMIN_ID)
+                
+                if is_pro:
+                    processing_list = watch_list
+                else:
+                    # Free user chỉ được xử lý mã đầu tiên trong danh sách
+                    processing_list = watch_list[:1] if watch_list else []
+
                 if chat_key not in all_state:
                     all_state[chat_key] = {}
                 personal_state = all_state[chat_key]
 
                 messages: list[str] = []
 
-                for sym in watch_list:
+                # Chỉ duyệt qua các mã được phép xử lý
+                for sym in processing_list:
                     sym_u = str(sym).upper().strip()
                     if not sym_u:
                         continue
@@ -2746,16 +2675,12 @@ async def alert_loop():
                         except Exception:
                             last_alert_at = None
 
-                    # ⚡ LOGIC QUAN TRỌNG NHẤT ĐÂY ⚡
-                    # 1. Nếu chưa có last_pct (mới thêm mã) -> Gán = 0.0 (Tham chiếu)
-                    # 2. Nếu qua ngày mới -> Reset về 0.0 (Tham chiếu)
+                    # Reset mốc về 0.0 nếu qua ngày mới
                     if last_pct is None or (last_alert_at and last_alert_at.date() != now.date()):
                         last_pct = 0.0 
-                        last_alert_at = None # Coi như chưa báo hôm nay
+                        last_alert_at = None 
 
                     # === TÍNH TOÁN BIẾN ĐỘNG ===
-                    # Delta = % Hiện tại - % Mốc cũ
-                    # Ví dụ: Mốc cũ (Tham chiếu) = 0.0. Hiện tại = -2.1%. Delta = 2.1 -> BÁO
                     delta_pct = float(pct) - float(last_pct)
                     should_alert = abs(delta_pct) >= 2.0 # Ngưỡng 2%
 
@@ -2764,32 +2689,22 @@ async def alert_loop():
                         icon = "🟢" if pct >= 0 else "🔴"
                         direction = "tăng" if pct >= 0 else "giảm"
                         
-                        # Format giá: 20.000
                         price_str = f"{float(price):,.0f}".replace(",", ".")
-                        # Format %: +2.10%
                         pct_str = f"{float(pct):+.2f}%"
                         
-                        # Câu thoại vui
                         fun_line = random.choice(FUN_UP if pct >= 0 else FUN_DOWN)
 
-                        # 2. Tạo nội dung tin nhắn (GỌN GÀNG)
-                        # Mẫu: 🟢 HPG tăng +2.10% Giá hiện tại: 25.000
+                        # 2. Tạo nội dung tin nhắn
                         msg = (
                             f"{icon} * {sym_u} {direction} {pct_str} Giá hiện tại: {price_str}*\n"
                             f"_{fun_line}_"
                         )
                         
-                        # TẠO NÚT "SOI CHART" (Link Web App)
+                        # Nút soi chart
                         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
                         chart_url = f"{base_url}/chart/{sym_u}"
                         
-                        kb = InlineKeyboardMarkup([
-                            [
-                                InlineKeyboardButton("📉 Soi Chart Realtime", web_app=WebAppInfo(url=chart_url)),
-                                InlineKeyboardButton("📄 Hồ sơ", callback_data=f"btn_info_{sym_u}")
-                            ]
-                        ])
-
+                        # Lưu ý: Ở đây mình không attach button vào từng msg để gộp tin cho gọn
                         messages.append(msg)
                         
                         # 3. Cập nhật mốc mới vào State
@@ -2798,15 +2713,17 @@ async def alert_loop():
                             "last_alert_at": now.isoformat(),
                         }
                     
-                    # Nếu chưa đủ 2% để báo, nhưng là ngày mới/mã mới, ta vẫn phải lưu mốc 0.0 vào state
-                    # để vòng lặp sau có cái mà so sánh (tránh trường hợp nó cứ None mãi)
+                    # Lưu mốc 0.0 nếu chưa có alert nào trong ngày
                     elif sym_u not in personal_state or (last_alert_at is None and state_entry.get("last_pct") != 0.0):
                          personal_state[sym_u] = {
                             "last_pct": 0.0,
-                            "last_alert_at": state_entry.get("last_alert_at") # Giữ nguyên time cũ hoặc None
+                            "last_alert_at": state_entry.get("last_alert_at")
                         }
 
-                if messages:
+                # === 🔥 LOGIC 2: CHECK BẬT/TẮT TRƯỚC KHI GỬI 🔥 ===
+                # Chỉ gửi nếu có tin nhắn VÀ user đang BẬT tính năng này
+                # (User có trong _stock_alert_enabled_cache nghĩa là đang BẬT)
+                if messages and (chat_id in _stock_alert_enabled_cache):
                     header = (
                         "--------------------------------\n"
                         f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
@@ -3349,31 +3266,6 @@ def ensure_bot_user_settings_table():
                     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
-        conn.commit()
-
-def get_vn30f1m_enabled_map() -> dict[int, bool]:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT chat_id,
-                       COALESCE((settings ->> 'vn30f1m_enabled')::boolean, FALSE) AS enabled
-                FROM bot_user_settings
-            """)
-            rows = cur.fetchall()
-    return {int(r[0]): bool(r[1]) for r in rows}
-
-def set_vn30f1m_enabled(chat_id: int, enabled: bool):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO bot_user_settings (chat_id, settings)
-                VALUES (%s, jsonb_build_object('vn30f1m_enabled', %s))
-                ON CONFLICT (chat_id)
-                DO UPDATE SET
-                    settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
-                               || jsonb_build_object('vn30f1m_enabled', EXCLUDED.settings->'vn30f1m_enabled'),
-                    updated_at = NOW()
-            """, (chat_id, enabled))
         conn.commit()
 
 def reload_vn30f1m_enabled_cache():
@@ -5256,20 +5148,27 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-
 async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ CẬP NHẬT UX) Xem trạng thái & Cài đặt bằng nút bấm """
+    """ 
+    (ĐÃ CẬP NHẬT) Xem trạng thái & Cài đặt.
+    - Nếu dùng lệnh /setting -> Gửi tin nhắn mới.
+    - Nếu bấm nút -> Sửa tin nhắn cũ (In-place update).
+    """
     if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        if update.callback_query:
+            await update.callback_query.answer("⚙️ Bot đang bảo trì.", show_alert=True)
+        else:
+            await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
     
-    # Log command (dùng try-except cho an toàn)
-    try:
-        await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except: pass
+    # Chỉ log command nếu là lệnh gõ tay (để tránh spam log khi bấm nút)
+    if not update.callback_query:
+        try:
+            await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except: pass
 
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -5279,69 +5178,79 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = await asyncio.gather(
             asyncio.to_thread(get_user_pro_expiry, chat_id),
             asyncio.to_thread(get_vn30f1m_enabled_map),
+            asyncio.to_thread(get_stock_alert_enabled_map),
             return_exceptions=True
         )
         
         expiry_date = results[0] if not isinstance(results[0], Exception) else None
-        vn30f1m_map = results[1] if not isinstance(results[1], Exception) else {}
+        vn30_map = results[1] if not isinstance(results[1], Exception) else {}
+        stock_map = results[2] if not isinstance(results[2], Exception) else {}
         
-        vn30f1m_enabled = bool(vn30f1m_map.get(chat_id, False))
+        vn30_enabled = bool(vn30_map.get(chat_id, False))
+        stock_enabled = bool(stock_map.get(chat_id, True))
 
     except Exception as e:
         log.error(f"Setting error: {e}")
-        await reply_md(update, "⚠️ Lỗi lấy dữ liệu cài đặt.")
+        msg_err = "⚠️ Lỗi lấy dữ liệu cài đặt."
+        if update.callback_query:
+            await update.callback_query.answer(msg_err, show_alert=True)
+        else:
+            await reply_md(update, msg_err)
         return
 
     # --- 2. BUILD NỘI DUNG TEXT ---
     lines = ["⚙️ *CÀI ĐẶT & TRẠNG THÁI TÀI KHOẢN* ⚙️\n"]
 
     # Trạng thái Pro
-    is_pro = False
     if chat_id == ADMIN_ID:
-        lines.append("👤 *Gói cước:* 😎 *ADMIN* (Full quyền)")
-        is_pro = True
+        lines.append("👤 *Gói cước:* 😎 *ADMIN*")
     elif expiry_date and expiry_date.astimezone(vn_tz) > now:
-        is_pro = True
         exp_str = expiry_date.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
         lines.append(f"👤 *Gói cước:* 👑 *PRO*")
         lines.append(f"⏳ *Hết hạn:* {exp_str}")
     else:
         lines.append("👤 *Gói cước:* 🆓 *FREE*")
-        lines.append("_Giới hạn: 1 mã theo dõi, không có AI Report & Screener._")
+        lines.append("_Giới hạn: Theo dõi 1 mã, không có AI Report._")
 
     # Morning Digest
-    lines.append("\n📰 *Bản tin sáng (Digest)*")
-    lines.append("✅ Trạng thái: *TỰ ĐỘNG (07:00)*")
+    lines.append("\n📰 *Bản tin sáng (Digest)*: TỰ ĐỘNG (07:00)")
+
+    # Stock Alert
+    lines.append("\n📊 *Cảnh báo Biến động cổ phiếu*")
+    status_stock = "✅ *BẬT*" if stock_enabled else "❌ *TẮT*"
+    lines.append(status_stock)
 
     # Phái sinh
     lines.append("\n📈 *Cảnh báo VN30F1M*")
-    if vn30f1m_enabled:
-        lines.append("✅ Trạng thái: *ĐANG BẬT*")
-    else:
-        lines.append("❌ Trạng thái: *ĐANG TẮT*")
+    status_vn30 = "✅ *BẬT*" if vn30_enabled else "❌ *TẮT*"
+    lines.append(status_vn30)
 
     # --- 3. TẠO BÀN PHÍM ĐIỀU KHIỂN ---
     
-    # Logic nút VN30: Nếu đang Bật thì hiện nút Tắt, và ngược lại
-    if vn30f1m_enabled:
-        vn30_btn_text = "🔴 Tắt VN30F1M"
-        vn30_callback = "set_vn30_off"
-    else:
-        vn30_btn_text = "🟢 Bật VN30F1M"
-        vn30_callback = "set_vn30_on"
+    vn30_btn = "🔴 Tắt cập nhật VN30F1M" if vn30_enabled else "🟢 Bật cập nhật VN30F1M"
+    vn30_cb = "set_vn30_off" if vn30_enabled else "set_vn30_on"
+
+    stock_btn = "🔴 Tắt cập nhật cổ phiếu" if stock_enabled else "🟢 Bật cập nhật cổ phiếu"
+    stock_cb = "set_stock_off" if stock_enabled else "set_stock_on"
 
     kb = [
-        # Hàng 1: Nâng cấp (Luôn hiện, vì Pro cũng cần gia hạn)
         [InlineKeyboardButton("💎 Nâng cấp / Gia hạn Pro", callback_data="btn_upgrade")],
-        
-        # Hàng 2: Bật/Tắt VN30
-        [InlineKeyboardButton(vn30_btn_text, callback_data=vn30_callback)],
-        
-        # Hàng 3: Đóng
-        [InlineKeyboardButton("❌ Đóng", callback_data="close_setting")]
+        [InlineKeyboardButton(stock_btn, callback_data=stock_cb)], 
+        [InlineKeyboardButton(vn30_btn, callback_data=vn30_cb)],   
+        [InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]
     ]
+    
+    msg_text = "\n".join(lines)
+    reply_markup = InlineKeyboardMarkup(kb)
 
-    await reply_md(update, "\n".join(lines), reply_markup=InlineKeyboardMarkup(kb))
+    # --- 4. QUYẾT ĐỊNH: GỬI MỚI HAY SỬA CŨ ---
+    if update.callback_query:
+        # Nếu gọi từ nút bấm -> Sửa tin nhắn hiện tại (In-place)
+        await safe_edit_message(update.callback_query, msg_text, reply_markup)
+    else:
+        # Nếu gọi từ lệnh /setting -> Gửi tin nhắn mới
+        await reply_md(update, msg_text, reply_markup=reply_markup)
+
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -7046,52 +6955,6 @@ def view_screener_result(id):
         log.error(f"Lỗi render screener_result: {e}")
         return f"Lỗi server: {e}", 500
 
-@flask_app.route("/api/admin/user/contact", methods=["POST"])
-def api_admin_request_contact():
-    """API gửi link chat (Markdown) về cho admin rồi đóng webapp"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = data.get("target_id")
-        target_name = data.get("target_name")
-        username = data.get("username")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        # Tạo nội dung tin nhắn
-        if username:
-            # Case 1: Có username -> Dùng link t.me chuẩn
-            display_link = f"https://t.me/{username}"
-            msg_text = (
-                f"👤 **Contact:** {target_name}\n"
-                f"🔗 Link: {display_link}\n\n"
-                f"👉 [Bấm vào đây để chat với @{username}]({display_link})"
-            )
-        else:
-            # Case 2: Không có username -> Dùng Markdown Link với ID
-            # Cú pháp: [Text hiển thị](tg://user?id=123456) <- Đây là cách duy nhất hoạt động ổn định
-            deep_link = f"tg://user?id={target_id}"
-            msg_text = (
-                f"👤 **Contact:** {target_name} (ID: `{target_id}`)\n"
-                f"⚠️ User này chưa đặt Username.\n\n"
-                f"👉 [Bấm vào đây để mở chat riêng]({deep_link})"
-            )
-
-        # Gửi tin nhắn
-        if tg_app and MAIN_LOOP:
-            asyncio.run_coroutine_threadsafe(
-                send_md(tg_app.bot, int(req_admin_id), msg_text),
-                MAIN_LOOP
-            )
-            return jsonify({"ok": True})
-        
-        return jsonify({"ok": False, "message": "Bot not ready"}), 500
-
-    except Exception as e:
-        log.error(f"[ADMIN_API] Request Contact Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
 # ==============================================
 # 👑 ADMIN DASHBOARD ROUTES
 # ==============================================
@@ -7327,6 +7190,52 @@ def api_admin_send_message():
 
     except Exception as e:
         log.error(f"[ADMIN_API] Send Message Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/user/contact", methods=["POST"])
+def api_admin_request_contact():
+    """API gửi link chat (Markdown) về cho admin rồi đóng webapp"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = data.get("target_id")
+        target_name = data.get("target_name")
+        username = data.get("username")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        # Tạo nội dung tin nhắn
+        if username:
+            # Case 1: Có username -> Dùng link t.me chuẩn
+            display_link = f"https://t.me/{username}"
+            msg_text = (
+                f"👤 **Contact:** {target_name}\n"
+                f"🔗 Link: {display_link}\n\n"
+                f"👉 [Bấm vào đây để chat với @{username}]({display_link})"
+            )
+        else:
+            # Case 2: Không có username -> Dùng Markdown Link với ID
+            # Cú pháp: [Text hiển thị](tg://user?id=123456) <- Đây là cách duy nhất hoạt động ổn định
+            deep_link = f"tg://user?id={target_id}"
+            msg_text = (
+                f"👤 **Contact:** {target_name} (ID: `{target_id}`)\n"
+                f"⚠️ User này chưa đặt Username.\n\n"
+                f"👉 [Bấm vào đây để mở chat riêng]({deep_link})"
+            )
+
+        # Gửi tin nhắn
+        if tg_app and MAIN_LOOP:
+            asyncio.run_coroutine_threadsafe(
+                send_md(tg_app.bot, int(req_admin_id), msg_text),
+                MAIN_LOOP
+            )
+            return jsonify({"ok": True})
+        
+        return jsonify({"ok": False, "message": "Bot not ready"}), 500
+
+    except Exception as e:
+        log.error(f"[ADMIN_API] Request Contact Error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
 # ==============================================

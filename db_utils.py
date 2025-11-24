@@ -1844,3 +1844,67 @@ def get_historical_valuation_from_redis() -> dict | None:
         redis_debug_log(f"Lỗi đọc historical valuation: {e}")
         return None
 
+# ==========================================
+# USER SETTINGS (VN30 & STOCK ALERT)
+# ==========================================
+
+def get_vn30f1m_enabled_map() -> dict[int, bool]:
+    """Lấy danh sách user đang bật cảnh báo VN30F1M"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id,
+                       COALESCE((settings ->> 'vn30f1m_enabled')::boolean, FALSE) AS enabled
+                FROM bot_user_settings
+            """)
+            rows = cur.fetchall()
+    return {int(r[0]): bool(r[1]) for r in rows}
+
+def set_vn30f1m_enabled(chat_id: int, enabled: bool):
+    """Cập nhật trạng thái bật/tắt VN30F1M"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('vn30f1m_enabled', %s))
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
+                               || jsonb_build_object('vn30f1m_enabled', EXCLUDED.settings->'vn30f1m_enabled'),
+                    updated_at = NOW()
+            """, (chat_id, enabled))
+        conn.commit()
+
+def get_stock_alert_enabled_map() -> dict[int, bool]:
+    """
+    Lấy trạng thái nhận cảnh báo Stock của user.
+    Mặc định (COALESCE) là TRUE (BẬT) nếu chưa cài đặt.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id,
+                       COALESCE((settings ->> 'stock_alert_enabled')::boolean, TRUE) AS enabled
+                FROM bot_user_settings
+            """)
+            rows = cur.fetchall()
+    return {int(r[0]): bool(r[1]) for r in rows}
+
+def set_stock_alert_enabled(chat_id: int, enabled: bool):
+    """Cập nhật trạng thái bật/tắt Stock Alert"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('stock_alert_enabled', %s))
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
+                               || jsonb_build_object('stock_alert_enabled', EXCLUDED.settings->'stock_alert_enabled'),
+                    updated_at = NOW()
+            """, (chat_id, enabled))
+        conn.commit()
+
+
+
+
