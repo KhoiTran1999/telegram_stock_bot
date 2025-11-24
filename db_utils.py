@@ -60,7 +60,8 @@ def init_db():
                     joined_at TIMESTAMPTZ DEFAULT NOW(),
                     last_active_at TIMESTAMPTZ DEFAULT NOW(),
                     admin_note TEXT,
-                    is_banned BOOLEAN DEFAULT FALSE
+                    is_banned BOOLEAN DEFAULT FALSE,
+                    has_used_trial BOOLEAN DEFAULT FALSE
                 )
             """)
 
@@ -1988,6 +1989,64 @@ def set_user_ban_status(chat_id: int, is_banned: bool):
             """, (chat_id, is_banned))
         conn.commit()
 
+# ==========================================
+# TÍNH NĂNG DÙNG THỬ (TRIAL) - MỚI THÊM
+# ==========================================
+
+def check_trial_eligibility(chat_id: int) -> str:
+    """
+    Kiểm tra xem user có được dùng thử không.
+    Trả về:
+    - 'OK': Hợp lệ, cho dùng thử.
+    - 'IS_PRO': Đang là Pro rồi (không cần trial).
+    - 'USED': Đã từng dùng thử rồi (hết lượt).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # 1. Check xem đang là Pro không
+            cur.execute("SELECT 1 FROM paid_users WHERE chat_id = %s AND expiry_date > NOW()", (chat_id,))
+            if cur.fetchone():
+                return 'IS_PRO'
+            
+            # 2. Check xem đã dùng trial chưa (trong bảng users)
+            cur.execute("SELECT has_used_trial FROM users WHERE chat_id = %s", (chat_id,))
+            row = cur.fetchone()
+            # Nếu chưa có record trong users (user mới tinh), coi như chưa dùng (False)
+            has_used = row[0] if row else False
+            
+            if has_used:
+                return 'USED'
+            
+    return 'OK'
+
+def activate_trial_package(chat_id: int, days: int = 3):
+    """
+    Kích hoạt gói dùng thử.
+    1. Đánh dấu user đã dùng trial (users.has_used_trial = True).
+    2. Thêm vào bảng paid_users với hạn dùng 'days' ngày.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # 1. Đánh dấu đã dùng
+            cur.execute("""
+                INSERT INTO users (chat_id, has_used_trial, last_active_at)
+                VALUES (%s, TRUE, NOW())
+                ON CONFLICT (chat_id) DO UPDATE 
+                SET has_used_trial = TRUE, last_active_at = NOW()
+            """, (chat_id,))
+            
+            # 2. Kích hoạt Pro (plan_name='trial')
+            # Nếu user cũ hết hạn -> Ghi đè ngày hết hạn = NOW() + 3 ngày
+            cur.execute("""
+                INSERT INTO paid_users (chat_id, expiry_date, plan_name)
+                VALUES (%s, NOW() + interval '1 day' * %s, 'trial')
+                ON CONFLICT (chat_id)
+                DO UPDATE SET 
+                    expiry_date = NOW() + interval '1 day' * %s,
+                    plan_name = 'trial'
+            """, (chat_id, days, days))
+            
+        conn.commit()
 
 
 

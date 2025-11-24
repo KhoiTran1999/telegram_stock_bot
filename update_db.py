@@ -7,7 +7,7 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-def migrate_db():
+def migrate_admin_note():
     print("🚀 Đang kết nối đến Database...")
     
     if not DATABASE_URL:
@@ -49,6 +49,24 @@ def add_ban_column():
     except Exception as e:
         print(f"❌ Lỗi: {e}")
 
+def migrate_trial():
+    print("🚀 Đang bắt đầu thêm cột 'has_used_trial' vào bảng 'users'...")
+    if not DATABASE_URL:
+        print("❌ Lỗi: Thiếu DATABASE_URL.")
+        return
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # Thêm cột is_banned, mặc định là FALSE (chưa bị chặn)
+                sql = "ALTER TABLE users ADD COLUMN IF NOT EXISTS has_used_trial BOOLEAN DEFAULT FALSE;"
+                cur.execute(sql)
+            conn.commit()
+            print("✅ THÀNH CÔNG! Đã thêm cột 'has_used_trial'.")
+    except Exception as e:
+        print(f"❌ Lỗi: {e}")
+
 if __name__ == "__main__":
-    migrate_db()
+    migrate_admin_note()
     add_ban_column()
+    migrate_trial()

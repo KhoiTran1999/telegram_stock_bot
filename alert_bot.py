@@ -107,6 +107,8 @@ from db_utils import (
     update_user_admin_note,
     get_banned_users,
     set_user_ban_status,
+    check_trial_eligibility,
+    activate_trial_package,
 )
 import psutil
 import time
@@ -2198,6 +2200,10 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     elif data == "menu_setting":
         await cmd_setting(update, context) # Gọi hàm setting mới cập nhật ở trên
+    
+    elif data == "btn_trial_click":
+        # Gọi lại hàm cmd_trial
+        await cmd_trial(update, context)
 
     # --- NHÓM 3: XỬ LÝ BẬT/TẮT (SETTING) ---
     
@@ -4749,34 +4755,36 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # (Nhớ thêm tg_app.add_handler(CommandHandler("admin", cmd_admin)) vào main)
 
+# alert_bot.py
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Hiển thị Dashboard chính với các nút bấm tiện lợi.
-    (ĐÃ CẬP NHẬT: Lưu thông tin user vào bảng users)
+    Dashboard chính (Logic thông minh: Ẩn Trial nếu đã dùng/Pro/Admin).
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
     
-    # --- [MỚI] Lưu thông tin user vào DB ---
-    await track_user_activity(update) 
-    # ---------------------------------------
-
+    await track_user_activity(update)
     chat_id = update.effective_chat.id
     
-    # Log và khởi tạo DB nếu user mới
+    # 1. Init watchlist nếu chưa có
     try:
         await asyncio.to_thread(log_command_usage, chat_id, "/start", ADMIN_ID)
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
-        if lst is None:
-            await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
-    except Exception:
-        pass
+        if lst is None: await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
+    except: pass
 
-    # Lấy Base URL
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    # 2. Kiểm tra trạng thái Trial/Pro
+    # Hàm check_trial_eligibility trả về: 'OK' (Được dùng), 'IS_PRO', 'USED'
+    trial_status = await asyncio.to_thread(check_trial_eligibility, chat_id)
+    print("trial_status: ", trial_status)
+    # Logic hiển thị: Chỉ hiện Trial nếu user ĐỦ ĐIỀU KIỆN ('OK')
+    # Nếu là Admin thì cũng coi như không hiện (để giao diện gọn, hoặc tùy bạn)
+    is_admin = (chat_id == ADMIN_ID)
+    show_trial = (trial_status == 'OK') and not is_admin
 
-    # --- TẠO DASHBOARD MENU ---
+    # --- MENU DASHBOARD CƠ BẢN ---
     kb = [
         [
             InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"),
@@ -4789,20 +4797,37 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
             InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
-        ],
-        [
-            InlineKeyboardButton("❓ Help", callback_data="menu_help")
         ]
     ]
 
-    welcome_msg = (
-        "👋 *Chào mừng bạn đến với Người Canh Bảng 🧑‍💻*\n"
-        "Trợ lý đầu tư chứng khoán thông minh tích hợp AI.\n\n"
+    # Nếu đủ điều kiện Trial -> Thêm nút Kích hoạt
+    if show_trial:
+        kb.append([InlineKeyboardButton("🎁 Kích hoạt Dùng thử (Free)", callback_data="btn_trial_click")])
+    
+    # Thêm nút Hướng dẫn cuối cùng
+    kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
+
+    # --- NỘI DUNG TIN NHẮN ---
+    if show_trial:
+        # Dành cho User Mới (Chưa dùng thử) -> Có chào mời
+        welcome_msg = (
+            "👋 *Chào bạn! Mình là Người Canh Bảng 🧑‍💻*\n"
+            "Trợ lý đầu tư chứng khoán thông minh 24/7.\n\n"
+            "🚀 **Tôi giúp gì cho bạn?**\n"
+            "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
+            "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
+            "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n\n"
+            "🎁 **Tặng bạn 3 ngày dùng thử Full tính năng Pro!**\n"
+            "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
+        )
+    else:
+        # Dành cho User Cũ / Pro / Admin -> Gọn gàng, đi thẳng vào vấn đề
+        welcome_msg = (
+        "*Người Canh Bảng* 🧑‍💻 đây\n"
         "👇 *Chọn nhanh tính năng bên dưới:*"
     )
 
     await reply_md(update, welcome_msg, reply_markup=InlineKeyboardMarkup(kb))
-
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ NÂNG CẤP UX) Hướng dẫn sử dụng gọn gàng & Nút điều hướng """
@@ -4821,18 +4846,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ **Quản lý Danh mục (Cực nhanh)**\n"
         "• **Thêm mã:** Chỉ cần gõ mã 3 chữ cái (VD: `HPG`, `FPT`) vào chat -> Bot sẽ hiện nút thêm.\n"
         "• **Xóa/Xem:** Bấm nút **[📋 Danh mục]** trên Dashboard (/start).\n\n"
+        "• 🔔 Theo dõi biến động giá cổ phiếu.\n"
 
-        "2️⃣ **Phân tích & Dữ liệu AI**\n"
-        "• 📊 `/report`: AI phân tích sức khỏe toàn bộ danh mục.\n"
-        "• 📄 `/info <MÃ>`: Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n\n"
+        "2️⃣ **Công cụ Pro**\n"
+        "• 💎 Lọc cổ phiếu giá trị (Realtime).\n"
+        "• 📉 Bật cảnh báo phái sinh (biến động ±5 điểm).\n"
+        "• 📊 AI phân tích sức khỏe toàn bộ danh mục.\n"
+        "• 📄 Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n\n"
 
-        "3️⃣ **Công cụ Pro**\n"
-        "• 💎 `/screener_value`: Lọc cổ phiếu giá trị (Realtime).\n"
-        "• 📉 `/vn30f1m_on`: Bật cảnh báo phái sinh (biến động ±5 điểm).\n\n"
-
-        "4️⃣ **Hệ thống**\n"
-        "• `/setting`: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
-        "• `/start`: Mở lại Bảng điều khiển chính (Dashboard)."
+        "3️⃣ **Hệ thống**\n"
+        "• [⚙️ Danh mục]: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
+        "• [🏠 Dashboard]`: Mở lại Bảng điều khiển chính (Dashboard)."
     )
 
     # Tạo bàn phím điều hướng
@@ -5297,6 +5321,79 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Nếu gọi từ lệnh /setting -> Gửi tin nhắn mới
         await reply_md(update, msg_text, reply_markup=reply_markup)
 
+async def cmd_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Kích hoạt dùng thử 10 ngày (ĐÃ SỬA LỖI GỬI TIN ADMIN).
+    """
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id
+    await track_user_activity(update) 
+    
+    try: await asyncio.to_thread(log_command_usage, chat_id, "/trial", ADMIN_ID)
+    except: pass
+
+    # 1. Kiểm tra điều kiện
+    status = await asyncio.to_thread(check_trial_eligibility, chat_id)
+
+    if status == 'IS_PRO':
+        await reply_md(update, "😎 **Bạn đang là thành viên Pro rồi!**\nKhông cần kích hoạt dùng thử nữa.")
+        return
+
+    if status == 'USED':
+        kb = [[InlineKeyboardButton("💎 Nâng cấp ngay (Chỉ 3k/ngày)", callback_data="btn_upgrade")]]
+        await reply_md(
+            update, 
+            "😢 **Rất tiếc, bạn đã sử dụng hết lượt Dùng thử.**\n\nVui lòng nâng cấp gói Pro để tiếp tục.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    # 3. Kích hoạt
+    TRIAL_DAYS = 10
+    await reply_md(update, "⏳ Đang kích hoạt gói dùng thử...")
+    
+    try:
+        # Gọi hàm kích hoạt (chạy trực tiếp vì nó rất nhanh)
+        activate_trial_package(chat_id, TRIAL_DAYS)
+        
+        msg_success = (
+            f"🚀 **KÍCH HOẠT THÀNH CÔNG!**\n\n"
+            f"Bạn đã nhận được **{TRIAL_DAYS} ngày** trải nghiệm Full tính năng Pro:\n\n"
+            f"💎 **Các đặc quyền đã được mở khóa:**\n"
+            f"• 📊 **AI Report:** Phân tích sâu sức khỏe danh mục & khuyến nghị hành động.\n"
+            f"• 🔍 **Screener:** Lọc cổ phiếu Rẻ/Đắt theo định giá lịch sử.\n"
+            f"• 🏢 **Soi Hồ Sơ:** Phân tích mô hình kinh doanh, lợi thế cạnh tranh & rủi ro.\n"
+            f"• 📉 **Phái Sinh:** Nhận tín hiệu cảnh báo VN30F1M realtime.\n"
+            f"• 🔔 **Không Giới Hạn:** Theo dõi biến động giá cho toàn bộ danh mục (gói Free chỉ được 1 mã).\n\n"
+            f"👉 **Hãy bắt đầu trải nghiệm ngay với** /start"
+        )
+        await reply_md(update, msg_success)
+        
+        # --- SỬA LỖI TẠI ĐÂY ---
+        # Dùng context.bot.send_message thay vì send_msg_to
+        if ADMIN_ID and chat_id != ADMIN_ID:
+            user = update.effective_user
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID, 
+                    text=f"👤 User {user.full_name} (ID: {chat_id}) vừa kích hoạt /trial."
+                )
+            except Exception: pass # Bỏ qua nếu lỗi gửi admin
+            
+    except Exception as e:
+        log.error(f"Lỗi kích hoạt trial cho {chat_id}: {e}")
+        # Sửa cả chỗ báo lỗi này luôn
+        if ADMIN_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=f"⚠️ Lỗi hệ thống khi user {chat_id} trial: {e}"
+                )
+            except: pass
+        await reply_md(update, f"⚠️ Lỗi hệ thống. Vui lòng thử lại sau.")
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -7689,6 +7786,7 @@ async def main():
     tg_app.add_handler(CommandHandler("vn30f1m_on", cmd_vn30f1m_on))
     tg_app.add_handler(CommandHandler("vn30f1m_off", cmd_vn30f1m_off))
     tg_app.add_handler(CommandHandler("start", cmd_start))
+    tg_app.add_handler(CommandHandler("trial", cmd_trial))
 
     # Admin commands
     tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))
