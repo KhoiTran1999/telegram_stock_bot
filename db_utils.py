@@ -548,29 +548,33 @@ def get_user_logs(chat_id: int, limit: int = 10):
             return cur.fetchall()
 
 def get_user_configs(chat_id: int):
-    """Lấy cài đặt cá nhân (VN30, News...)"""
+    """Lấy cài đặt cá nhân (VN30, Stock Alert, News...)"""
     with get_conn() as conn:
         with conn.cursor(row_factory=rows.dict_row) as cur:
-            # 1. Lấy cấu hình VN30
+            # 1. Lấy cấu hình Bot Settings (VN30 & Stock)
             cur.execute("SELECT settings FROM bot_user_settings WHERE chat_id = %s", (chat_id,))
             s_row = cur.fetchone()
+            
             vn30_enabled = False
+            stock_enabled = True # Mặc định là BẬT
+            
             if s_row and s_row.get('settings'):
-                vn30_enabled = s_row['settings'].get('vn30f1m_enabled', False)
+                settings = s_row['settings']
+                vn30_enabled = settings.get('vn30f1m_enabled', False)
+                stock_enabled = settings.get('stock_alert_enabled', True)
 
             # 2. Lấy cấu hình Tin tức (News Pref)
-            # (Mặc định là True nếu chưa có record)
             cur.execute("SELECT enable_specialized, enable_macro FROM news_pref WHERE chat_id = %s", (chat_id,))
             n_row = cur.fetchone()
             
-            news_enabled = True # Mặc định
+            news_enabled = True
             if n_row:
-                # Nếu tắt cả 2 thì coi như tắt News
                 if not n_row['enable_specialized'] and not n_row['enable_macro']:
                     news_enabled = False
 
             return {
                 "vn30": vn30_enabled,
+                "stock": stock_enabled, # <--- Key mới thêm vào
                 "news": news_enabled
             }
 

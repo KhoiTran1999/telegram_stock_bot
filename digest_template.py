@@ -1606,19 +1606,28 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     </div>
                 </div>
 
-                <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-                    <div class="flex items-center gap-4">
-                        <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg"
+                <div class="grid grid-cols-2 gap-3 mt-4">
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
                              :class="selectedUser?.config?.vn30 ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'">
                             <i class="fa-solid fa-chart-line"></i>
                         </div>
-                        <div>
-                            <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Cảnh báo VN30F1M</div>
-                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vn30 ? 'ĐANG BẬT' : 'ĐANG TẮT'"></div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">VN30F1m</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vn30 ? 'BẬT' : 'TẮT'"></div>
                         </div>
                     </div>
-                    <div class="h-3 w-3 rounded-full" 
-                         :class="selectedUser?.config?.vn30 ? 'bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]' : 'bg-slate-300'"></div>
+
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.stock ? 'bg-purple-100 text-purple-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-bell"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">Cổ Phiếu</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.stock ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
