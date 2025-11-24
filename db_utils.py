@@ -1145,6 +1145,7 @@ def clear_bctc_queue_entry(symbol: str, year: int, quarter: int, notify_date):
 
 # Các bảng "cốt lõi" cần backup/restore khi đổi DB
 CORE_TABLES = [
+    "users",
     "bot_watch",       # watchlist mỗi user
     "news_pref",       # bật/tắt tin tức
     "bot_config",      # cấu hình chung (BOT_ACTIVE, v.v.)
@@ -1294,6 +1295,34 @@ def import_core_data(payload: dict, mode: str = "replace"):
                     (
                         row.get("symbol"), row["link"], row.get("title"), 
                         row.get("published_at"), row.get("created_at")
+                    ),
+                )
+
+            # 10) users (Thông tin user, ban status, admin notes)
+            for row in tables.get("users", []):
+                # Chỉ restore nếu có dữ liệu
+                if not row: continue
+                
+                cur.execute(
+                    """
+                    INSERT INTO users (chat_id, username, full_name, joined_at, last_active_at, admin_note, is_banned)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (chat_id) DO UPDATE
+                    SET
+                        username = COALESCE(EXCLUDED.username, users.username),
+                        full_name = COALESCE(EXCLUDED.full_name, users.full_name),
+                        admin_note = COALESCE(EXCLUDED.admin_note, users.admin_note),
+                        is_banned = EXCLUDED.is_banned,
+                        last_active_at = GREATEST(users.last_active_at, EXCLUDED.last_active_at)
+                    """,
+                    (
+                        row.get("chat_id"), 
+                        row.get("username"), 
+                        row.get("full_name"),
+                        row.get("joined_at"), 
+                        row.get("last_active_at"),
+                        row.get("admin_note"), 
+                        row.get("is_banned", False)
                     ),
                 )
 

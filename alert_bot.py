@@ -5653,7 +5653,7 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = {}
         # Danh sách tất cả các bảng quan trọng
         tables = [
-            "bot_watch", "news_pref", "bot_config", "bctc_notified", # Core cũ
+            "users","bot_watch", "news_pref", "bot_config", "bctc_notified", # Core cũ
             "paid_users", "bot_orders", "bot_user_settings", "analysis_report_seen" # Core mới (Tiền nong)
         ]
         with get_conn() as conn:
@@ -5715,6 +5715,7 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Danh sách hiển thị đẹp
     display_map = {
+        "users": "👤 User Info",
         "paid_users": "💰 User Pro",
         "bot_orders": "🧾 Đơn hàng",
         "bot_watch": "📋 Watchlist",
