@@ -1531,7 +1531,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                             </div>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <h3 class="font-bold text-slate-800 text-sm truncate" x-text="user.name"></h3>
+                            <h3 class="font-bold text-sm truncate flex items-center gap-2">
+                                <span x-text="user.name" :class="user.is_banned ? 'line-through text-red-500' : 'text-slate-800'"></span>
+                                <span x-show="user.is_banned" class="text-[10px] bg-red-100 text-red-600 px-1.5 rounded">BANNED</span>
+                            </h3>
                             <div class="flex items-center gap-2 mt-0.5">
                                 <div class="text-xs text-slate-400 font-mono" x-text="user.id"></div>
                                 <button @click.stop="copyId(user.id)" class="text-slate-300 hover:text-blue-500 transition active:scale-90 p-1">
@@ -1603,6 +1606,16 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         <button class="py-3 bg-white border border-slate-200 text-slate-700 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-slate-50" @click="extendUser(7)">+7 Ngày</button>
                         <button class="py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100" @click="extendUser(-7)">-7 Ngày</button>
                         <button class="py-3 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-red-100" @click="deactivateUser()"><i class="fa-solid fa-ban mr-1"></i> Hủy Gói</button>
+                        <button x-show="!selectedUser?.is_banned" @click="toggleBan(true)"
+                            class="w-full py-3 bg-red-50 text-red-600 border border-red-200 rounded-xl text-sm font-bold active:scale-95 transition flex items-center justify-center gap-2 hover:bg-red-100">
+                        <i class="fa-solid fa-ban"></i> CHẶN USER
+                    </button>
+                    
+                    <button x-show="selectedUser?.is_banned" @click="toggleBan(false)"
+                            class="w-full py-3 bg-green-50 text-green-600 border border-green-200 rounded-xl text-sm font-bold active:scale-95 transition flex items-center justify-center gap-2 hover:bg-green-100 animate-pulse">
+                        <i class="fa-solid fa-lock-open"></i> BỎ CHẶN
+                    </button>
+                    <div x-show="selectedUser?.is_banned" class="text-center text-[10px] text-red-500 mt-1 font-bold">⛔ User này đang bị chặn hoàn toàn khỏi hệ thống</div>
                     </div>
                 </div>
 
@@ -1792,6 +1805,34 @@ ADMIN_MOBILE_TEMPLATE = r"""
 
                         if (result.ok) this.showToast('📩 Đã gửi tin nhắn!');
                         else alert('❌ Lỗi: ' + result.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                async toggleBan(shouldBan) {
+                    const action = shouldBan ? 'ban' : 'unban';
+                    const text = shouldBan ? 'CHẶN' : 'BỎ CHẶN';
+                    
+                    if (!confirm(`⚠️ Xác nhận ${text} user ${this.selectedUser.name}?\n(Hành động này có hiệu lực ngay lập tức)`)) return;
+                    
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch('/api/admin/user/ban', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                admin_id: this.adminId, 
+                                target_id: this.selectedUser.id, 
+                                action: action 
+                            })
+                        });
+                        const result = await res.json();
+                        if (result.ok) {
+                            this.selectedUser.is_banned = shouldBan; // Cập nhật UI ngay
+                            this.showToast(`✅ Đã ${text} thành công!`);
+                        } else {
+                            alert('❌ Lỗi: ' + result.message);
+                        }
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
                     finally { this.isLoading = false; }
                 },

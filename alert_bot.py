@@ -105,6 +105,8 @@ from db_utils import (
     set_stock_alert_enabled,
     get_total_revenue_real,
     update_user_admin_note,
+    get_banned_users,
+    set_user_ban_status,
 )
 import psutil
 import time
@@ -174,7 +176,7 @@ def is_user_spamming(user_id: int) -> bool:
     _user_last_action_time[user_id] = now
     return False
 
-# --- DECORATOR 1: CHỐNG SPAM CLICK (NÂNG CẤP) ---
+# --- DECORATOR 1: CHỐNG SPAM & BLACKLIST (NÂNG CẤP) ---
 def anti_spam_check(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -183,21 +185,23 @@ def anti_spam_check(func):
             
         user_id = update.effective_user.id
         
-        # Gọi hàm check spam helper
+        # 1. CHECK BLACKLIST (Ưu tiên cao nhất - Im lặng tuyệt đối)
+        if user_id in BANNED_CACHE:
+            # Nếu muốn log debug thì mở dòng dưới, còn không thì im lặng luôn cho nhẹ
+            # log.info(f"⛔ Ignored request from BANNED user: {user_id}")
+            return 
+
+        # 2. Check Spam Click (Logic cũ)
         if is_user_spamming(user_id):
-            # 🔥 FIX QUAN TRỌNG:
-            # Nếu là nút bấm (CallbackQuery), BẮT BUỘC phải answer() để tắt loading
-            # show_alert=False để nó chỉ hiện cái toast nhỏ hoặc không hiện gì,
-            # giúp user biết là "đã bấm ăn rồi, đừng bấm nữa".
             if update.callback_query:
                 try: 
                     await update.callback_query.answer("⏳ Đang xử lý, bình tĩnh...", show_alert=False)
-                except: 
-                    pass
-            return # Chặn, không chạy hàm gốc
+                except: pass
+            return 
             
         return await func(update, context, *args, **kwargs)
     return wrapper
+
 
 # --- DECORATOR 2: KHÓA TÁC VỤ NẶNG (Cho /report, /info...) ---
 def task_locked(func):
@@ -238,6 +242,9 @@ PORT = int(os.getenv("PASSENGER_PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+
+# 🔥 CACHE DANH SÁCH ĐEN (Lưu trong RAM để check siêu nhanh)
+BANNED_CACHE = set()
 
 # --- State trong RAM (Global)
 _vn30f1m_anchor: float | None = None
@@ -7305,6 +7312,60 @@ async def api_admin_save_note():
         log.error(f"[ADMIN_API] Save Note Error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
+@flask_app.route("/api/admin/user/ban", methods=["POST"])
+async def api_admin_ban_user():
+    """API Chặn / Bỏ chặn user (Có gửi thông báo)"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = int(data.get("target_id"))
+        action = data.get("action") # 'ban' hoặc 'unban'
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        should_ban = (action == 'ban')
+        
+        # 1. Cập nhật DB (Async)
+        await asyncio.to_thread(set_user_ban_status, target_id, should_ban)
+        
+        # 2. Cập nhật RAM Cache ngay lập tức
+        if should_ban:
+            BANNED_CACHE.add(target_id)
+            log.info(f"[ADMIN] ⛔ Đã BAN user {target_id}")
+            
+            # Nội dung tin nhắn khi BAN
+            msg_text = (
+                "⛔ **THÔNG BÁO: TÀI KHOẢN BỊ KHÓA**\n\n"
+                "Tài khoản của bạn đã bị chặn truy cập Bot do vi phạm chính sách hoặc nghi vấn Spam.\n"
+                "Vui lòng liên hệ Admin @KhoiTran99 để được hỗ trợ."
+            )
+        else:
+            if target_id in BANNED_CACHE:
+                BANNED_CACHE.remove(target_id)
+            log.info(f"[ADMIN] ✅ Đã UNBAN user {target_id}")
+            
+            # Nội dung tin nhắn khi UNBAN
+            msg_text = (
+                "✅ **THÔNG BÁO: TÀI KHOẢN ĐƯỢC MỞ KHÓA**\n\n"
+                "Quyền truy cập Bot của bạn đã được khôi phục.\n"
+                "Chúc bạn đầu tư hiệu quả! 🚀"
+            )
+
+        # 3. Gửi thông báo tới User
+        # Sử dụng run_coroutine_threadsafe để đảm bảo an toàn luồng giữa Flask và Telegram Bot
+        if tg_app and MAIN_LOOP:
+            asyncio.run_coroutine_threadsafe(
+                send_md(tg_app.bot, target_id, msg_text),
+                MAIN_LOOP
+            )
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Ban Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
 # Đây là phần code đã sửa lỗi hoàn toàn
@@ -7462,15 +7523,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
         commands = [
             # --- CÁC LỆNH CỐT LÕI ---
             ("start", "🏠 Mở Dashboard chính"),
-            ("list", "📋 Xem danh mục theo dõi"),
-            ("add", "➕ Thêm mã (VD: /add HPG)"),
-            ("report", "📊 Phân tích danh mục AI"),
-            
-            # --- CÔNG CỤ ---
-            ("screener_value", "💎 Bộ lọc cổ phiếu giá trị"),
-            ("info", "📄 Tra cứu doanh nghiệp"),
-            ("setting", "⚙️ Cài đặt & Gói Pro"),
-            ("help", "❓ Hướng dẫn sử dụng"),
+            ("admin", "(admin) Mở Dashboard Admin"),
             ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
             ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
             ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
@@ -7489,7 +7542,6 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
             ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
             ("test_digest", "(admin) Gửi bản tin test Web App ngay lập tức"),
-            ("admin", "(admin) Mở Dashboard Admin"),
         ]
         
 
@@ -7672,6 +7724,14 @@ async def main():
     config.bind = [f"0.0.0.0:{PORT}"]
 
     log.info(f"[{INSTANCE_ID}] Cấu hình hoàn tất. Khởi động máy chủ và các tác vụ nền...")
+
+    # 🔥 LOAD BLACKLIST VÀO RAM
+    global BANNED_CACHE
+    try:
+        BANNED_CACHE = await asyncio.to_thread(get_banned_users)
+        log.info(f"[{INSTANCE_ID}] ⛔ Đã load {len(BANNED_CACHE)} users vào danh sách chặn (Blacklist).")
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] ❌ Lỗi load Blacklist: {e}")
 
     # Chạy tất cả các tác vụ song song
     await asyncio.gather(

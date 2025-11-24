@@ -59,7 +59,8 @@ def init_db():
                     full_name TEXT,
                     joined_at TIMESTAMPTZ DEFAULT NOW(),
                     last_active_at TIMESTAMPTZ DEFAULT NOW(),
-                    admin_note TEXT
+                    admin_note TEXT,
+                    is_banned BOOLEAN DEFAULT FALSE
                 )
             """)
 
@@ -249,6 +250,7 @@ def get_admin_dashboard_data():
                     COALESCE(u.full_name, u.username, 'User ' || u.chat_id) as name,
                     u.username,
                     u.admin_note,
+                    COALESCE(u.is_banned, FALSE) as is_banned,
                     
                     -- Thông tin Pro
                     p.expiry_date,
@@ -1932,6 +1934,29 @@ def set_stock_alert_enabled(chat_id: int, enabled: bool):
                                || jsonb_build_object('stock_alert_enabled', EXCLUDED.settings->'stock_alert_enabled'),
                     updated_at = NOW()
             """, (chat_id, enabled))
+        conn.commit()
+
+#--------------------------------------------
+
+def get_banned_users() -> set[int]:
+    """Lấy toàn bộ danh sách chat_id bị chặn để load vào RAM."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM users WHERE is_banned = TRUE")
+            rows = cur.fetchall()
+    return {int(r[0]) for r in rows}
+
+def set_user_ban_status(chat_id: int, is_banned: bool):
+    """Cập nhật trạng thái chặn của user."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Upsert: Nếu user chưa có trong bảng users thì tạo mới luôn
+            cur.execute("""
+                INSERT INTO users (chat_id, is_banned, last_active_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (chat_id) DO UPDATE 
+                SET is_banned = EXCLUDED.is_banned
+            """, (chat_id, is_banned))
         conn.commit()
 
 

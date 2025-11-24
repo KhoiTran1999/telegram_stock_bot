@@ -32,5 +32,23 @@ def migrate_db():
     except Exception as e:
         print(f"❌ CÓ LỖI XẢY RA: {e}")
 
+def add_ban_column():
+    print("🚀 Đang kết nối Database để thêm cột Blacklist...")
+    if not DATABASE_URL:
+        print("❌ Lỗi: Thiếu DATABASE_URL.")
+        return
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # Thêm cột is_banned, mặc định là FALSE (chưa bị chặn)
+                sql = "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;"
+                cur.execute(sql)
+            conn.commit()
+            print("✅ THÀNH CÔNG! Đã thêm cột 'is_banned'.")
+    except Exception as e:
+        print(f"❌ Lỗi: {e}")
+
 if __name__ == "__main__":
     migrate_db()
+    add_ban_column()
