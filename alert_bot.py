@@ -2286,33 +2286,98 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         symbol = data.split("_")[2]
         context.args = [symbol]
         await cmd_info(update, context)
+
     elif data == "btn_upgrade": await cmd_upgrade(update, context)
+
     elif data.startswith("btn_add_"):
-        # Logic add nhanh
         symbol = data.split("_")[2]
+        
+        # Lấy danh sách hiện tại
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-        if symbol in lst: await query.answer("Đã có rồi!", show_alert=True)
-        else:
+        
+        # Check giới hạn Pro (nếu cần)
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id)
+        is_admin = (chat_id == ADMIN_ID)
+        
+        if not is_pro and not is_admin and len(lst) >= 1:
+             # Nếu chưa có mã này mà list đã đầy -> Chặn
+             if symbol not in lst:
+                await query.answer("⚠️ Free chỉ được 1 mã. Nâng Pro để thêm!", show_alert=True)
+                return 
+
+        # Thêm vào DB nếu chưa có
+        if symbol not in lst:
             lst.append(symbol)
             await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
             await query.answer(f"✅ Đã thêm {symbol}")
-            query.data = "menu_list"
-            await handle_quick_button(update, context)
+        else:
+            await query.answer("Đã có trong danh mục!", show_alert=True)
+
+        # --- 🔥 QUAN TRỌNG: VẼ LẠI MENU DANH MỤC NGAY TẠI ĐÂY ---
+        # (Copy logic hiển thị từ menu_list)
+        if not lst:
+            kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
+            await safe_edit_message(query, "📭 Danh mục trống.", InlineKeyboardMarkup(kb))
+        else:
+            keyboard = []
+            row = []
+            for sym in lst:
+                row.append(InlineKeyboardButton(f"{sym}", callback_data=f"mgr_{sym}"))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row: keyboard.append(row)
+            
+            keyboard.append([InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")])
+            keyboard.append([InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")])
+            
+            # Update giao diện thành danh sách mới
+            await safe_edit_message(query, "📋 **Quản lý danh mục**", InlineKeyboardMarkup(keyboard))
+
+
+    # =========================================================
+    # 2. XỬ LÝ NÚT XÓA (Sửa lại để tự quay về danh sách)
+    # =========================================================
+    elif data.startswith("btn_del_"):
+        symbol = data.split("_")[2]
+        
+        # Lấy danh sách
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        
+        # Xóa khỏi DB
+        if symbol in lst:
+            lst.remove(symbol)
+            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
+            await query.answer(f"🗑️ Đã xóa {symbol}")
+        else:
+            await query.answer("Mã không tồn tại!", show_alert=True)
+        
+        # --- 🔥 QUAN TRỌNG: VẼ LẠI MENU DANH MỤC ---
+        # (Logic y hệt bên trên, để sau khi xóa xong user thấy ngay list mới)
+        if not lst:
+            kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
+            await safe_edit_message(query, "📭 Danh mục trống.", InlineKeyboardMarkup(kb))
+        else:
+            keyboard = []
+            row = []
+            for sym in lst:
+                row.append(InlineKeyboardButton(f"{sym}", callback_data=f"mgr_{sym}"))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row: keyboard.append(row)
+            
+            keyboard.append([InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")])
+            keyboard.append([InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")])
+            
+            await safe_edit_message(query, "📋 **Quản lý danh mục**", InlineKeyboardMarkup(keyboard))
+
     elif data.startswith("mgr_"):
         # Menu quản lý mã
         symbol = data.split("_")[1]
         kb = [[InlineKeyboardButton("📄 Soi hồ sơ", callback_data=f"btn_info_{symbol}"), InlineKeyboardButton("🗑️ Xóa", callback_data=f"btn_del_{symbol}")], [InlineKeyboardButton("🔙 Quay lại", callback_data="back_to_list")]]
         await safe_edit_message(query, f"⚙️ **{symbol}**", InlineKeyboardMarkup(kb))
-    elif data.startswith("btn_del_"):
-        # Logic xóa
-        symbol = data.split("_")[2]
-        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
-        if symbol in lst:
-            lst.remove(symbol)
-            await asyncio.to_thread(save_watch_list_for_chat, chat_id, lst)
-            await query.answer(f"🗑️ Đã xóa {symbol}")
-        query.data = "menu_list"
-        await handle_quick_button(update, context)
+
 
 # =====================================================================
 # =============== VALUE SCREENER (VNSTOCK API VERSION) ================
