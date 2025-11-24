@@ -1667,6 +1667,19 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     </div>
                 </div>
 
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide">Ghi chú Admin</h3>
+                        <button @click="saveNote()" x-show="isNoteDirty" 
+                                class="text-[10px] bg-blue-600 text-white px-2 py-1 rounded font-bold animate-pulse">
+                            Lưu
+                        </button>
+                    </div>
+                    <textarea x-model="currentNote" @input="isNoteDirty = true"
+                              class="w-full bg-yellow-50 border border-yellow-100 rounded-xl p-3 text-sm text-slate-700 focus:ring-2 focus:ring-yellow-400 outline-none resize-none"
+                              rows="2" placeholder="Nhập ghi chú..."></textarea>
+                </div>
+
                 <div>
                     <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3 px-1">Giao dịch gần đây</h3>
                     <div class="space-y-2">
@@ -1729,6 +1742,8 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 filterStatus: 'all',
                 sheetOpen: false,
                 selectedUser: null,
+                currentNote: '',
+                isNoteDirty: false,
                 toast: { visible: false, message: '' },
                 users: {{ initial_data | safe }},
                 adminId: '{{ admin_id }}',
@@ -1844,10 +1859,38 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
                     finally { this.isLoading = false; }
                 },
-
+                async saveNote() {
+                    if (!this.selectedUser) return;
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch('/api/admin/user/note', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ 
+                                admin_id: this.adminId, 
+                                target_id: this.selectedUser.id, 
+                                note: this.currentNote 
+                            })
+                        });
+                        const result = await res.json();
+                        if (result.ok) {
+                            this.selectedUser.admin_note = this.currentNote;
+                            this.isNoteDirty = false;
+                            this.showToast('✅ Đã lưu ghi chú!');
+                        } else {
+                            alert('❌ Lỗi: ' + result.message);
+                        }
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
                 copyId(id) { navigator.clipboard.writeText(id); this.showToast('Đã sao chép ID: ' + id); },
                 showToast(msg) { this.toast.message = msg; this.toast.visible = true; setTimeout(() => this.toast.visible = false, 2500); },
-                openSheet(user) { this.selectedUser = user; this.sheetOpen = true; },
+                openSheet(user) { 
+                    this.selectedUser = user; 
+                    this.currentNote = user.admin_note || ''; 
+                    this.isNoteDirty = false;
+                    this.sheetOpen = true; 
+                },
                 getStatusLabel(user) { return !user.is_pro ? 'FREE' : (user.is_expired ? 'EXPIRED' : 'PRO'); },
                 getStatusClass(user) { return !user.is_pro ? 'bg-slate-100 text-slate-500' : (user.is_expired ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'); },
                 formatDate(isoStr) { if (!isoStr) return '—'; try { return new Date(isoStr).toLocaleDateString('vi-VN'); } catch { return isoStr; } },

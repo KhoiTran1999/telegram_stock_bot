@@ -58,7 +58,8 @@ def init_db():
                     username TEXT,
                     full_name TEXT,
                     joined_at TIMESTAMPTZ DEFAULT NOW(),
-                    last_active_at TIMESTAMPTZ DEFAULT NOW()
+                    last_active_at TIMESTAMPTZ DEFAULT NOW(),
+                    admin_note TEXT
                 )
             """)
 
@@ -247,6 +248,7 @@ def get_admin_dashboard_data():
                     u.chat_id as id,
                     COALESCE(u.full_name, u.username, 'User ' || u.chat_id) as name,
                     u.username,
+                    u.admin_note,
                     
                     -- Thông tin Pro
                     p.expiry_date,
@@ -265,6 +267,17 @@ def get_admin_dashboard_data():
                 ORDER BY u.last_active_at DESC
             """)
             return cur.fetchall()
+
+def update_user_admin_note(chat_id: int, note: str):
+    """Cập nhật ghi chú của admin cho user"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users
+                SET admin_note = %s
+                WHERE chat_id = %s
+            """, (note, chat_id))
+        conn.commit()
 
 # ==========================================
 # WATCHLIST

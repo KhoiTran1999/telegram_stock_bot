@@ -104,6 +104,7 @@ from db_utils import (
     get_stock_alert_enabled_map,
     set_stock_alert_enabled,
     get_total_revenue_real,
+    update_user_admin_note,
 )
 import psutil
 import time
@@ -7281,6 +7282,27 @@ def api_admin_request_contact():
 
     except Exception as e:
         log.error(f"[ADMIN_API] Request Contact Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/user/note", methods=["POST"])
+async def api_admin_save_note():
+    """API Lưu ghi chú admin"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        target_id = data.get("target_id")
+        note = data.get("note")
+
+        # Check quyền Admin
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        # Gọi hàm DB (chạy trong thread để không block bot)
+        await asyncio.to_thread(update_user_admin_note, int(target_id), note)
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Save Note Error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
 # ==============================================
