@@ -4843,7 +4843,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. Kiểm tra trạng thái Trial/Pro
     # Hàm check_trial_eligibility trả về: 'OK' (Được dùng), 'IS_PRO', 'USED'
     trial_status = await asyncio.to_thread(check_trial_eligibility, chat_id)
-    print("trial_status: ", trial_status)
+
     # Logic hiển thị: Chỉ hiện Trial nếu user ĐỦ ĐIỀU KIỆN ('OK')
     # Nếu là Admin thì cũng coi như không hiện (để giao diện gọn, hoặc tùy bạn)
     is_admin = (chat_id == ADMIN_ID)
@@ -5493,20 +5493,12 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.warning(f"Lỗi khi gửi /announce: {e}")
         await reply_md(update, f"⚠️ Lỗi khi gửi broadcast: {e}")
 
-# (Đảm bảo bạn đã import pytz và datetime ở đầu file)
-import pytz
-import datetime
-# ...
-from db_utils import (
-    # ...
-    get_all_paid_users_expiry
-)
-
 @task_locked
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     (PREMIUM) Bộ lọc Định giá (Mean Reversion).
-    Kết hợp dữ liệu Realtime + Lịch sử 5 năm.
+    - Free: Hiện nút mở WebApp khóa.
+    - Pro: Tính toán & Hiện nút mở WebApp kết quả.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
@@ -5514,23 +5506,52 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     chat_id = update.effective_chat.id
     
-    # 1. Kiểm tra Paywall
-    if not await check_pro_access(update, context): return
+    # 1. Xác định quyền hạn
+    is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
 
+    # ==================================================================
+    # 🔴 NHÁNH 1: FREE USER (Gửi nút WebApp Locked)
+    # ==================================================================
+    if not is_pro:
+        try: await asyncio.to_thread(log_command_usage, chat_id, "/screener_value (Free)", ADMIN_ID)
+        except: pass
+        
+        # Link trỏ về route khóa
+        web_app_url = f"{base_url}/screener/locked"
+        
+        kb = [
+            [InlineKeyboardButton("💎 Mở Bộ Lọc (Pro Only)", web_app=WebAppInfo(url=web_app_url))],
+            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+        ]
+        
+        await reply_md(
+            update,
+            "💎 **Bộ Lọc Cổ Phiếu Giá Trị (Mean Reversion)**\n\n"
+            "Hệ thống quét toàn thị trường tìm mã Rẻ/Đắt so với lịch sử 5 năm.\n"
+            "👇 Nhấn nút bên dưới để xem demo tính năng.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    # ==================================================================
+    # 🟢 NHÁNH 2: PRO USER (Tính toán & Gửi kết quả)
+    # ==================================================================
     try: await asyncio.to_thread(log_command_usage, chat_id, "/screener_value", ADMIN_ID)
     except: pass
 
-    # 2. Lấy dữ liệu Lịch sử
+    # 2. Kiểm tra dữ liệu lịch sử
     hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
     if not hist_data:
         await reply_md(update, "⏳ Hệ thống đang khởi tạo dữ liệu định giá lịch sử. Vui lòng thử lại sau 2-3 phút.")
         asyncio.create_task(calculate_historical_valuation_task())
         return
 
+    # 3. Gửi tiến trình Loading
     progress_msg = await reply_md(update, f"💎 **Đang phân tích định giá thị trường...**\n`[{make_progress_bar(20)}] 20%`")
 
     try:
-        # 3. Lấy dữ liệu Hiện tại
+        # 4. Lấy dữ liệu Hiện tại (Screener)
         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
         await context.bot.edit_message_text(
@@ -5538,9 +5559,8 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text=f"📊 **Đang so sánh với dữ liệu quá khứ...**\n`[{make_progress_bar(60)}] 60%`", parse_mode="Markdown"
         )
 
-        # 4. Xử lý & Ghép dữ liệu
+        # 5. Xử lý logic so sánh
         processed_items = []
-        
         for index, row in screener_df.iterrows():
             sym = row['ticker']
             if sym not in hist_data: continue
@@ -5553,15 +5573,16 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pe_avg = hist_data[sym]['pe_avg']
             pb_avg = hist_data[sym]['pb_avg']
             
-            # 🔥 [FIX]: Loại bỏ cổ phiếu lỗ hoặc không có chỉ số hợp lệ
+            # Bỏ qua mã lỗ hoặc dữ liệu sai
             if pe_cur <= 0 or pb_cur <= 0: continue
             if pe_avg <= 0 or pb_avg <= 0: continue
 
-            # Tính toán
+            # Tính toán độ lệch
             pe_discount = (pe_cur - pe_avg) / pe_avg
             pb_discount = (pb_cur - pb_avg) / pb_avg
             avg_discount = (pe_discount + pb_discount) / 2
             
+            # Helper format hiển thị
             def get_ui_meta(discount):
                 pct_val = abs(discount) * 100
                 if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
@@ -5587,9 +5608,9 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 'avg_discount': avg_discount
             })
 
-        # 5. Sắp xếp & Lưu Cache
+        # 6. Sắp xếp & Lưu Cache Redis
         processed_items.sort(key=lambda x: x['avg_discount'])
-        top_items = processed_items[:50]
+        top_items = processed_items[:50] # Lấy Top 50 mã rẻ nhất
 
         digest_id = uuid.uuid4().hex
         vn_tz = pytz.timezone(TIMEZONE)
@@ -5601,8 +5622,8 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         r = get_redis()
         r.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600)
 
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        web_url = f"{base_url}/screener_result/{digest_id}"
+        # Link trỏ về route kết quả (thêm chat_id để bảo mật route này nếu cần)
+        web_url = f"{base_url}/screener_result/{digest_id}?chat_id={chat_id}"
         
         await context.bot.delete_message(chat_id, progress_msg.message_id)
         
@@ -6951,7 +6972,14 @@ async def view_profile(symbol: str): # <--- Đổi thành async
             LOCKED_FEATURE_TEMPLATE,
             icon="🏢",
             title=f"Hồ Sơ Doanh Nghiệp {symbol}",
-            desc="Phân tích chuyên sâu về Mô hình kinh doanh, Lợi thế cạnh tranh (Moat) và Vị thế trong ngành."
+            desc=(
+            "Hệ thống AI sẽ tổng hợp và phân tích toàn diện hồ sơ doanh nghiệp "
+            "giúp bạn thấu hiểu cổ phiếu chỉ trong 30 giây.\n\n"
+            "✅ Phân tích Mô hình kinh doanh & Chuỗi giá trị.\n"
+            "✅ Đánh giá Lợi thế cạnh tranh (Moat) & Vị thế ngành.\n"
+            "✅ Nhận diện Rủi ro tiềm ẩn & Ban lãnh đạo.\n\n"
+            "Báo cáo chuyên sâu này chỉ dành cho thành viên Pro."
+        )
         ), 403
 
     sym = symbol.upper().strip()
@@ -7041,7 +7069,14 @@ async def view_report(cache_key):
         except: pass
     
     if not is_pro:
-        return render_template_string(LOCKED_FEATURE_TEMPLATE, icon="📊", title="AI Phân Tích Danh Mục", desc="..."), 403
+        return render_template_string(LOCKED_FEATURE_TEMPLATE, icon="📊", title="AI Phân Tích Danh Mục", desc=(
+            "Trợ lý AI (Gemini) sẽ phân tích chuyên sâu sức khỏe danh mục "
+            "đầu tư của bạn dựa trên dữ liệu Real-time.\n\n"
+            "✅ Chấm điểm sức khỏe danh mục (Portfolio Score).\n"
+            "✅ Khuyến nghị hành động cụ thể: Mua / Bán / Giữ.\n"
+            "✅ Phân tích động lực tăng giá & Rủi ro tiềm ẩn.\n\n"
+            "Báo cáo tư vấn chi tiết này chỉ dành cho thành viên Pro."
+        )), 403
 
     # 2. Lấy Cache (FIX ASYNC REDIS)
     try:
@@ -7147,20 +7182,60 @@ async def view_chart(symbol: str):
         volume_str=data['volume_str']
     )
 
+@flask_app.route("/screener/locked")
+def view_screener_locked():
+    """
+    Route hiển thị giao diện khóa cho Screener (Dành cho Free User).
+    Sử dụng LOCKED_FEATURE_TEMPLATE.
+    """
+    return render_template_string(
+        LOCKED_FEATURE_TEMPLATE,
+        icon="💎",
+        title="Bộ Lọc Giá Trị (Mean Reversion)",
+        desc=(
+            "Hệ thống tự động quét toàn thị trường để tìm kiếm các cổ phiếu "  # <--- Đã sửa: Thêm dấu cách, bỏ dấu chấm
+            "đang bị định giá thấp hơn lịch sử 5 năm (P/E, P/B).\n\n"
+            "✅ Tự động loại bỏ cổ phiếu rác.\n"                              # Rút gọn cho đỡ bị ngắt dòng xấu
+            "✅ Xếp hạng cơ hội đầu tư thực chiến.\n"
+            "✅ Dữ liệu Realtime trong phiên.\n\n"
+            "Kết quả lọc chuyên sâu này chỉ dành cho thành viên Pro."
+        )
+    )
+
 @flask_app.route("/screener_result/<id>")
-def view_screener_result(id):
-    """Route hiển thị kết quả Screener Value (Mean Reversion)"""
+async def view_screener_result(id): # <--- Chuyển thành ASYNC để gọi DB
+    """
+    Route hiển thị kết quả Screener Value.
+    """
+    # 1. Kiểm tra quyền hạn (Paywall Check)
+    chat_id_str = request.args.get("chat_id")
+    is_pro = False
+    if chat_id_str:
+        try:
+            cid = int(chat_id_str)
+            # Gọi hàm check DB trong thread riêng
+            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
+        except: pass
+    
+    # Nếu không phải Pro -> Hiển thị giao diện Khóa
+    if not is_pro:
+        return render_template_string(
+            LOCKED_FEATURE_TEMPLATE,
+            icon="💎",
+            title="Bộ Lọc Giá Trị (Mean Reversion)",
+            desc="Kết quả lọc cổ phiếu định giá rẻ chuyên sâu này chỉ dành cho thành viên Pro."
+        ), 403
+
+    # 2. Lấy dữ liệu từ Redis (Logic cũ)
     try:
         r = get_redis()
         raw = r.get(f"digest_web:screener_val:{id}")
         
         if not raw:
-            # Nếu không tìm thấy data, báo lỗi đơn giản
             return "<h3>Dữ liệu đã hết hạn hoặc không tồn tại. Vui lòng tạo lại lệnh /screener_value</h3>", 404
             
         data = json.loads(raw)
         
-        # Render HTML mới
         return render_template_string(
             SCREENER_HTML_TEMPLATE, 
             items=data['items'], 
@@ -7169,7 +7244,7 @@ def view_screener_result(id):
     except Exception as e:
         log.error(f"Lỗi render screener_result: {e}")
         return f"Lỗi server: {e}", 500
-
+    
 # ==============================================
 # 👑 ADMIN DASHBOARD ROUTES
 # ==============================================

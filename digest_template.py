@@ -1098,8 +1098,22 @@ LOCKED_FEATURE_TEMPLATE = r"""
         }
 
         .title { font-size: 24px; font-weight: 800; margin: 0 0 12px 0; line-height: 1.3; }
-        .desc { font-size: 15px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 40px; max-width: 320px; }
-
+        .desc { 
+            font-size: 15px; 
+            color: var(--text-secondary); 
+            line-height: 1.6; 
+            margin-bottom: 32px; 
+            max-width: 320px;
+            
+            /* 🔥 CÁC THAY ĐỔI QUAN TRỌNG: */
+            white-space: pre-line;       /* Để hiểu ký tự xuống dòng \n */
+            text-align: left;            /* Căn trái để các dấu tích ✅ thẳng hàng */
+            margin-left: auto;           /* Tự động căn giữa khối div */
+            margin-right: auto;          /* Tự động căn giữa khối div */
+            background: rgba(0,0,0,0.03);/* (Tuỳ chọn) Thêm nền nhẹ cho nổi bật */
+            padding: 16px;               /* (Tuỳ chọn) Đệm lề nếu thêm nền */
+            border-radius: 12px;         /* (Tuỳ chọn) Bo góc */
+        }
         .btn { 
             background: var(--btn-gradient); color: white; border: none; 
             padding: 16px 32px; border-radius: 16px; 
