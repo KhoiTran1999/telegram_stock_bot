@@ -1511,7 +1511,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
             <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
                 <div class="text-xs text-slate-400 mb-1 font-bold">Doanh thu</div>
                 <div class="text-lg font-extrabold text-slate-800">{{ total_revenue }}</div>
-                <div class="text-[10px] text-green-500 mt-1 font-bold">↑ Tạm tính</div>
+                <div class="text-[10px] text-green-500 mt-1 font-bold">↑ từ bảng bot_orders</div>
             </div>
             <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
                 <div class="text-xs text-slate-400 mb-1 font-bold">Sắp hết hạn</div>

@@ -1769,6 +1769,18 @@ def get_user_orders(chat_id: int):
             """, (chat_id,))
             return cur.fetchall()
 
+def get_total_revenue_real():
+    """Tính tổng tiền từ các đơn hàng đã PAID"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT SUM(amount) 
+                FROM bot_orders 
+                WHERE status = 'PAID'
+            """)
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] else 0
+
 #-------------------------------------------------
 def get_messages_to_cleanup(target_types: list[str], older_than_minutes: int = 0):
     """

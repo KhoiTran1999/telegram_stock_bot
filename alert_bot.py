@@ -102,7 +102,8 @@ from db_utils import (
     get_vn30f1m_enabled_map,
     set_vn30f1m_enabled,
     get_stock_alert_enabled_map,
-    set_stock_alert_enabled
+    set_stock_alert_enabled,
+    get_total_revenue_real,
 )
 import psutil
 import time
@@ -7052,10 +7053,11 @@ def admin_dashboard():
                 except: row['watchlist'] = []
         # -------------------------------------------------------
 
-        # --- TÍNH DOANH THU GIẢ LẬP ---
-        pro_count = sum(1 for u in raw_data if u.get('is_pro'))
-        est_revenue = pro_count * 99000
-        revenue_str = "{:,.0f}".format(est_revenue).replace(",", ".")
+        # --- TÍNH DOANH ---
+        # Gọi hàm tính tổng từ bảng orders
+        real_revenue = get_total_revenue_real() # <-- Hàm mới viết ở db_utils
+        # Format thành dạng: 4.500.000
+        revenue_str = "{:,.0f}".format(real_revenue).replace(",", ".")
         
         # 3. Hàm xử lý dữ liệu an toàn (Date, Decimal...)
         def safe_serializer(obj):
