@@ -2229,7 +2229,44 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     # (Copy logic cũ của bạn vào đây để không bị mất các tính năng đó)
     elif data == "menu_report": await cmd_report(update, context)
     elif data == "menu_screener": await cmd_screener_value(update, context)
-    elif data == "menu_info": await cmd_info(update, context) # Mở menu info chung
+    # [MỚI] XỬ LÝ NÚT SOI HỒ SƠ TỪ DASHBOARD
+    elif data == "menu_info":
+        chat_id = update.effective_chat.id
+        
+        # 1. Lấy danh sách watchlist
+        lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+        
+        keyboard = []
+        
+        # 2. Tạo nút cho từng mã
+        if lst:
+            row = []
+            for sym in lst:
+                row.append(InlineKeyboardButton(sym, callback_data=f"btn_info_{sym}"))
+                if len(row) == 3: 
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+        
+        # 3. Nút điều hướng: Quay lại Dashboard (Thay vì Đóng)
+        keyboard.append([InlineKeyboardButton("🔙 Quay lại Dashboard", callback_data="back_to_start")])
+        
+        msg_text = "📄 **Tra cứu Hồ sơ Doanh nghiệp**\n\n"
+        if lst:
+            msg_text += "👇 **Chọn mã trong danh mục để soi:**\n"
+        else:
+            msg_text += "📭 Danh mục trống. Hãy thêm mã trước.\n"
+            
+        msg_text += "\n👉 Hoặc gõ trực tiếp mã (VD: `MWG`) vào ô chat."
+
+        # 4. Cập nhật tại chỗ (In-place)
+        await query.edit_message_text(
+            text=msg_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
     elif data.startswith("btn_info_"):
         symbol = data.split("_")[2]
         context.args = [symbol]
