@@ -4855,7 +4855,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 📄 Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n\n"
 
         "3️⃣ **Hệ thống**\n"
-        "• [⚙️ Danh mục]: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
+        "• [⚙️ Tài khoản]: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
         "• [🏠 Dashboard]`: Mở lại Bảng điều khiển chính (Dashboard)."
     )
 
