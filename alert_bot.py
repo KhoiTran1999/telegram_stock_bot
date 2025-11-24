@@ -3433,48 +3433,6 @@ def vn30f1m_day_healthcheck():
     except Exception as e:
         log.warning(f"[VN30F1M] LIVE_PROBE error: {e}")
 
-async def _vn30f1m_get_current_price() -> float | None:
-    """
-    (V8 - Fix) Lấy giá realtime dùng price_board (nhẹ & ổn định hơn history).
-    Tránh lỗi ConnectionError/RetryError từ endpoint history.
-    """
-    # Sử dụng biến global stock_trading (đã được cơ chế Re-init quản lý bên fetcher loop)
-    global stock_trading
-    
-    try:
-        if stock_trading is None:
-            return None
-
-        # Gọi API lấy bảng giá (Snapshot realtime) - Nhanh và ít bị chặn
-        df = await asyncio.to_thread(stock_trading.price_board, [VN30F1M_SYMBOL])
-        
-        if df is None or df.empty:
-            return None
-
-        # Lấy giá khớp lệnh (Match Price) từ DataFrame
-        # Cấu trúc price_board trả về thường là MultiIndex: ('match', 'match_price')
-        try:
-            row = df.iloc[0]
-            # Ưu tiên lấy giá khớp lệnh
-            val = row.get(('match', 'match_price'))
-            
-            # Nếu không có giá khớp (ví dụ đầu phiên chưa khớp), thử lấy giá tham chiếu
-            if val is None or val == 0:
-                 val = row.get(('listing', 'ref_price'))
-
-            if val is not None:
-                return float(val)
-                
-        except Exception:
-            pass
-            
-        return None
-
-    except Exception as e:
-        # Log warning nhẹ để debug nếu cần
-        log.warning(f"[VN30F1M] Lỗi lấy giá Live (price_board): {e}")
-        return None
-
 async def _vn30f1m_process_tick(price: float):
     global _vn30f1m_anchor, _vn30f1m_ref_price
 
@@ -4144,7 +4102,7 @@ async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
 async def daily_user_digest_loop():
     """
     Gửi bản tin tổng hợp (Digest) 7:00 sáng.
-    Đã tích hợp: Value Screener, BCTC, Báo cáo, Tin tức AI (JSON).
+    (ĐÃ TỐI ƯU: Không tính toán nặng nữa, chỉ lấy từ Redis do Nightly Loop đã làm)
     """
     vn_tz = pytz.timezone(TIMEZONE)
     loop_id = 0
@@ -4166,19 +4124,12 @@ async def daily_user_digest_loop():
 
         if not BOT_ACTIVE: continue
         
-        log.info(f"{loop_label} 07:00! Bắt đầu build digest...")
+        log.info(f"{loop_label} 07:00! Bắt đầu quy trình Digest...")
 
-        # 🔥 [FIX]: Đợi tính toán xong (tối đa 5 phút) để đảm bảo có dữ liệu
-        # Nếu Redis đã có dữ liệu hôm nay thì hàm này sẽ chạy rất nhanh (logic kiểm tra bên trong)
-        # Nhưng ở đây ta gọi hàm calculate trực tiếp để force update đầu ngày
-        log.info(f"{loop_label} Đang tính toán định giá Mean Reversion (chờ tối đa 180s)...")
-        try:
-            await asyncio.wait_for(calculate_historical_valuation_task(), timeout=180.0)
-        except asyncio.TimeoutError:
-            log.warning(f"{loop_label} Tính toán định giá quá lâu, bỏ qua để gửi Digest kịp giờ.")
-        except Exception as e:
-            log.error(f"{loop_label} Lỗi tính toán định giá: {e}")
-
+        # 🔥 [THAY ĐỔI]: KHÔNG tính toán ở đây nữa.
+        # Nightly Loop (02:00) đã làm việc này và lưu vào Redis rồi.
+        # Hàm get_top_mean_reversion_stocks bên dưới sẽ tự đọc Redis.
+        
         log.info(f"{loop_label} Bắt đầu thu thập dữ liệu gửi đi...")
 
         # 2️⃣ Thu thập dữ liệu (Song song)
@@ -4201,37 +4152,50 @@ async def daily_user_digest_loop():
                 asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
                 asyncio.to_thread(get_all_watch),
                 asyncio.to_thread(get_all_pro_chat_ids),
-                get_top_mean_reversion_stocks(limit=5),
+                get_top_mean_reversion_stocks(limit=5), # <--- Hàm này sẽ lấy cache Redis đêm qua
             )
             
-            all_keywords = COMPANY_KEYWORDS
-
         except Exception as e:
             log.error(f"{loop_label} Lỗi nghiêm trọng khi gather data: {e}")
             await asyncio.sleep(600) 
             continue
 
+        # ... (PHẦN CÒN LẠI CỦA HÀM GIỮ NGUYÊN KHÔNG ĐỔI) ...
+        # ... (Logic AI News, Payload, Gửi tin...)
+        
         # ============================================================
-        # 🔥 XỬ LÝ TIN TỨC AI (PHẦN MỚI THÊM)
+        # 🔥 XỬ LÝ TIN TỨC AI
         # ============================================================
-        ai_news_data = None # Biến chứa JSON để lưu vào Web App
+        ai_news_data = None
+        ai_telegram_text = ""
 
-        # 1. Gom tin
         all_news_items = []
         for row in macro_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Vĩ mô"})
         for row in spec_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Doanh nghiệp"})
 
-        # 2. Gọi AI (Chỉ gọi nếu có tin)
         if all_news_items:
             log.info(f"{loop_label} 🤖 Đang gọi AI tóm tắt {len(all_news_items)} tin tức...")
-            # Gọi hàm JSON mà bạn đã copy trước đó
-            ai_news_data = await summarize_daily_news_with_ai(all_news_items)
+            try:
+                ai_news_data = await summarize_daily_news_with_ai(all_news_items)
+                if ai_news_data:
+                    lines = []
+                    if ai_news_data.get('headline'):
+                        lines.append("⚡ *TIÊU ĐIỂM*")
+                        for item in ai_news_data['headline']:
+                            lines.append(f"• {item['text']}")
+                    if ai_news_data.get('comment'):
+                        lines.append(f"\n🧠 *AI:* {ai_news_data['comment']}")
+                    ai_telegram_text = "\n".join(lines)
+            except Exception as e:
+                log.error(f"{loop_label} Lỗi AI Summary: {e}")
+
+        if not ai_telegram_text:
+            ai_telegram_text = "_Hôm nay thị trường khá yên ắng, chưa có tin nổi bật._"
 
         # ============================================================
-        # XỬ LÝ DỮ LIỆU KHÁC (GIỮ NGUYÊN LOGIC CŨ)
+        # XỬ LÝ DỮ LIỆU KHÁC
         # ============================================================
 
-        # BCTC & Report & Mapping (Logic cũ giữ nguyên để tiết kiệm dòng)
         bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
         reports_by_sym = {}
         for (s, t, l, p, c) in report_rows: reports_by_sym.setdefault(str(s).upper(), []).append((t, l, p))
@@ -4243,26 +4207,31 @@ async def daily_user_digest_loop():
             for sym in user_block.get("list", []) or []:
                 watch_to_chats.setdefault(str(sym).upper().strip(), []).append(chat_id)
 
-        # Hàm Helper tạo payload
         digest_payloads = {}
         def _get_payload(cid):
             if cid not in digest_payloads:
                 digest_payloads[cid] = {
                     "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
-                    "ai_news": ai_news_data, # <--- 🔥 QUAN TRỌNG: Gắn JSON tin tức vào đây
+                    "ai_news": ai_news_data, 
                     "value_stocks": [], "bctc": [], "reports": []
                 }
             return digest_payloads[cid]
 
-        # Fill dữ liệu vào payload (Value, BCTC, Report)
-        # (Phần này giống logic cũ, chỉ viết gọn lại)
-        # Fill dữ liệu vào payload
+        # 🔥 [FIX 2]: KHỞI TẠO PAYLOAD CHO TẤT CẢ USER CÓ WATCHLIST
+        # Để đảm bảo dù Screener timeout hay không có BCTC, họ vẫn nhận được Tin Tức AI
+        if all_watch:
+            for chat_key in all_watch.keys():
+                try:
+                    cid = int(chat_key)
+                    _get_payload(cid) # Gọi hàm này để init dict cho user
+                except: continue
+
+        # Fill dữ liệu chi tiết
         if top_value_stocks:
             for cid in all_watch.keys():
                 try: cid = int(cid)
                 except: continue
                 if cid in pro_chat_ids or cid == ADMIN_ID: 
-                    # Gán trực tiếp danh sách đã xử lý
                     _get_payload(cid)["value_stocks"] = top_value_stocks
 
         if bctc_rows:
@@ -4278,7 +4247,6 @@ async def daily_user_digest_loop():
             for sym, r_list in reports_by_sym.items():
                 for cid in watch_to_chats.get(sym, []):
                     pl = _get_payload(cid)
-                    # Lấy report mới nhất
                     last = r_list[0]; t_str = last[2].astimezone(vn_tz).strftime("%H:%M %d/%m") if last[2] else ""
                     if pl["is_pro"]:
                         for (title, link, pub) in r_list:
@@ -4288,32 +4256,74 @@ async def daily_user_digest_loop():
                         if not any(x['symbol'] == sym for x in pl["reports"]):
                             pl["reports"].append({"symbol": sym, "title": "Báo cáo phân tích (Pro)", "link": "#", "time": t_str, "is_locked": True})
 
-        # 4️⃣ GỬI TIN NHẮN (LOOP CUỐI CÙNG)
+        # 4️⃣ GỬI TIN NHẮN
         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
         tasks = []
         sent_count = 0
 
         for chat_id, data in digest_payloads.items():
-            # Tạo Link Web App
-            digest_id = uuid.uuid4().hex
-            await asyncio.to_thread(save_digest_to_redis, digest_id, data)
-            web_app_url = f"{base_url}/digest/{digest_id}"
-            
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Chi Tiết (Web App) 🚀", web_app=WebAppInfo(url=web_app_url))]])
-            
-            # Nội dung tin nhắn: Tiêu đề + AI Text
-            msg_text = (
-                f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
-                f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
-            )
-            
-            tasks.append(send_digest_with_pin(tg_app.bot, chat_id, msg_text, kb))
-            sent_count += 1
+            try:
+                digest_id = uuid.uuid4().hex
+                await asyncio.to_thread(save_digest_to_redis, digest_id, data)
+                web_app_url = f"{base_url}/digest/{digest_id}"
+                
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Chi Tiết (Web App) 🚀", web_app=WebAppInfo(url=web_app_url))]])
+                
+                msg_text = (
+                    f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
+                    f"{ai_telegram_text}\n\n"
+                    f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
+                )
+                
+                tasks.append(send_digest_with_pin(tg_app.bot, chat_id, msg_text, kb))
+                sent_count += 1
+            except Exception as e:
+                log.warning(f"{loop_label} Lỗi tạo task gửi cho {chat_id}: {e}")
         
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
             
         log.info(f"{loop_label} Hoàn tất gửi Digest cho {sent_count} user.")
+
+async def nightly_valuation_loop():
+    """
+    Chạy tính toán định giá Mean Reversion vào 02:00 sáng mỗi ngày.
+    Lưu kết quả vào Redis để 07:00 sáng Digest chỉ việc lấy ra dùng.
+    """
+    vn_tz = pytz.timezone(TIMEZONE)
+    loop_id = 0
+
+    log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Khởi động loop tính toán đêm (02:00).")
+
+    while True:
+        loop_id += 1
+        now = datetime.datetime.now(vn_tz)
+
+        # 1. Tính thời gian ngủ tới 02:00 sáng hôm sau (hoặc hôm nay nếu chưa tới)
+        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += datetime.timedelta(days=1)
+        
+        wait_sec = (target - now).total_seconds()
+        log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL {loop_id}] Ngủ {wait_sec/3600:.1f}h tới {target.strftime('%Y-%m-%d %H:%M')} để tính định giá.")
+        
+        await asyncio.sleep(wait_sec)
+
+        # 2. Thức dậy & Kiểm tra
+        if not BOT_ACTIVE:
+            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Bot đang TẮT, bỏ qua lần chạy này.")
+            await asyncio.sleep(60)
+            continue
+
+        # 3. Chạy tính toán (Task nặng)
+        try:
+            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] 🌙 02:00! Bắt đầu tính toán Historical Valuation...")
+            # Gọi trực tiếp và chờ cho xong (vì lúc này đêm khuya, không sợ block ai)
+            await calculate_historical_valuation_task()
+            
+        except Exception as e:
+            log.error(f"[{INSTANCE_ID}][NIGHTLY_VAL] ❌ Lỗi: {e}")
+            await asyncio.sleep(300) # Ngủ 5p tránh lỗi lặp
 
 #-------------------------------------------
 async def restore_reminder_loop():
@@ -7370,6 +7380,7 @@ async def asgi_wrapper_app(scope, receive, send):
                     MAIN_LOOP.create_task(weekly_report_loop()),
                     MAIN_LOOP.create_task(analysis_report_loop()),
                     MAIN_LOOP.create_task(financial_Statements_notice_loop()),
+                    MAIN_LOOP.create_task(nightly_valuation_loop()),
                     MAIN_LOOP.create_task(daily_user_digest_loop()),
                     MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
