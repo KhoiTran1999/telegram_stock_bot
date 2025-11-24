@@ -4882,7 +4882,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
             "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
             "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n\n"
-            "🎁 **Tặng bạn 3 ngày dùng thử Full tính năng Pro!**\n"
+            "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
             "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
         )
     else:
