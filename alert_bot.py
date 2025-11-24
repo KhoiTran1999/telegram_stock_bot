@@ -4883,12 +4883,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
             "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n\n"
             "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
-            "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
+            "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay.\n\n"
+            "----------------\n\n"
+            "⚖️ *Người Canh Bảng* 🧑‍💻 _là công cụ hỗ trợ dữ liệu. Mọi thông tin chỉ mang tính tham khảo, nhà đầu tư tự chịu trách nhiệm với quyết định của mình._"
         )
     else:
         # Dành cho User Cũ / Pro / Admin -> Gọn gàng, đi thẳng vào vấn đề
         welcome_msg = (
-        "*Người Canh Bảng* 🧑‍💻 đây\n"
+        "*Người Canh Bảng* 🧑‍💻 đây\n\n"
+        "⚖️ *Người Canh Bảng* 🧑‍💻 _là công cụ hỗ trợ dữ liệu. Mọi thông tin chỉ mang tính tham khảo, nhà đầu tư tự chịu trách nhiệm với quyết định của mình._\n\n"
         "👇 *Chọn nhanh tính năng bên dưới:*"
     )
 
@@ -4921,7 +4924,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "3️⃣ **Hệ thống**\n"
         "• [⚙️ Tài khoản]: Kiểm tra hạn sử dụng Pro & Cài đặt thông báo.\n"
-        "• [🏠 Dashboard]`: Mở lại Bảng điều khiển chính (Dashboard)."
+        "• [🏠 Dashboard]: Mở lại Bảng điều khiển chính (Dashboard).\n\n"
+
+        "⚠️ **Lưu ý quan trọng:**\n"
+        "_Các phân tích từ Bot được tạo tự động bởi thuật toán và AI. thị trường chứng khoán luôn tiềm ẩn rủi ro, vui lòng cân nhắc kỹ trước khi xuống tiền._"
     )
 
     # Tạo bàn phím điều hướng
