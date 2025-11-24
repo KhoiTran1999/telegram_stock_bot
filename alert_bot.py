@@ -2266,7 +2266,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        
+
     elif data.startswith("btn_info_"):
         symbol = data.split("_")[2]
         context.args = [symbol]
@@ -6611,15 +6611,15 @@ def telegram_webhook():
 
     return "OK", 200
 #--------------------------------
+
 @flask_app.route("/sepay-webhook", methods=["POST"])
 def sepay_webhook():
     """
     Endpoint nhận thông báo thanh toán (Webhook) từ SePay.
-    (ĐÃ SỬA: Đọc Token từ Header 'Authorization: Apikey ...')
-    (ĐÃ SỬA: Dùng Regex để tìm Order ID)
+    (ĐÃ CẬP NHẬT: Báo cáo về Admin kèm link chat trực tiếp)
     """
     
-    # === 1. LẤY DỮ LIỆU VÀ XÁC THỰC TOKEN (Giữ nguyên) ===
+    # === 1. LẤY DỮ LIỆU VÀ XÁC THỰC TOKEN ===
     try:
         auth_header = request.headers.get("Authorization")
         data = request.get_json()
@@ -6631,108 +6631,114 @@ def sepay_webhook():
              log.warning("[SEPAPAY] Bỏ qua xác thực vì SEPAY_TOKEN chưa được set.")
         elif not hmac.compare_digest(str(token_from_request), SEPAY_TOKEN):
             log.warning(f"[SEPAPAY] WEBHOOK BỊ TỪ CHỐI - SAI TOKEN!")
-            log.warning(f"[SEPAPAY] Header 'Authorization' nhận được: {auth_header}")
             return jsonify({"message": "Invalid Token"}), 403
     except Exception as e:
         log.error(f"[SEPAPAY] Lỗi khi parse JSON hoặc xác thực Header: {e}")
         return jsonify({"message": "Invalid Request Body"}), 400
 
-    # === 2. PHÂN TÍCH PAYLOAD (SỬA LỖI REGEX) ===
+    # === 2. PHÂN TÍCH PAYLOAD ===
     try:
-        # 1. Lấy nội dung gốc
         raw_content = data.get("content")
         received_amount_str = data.get("transferAmount")
         transfer_type = data.get("transferType")
 
         if transfer_type != "in":
-            log.info(f"[SEPAPAY] Bỏ qua giao dịch (type: {transfer_type}).")
             return jsonify({"message": "Not an 'in' transaction"}), 200
 
         if not raw_content or received_amount_str is None:
-            log.warning("[SEPAPAY] Webhook thiếu 'content' hoặc 'transferAmount'.")
             return jsonify({"message": "Missing fields"}), 400
         
-        # 2. Dùng REGEX để tìm mã PAY... bên trong nội dung
-        # (Regex: Tìm chữ "PAY", theo sau là 9-15 chữ số, và 5 chữ/số)
-        # (Bạn đã import 're' ở dòng 98 rồi)
+        # Regex tìm mã PAY...
         match = re.search(r'(PAY\d{9,15}\w{5})', raw_content.upper())
+        order_id = match.group(1) if match else None
         
-        order_id = None
-        if match:
-            order_id = match.group(1) # Lấy mã PAY... đã tìm được
-        
-        # 3. Nếu không tìm thấy mã PAY... -> Bỏ qua
         if not order_id:
-            log.info(f"[SEPAPAY] Không tìm thấy Order ID (PAY...) trong nội dung: '{raw_content}'. Bỏ qua.")
+            log.info(f"[SEPAPAY] Không tìm thấy Order ID trong: '{raw_content}'. Bỏ qua.")
             return jsonify({"message": "Order ID pattern not found"}), 200
         
         received_amount = int(float(received_amount_str))
             
     except Exception as e:
-        log.error(f"[SEPAPAY] Lỗi khi đọc các trường hoặc Regex: {e}")
+        log.error(f"[SEPAPAY] Lỗi phân tích payload: {e}")
         return jsonify({"message": "Invalid fields"}), 400
     
-    # === 3. XỬ LÝ LOGIC THANH TOÁN (Giữ nguyên) ===
-    # (Từ đây trở đi, 'order_id' đã là mã PAY... chuẩn, code sẽ chạy đúng)
+    # === 3. XỬ LÝ LOGIC THANH TOÁN ===
     try:
         order = get_order_by_id(order_id)
     except Exception as e:
-        log.error(f"[SEPAPAY] Lỗi DB khi gọi get_order_by_id({order_id}): {e}")
+        log.error(f"[SEPAPAY] Lỗi DB: {e}")
         return jsonify({"message": "Database error"}), 500
 
-    # 3.1. Không tìm thấy đơn hàng
     if not order:
-        log.warning(f"[SEPAPAY] Không tìm thấy đơn hàng cho order_id: {order_id}")
         return jsonify({"message": "Order not found"}), 200
 
-    # 3.2. Đơn hàng đã được xử lý
     if order['status'] == 'PAID':
-        log.info(f"[SEPAPAY] Đơn hàng {order_id} đã được xử lý trước đó. Bỏ qua.")
         return jsonify({"message": "Already processed"}), 200
 
-    # 3.3. Đơn hàng PENDING -> Kiểm tra tiền
+    # Dữ liệu đơn hàng
     chat_id = order['chat_id']
     expected_amount = int(order['amount']) 
     days_to_add = order['days_to_add']
     
-    # 3.4. XỬ LÝ SAI TIỀN
+    # --- CASE 1: THANH TOÁN SAI SỐ TIỀN (THẤT BẠI) ---
     if received_amount != expected_amount:
-        log.warning(f"[SEPAPAY] THANH TOÁN SAI SỐ TIỀN: User {chat_id} | Order {order_id}. "
-                    f"Yêu cầu {expected_amount}, nhận {received_amount}.")
+        log.warning(f"[SEPAPAY] SAI TIỀN: User {chat_id}. Yêu cầu {expected_amount}, nhận {received_amount}.")
         
-        msg_fail = (
-            f"⚠️ **Thanh toán thất bại!**\n\n"
-            f"Đơn hàng `{order_id}` của bạn yêu cầu *{expected_amount:,} VNĐ*, "
-            f"*nhưng hệ thống ghi nhận bạn đã chuyển *"
-            f"*{received_amount:,} VNĐ*.\n\n"
-            "Giao dịch này **không** được ghi nhận. "
-            "Vui lòng liên hệ Admin để xử lý hoặc tạo đơn hàng mới."
+        # 1. Báo cho User
+        msg_fail_user = (
+            f"⚠️ **Thanh toán chưa được ghi nhận!**\n\n"
+            f"Hệ thống nhận được *{received_amount:,} đ*, nhưng đơn hàng yêu cầu *{expected_amount:,} đ*.\n"
+            "Vui lòng liên hệ Admin để được hỗ trợ xử lý thủ công."
         )
-        
-        _send_telegram_message_safe(chat_id, msg_fail)
+        _send_telegram_message_safe(chat_id, msg_fail_user)
+
+        # 2. Báo cho Admin (Kèm link chat)
+        if ADMIN_ID:
+            msg_fail_admin = (
+                f"🚨 **CẢNH BÁO: LỖI THANH TOÁN (SAI TIỀN)**\n\n"
+                f"👤 User ID: `{chat_id}`\n"
+                f"📝 Mã đơn: `{order_id}`\n"
+                f"🔻 Thực nhận: `{received_amount:,} đ`\n"
+                f"yêu cầu: `{expected_amount:,} đ`\n\n"
+                f"👉 [Bấm vào đây để chat với khách](tg://user?id={chat_id})"
+            )
+            _send_telegram_message_safe(ADMIN_ID, msg_fail_admin)
+
         return jsonify({"message": "Incorrect amount"}), 200
 
-    # 3.5. XỬ LÝ THÀNH CÔNG
+    # --- CASE 2: THANH TOÁN THÀNH CÔNG ---
     try:
-        log.info(f"[SEPAPAY] THÀNH CÔNG: User {chat_id} | Order {order_id}. "
-                 f"Kích hoạt {days_to_add} ngày Pro.")
+        log.info(f"[SEPAPAY] THÀNH CÔNG: User {chat_id}. +{days_to_add} ngày.")
         
         add_paid_user(chat_id, days_to_add)
         mark_order_as_paid(order_id)
         
-        msg_success = (
+        # 1. Báo cho User
+        msg_success_user = (
             f"🚀 **Kích hoạt Gói Pro thành công!**\n\n"
-            f"Tài khoản của bạn đã được cộng thêm *{days_to_add} ngày* sử dụng Gói Pro.\n\n"
-            "Cảm ơn bạn đã sử dụng dịch vụ!"
+            f"Bạn đã được cộng thêm *{days_to_add} ngày* sử dụng.\n"
+            "Cảm ơn bạn đã ủng hộ! 🥰"
         )
-        _send_telegram_message_safe(chat_id, msg_success)
+        _send_telegram_message_safe(chat_id, msg_success_user)
+
+        # 2. Báo cho Admin (Kèm link chat)
+        if ADMIN_ID:
+            msg_success_admin = (
+                f"💰 **NẠP TIỀN THÀNH CÔNG**\n\n"
+                f"👤 User ID: `{chat_id}`\n"
+                f"💵 Số tiền: `{received_amount:,} đ`\n"
+                f"📦 Gói: `{days_to_add} ngày`\n"
+                f"📝 Mã: `{order_id}`\n\n"
+                f"👉 [Bấm vào đây để chat/cảm ơn khách](tg://user?id={chat_id})"
+            )
+            _send_telegram_message_safe(ADMIN_ID, msg_success_admin)
         
     except Exception as e:
-        log.error(f"[SEPAPAY] Lỗi nghiêm trọng khi kích hoạt Pro cho {chat_id}: {e}")
+        log.error(f"[SEPAPAY] Lỗi kích hoạt Pro: {e}")
         return jsonify({"message": "Error activating Pro"}), 500
 
-    # Trả 200 OK cuối cùng
     return jsonify({"message": "Success"}), 200
+
 # --- FLASK ROUTE CHO WEB APP ---
 @flask_app.route("/digest/<digest_id>")
 def view_digest(digest_id):
