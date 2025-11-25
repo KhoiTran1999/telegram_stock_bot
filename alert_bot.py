@@ -3518,20 +3518,15 @@ async def vn30f1m_alert_loop():
                 continue
 
             if not in_session_vietnam():
-                # Clear anchor, price cache... mỗi khi ra ngoài giờ
-                _vn30f1m_clear_after_close()
+                _vn30f1m_clear_after_close() # Clear mốc neo khi hết phiên
+                
                 now = datetime.datetime.now(vn_tz)
-
-                next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-                if now >= next_open:
-                    next_open += datetime.timedelta(days=1)
-
-                while next_open.weekday() >= 5:
-                    next_open += datetime.timedelta(days=1)
-
+                
+                # SỬ DỤNG HÀM next_session_start
+                next_open = next_session_start(now)
+                
                 sleep_seconds = max(5, (next_open - now).total_seconds())
-
-                log.info(f"[VN30F1M][TICKER] Ngoài giờ. Ngủ tới {next_open.strftime('%Y-%m-%d %H:%M:%S')} ({int(sleep_seconds)}s)")
+                log.info(f"[{INSTANCE_ID}][TICKER] Ngoài giờ. Ngủ tới {next_open.strftime('%H:%M')} ({int(sleep_seconds)}s)")
                 await asyncio.sleep(sleep_seconds)
                 continue
                 
@@ -3578,13 +3573,13 @@ async def vn30f1m_price_fetcher_loop():
                 continue
                 
             if not in_session_vietnam():
-                # ... (Logic ngủ ngoài giờ) ...
                 now = datetime.datetime.now(vn_tz)
-                next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-                if now >= next_open: next_open += datetime.timedelta(days=1)
-                while next_open.weekday() >= 5: next_open += datetime.timedelta(days=1)
+                
+                # SỬ DỤNG HÀM next_session_start ĐỂ TỰ TÌM 13:00 HOẶC 09:15
+                next_open = next_session_start(now)
+                
                 sleep_seconds = max(5, (next_open - now).total_seconds())
-                log.info(f"[{INSTANCE_ID}][VN30F1M] Ngoài giờ. Ngủ tới {next_open.strftime('%H:%M')}")
+                log.info(f"[{INSTANCE_ID}][VN30F1M] Ngoài giờ (Nghỉ trưa/Tối). Ngủ tới {next_open.strftime('%H:%M')} ({int(sleep_seconds)}s)")
                 await asyncio.sleep(sleep_seconds)
                 continue
 
