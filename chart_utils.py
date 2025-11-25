@@ -1,7 +1,7 @@
 import asyncio
 import pandas as pd
 import numpy as np
-from vnstock import Quote
+from vnstock import Quote, Trading
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import datetime
@@ -72,7 +72,6 @@ async def _create_daily_chart(symbol: str, height: int) -> str:
 def draw_line_chart_fixed_ui(x_list, y_list, v_list):
     """
     Vẽ Line Chart 5 phút (Premium Style).
-    Tên hàm này khớp với alert_bot.py import.
     """
     if not y_list: return ""
     mn, mx = min(y_list), max(y_list)
@@ -108,44 +107,79 @@ def draw_line_chart_fixed_ui(x_list, y_list, v_list):
 
 def draw_orderbook_fixed_ui(price_depth, ref_price):
     """
-    Vẽ biểu đồ khớp lệnh (Bo tròn).
-    Tên hàm này khớp với alert_bot.py import.
+    Vẽ biểu đồ phân bổ dòng tiền (Style Soft & Modern).
+    [ĐÃ SỬA] Giảm cornerradius xuống 4 cho tinh tế hơn.
     """
     if not price_depth: return ""
-    data = sorted(price_depth, key=lambda x: x['volume'], reverse=True)[:6]
+    
+    # 1. Lọc và Sắp xếp
+    data = [x for x in price_depth if x['volume'] > 0]
     data.sort(key=lambda x: x['price'], reverse=True)
+    data = data[:16] 
 
     prices = [f"{x['price']:,.0f}" for x in data]
     volumes = [x['volume'] for x in data]
     raw_prices = [x['price'] for x in data]
     
+    # 2. Logic màu sắc
     colors = []
+    
     for p in raw_prices:
-        if p > ref_price: colors.append('#089981')
-        elif p < ref_price: colors.append('#f23645')
-        else: colors.append('#f0b90b')
+        if p > ref_price: colors.append('#089981') 
+        elif p < ref_price: colors.append('#f23645') 
+        else: colors.append('#f0b90b') 
 
+    # 3. Format Volume
+    text_labels = []
+    for v in volumes:
+        val_str = ""
+        if v >= 1_000_000: val_str = f"{v/1_000_000:.2f}M"
+        elif v >= 1_000: val_str = f"{v/1_000:.0f}K"
+        else: val_str = str(int(v))
+        text_labels.append(f" {val_str} ") 
+
+    # 4. Vẽ Chart
     fig = go.Figure(go.Bar(
-        x=volumes, y=prices, orientation='h',
-        marker_color=colors, marker_line_width=0,
-        text=volumes, textposition='auto', texttemplate='%{value:.2s}',
-        hoverinfo='none', marker=dict(color=colors, cornerradius=5)
+        x=volumes, 
+        y=prices, 
+        orientation='h',
+        marker_color=colors, 
+        marker_line_width=0,
+        text=text_labels, 
+        textposition='inside', 
+        insidetextanchor='end', 
+        textfont=dict(size=10, family="Manrope, sans-serif", color='white', weight='bold'),
+        hoverinfo='none',
+        opacity=0.9,
+        # --- [FIX] Giảm bo tròn từ 10 xuống 4 cho tinh tế ---
+        marker=dict(cornerradius=4) 
     ))
 
+    chart_height = max(200, len(data) * 26) 
+
     fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=0, r=0, t=0, b=0), height=200, bargap=0.35,
-        xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True),
-        yaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=12, color='#131722', weight='bold')),
-        dragmode=False, hovermode=False, font=dict(family="Manrope, sans-serif")
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=0, r=0, t=0, b=0), 
+        height=chart_height, 
+        bargap=0.35,
+        xaxis=dict(showgrid=False, showticklabels=False, fixedrange=True, zeroline=False),
+        yaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(size=11, color='#9ca3af', family="Manrope, sans-serif"), type='category'),
+        dragmode=False, 
+        hovermode=False,
+        font=dict(family="Manrope, sans-serif")
     )
+    
     return fig.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False, 'staticPlot': False})
 
 # ==========================================
 # 3. HÀM LẤY DATA TỔNG HỢP
 # ==========================================
 async def get_flash_view_data(symbol: str):
-    """Lấy toàn bộ dữ liệu Intraday, Resample và Tính toán chỉ số"""
+    """
+    Lấy toàn bộ dữ liệu Intraday, Resample và Tính toán chỉ số.
+    [ĐÃ SỬA] Fix lỗi màu RSI khi ở vùng Trung tính (Neutral) trong Dark Mode.
+    """
     q = Quote(symbol=symbol, source='VCI')
     try:
         df = await asyncio.to_thread(lambda: q.intraday(symbol=symbol, page_size=10000))
@@ -167,13 +201,30 @@ async def get_flash_view_data(symbol: str):
     df_5m = df['price'].resample('5min').last().ffill().dropna()
     vol_5m = df['volume'].resample('5min').sum().fillna(0).reindex(df_5m.index).fillna(0)
     
-    # Convert Lists (No Timezone)
     x_list = df_5m.index.strftime('%H:%M').tolist()
     y_list = df_5m.tolist()
     v_list = vol_5m.tolist()
     
     current = y_list[-1]
+    
+    # Lấy Ref Price chuẩn
     ref_price = df['price'].iloc[0]
+    try:
+        def _get_true_ref():
+            t = Trading(source='VCI')
+            board = t.price_board([symbol])
+            if board is not None and not board.empty:
+                row = board.iloc[0]
+                if 'ref_price' in row: return float(row['ref_price'])
+                if ('listing', 'ref_price') in row: return float(row[('listing', 'ref_price')])
+            return None
+
+        true_ref = await asyncio.to_thread(_get_true_ref)
+        if true_ref and true_ref > 0:
+            if true_ref < 500: true_ref *= 1000
+            ref_price = true_ref
+    except Exception: pass
+
     change_val = current - ref_price
     change_pct = (change_val / ref_price) * 100
     
@@ -200,6 +251,20 @@ async def get_flash_view_data(symbol: str):
     rsi = 100 - (100 / (1 + rs)).iloc[-1]
     if np.isnan(rsi): rsi = 50
 
+    # --- [FIX START] RSI COLOR LOGIC ---
+    # Nếu RSI > 70 (Quá Mua) -> Đỏ
+    # Nếu RSI < 30 (Quá Bán) -> Xanh
+    # Nếu Trung tính -> Dùng biến CSS var(--text-primary) để tự động theo Dark/Light mode
+    if rsi < 30:
+        rsi_color = "#089981"
+    elif rsi > 70:
+        rsi_color = "#f23645"
+    else:
+        rsi_color = "var(--text-primary)" # Thay vì fix cứng màu đen (#131722)
+    # --- [FIX END] ---
+
+    rsi_msg = "Vùng Quá Bán" if rsi < 30 else "Vùng Quá Mua" if rsi > 70 else "Trung Tính"
+
     return {
         "symbol": symbol,
         "chart_data": (x_list, y_list, v_list),
@@ -217,7 +282,7 @@ async def get_flash_view_data(symbol: str):
         "high": f"{high:,.0f}",
         "range_pct": range_pct,
         "rsi_val": f"{rsi:.1f}",
-        "rsi_color": "#089981" if rsi < 30 else "#f23645" if rsi > 70 else "#131722",
-        "rsi_msg": "Vùng Quá Bán" if rsi < 30 else "Vùng Quá Mua" if rsi > 70 else "Trung Tính",
+        "rsi_color": rsi_color, # Sử dụng màu đã fix
+        "rsi_msg": rsi_msg,
         "volume_str": f"{total_vol/1e6:.1f}M"
     }
