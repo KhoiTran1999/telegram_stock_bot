@@ -5556,10 +5556,15 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # 4. Lấy dữ liệu Hiện tại (Screener)
         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
-        await context.bot.edit_message_text(
-            chat_id=chat_id, message_id=progress_msg.message_id,
-            text=f"📊 **Đang so sánh với dữ liệu quá khứ...**\n`[{make_progress_bar(60)}] 60%`", parse_mode="Markdown"
-        )
+        # --- 🔥 SỬA: Bọc cập nhật giao diện để tránh crash nếu mạng lag ---
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=progress_msg.message_id,
+                text=f"📊 **Đang so sánh với dữ liệu quá khứ...**\n`[{make_progress_bar(60)}] 60%`", parse_mode="Markdown"
+            )
+        except Exception as e:
+            log.warning(f"Không update được progress bar (mạng lag), nhưng vẫn tính tiếp: {e}")
+        # -----------------------------------------------------------------
 
         # 5. Xử lý logic so sánh
         processed_items = []
@@ -5623,6 +5628,20 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         r = get_redis()
         r.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600)
+
+        # Bước 3: Hoàn tất (100%)
+        # --- 🔥 SỬA: Bọc try/except ---
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"✅ **Hoàn tất! Đang tạo bảng xếp hạng...**\n`[{make_progress_bar(100)}] 100%`",
+                parse_mode="Markdown"
+            )
+        except: pass
+        # ------------------------------
+            
+        await asyncio.sleep(0.5)
 
         # Link trỏ về route kết quả (thêm chat_id để bảo mật route này nếu cần)
         web_url = f"{base_url}/screener_result/{digest_id}?chat_id={chat_id}"
