@@ -2762,6 +2762,9 @@ async def alert_loop():
 
                 messages: list[str] = []
 
+                # Tạo danh sách chứa các nút bấm
+                buttons = []
+
                 # Chỉ duyệt qua các mã được phép xử lý
                 for sym in processing_list:
                     sym_u = str(sym).upper().strip()
@@ -2821,6 +2824,11 @@ async def alert_loop():
                         # Nút soi chart
                         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
                         chart_url = f"{base_url}/chart/{sym_u}"
+
+                        # Tạo nút và thêm vào danh sách (Mỗi mã 1 hàng)
+                        buttons.append([
+                            InlineKeyboardButton(f"📊 Soi Chart {sym_u}", web_app=WebAppInfo(url=chart_url))
+                        ])
                         
                         # Lưu ý: Ở đây mình không attach button vào từng msg để gộp tin cho gọn
                         messages.append(msg)
@@ -2838,20 +2846,26 @@ async def alert_loop():
                             "last_alert_at": state_entry.get("last_alert_at")
                         }
 
-                # === 🔥 LOGIC 2: CHECK BẬT/TẮT TRƯỚC KHI GỬI 🔥 ===
-                # Chỉ gửi nếu có tin nhắn VÀ user đang BẬT tính năng này
-                # (User có trong _stock_alert_enabled_cache nghĩa là đang BẬT)
-                if messages and (chat_id in _stock_alert_enabled_cache):
-                    header = (
-                        "--------------------------------\n"
-                        f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
-                    )
-                    messages_text = "\n".join(messages)
-                    body = messages_text + "\n" + header
+               # === LOGIC GỬI TIN ===
+            if messages and (chat_id in _stock_alert_enabled_cache):
+                header = (
+                    "--------------------------------\n"
+                    f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
+                )
+                messages_text = "\n".join(messages)
+                body = messages_text + "\n" + header
+                
+                # Tạo Markup từ danh sách nút đã gom
+                reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
 
-                    try:
-                        _stock_broadcast_queue.put_nowait({"chat_id": chat_id, "body": body})
-                    except asyncio.QueueFull:
+                try:
+                    # 🔥 QUAN TRỌNG: Đẩy cả 'markup' vào queue
+                    _stock_broadcast_queue.put_nowait({
+                        "chat_id": chat_id, 
+                        "body": body,
+                        "markup": reply_markup 
+                    })
+                except asyncio.QueueFull:
                         pass
 
             save_state_for_all(all_state)
