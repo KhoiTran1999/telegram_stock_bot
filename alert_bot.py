@@ -420,7 +420,7 @@ DỮ LIỆU ĐẦU VÀO (Kèm gợi ý [TAG] từ robot thu thập):
         config = {"response_mime_type": "application/json"}
         json_str = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-flash", 
+            model_id="gemini-2.5-pro", 
             contents=prompt,
             config=config
         )
@@ -1231,7 +1231,7 @@ async def call_gemini_eod_insight(market_data: dict) -> str:
         # SỬ DỤNG call_gemini_safe TRONG THREAD
         text = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-flash",
+            model_id="gemini-2.5-pro",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
