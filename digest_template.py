@@ -7,6 +7,7 @@ DIGEST_HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>StockBot Digest</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
@@ -44,33 +45,33 @@ DIGEST_HTML_TEMPLATE = """
             --r3-shadow: rgba(234, 88, 12, 0.15);
         }
         
-        /* --- Dark Mode Overrides (ĐÃ FIX LỖI MÀU GẮT) --- */
+        /* --- Dark Mode Overrides (FIXED HIGH CONTRAST) --- */
         @media (prefers-color-scheme: dark) {
             :root {
-                --border-color: rgba(255,255,255,0.1);
-                --info-bg-light: rgba(0,122,255,0.15); 
+                --border-color: rgba(255,255,255,0.15); /* Viền sáng hơn để nổi khối */
+                --info-bg-light: rgba(10, 132, 255, 0.15); 
 
                 --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
                 --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
                 --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
 
-                /* Nền ô chỉ số trong suốt nhẹ để hòa vào nền tối */
-                --metric-bg: rgba(255, 255, 255, 0.05); 
+                /* 🔥 FIX: Nền ô chỉ số sáng hơn nền card một chút để tạo độ sâu */
+                --metric-bg: #2c2c2e; 
 
-                /* Rank 1 (Gold Dark) - Gradient tối dần */
-                --r1-bg: linear-gradient(160deg, rgba(251, 191, 36, 0.15) 0%, rgba(0,0,0,0) 100%);
-                --r1-border: #b45309; 
-                --r1-shadow: rgba(0,0,0,0); 
+                /* Rank 1 (Gold Dark) - Gradient đậm đà */
+                --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
+                --r1-border: #fbbf24; 
+                --r1-shadow: rgba(251, 191, 36, 0.1); 
 
                 /* Rank 2 (Silver Dark) */
-                --r2-bg: linear-gradient(160deg, rgba(255, 255, 255, 0.1) 0%, rgba(0,0,0,0) 100%);
-                --r2-border: #4b5563; 
-                --r2-shadow: rgba(0,0,0,0);
+                --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
+                --r2-border: #9ca3af; 
+                --r2-shadow: rgba(255,255,255,0.05);
 
                 /* Rank 3 (Bronze Dark) */
-                --r3-bg: linear-gradient(160deg, rgba(253, 186, 116, 0.15) 0%, rgba(0,0,0,0) 100%);
-                --r3-border: #7c2d12; 
-                --r3-shadow: rgba(0,0,0,0);
+                --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
+                --r3-border: #fb923c; 
+                --r3-shadow: rgba(251, 146, 60, 0.1);
             }
         }
 
@@ -92,21 +93,28 @@ DIGEST_HTML_TEMPLATE = """
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
 
-        /* Badges */
+        /* Custom Badges */
         .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
         .st-badge.act-buy { background: var(--success-bg); color: var(--success-text); }
         .st-badge.act-sell { background: var(--danger-bg); color: var(--danger-text); }
         .st-badge.act-hold { background: var(--warning-bg); color: var(--warning-text); }
         
-        /* AI Insight */
-        .ai-hot-topic { background: var(--info-bg-light); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+        /* AI Insight Card */
+        .ai-hot-topic { 
+            background: var(--info-bg-light); 
+            border-radius: 12px; padding: 12px; margin-bottom: 16px; 
+        }
         .ai-hot-title { font-weight:700; color:var(--accent-color); margin-bottom:8px; font-size:12px; text-transform: uppercase; }
         .ai-hot-text a { text-decoration:none; color:inherit; }
         .ai-hot-text a:hover { text-decoration: underline; }
         .ai-macro-title { font-weight:700; color:var(--hint-color); margin:16px 0 8px 0; font-size:12px; text-transform: uppercase; }
         .ai-macro-text a { text-decoration:none; color:inherit; } 
         .ai-corp-header { font-weight:800; color:var(--hint-color); margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid var(--border-color); padding-bottom: 6px; display:flex; align-items:center; gap:6px; }
-        .ai-comment-box { margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; border-top: 1px solid var(--border-color); padding-top: 12px; background:var(--bg-color); padding:12px; border-radius:8px; }
+        .ai-comment-box { 
+            margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; 
+            border-top: 1px solid var(--border-color); padding-top: 12px; 
+            background:var(--bg-color); padding:12px; border-radius:8px; 
+        }
         
         .ai-corp-item { padding: 10px 0; border-bottom: 1px solid var(--border-color); display: flex; align-items: flex-start; gap: 10px; }
         .ai-corp-item:last-child { border-bottom: none; }
@@ -126,17 +134,31 @@ DIGEST_HTML_TEMPLATE = """
         .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
         
         /* Locked Feature */
-        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); cursor: default; }
+        .list-item.locked { 
+            position: relative; 
+            background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); 
+            cursor: default; 
+        }
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
-        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
-        @media (prefers-color-scheme: dark) { .lock-overlay { background: rgba(0, 0, 0, 0.7); } }
-        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; }
+        .lock-overlay { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; 
+            align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; 
+        }
+        @media (prefers-color-scheme: dark) {
+             .lock-overlay { background: rgba(0, 0, 0, 0.7); }
+        }
+        .lock-btn { 
+            background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; 
+            border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; 
+        }
 
-        /* --- Định giá Card (Đã Fix Dark Mode) --- */
+        /* --- Định giá Card (NEW FIXED STYLE) --- */
         .screener-card {
             border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
-            /* Viền thẻ sử dụng màu rX-border đã được điều chỉnh cho từng theme */
             background: var(--card-bg);
+            border: 1px solid var(--border-color); /* Luôn có viền mỏng */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
         }
         
         /* Rank 1 */
@@ -152,6 +174,7 @@ DIGEST_HTML_TEMPLATE = """
         .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 4px 15px var(--r3-shadow); }
         .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid var(--card-bg); color: #fff;}
         
+        /* Rank 4+ */
         .rank-other { background: var(--metric-bg); color: var(--hint-color); font-family: 'Manrope', sans-serif; }
         
         .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--border-color); opacity: 0.9; }
@@ -164,7 +187,13 @@ DIGEST_HTML_TEMPLATE = """
         .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
 
         .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--border-color); }
+        
+        /* Metric Box Style */
+        .metric-box { 
+            background: var(--metric-bg); 
+            padding: 10px; border-radius: 12px; 
+            border: 1px solid var(--border-color); 
+        }
         .m-label { font-size: 10px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
         .m-row { display: flex; justify-content: space-between; align-items: baseline; }
         .m-curr { font-size: 15px; font-weight: 800; color: var(--text-color); }
@@ -333,12 +362,12 @@ DIGEST_HTML_TEMPLATE = """
                 <div class="metrics-grid">
                     <div class="metric-box">
                         <div class="m-label">P/E Ratio</div>
-                        <div class="m-row"><span class="m-curr">{{ item.pe_cur }}x</span><span class="m-avg">TB: {{ item.pe_avg }}</span></div>
+                        <div class="m-row"><span class="m-curr">{{ "%.1f"|format(item.pe_cur) }}x</span><span class="m-avg">TB: {{ "%.1f"|format(item.pe_avg) }}</span></div>
                         <div class="m-diff {{ item.pe_class }}">{{ item.pe_diff_str }}</div>
                     </div>
                     <div class="metric-box">
                         <div class="m-label">P/B Ratio</div>
-                        <div class="m-row"><span class="m-curr">{{ item.pb_cur }}x</span><span class="m-avg">TB: {{ item.pb_avg }}</span></div>
+                        <div class="m-row"><span class="m-curr">{{ "%.1f"|format(item.pb_cur) }}x</span><span class="m-avg">TB: {{ "%.1f"|format(item.pb_avg) }}</span></div>
                         <div class="m-diff {{ item.pb_class }}">{{ item.pb_diff_str }}</div>
                     </div>
                 </div>
@@ -377,6 +406,8 @@ DIGEST_HTML_TEMPLATE = """
 
         // --- HÀM MỞ LINK CƠ BẢN NHẤT ---
         function viewNews(url) {
+            // Mở link bằng trình duyệt mặc định (Safari/Chrome)
+            // Đảm bảo hoạt động 100% trên mọi thiết bị
             Telegram.WebApp.openLink(url);
         }
 
@@ -387,7 +418,9 @@ DIGEST_HTML_TEMPLATE = """
             const isExpanded = btn.getAttribute('data-expanded') === 'true';
             const hiddenCount = total - limit;
             let unit = 'mục';
-            if (cardId.includes('reports')) unit = 'báo cáo';
+            if (cardId.includes('stocks')) unit = 'mã';
+            else if (cardId.includes('specialized') || cardId.includes('macro')) unit = 'tin';
+            else if (cardId.includes('reports')) unit = 'báo cáo';
 
             if (!isExpanded) {
                 hiddenItems.forEach(item => {
@@ -414,7 +447,6 @@ DIGEST_HTML_TEMPLATE = """
 </body>
 </html>
 """
-
 
 DIGEST_404_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -994,70 +1026,104 @@ SCREENER_HTML_TEMPLATE = r"""
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: var(--tg-theme-bg-color, #f8f9fa);
-            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
-            --text-primary: var(--tg-theme-text-color, #111827);
-            --text-secondary: var(--tg-theme-hint-color, #6b7280);
+            /* --- Light Mode Defaults --- */
+            --bg-color: #f8f9fa; 
+            --card-bg: #ffffff; 
+            --text-primary: #111827; 
+            --text-secondary: #6b7280;
             --metric-border: rgba(0,0,0,0.04);
+            --metric-bg: #f9fafb;
             
+            /* Rank Colors (Light) */
+            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
+            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
+            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
+            
+            /* Rank 4+ (Light fix) */
+            --rank-other-bg: #e5e7eb;
+            --rank-other-text: #374151;
+
+            /* Signal Colors */
             --success-text: #059669; --success-bg: #d1fae5;
             --danger-text: #dc2626;  --danger-bg: #fee2e2;
             --warning-text: #d97706; --warning-bg: #fef3c7;
             --brand-gradient: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
             --pro-gradient: linear-gradient(135deg, #F59E0B 0%, #FCD34D 100%);
-
-            /* Màu Định giá LIGHT */
-            --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
-            --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
-            --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
-            --metric-bg: var(--bg-color); 
         }
 
-        /* Dark Mode Overrides */
-        [data-theme="dark"], @media (prefers-color-scheme: dark) {
-            :root {
-                --text-primary: var(--tg-theme-text-color, #f9fafb);
-                --text-secondary: var(--tg-theme-hint-color, #9ca3af);
-                --metric-border: rgba(255, 255, 255, 0.1);
-                --metric-bg: rgba(255, 255, 255, 0.05);
-                
-                --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
-                --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
-                --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
+        /* --- Dark Mode Overrides --- */
+        [data-theme="dark"] {
+            --bg-color: #121212; 
+            --card-bg: #1e1e1e; 
+            --text-primary: #f9fafb; 
+            --text-secondary: #9ca3af;
+            --metric-border: rgba(255, 255, 255, 0.15);
+            --metric-bg: #2c2c2e; /* Nền ô chỉ số sáng hơn nền card */
+            
+            --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
+            --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
+            --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
 
-                --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
-                --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
-                --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
-            }
+            --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%); --r1-border: #b45309; --r1-shadow: rgba(251, 191, 36, 0.1);
+            --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
+            --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%); --r3-border: #7c2d12; --r3-shadow: rgba(251, 146, 60, 0.1);
+            
+            /* Rank 4+ (Dark fix) */
+            --rank-other-bg: rgba(255,255,255,0.1);
+            --rank-other-text: #d1d5db;
         }
         
         body { font-family: 'Manrope', sans-serif; background-color: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px 16px 40px 16px; transition: all 0.3s ease; -webkit-font-smoothing: antialiased; }
+        
+        /* Header */
         .header { text-align: center; margin-bottom: 28px; margin-top: 10px;}
         .header-title { font-size: 26px; font-weight: 800; margin: 0; letter-spacing: -0.5px; background: var(--brand-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display:inline-block; }
         .pro-badge { background: var(--pro-gradient); color: #fff; font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 12px; display: inline-flex; align-items: center; transform: translateY(-4px); box-shadow: 0 4px 10px rgba(245, 158, 11, 0.3); margin-left: 6px; }
         .header-subtitle { font-size: 13px; color: var(--text-secondary); font-weight: 500; margin-top: 4px; }
         .timestamp-badge { display: inline-block; margin-top: 8px; padding: 4px 10px; background: var(--metric-bg); border-radius: 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--metric-border); }
         
-        /* Card */
-        .card { border-radius: 20px; padding: 18px; margin-bottom: 16px; position: relative; border: 1px solid var(--metric-border); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02); transition: transform 0.2s; background: var(--card-bg); }
-        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 10px 25px -5px var(--r1-shadow); transform: scale(1.02); z-index: 10; }
-        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.5); font-size: 18px; width: 36px; height: 36px; border: 2px solid var(--card-bg); }
-        .card-rank-1::before { content: '👑'; position: absolute; top: -14px; left: 10px; font-size: 24px; transform: rotate(-15deg); z-index: 20; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
-        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 10px 25px -5px var(--r2-shadow); }
-        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.4); font-size: 16px; width: 32px; height: 32px; border: 2px solid var(--card-bg); color: var(--text-primary); }
-        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 10px 25px -5px var(--r3-shadow); }
-        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); font-size: 16px; width: 32px; height: 32px; border: 2px solid var(--card-bg); }
+        /* Card Styles */
+        .card { 
+            border-radius: 20px; padding: 18px; margin-bottom: 16px; position: relative; 
+            border: 1px solid var(--metric-border); 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02); 
+            transition: transform 0.2s; 
+            background: var(--card-bg); 
+        }
         
-        .rank-other { background: var(--metric-bg); color: var(--text-secondary); font-size: 12px; border-radius: 8px; width: 24px; height: 24px; font-family: 'Manrope', sans-serif; font-weight: 800; }        
+        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 10px 25px -5px var(--r1-shadow); transform: scale(1.02); z-index: 10; }
+        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.5); font-size: 18px; width: 36px; height: 36px; border: 2px solid var(--card-bg); color: #fff; }
+        .card-rank-1::before { content: '👑'; position: absolute; top: -14px; left: 10px; font-size: 24px; transform: rotate(-15deg); z-index: 20; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
+        
+        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 10px 25px -5px var(--r2-shadow); }
+        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.4); font-size: 16px; width: 32px; height: 32px; border: 2px solid var(--card-bg); color: #374151; }
+        
+        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 10px 25px -5px var(--r3-shadow); }
+        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); font-size: 16px; width: 32px; height: 32px; border: 2px solid var(--card-bg); color: #fff; }
+        
+        /* Style cho Rank 4+ (Đã fix màu) */
+        .rank-other { 
+            background: var(--rank-other-bg); 
+            color: var(--rank-other-text); 
+            font-size: 13px; 
+            border-radius: 8px; 
+            width: 26px; height: 26px; 
+            font-family: 'Manrope', sans-serif; 
+            font-weight: 800; 
+            display: flex; align-items: center; justify-content: center;
+        }
         
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
         .symbol-wrap { display: flex; align-items: center; gap: 12px; }
-        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 10px; font-family: 'Oswald', sans-serif; font-weight: 700; color: #fff; }
+        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 10px; font-family: 'Oswald', sans-serif; font-weight: 700; }
+        
         .symbol { font-size: 20px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }
+        
         .signal-badge { font-size: 11px; font-weight: 700; padding: 5px 12px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
         .sig-cheap { background: var(--success-bg); color: var(--success-text); }
         .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
         .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
+        
         .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--metric-border); }
         .m-label { font-size: 10px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
@@ -1065,15 +1131,17 @@ SCREENER_HTML_TEMPLATE = r"""
         .m-avg { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
         .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
         .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
+        
         .hidden-item { display: none; }
         .btn-expand { display: block; width: 100%; padding: 14px; background: var(--card-bg); color: var(--text-secondary); border: 1px solid var(--text-secondary); border-radius: 16px; font-size: 13px; font-weight: 700; margin-top: 24px; cursor: pointer; opacity: 0.6; }
+        
         .algo-explain { margin-top: 40px; padding: 24px; background: var(--card-bg); border-radius: 20px; border: 1px solid var(--metric-border); }
         .algo-title { font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--text-primary); }
         .algo-text { font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
         .algo-formula { background: var(--metric-bg); padding: 10px 14px; border-radius: 10px; font-family: monospace; font-weight: 700; font-size: 12px; color: var(--text-primary); margin: 12px 0; display: block; border-left: 4px solid #3b82f6; }
     </style>
 </head>
-<body data-theme="light">
+<body>
     <div class="header">
         <div><span class="header-title">Định Giá Cổ Phiếu</span><span class="pro-badge">PRO 👑</span></div>
         <div class="header-subtitle">Top cổ phiếu định giá Rẻ nhất so với Lịch sử</div>
@@ -1123,13 +1191,11 @@ SCREENER_HTML_TEMPLATE = r"""
         function applyTheme() {
             const scheme = Telegram.WebApp.colorScheme;
             const body = document.body;
-            body.setAttribute('data-theme', scheme);
+            const html = document.documentElement;
             
-            // Fix for rank 2/3 badges losing color in dark mode
-            const rank2 = document.querySelector('.card-rank-2 .rank-badge');
-            if(rank2) {
-                rank2.style.color = (scheme === 'dark') ? '#f9fafb' : '#374151';
-            }
+            // Set attribute data-theme cho cả html để CSS selector bắt được
+            html.setAttribute('data-theme', scheme);
+            body.setAttribute('data-theme', scheme);
         }
         
         Telegram.WebApp.onEvent('themeChanged', applyTheme);
