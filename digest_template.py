@@ -187,13 +187,7 @@ DIGEST_HTML_TEMPLATE = """
         .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
 
         .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        
-        /* Metric Box Style */
-        .metric-box { 
-            background: var(--metric-bg); 
-            padding: 10px; border-radius: 12px; 
-            border: 1px solid var(--border-color); 
-        }
+        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--border-color); }
         .m-label { font-size: 10px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
         .m-row { display: flex; justify-content: space-between; align-items: baseline; }
         .m-curr { font-size: 15px; font-weight: 800; color: var(--text-color); }
@@ -206,11 +200,56 @@ DIGEST_HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <div class="header">
-        <div class="date-badge"><span>🗓️</span> {{ date_str }}</div>
-        <div class="header-title">Daily Digest</div>
-        {% if data.is_pro %}<span class="pro-badge">PRO MEMBER 👑</span>{% endif %}
+    <div class="header-row">
+        <div class="header-title">Báo Cáo Danh Mục {% if is_pro %}<span class="pro-badge">PRO 👑</span>{% endif %}</div>
+        <div class="header-time">Cập nhật lúc: {{ generated_at }}</div>
     </div>
+
+    <div class="score-card">
+        <div class="score-val">{{ data.portfolio_health_score }}</div>
+        <div class="score-label">Điểm Sức Khỏe</div>
+        <div class="score-sub">Đánh giá tiềm năng danh mục</div>
+    </div>
+
+    <div class="market-card">
+        <div class="market-title">NHẬN ĐỊNH THỊ TRƯỜNG</div>
+        <div class="market-text">{{ data.general_market_comment }}</div>
+    </div>
+
+    <div style="margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--hint-color); text-transform: uppercase; letter-spacing: 0.5px;">Chi tiết cổ phiếu</div>
+    
+    {% for stock in data.stocks %}
+    <div class="stock-card">
+        <div class="st-header">
+            <div>
+                <span class="st-symbol">{{ stock.symbol }}</span>
+                <span class="st-industry">{{ stock.industry }}</span>
+            </div>
+            {% set act = stock.action | lower %}
+            {% set badge_class = 'act-neutral' %}
+            {% if 'mua' in act or 'tăng' in act %} {% set badge_class = 'act-buy' %}
+            {% elif 'giữ' in act or 'nắm' in act %} {% set badge_class = 'act-hold' %}
+            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %} {% set badge_class = 'act-sell' %}
+            {% endif %}
+            <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
+        </div>
+        
+        {% if stock.chart_html %}
+        <div class="chart-mini-wrapper">
+            {{ stock.chart_html | safe }}
+        </div>
+        {% endif %}
+        
+        <div class="st-analysis">{{ stock.analysis }}</div>
+        
+        {% if stock.key_metrics %}
+        <div class="st-metrics">
+            <span class="st-metrics-icon">📊</span> 
+            <span><b>Metrics:</b> {{ stock.key_metrics }}</span>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
 
     {% if data.ai_news %}
     <div class="section-card">
@@ -362,12 +401,12 @@ DIGEST_HTML_TEMPLATE = """
                 <div class="metrics-grid">
                     <div class="metric-box">
                         <div class="m-label">P/E Ratio</div>
-                        <div class="m-row"><span class="m-curr">{{ "%.1f"|format(item.pe_cur) }}x</span><span class="m-avg">TB: {{ "%.1f"|format(item.pe_avg) }}</span></div>
+                        <div class="m-row"><span class="m-curr">{{ item.pe_cur }}x</span><span class="m-avg">TB: {{ item.pe_avg }}</span></div>
                         <div class="m-diff {{ item.pe_class }}">{{ item.pe_diff_str }}</div>
                     </div>
                     <div class="metric-box">
                         <div class="m-label">P/B Ratio</div>
-                        <div class="m-row"><span class="m-curr">{{ "%.1f"|format(item.pb_cur) }}x</span><span class="m-avg">TB: {{ "%.1f"|format(item.pb_avg) }}</span></div>
+                        <div class="m-row"><span class="m-curr">{{ item.pb_cur }}x</span><span class="m-avg">TB: {{ item.pb_avg }}</span></div>
                         <div class="m-diff {{ item.pb_class }}">{{ item.pb_diff_str }}</div>
                     </div>
                 </div>
@@ -381,34 +420,41 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    {% if not data.is_pro %}
-    <div class="premium-card">
-        <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Mở khóa toàn bộ sức mạnh 🚀</div>
-        <div style="font-size:13px; opacity:0.9; margin-bottom:20px;">
-            • Xem chi tiết BCTC ngay khi công bố<br>
-            • Đọc báo cáo phân tích chuyên sâu<br>
-            • Sử dụng Bộ lọc Value Realtime
-        </div>
-        <button class="premium-btn" onclick="Telegram.WebApp.close()">🔥 Gõ /upgrade ngay</button>
-    </div>
-    {% else %}
-    <div style="text-align:center; margin-top:30px;">
-        <button style="padding:12px 40px; background:var(--text-color); color:var(--bg-color); border:none; border-radius:12px; font-weight:600;" onclick="Telegram.WebApp.close()">Đóng</button>
-    </div>
-    {% endif %}
+    <div class="footer">Dữ liệu được phân tích tự động bởi AI (Gemini).<br>Không phải khuyến nghị đầu tư tài chính.</div>
+    <button class="btn-close" onclick="Telegram.WebApp.close()">Đóng Báo Cáo</button>
 
     <script>
         Telegram.WebApp.expand();
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
+            applyChartTheme();
+            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
             Telegram.WebApp.ready();
         });
 
-        // --- HÀM MỞ LINK CƠ BẢN NHẤT ---
         function viewNews(url) {
-            // Mở link bằng trình duyệt mặc định (Safari/Chrome)
-            // Đảm bảo hoạt động 100% trên mọi thiết bị
             Telegram.WebApp.openLink(url);
+        }
+
+        function applyChartTheme() {
+            const chartDivs = document.querySelectorAll('.plotly-graph-div');
+            if (!chartDivs.length) return;
+
+            const scheme = Telegram.WebApp.colorScheme;
+            const style = getComputedStyle(document.body);
+            const textColor = style.getPropertyValue('--text-color').trim();
+            const hintColor = style.getPropertyValue('--hint-color').trim();
+            const gridColor = (scheme === 'dark') ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
+
+            const update = {
+                'font.color': textColor,
+                'xaxis.gridcolor': gridColor,
+                'yaxis.gridcolor': gridColor,
+                'xaxis.tickfont.color': hintColor,
+                'yaxis.tickfont.color': hintColor
+            };
+
+            chartDivs.forEach(div => Plotly.relayout(div, update));
         }
 
         // Hàm toggle view cũ
