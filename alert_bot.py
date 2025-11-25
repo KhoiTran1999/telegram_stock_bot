@@ -2880,7 +2880,6 @@ async def alert_loop():
 async def stock_broadcast_loop():
     """
     (TÁC VỤ 3 - BROADCASTER STOCK)
-    - Đã thêm check BOT_ACTIVE để chặn tin tồn đọng khi tắt bot.
     """
     log.info("[BCASTER_STOCK] Bắt đầu. Chờ tin nhắn trong queue...")
     
@@ -2889,20 +2888,34 @@ async def stock_broadcast_loop():
             # Chờ Ticker đẩy tin nhắn vào
             item = await _stock_broadcast_queue.get()
             
-            # 🔥 CHẶN TẠI ĐÂY: Nếu bot tắt, hủy bỏ tin nhắn này luôn
             if not BOT_ACTIVE:
                 _stock_broadcast_queue.task_done()
                 continue
 
             chat_id = item.get("chat_id")
             body = item.get("body")
+            # --- LẤY MARKUP TỪ QUEUE ---
+            markup_obj = item.get("markup") 
             
             if not chat_id or not body:
                 _stock_broadcast_queue.task_done()
                 continue
             
-            # Gửi tin nhắn (đã gán msg_type='STOCK_ALERT')
-            await asyncio.to_thread(send_msg_to, chat_id, body, "Markdown", False, "STOCK_ALERT")
+            # --- CHUYỂN MARKUP SANG JSON STRING ---
+            # Vì send_msg_to dùng requests (HTTP request thuần), 
+            # ta phải convert object InlineKeyboardMarkup thành JSON string.
+            markup_json = markup_obj.to_json() if markup_obj else None
+
+            # Gửi tin nhắn kèm reply_markup
+            await asyncio.to_thread(
+                send_msg_to, 
+                chat_id, 
+                body, 
+                "Markdown", 
+                False, 
+                "STOCK_ALERT",
+                markup_json  # <--- Truyền vào đây
+            )
 
             _stock_broadcast_queue.task_done()
             await asyncio.sleep(0.1)
@@ -4686,13 +4699,14 @@ async def reply_md(update: Update, text: str, **kwargs):
         return await _send(safe_text)
 
 
-def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False, msg_type: str = 'GENERAL'):
+# Thêm tham số reply_markup vào cuối
+def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False, msg_type: str = 'GENERAL', reply_markup: str | None = None):
     """
-    Gửi tin nhắn Telegram, có hỗ trợ msg_type để phân loại rác.
+    Gửi tin nhắn Telegram, có hỗ trợ msg_type và reply_markup (nút bấm).
     """
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    def _do_send(t: str, mode: str | None, silent_flag: bool):
+    def _do_send(t: str, mode: str | None, silent_flag: bool, r_markup: str | None):
         params = {
             "chat_id": chat_id,
             "text": t,
@@ -4701,13 +4715,18 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", si
             params["parse_mode"] = mode
         if silent_flag:
             params["disable_notification"] = True
+        
+        # --- THÊM ĐOẠN NÀY ---
+        if r_markup:
+            params["reply_markup"] = r_markup
+        # ---------------------
 
         res = requests.get(url, params=params, timeout=10)
         return res.json()
 
     try:
         # Lần 1: gửi nguyên văn
-        data = _do_send(text, parse_mode, silent)
+        data = _do_send(text, parse_mode, silent, reply_markup) # <--- Truyền reply_markup vào
 
         # Nếu lỗi do Markdown -> escape và gửi lại
         if (
@@ -4717,11 +4736,11 @@ def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", si
             and "can't parse entities" in data["description"].lower()
         ):
             safe_text = escape_markdown_v2(text)
-            data = _do_send(safe_text, parse_mode, silent)
+            # Lần 2: Retry cũng phải kèm nút bấm
+            data = _do_send(safe_text, parse_mode, silent, reply_markup) 
 
         if data.get("ok") and "result" in data:
             msg_id = data["result"]["message_id"]
-            # 🔥 LƯU LOẠI TIN NHẮN VÀO DB 🔥
             save_bot_message(chat_id, msg_id, msg_type)
         else:
             log.warning(f"[WARN] Telegram send failed: {data}")
