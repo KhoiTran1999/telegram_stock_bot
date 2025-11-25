@@ -1482,6 +1482,15 @@ EOD_HTML_TEMPLATE = r"""
         Telegram.WebApp.expand();
         window.addEventListener('load', function() { 
             document.body.classList.add('loaded'); 
+
+            const aiContent = document.querySelector('.ai-content');
+            if (aiContent) {
+                // Chuyển **text** thành <b>text</b>
+                aiContent.innerHTML = aiContent.innerHTML
+                    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+                    .replace(/\*(.*?)\*/g, '<i>$1</i>'); // (Tuỳ chọn) Xử lý thêm in nghiêng
+            }
+            
             // Cần resize lại Plotly khi mở modal.
             Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
         });

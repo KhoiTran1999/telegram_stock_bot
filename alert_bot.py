@@ -1211,18 +1211,19 @@ async def call_gemini_eod_insight(market_data: dict) -> str:
     Hãy phân tích dữ liệu kết phiên hôm nay:
     {json.dumps(market_data, ensure_ascii=False)}
 
-    Yêu cầu nội dung (Tối đa 100-120 từ):
+    Yêu cầu nội dung (Tối đa 200 từ):
     1. 🎯 Bắt mạch thị trường: Nhận định xu hướng dựa trên sự tăng giảm Điểm số và Khối lượng (Volume).
        - Giá tăng + Vol tăng => Tiền vào mạnh?
        - Giá tăng + Vol thấp => Kéo rướn/Xanh vỏ đỏ lòng?
        - Giá giảm + Vol cao => Xả hàng/Phân phối?
        - Giá giảm + Vol thấp => Tiết cung/Cạn lực bán?
-    2. 🌪️ Tâm lý: Đánh giá tâm lý đám đông (Hưng phấn, Sợ hãi hay Thận trọng).
+    2. 🔥 Một chút đánh giá về Vĩ mô hiện tại.
+    3. 🌪️ Tâm lý: Đánh giá tâm lý đám đông (Hưng phấn, Sợ hãi hay Thận trọng).
     3. 💡 Hành động ngày mai: Đưa ra "Key Action" ngắn gọn (VD: "Canh chốt lời", "Mua thăm dò", "Quan sát mốc X", "Ngồi im giữ tiền").
 
     Yêu cầu văn phong:
     - Giọng văn "bụi bặm", chuyên nghiệp kiểu dân trader (dùng từ như: rút chân, nổ vol, cạn cung, fomo, bull trap...).
-    - Dùng emoji sinh động để nhấn mạnh (📈, 📉, 🛡️, 💣, 💎).
+    - Dùng emoji sinh động để nhấn mạnh.
 
     OUTPUT JSON FORMAT:
     {{ "ai_comment": "Nội dung nhận định..." }}
