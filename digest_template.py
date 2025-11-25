@@ -11,7 +11,7 @@ DIGEST_HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
-            /* Biến Theme chính */
+            /* --- Biến Theme Chung (Light Mode Mặc định) --- */
             --bg-color: var(--tg-theme-bg-color, #f2f2f7);
             --text-color: var(--tg-theme-text-color, #000);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
@@ -19,33 +19,58 @@ DIGEST_HTML_TEMPLATE = """
             --accent-color: var(--tg-theme-button-color, #007aff);
             --border-color: rgba(0,0,0,0.05);
 
-            /* Màu cho các badge/vùng nhấn mạnh */
+            /* Badge Colors */
             --success-bg: rgba(52, 199, 89, 0.15); --success-text: #34c759;
             --warning-bg: rgba(255, 204, 0, 0.15); --warning-text: #d48806;
             --danger-bg: rgba(255, 59, 48, 0.15);  --danger-text: #ff3b30;
             --info-bg-light: rgba(0,122,255,0.05); 
-            --metric-bg: var(--bg-color); 
             
-            /* Màu Định giá LIGHT */
-            --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
-            --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
-            --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
+            /* --- Màu Định giá (Rankings) - Light Mode --- */
+            --metric-bg: #f9fafb; /* Nền ô chỉ số sáng */
+            
+            /* Rank 1 (Gold) */
+            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); 
+            --r1-border: #fbbf24; 
+            --r1-shadow: rgba(245, 158, 11, 0.25);
+            
+            /* Rank 2 (Silver) */
+            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); 
+            --r2-border: #9ca3af; 
+            --r2-shadow: rgba(156, 163, 175, 0.2);
+            
+            /* Rank 3 (Bronze) */
+            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); 
+            --r3-border: #fdba74; 
+            --r3-shadow: rgba(234, 88, 12, 0.15);
         }
         
-        /* Dark Mode Overrides */
+        /* --- Dark Mode Overrides (ĐÃ FIX LỖI MÀU GẮT) --- */
         @media (prefers-color-scheme: dark) {
             :root {
                 --border-color: rgba(255,255,255,0.1);
-                --metric-bg: rgba(255, 255, 255, 0.05);
                 --info-bg-light: rgba(0,122,255,0.15); 
 
                 --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
                 --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
                 --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
 
-                --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
-                --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
-                --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
+                /* Nền ô chỉ số trong suốt nhẹ để hòa vào nền tối */
+                --metric-bg: rgba(255, 255, 255, 0.05); 
+
+                /* Rank 1 (Gold Dark) - Gradient tối dần */
+                --r1-bg: linear-gradient(160deg, rgba(251, 191, 36, 0.15) 0%, rgba(0,0,0,0) 100%);
+                --r1-border: #b45309; 
+                --r1-shadow: rgba(0,0,0,0); 
+
+                /* Rank 2 (Silver Dark) */
+                --r2-bg: linear-gradient(160deg, rgba(255, 255, 255, 0.1) 0%, rgba(0,0,0,0) 100%);
+                --r2-border: #4b5563; 
+                --r2-shadow: rgba(0,0,0,0);
+
+                /* Rank 3 (Bronze Dark) */
+                --r3-bg: linear-gradient(160deg, rgba(253, 186, 116, 0.15) 0%, rgba(0,0,0,0) 100%);
+                --r3-border: #7c2d12; 
+                --r3-shadow: rgba(0,0,0,0);
             }
         }
 
@@ -67,31 +92,21 @@ DIGEST_HTML_TEMPLATE = """
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
 
-        /* Custom Badges */
+        /* Badges */
         .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
         .st-badge.act-buy { background: var(--success-bg); color: var(--success-text); }
         .st-badge.act-sell { background: var(--danger-bg); color: var(--danger-text); }
         .st-badge.act-hold { background: var(--warning-bg); color: var(--warning-text); }
         
-        /* AI Insight Card */
-        .ai-hot-topic { 
-            background: var(--info-bg-light); 
-            border-radius: 12px; padding: 12px; margin-bottom: 16px; 
-        }
+        /* AI Insight */
+        .ai-hot-topic { background: var(--info-bg-light); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
         .ai-hot-title { font-weight:700; color:var(--accent-color); margin-bottom:8px; font-size:12px; text-transform: uppercase; }
         .ai-hot-text a { text-decoration:none; color:inherit; }
         .ai-hot-text a:hover { text-decoration: underline; }
         .ai-macro-title { font-weight:700; color:var(--hint-color); margin:16px 0 8px 0; font-size:12px; text-transform: uppercase; }
-        
-        /* 🔥 FIX CHÍNH: Buộc link macro phải kế thừa màu chữ chính */
         .ai-macro-text a { text-decoration:none; color:inherit; } 
-        
         .ai-corp-header { font-weight:800; color:var(--hint-color); margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid var(--border-color); padding-bottom: 6px; display:flex; align-items:center; gap:6px; }
-        .ai-comment-box { 
-            margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; 
-            border-top: 1px solid var(--border-color); padding-top: 12px; 
-            background:var(--bg-color); padding:12px; border-radius:8px; 
-        }
+        .ai-comment-box { margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; border-top: 1px solid var(--border-color); padding-top: 12px; background:var(--bg-color); padding:12px; border-radius:8px; }
         
         .ai-corp-item { padding: 10px 0; border-bottom: 1px solid var(--border-color); display: flex; align-items: flex-start; gap: 10px; }
         .ai-corp-item:last-child { border-bottom: none; }
@@ -111,43 +126,50 @@ DIGEST_HTML_TEMPLATE = """
         .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
         
         /* Locked Feature */
-        .list-item.locked { 
-            position: relative; 
-            background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); 
-            cursor: default; 
-        }
+        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); cursor: default; }
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
-        .lock-overlay { 
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; 
-            align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; 
-        }
-        @media (prefers-color-scheme: dark) {
-             .lock-overlay { background: rgba(0, 0, 0, 0.7); }
-        }
-        .lock-btn { 
-            background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; 
-            border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; 
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; 
-        }
+        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
+        @media (prefers-color-scheme: dark) { .lock-overlay { background: rgba(0, 0, 0, 0.7); } }
+        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; }
 
-        /* Định giá Card (Sử dụng biến theme) */
+        /* --- Định giá Card (Đã Fix Dark Mode) --- */
         .screener-card {
             border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
-            border: 1px solid var(--metric-border); box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            /* Viền thẻ sử dụng màu rX-border đã được điều chỉnh cho từng theme */
             background: var(--card-bg);
         }
-        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 8px 20px -5px var(--r1-shadow); z-index: 2; }
+        
+        /* Rank 1 */
+        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 4px 15px var(--r1-shadow); z-index: 2; }
         .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4); border: 2px solid var(--card-bg); color: #fff;}
         .card-rank-1::before { content: '👑'; position: absolute; top: -12px; left: 8px; font-size: 20px; transform: rotate(-15deg); z-index: 3; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1)); }
-        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 8px 20px -5px var(--r2-shadow); }
+        
+        /* Rank 2 */
+        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 4px 15px var(--r2-shadow); }
         .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.3); border: 2px solid var(--card-bg); color: var(--text-color); }
-        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 8px 20px -5px var(--r3-shadow); }
+        
+        /* Rank 3 */
+        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 4px 15px var(--r3-shadow); }
         .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid var(--card-bg); color: #fff;}
+        
         .rank-other { background: var(--metric-bg); color: var(--hint-color); font-family: 'Manrope', sans-serif; }
         
-        .screener-card-header { border-bottom: 1px dashed var(--border-color); }
-        .symbol-name { font-weight: 800; color: var(--text-color); }
-        .metric-box { background: var(--metric-bg); border: 1px solid var(--border-color); }
+        .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--border-color); opacity: 0.9; }
+        .symbol-wrap { display: flex; align-items: center; gap: 10px; }
+        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 8px; font-family: 'Oswald', sans-serif; font-weight: 700; width: 28px; height: 28px; font-size: 14px;}
+        .symbol-name { font-size: 18px; font-weight: 800; color: var(--text-color); letter-spacing: -0.5px; }
+        .signal-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
+        .sig-cheap { background: var(--success-bg); color: var(--success-text); }
+        .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
+        .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
+
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--border-color); }
+        .m-label { font-size: 10px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
+        .m-row { display: flex; justify-content: space-between; align-items: baseline; }
+        .m-curr { font-size: 15px; font-weight: 800; color: var(--text-color); }
+        .m-avg { font-size: 11px; color: var(--hint-color); font-weight: 500; }
+        .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
         .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
 
         .premium-card { background: linear-gradient(135deg, var(--accent-color) 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
@@ -355,7 +377,6 @@ DIGEST_HTML_TEMPLATE = """
 
         // --- HÀM MỞ LINK CƠ BẢN NHẤT ---
         function viewNews(url) {
-            // Mở link bằng trình duyệt mặc định (Safari/Chrome)
             Telegram.WebApp.openLink(url);
         }
 
@@ -393,6 +414,7 @@ DIGEST_HTML_TEMPLATE = """
 </body>
 </html>
 """
+
 
 DIGEST_404_TEMPLATE = r"""
 <!DOCTYPE html>
