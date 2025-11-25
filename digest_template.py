@@ -1,4 +1,3 @@
-
 DIGEST_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -7,7 +6,6 @@ DIGEST_HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>StockBot Digest</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
@@ -27,7 +25,7 @@ DIGEST_HTML_TEMPLATE = """
             --info-bg-light: rgba(0,122,255,0.05); 
             
             /* --- Màu Định giá (Rankings) - Light Mode --- */
-            --metric-bg: #f9fafb; /* Nền ô chỉ số sáng */
+            --metric-bg: #f9fafb; 
             
             /* Rank 1 (Gold) */
             --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); 
@@ -43,35 +41,40 @@ DIGEST_HTML_TEMPLATE = """
             --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); 
             --r3-border: #fdba74; 
             --r3-shadow: rgba(234, 88, 12, 0.15);
+
+            /* Rank 4+ */
+            --rank-other-bg: #e5e7eb;
+            --rank-other-text: #374151;
         }
         
-        /* --- Dark Mode Overrides (FIXED HIGH CONTRAST) --- */
+        /* --- Dark Mode Overrides --- */
         @media (prefers-color-scheme: dark) {
             :root {
-                --border-color: rgba(255,255,255,0.15); /* Viền sáng hơn để nổi khối */
+                --border-color: rgba(255,255,255,0.15);
                 --info-bg-light: rgba(10, 132, 255, 0.15); 
 
                 --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
                 --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
                 --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
 
-                /* 🔥 FIX: Nền ô chỉ số sáng hơn nền card một chút để tạo độ sâu */
+                /* Nền ô chỉ số sáng hơn nền card một chút để tạo độ nổi */
                 --metric-bg: #2c2c2e; 
 
-                /* Rank 1 (Gold Dark) - Gradient đậm đà */
+                /* Rank 1 (Gold Dark) */
                 --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
-                --r1-border: #fbbf24; 
-                --r1-shadow: rgba(251, 191, 36, 0.1); 
+                --r1-border: #fbbf24; --r1-shadow: rgba(251, 191, 36, 0.1); 
 
                 /* Rank 2 (Silver Dark) */
                 --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
-                --r2-border: #9ca3af; 
-                --r2-shadow: rgba(255,255,255,0.05);
+                --r2-border: #9ca3af; --r2-shadow: rgba(255,255,255,0.05);
 
                 /* Rank 3 (Bronze Dark) */
                 --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
-                --r3-border: #fb923c; 
-                --r3-shadow: rgba(251, 146, 60, 0.1);
+                --r3-border: #fb923c; --r3-shadow: rgba(251, 146, 60, 0.1);
+
+                /* Rank 4+ (Dark) */
+                --rank-other-bg: rgba(255,255,255,0.1);
+                --rank-other-text: #d1d5db;
             }
         }
 
@@ -83,44 +86,40 @@ DIGEST_HTML_TEMPLATE = """
         }
         body.loaded { visibility: visible; opacity: 1; }
 
+        /* HEADER Styles */
         .header { text-align: center; margin-bottom: 32px; }
         .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 12px; }
         .header-title { font-size: 32px; font-weight: 800; margin: 0; background: linear-gradient(135deg, #007aff 0%, #af52de 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .pro-badge { background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); color: white; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 8px; display: inline-flex; transform: translateY(-2px); }
         
+        /* CARD Styles */
         .section-card { background-color: var(--card-bg); border-radius: 16px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; }
         .card-header { padding: 16px 16px 10px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-color); }
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
 
-        /* Custom Badges */
+        /* BADGES */
         .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
         .st-badge.act-buy { background: var(--success-bg); color: var(--success-text); }
         .st-badge.act-sell { background: var(--danger-bg); color: var(--danger-text); }
         .st-badge.act-hold { background: var(--warning-bg); color: var(--warning-text); }
         
-        /* AI Insight Card */
-        .ai-hot-topic { 
-            background: var(--info-bg-light); 
-            border-radius: 12px; padding: 12px; margin-bottom: 16px; 
-        }
+        /* AI INSIGHT */
+        .ai-hot-topic { background: var(--info-bg-light); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
         .ai-hot-title { font-weight:700; color:var(--accent-color); margin-bottom:8px; font-size:12px; text-transform: uppercase; }
         .ai-hot-text a { text-decoration:none; color:inherit; }
         .ai-hot-text a:hover { text-decoration: underline; }
+        
         .ai-macro-title { font-weight:700; color:var(--hint-color); margin:16px 0 8px 0; font-size:12px; text-transform: uppercase; }
         .ai-macro-text a { text-decoration:none; color:inherit; } 
-        .ai-corp-header { font-weight:800; color:var(--hint-color); margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid var(--border-color); padding-bottom: 6px; display:flex; align-items:center; gap:6px; }
-        .ai-comment-box { 
-            margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; 
-            border-top: 1px solid var(--border-color); padding-top: 12px; 
-            background:var(--bg-color); padding:12px; border-radius:8px; 
-        }
         
+        .ai-corp-header { font-weight:800; color:var(--hint-color); margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid var(--border-color); padding-bottom: 6px; display:flex; align-items:center; gap:6px; }
+        .ai-comment-box { margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; border-top: 1px solid var(--border-color); padding-top: 12px; background:var(--bg-color); padding:12px; border-radius:8px; }
         .ai-corp-item { padding: 10px 0; border-bottom: 1px solid var(--border-color); display: flex; align-items: flex-start; gap: 10px; }
         .ai-corp-item:last-child { border-bottom: none; }
         .ai-corp-ticker { background-color: rgba(0,122,255,0.1); color: #007aff; font-weight: 700; font-size: 11px; padding: 2px 6px; border: 1px solid rgba(0,122,255,0.2); }
         
-        /* List Item */
+        /* LIST ITEMS */
         .list-item { padding: 14px 16px; border-bottom: 1px solid var(--border-color); display: block; text-decoration: none; color: inherit; cursor: pointer; }
         .list-item:active { background-color: rgba(0,0,0,0.05); }
         .list-item:last-child { border-bottom: none; }
@@ -133,31 +132,18 @@ DIGEST_HTML_TEMPLATE = """
         .action-area { padding: 10px; text-align: center; border-top: 1px solid var(--border-color); }
         .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
         
-        /* Locked Feature */
-        .list-item.locked { 
-            position: relative; 
-            background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); 
-            cursor: default; 
-        }
+        /* LOCKED CONTENT */
+        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); cursor: default; }
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
-        .lock-overlay { 
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; 
-            align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; 
-        }
-        @media (prefers-color-scheme: dark) {
-             .lock-overlay { background: rgba(0, 0, 0, 0.7); }
-        }
-        .lock-btn { 
-            background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; 
-            border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; 
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; 
-        }
+        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
+        @media (prefers-color-scheme: dark) { .lock-overlay { background: rgba(0, 0, 0, 0.7); } }
+        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; }
 
-        /* --- Định giá Card (NEW FIXED STYLE) --- */
+        /* --- SCREENER CARD (Fix Darkmode & Layout) --- */
         .screener-card {
             border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
             background: var(--card-bg);
-            border: 1px solid var(--border-color); /* Luôn có viền mỏng */
+            border: 1px solid var(--border-color);
             box-shadow: 0 2px 4px rgba(0,0,0,0.02);
         }
         
@@ -174,8 +160,14 @@ DIGEST_HTML_TEMPLATE = """
         .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 4px 15px var(--r3-shadow); }
         .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid var(--card-bg); color: #fff;}
         
-        /* Rank 4+ */
-        .rank-other { background: var(--metric-bg); color: var(--hint-color); font-family: 'Manrope', sans-serif; }
+        /* Rank 4+ (Fix số hiển thị) */
+        .rank-other { 
+            background: var(--rank-other-bg); 
+            color: var(--rank-other-text); 
+            font-size: 13px; border-radius: 8px; width: 26px; height: 26px; 
+            font-family: 'Manrope', sans-serif; font-weight: 800; 
+            display: flex; align-items: center; justify-content: center;
+        }
         
         .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--border-color); opacity: 0.9; }
         .symbol-wrap { display: flex; align-items: center; gap: 10px; }
@@ -195,61 +187,18 @@ DIGEST_HTML_TEMPLATE = """
         .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
         .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
 
+        /* PREMIUM & FOOTER */
         .premium-card { background: linear-gradient(135deg, var(--accent-color) 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
         .premium-btn { display: block; width: 100%; padding: 15px; background-color: var(--card-bg); color: var(--accent-color); border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
+        .btn-close-simple { padding: 12px 40px; background: var(--text-color); color: var(--bg-color); border: none; border-radius: 12px; font-weight: 600; cursor: pointer; }
     </style>
 </head>
 <body>
-    <div class="header-row">
-        <div class="header-title">Báo Cáo Danh Mục {% if is_pro %}<span class="pro-badge">PRO 👑</span>{% endif %}</div>
-        <div class="header-time">Cập nhật lúc: {{ generated_at }}</div>
+    <div class="header">
+        <div class="date-badge"><span>🗓️</span> {{ date_str }}</div>
+        <div class="header-title">Daily Digest</div>
+        {% if data.is_pro %}<span class="pro-badge">PRO MEMBER 👑</span>{% endif %}
     </div>
-
-    <div class="score-card">
-        <div class="score-val">{{ data.portfolio_health_score }}</div>
-        <div class="score-label">Điểm Sức Khỏe</div>
-        <div class="score-sub">Đánh giá tiềm năng danh mục</div>
-    </div>
-
-    <div class="market-card">
-        <div class="market-title">NHẬN ĐỊNH THỊ TRƯỜNG</div>
-        <div class="market-text">{{ data.general_market_comment }}</div>
-    </div>
-
-    <div style="margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--hint-color); text-transform: uppercase; letter-spacing: 0.5px;">Chi tiết cổ phiếu</div>
-    
-    {% for stock in data.stocks %}
-    <div class="stock-card">
-        <div class="st-header">
-            <div>
-                <span class="st-symbol">{{ stock.symbol }}</span>
-                <span class="st-industry">{{ stock.industry }}</span>
-            </div>
-            {% set act = stock.action | lower %}
-            {% set badge_class = 'act-neutral' %}
-            {% if 'mua' in act or 'tăng' in act %} {% set badge_class = 'act-buy' %}
-            {% elif 'giữ' in act or 'nắm' in act %} {% set badge_class = 'act-hold' %}
-            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %} {% set badge_class = 'act-sell' %}
-            {% endif %}
-            <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
-        </div>
-        
-        {% if stock.chart_html %}
-        <div class="chart-mini-wrapper">
-            {{ stock.chart_html | safe }}
-        </div>
-        {% endif %}
-        
-        <div class="st-analysis">{{ stock.analysis }}</div>
-        
-        {% if stock.key_metrics %}
-        <div class="st-metrics">
-            <span class="st-metrics-icon">📊</span> 
-            <span><b>Metrics:</b> {{ stock.key_metrics }}</span>
-        </div>
-        {% endif %}
-    </div>
-    {% endfor %}
 
     {% if data.ai_news %}
     <div class="section-card">
@@ -420,15 +369,26 @@ DIGEST_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <div class="footer">Dữ liệu được phân tích tự động bởi AI (Gemini).<br>Không phải khuyến nghị đầu tư tài chính.</div>
-    <button class="btn-close" onclick="Telegram.WebApp.close()">Đóng Báo Cáo</button>
+    {% if not data.is_pro %}
+    <div class="premium-card">
+        <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Mở khóa toàn bộ sức mạnh 🚀</div>
+        <div style="font-size:13px; opacity:0.9; margin-bottom:20px;">
+            • Xem chi tiết BCTC ngay khi công bố<br>
+            • Đọc báo cáo phân tích chuyên sâu<br>
+            • Sử dụng Bộ lọc Value Realtime
+        </div>
+        <button class="premium-btn" onclick="Telegram.WebApp.close()">🔥 Gõ /upgrade ngay</button>
+    </div>
+    {% else %}
+    <div style="text-align:center; margin-top:30px;">
+        <button class="btn-close-simple" onclick="Telegram.WebApp.close()">Đóng</button>
+    </div>
+    {% endif %}
 
     <script>
         Telegram.WebApp.expand();
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
-            applyChartTheme();
-            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
             Telegram.WebApp.ready();
         });
 
@@ -436,28 +396,6 @@ DIGEST_HTML_TEMPLATE = """
             Telegram.WebApp.openLink(url);
         }
 
-        function applyChartTheme() {
-            const chartDivs = document.querySelectorAll('.plotly-graph-div');
-            if (!chartDivs.length) return;
-
-            const scheme = Telegram.WebApp.colorScheme;
-            const style = getComputedStyle(document.body);
-            const textColor = style.getPropertyValue('--text-color').trim();
-            const hintColor = style.getPropertyValue('--hint-color').trim();
-            const gridColor = (scheme === 'dark') ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
-
-            const update = {
-                'font.color': textColor,
-                'xaxis.gridcolor': gridColor,
-                'yaxis.gridcolor': gridColor,
-                'xaxis.tickfont.color': hintColor,
-                'yaxis.tickfont.color': hintColor
-            };
-
-            chartDivs.forEach(div => Plotly.relayout(div, update));
-        }
-
-        // Hàm toggle view cũ
         function toggleSection(cardId, btn, total, limit) {
             const card = document.getElementById(cardId);
             const hiddenItems = card.querySelectorAll('.hidden-item');
