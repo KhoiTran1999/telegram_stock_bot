@@ -813,69 +813,65 @@ def _clean_vnstock_columns(df):
 async def calculate_historical_valuation_task():
     """
     TÁC VỤ NẶNG: Tính trung bình P/E, P/B 5 năm cho toàn thị trường.
-    Nên chạy 1 lần/ngày vào buổi sáng (ví dụ 7:00).
+    Đã FIX: Áp dụng _clean_vnstock_columns để xử lý MultiIndex.
     """
     log.info(f"[{INSTANCE_ID}] 🧮 Bắt đầu tính toán định giá lịch sử (Mean Reversion)...")
     
+    # 1. BỌC TRY/EXCEPT TỔNG QUÁT ĐỂ NGĂN TASK SẬP
     try:
         # 1. Lấy danh sách mã (Lọc sơ bộ để giảm tải)
-        # Lấy toàn bộ mã từ Screener trước
         screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
-        # --- 🔥 [FIX] BỘ LỌC CỐT LÕI ---
-        # market_cap: Đơn vị Tỷ VNĐ
-        # total_trading_value: Đơn vị Tỷ VNĐ (trong Screener của vnstock)
-        
-        MIN_MARKET_CAP = 5000  # 5000 Tỷ
-        MIN_TRADING_VAL = 10   # 10 Tỷ/phiên (TB 20 phiên hoặc phiên gần nhất)
-        
-        # Ép kiểu số để tránh lỗi so sánh
+        # --- LOGIC LỌC CƠ SỞ (Giữ nguyên) ---
+        MIN_MARKET_CAP = 5000 
+        MIN_TRADING_VAL = 10 
         screener['market_cap'] = pd.to_numeric(screener['market_cap'], errors='coerce').fillna(0)
-        
-        # Kiểm tra tên cột thanh khoản (có thể là 'total_trading_value' hoặc 'avg_trading_value_20d')
         liq_col = 'total_trading_value'
         if 'avg_trading_value_20d' in screener.columns:
-            liq_col = 'avg_trading_value_20d' # Ưu tiên dùng TB 20 phiên cho chuẩn
-            
+            liq_col = 'avg_trading_value_20d' 
         screener[liq_col] = pd.to_numeric(screener[liq_col], errors='coerce').fillna(0)
 
-        # Lọc: Vốn hóa > 5000 tỷ & Thanh khoản > 10 tỷ
         valid_df = screener[
             (screener['market_cap'] >= MIN_MARKET_CAP) & 
             (screener[liq_col] >= MIN_TRADING_VAL)
         ]
-        
         valid_tickers = valid_df['ticker'].tolist()
-        
         log.info(f"[{INSTANCE_ID}] Tìm thấy {len(valid_tickers)} mã đủ tiêu chuẩn (Vốn hóa > {MIN_MARKET_CAP} tỷ, GTGD > {MIN_TRADING_VAL} tỷ).")
         
         history_data = {}
-        
-        # 2. Loop và tính toán (ĐÃ TĂNG DELAY AN TOÀN)
         count = 0
-        consecutive_errors = 0 # Đếm số lỗi liên tiếp
+        consecutive_errors = 0 
 
+        # 2. Loop và tính toán
         for i, sym in enumerate(valid_tickers):
-            # 🔥 [RATE LIMIT] Nghỉ dài hơn sau mỗi 20 mã để server "thở"
+            
+            # 🔥 [RATE LIMIT] Nghỉ dài hơn sau mỗi 20 mã
             if i > 0 and i % 20 == 0:
-                log.info(f"[{INSTANCE_ID}] 💤 Đã xử lý {i} mã. Nghỉ 3s để tránh Rate Limit...")
-                await asyncio.sleep(3)
+                log.info(f"[{INSTANCE_ID}] 💤 Đã xử lý {i} mã. Nghỉ 5s để tránh Rate Limit...")
+                await asyncio.sleep(5) 
 
-            # 🔥 [RATE LIMIT] Nếu gặp lỗi liên tiếp > 5 lần (bị chặn IP), nghỉ cực lâu
+            # 🔥 [RATE LIMIT] Nếu gặp lỗi liên tiếp > 5 lần (bị chặn IP)
             if consecutive_errors > 5:
-                log.warning(f"[{INSTANCE_ID}] ⚠️ Phát hiện bị chặn liên tục. Ngủ 60s để cooldown...")
-                await asyncio.sleep(60)
-                consecutive_errors = 0 # Reset bộ đếm
+                log.warning(f"[{INSTANCE_ID}] ⚠️ Phát hiện bị chặn liên tục. Ngủ 120s để cooldown...")
+                await asyncio.sleep(120) 
+                consecutive_errors = 0 
 
+            # BỌC TRY/EXCEPT TỪNG MÃ
             try:
-                # Gọi Finance lấy dữ liệu năm
-                fin_df = await asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi'))
+                # Gọi Finance lấy dữ liệu năm (có timeout)
+                fin_df = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi')),
+                    timeout=30.0 
+                )
                 
                 if fin_df is not None and not fin_df.empty:
-                    fin_df = _clean_vnstock_columns(fin_df)
-                    df_5y = fin_df.head(5) # 5 năm gần nhất
                     
-                    # Ép kiểu số
+                    # 🔥🔥🔥 FIX: GỌI HÀM LÀM SẠCH CỘT Ở ĐÂY 🔥🔥🔥
+                    fin_df = _clean_vnstock_columns(fin_df) 
+                    
+                    df_5y = fin_df.head(5) 
+                    
+                    # Ép kiểu số (Tên cột đã được làm sạch thành 'pe' và 'pb')
                     pe_series = pd.to_numeric(df_5y['pe'], errors='coerce')
                     pb_series = pd.to_numeric(df_5y['pb'], errors='coerce')
                     
@@ -883,22 +879,25 @@ async def calculate_historical_valuation_task():
                     pe_series = pe_series[pe_series > 0]
                     pb_series = pb_series[pb_series > 0]
                     
-                    # Chỉ tính nếu có ít nhất 3 năm dữ liệu dương
                     if len(pe_series) >= 3 and len(pb_series) >= 3:
                         history_data[sym] = {
                             'pe_avg': pe_series.mean(),
                             'pb_avg': pb_series.mean()
                         }
                         count += 1
-                        consecutive_errors = 0 # Reset lỗi nếu thành công
+                        consecutive_errors = 0 
                 
-                # 🔥 [RATE LIMIT] Tăng delay cơ bản từ 0.1s -> 1.0s
-                # Chậm nhưng chắc, vì đây là task chạy ngầm
-                await asyncio.sleep(1)
+                # 🔥 [RATE LIMIT] Tăng delay cơ bản 
+                await asyncio.sleep(1.5) 
                 
+            except asyncio.TimeoutError:
+                consecutive_errors += 1
+                log.warning(f"Lỗi tính toán {sym}: Timeout (30s). Nghỉ 5s rồi thử mã kế tiếp.")
+                await asyncio.sleep(5.0)
+                continue
             except Exception as e:
                 consecutive_errors += 1
-                log.warning(f"Lỗi tính toán {sym}: {e}")
+                log.warning(f"Lỗi tính toán {sym} (Exception: {type(e).__name__}): {e}")
                 # Nếu lỗi từng mã lẻ tẻ, nghỉ 5s rồi thử mã kế tiếp
                 await asyncio.sleep(5.0)
                 continue
@@ -910,8 +909,10 @@ async def calculate_historical_valuation_task():
         else:
             log.warning(f"[{INSTANCE_ID}] ⚠️ Không tính được dữ liệu lịch sử nào.")
             
+    # XỬ LÝ LỖI TỔNG QUÁT (Task sẽ ngủ 120s rồi thoát khỏi hàm, không raise)
     except Exception as e:
-        log.error(f"[{INSTANCE_ID}] ❌ Lỗi task tính toán định giá: {e}")
+        log.error(f"[{INSTANCE_ID}] ❌ LỖI NGHIÊM TRỌNG (Mean Reversion Task) - Dừng 120s rồi thoát: {e}")
+        await asyncio.sleep(120)
 
 async def get_top_mean_reversion_stocks(limit=5):
     """

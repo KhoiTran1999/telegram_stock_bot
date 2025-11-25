@@ -1,3 +1,4 @@
+
 DIGEST_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -10,17 +11,49 @@ DIGEST_HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
+            /* Biến Theme chính */
             --bg-color: var(--tg-theme-bg-color, #f2f2f7);
             --text-color: var(--tg-theme-text-color, #000);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
-            --accent-color: #007aff;
+            --accent-color: var(--tg-theme-button-color, #007aff);
+            --border-color: rgba(0,0,0,0.05);
+
+            /* Màu cho các badge/vùng nhấn mạnh */
+            --success-bg: rgba(52, 199, 89, 0.15); --success-text: #34c759;
+            --warning-bg: rgba(255, 204, 0, 0.15); --warning-text: #d48806;
+            --danger-bg: rgba(255, 59, 48, 0.15);  --danger-text: #ff3b30;
+            --info-bg-light: rgba(0,122,255,0.05); 
+            --metric-bg: var(--bg-color); 
+            
+            /* Màu Định giá LIGHT */
+            --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
+            --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
+            --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
         }
         
+        /* Dark Mode Overrides */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --border-color: rgba(255,255,255,0.1);
+                --metric-bg: rgba(255, 255, 255, 0.05);
+                --info-bg-light: rgba(0,122,255,0.15); 
+
+                --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
+                --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
+                --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
+
+                --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
+                --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
+                --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
+            }
+        }
+
         body { 
             font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
             margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5;
             visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
+            -webkit-font-smoothing: antialiased;
         }
         body.loaded { visibility: visible; opacity: 1; }
 
@@ -30,83 +63,95 @@ DIGEST_HTML_TEMPLATE = """
         .pro-badge { background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); color: white; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 8px; display: inline-flex; transform: translateY(-2px); }
         
         .section-card { background-color: var(--card-bg); border-radius: 16px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; }
-        .card-header { padding: 16px 16px 10px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .card-header { padding: 16px 16px 10px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-color); }
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
+
+        /* Custom Badges */
+        .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
+        .st-badge.act-buy { background: var(--success-bg); color: var(--success-text); }
+        .st-badge.act-sell { background: var(--danger-bg); color: var(--danger-text); }
+        .st-badge.act-hold { background: var(--warning-bg); color: var(--warning-text); }
         
-        /* Item có hiệu ứng click */
-        .list-item { padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); display: block; text-decoration: none; color: inherit; cursor: pointer; }
+        /* AI Insight Card */
+        .ai-hot-topic { 
+            background: var(--info-bg-light); 
+            border-radius: 12px; padding: 12px; margin-bottom: 16px; 
+        }
+        .ai-hot-title { font-weight:700; color:var(--accent-color); margin-bottom:8px; font-size:12px; text-transform: uppercase; }
+        .ai-hot-text a { text-decoration:none; color:inherit; }
+        .ai-hot-text a:hover { text-decoration: underline; }
+        .ai-macro-title { font-weight:700; color:var(--hint-color); margin:16px 0 8px 0; font-size:12px; text-transform: uppercase; }
+        
+        /* 🔥 FIX CHÍNH: Buộc link macro phải kế thừa màu chữ chính */
+        .ai-macro-text a { text-decoration:none; color:inherit; } 
+        
+        .ai-corp-header { font-weight:800; color:var(--hint-color); margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid var(--border-color); padding-bottom: 6px; display:flex; align-items:center; gap:6px; }
+        .ai-comment-box { 
+            margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; 
+            border-top: 1px solid var(--border-color); padding-top: 12px; 
+            background:var(--bg-color); padding:12px; border-radius:8px; 
+        }
+        
+        .ai-corp-item { padding: 10px 0; border-bottom: 1px solid var(--border-color); display: flex; align-items: flex-start; gap: 10px; }
+        .ai-corp-item:last-child { border-bottom: none; }
+        .ai-corp-ticker { background-color: rgba(0,122,255,0.1); color: #007aff; font-weight: 700; font-size: 11px; padding: 2px 6px; border: 1px solid rgba(0,122,255,0.2); }
+        
+        /* List Item */
+        .list-item { padding: 14px 16px; border-bottom: 1px solid var(--border-color); display: block; text-decoration: none; color: inherit; cursor: pointer; }
         .list-item:active { background-color: rgba(0,0,0,0.05); }
         .list-item:last-child { border-bottom: none; }
         
         .item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-        .badge { background: rgba(0,0,0,0.05); font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; }
+        .badge { background: var(--metric-bg); font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; }
         .item-title { font-size: 15px; font-weight: 500; line-height: 1.4; }
         .item-meta { font-size: 12px; color: var(--hint-color); margin-top: 4px; }
         .hidden-item { display: none; }
-        .action-area { padding: 10px; text-align: center; border-top: 1px solid rgba(0,0,0,0.05); }
+        .action-area { padding: 10px; text-align: center; border-top: 1px solid var(--border-color); }
         .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
         
-        .stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .stock-table th { text-align: left; padding: 10px 16px; color: var(--hint-color); font-weight: 600; font-size: 11px; }
-        .stock-table td { padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
-        .score-badge { background: #5856d6; color: white; padding: 4px 8px; border-radius: 8px; font-weight: 700; font-size: 12px; }
-        
-        .premium-card { background: linear-gradient(135deg, #007aff 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
-        .premium-btn { display: block; width: 100%; padding: 15px; background-color: #fff; color: #007aff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
-        
-        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, #f9f9f9 10px, #f9f9f9 20px); cursor: default; }
+        /* Locked Feature */
+        .list-item.locked { 
+            position: relative; 
+            background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); 
+            cursor: default; 
+        }
         .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
-        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
-        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; transform: translateY(2px); }
-
-        /* --- CSS CHO THẺ ĐỊNH GIÁ (Ported from Screener) --- */
-        /* Định nghĩa thêm biến màu nếu chưa có */
-        :root {
-            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
-            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
-            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
-            --metric-bg: #f9fafb; --metric-border: rgba(0,0,0,0.04);
+        .lock-overlay { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; 
+            align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; 
         }
-        [data-theme="dark"] {
-            --r1-bg: linear-gradient(160deg, #1e1e1e 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
-            --r2-bg: linear-gradient(160deg, #1e1e1e 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
-            --r3-bg: linear-gradient(160deg, #1e1e1e 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
-            --metric-bg: rgba(255, 255, 255, 0.05); --metric-border: rgba(255, 255, 255, 0.1);
+        @media (prefers-color-scheme: dark) {
+             .lock-overlay { background: rgba(0, 0, 0, 0.7); }
+        }
+        .lock-btn { 
+            background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; 
+            border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; 
         }
 
-        /* Styles cho thẻ */
+        /* Định giá Card (Sử dụng biến theme) */
         .screener-card {
             border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
             border: 1px solid var(--metric-border); box-shadow: 0 2px 4px rgba(0,0,0,0.02);
             background: var(--card-bg);
         }
         .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 8px 20px -5px var(--r1-shadow); z-index: 2; }
-        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4); border: 2px solid #fff; color: #fff;}
+        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4); border: 2px solid var(--card-bg); color: #fff;}
         .card-rank-1::before { content: '👑'; position: absolute; top: -12px; left: 8px; font-size: 20px; transform: rotate(-15deg); z-index: 3; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1)); }
         .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 8px 20px -5px var(--r2-shadow); }
-        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.3); border: 2px solid #fff; color: #374151; }
+        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.3); border: 2px solid var(--card-bg); color: var(--text-color); }
         .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 8px 20px -5px var(--r3-shadow); }
-        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid #fff; color: #fff;}
-
-        .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
-        .symbol-wrap { display: flex; align-items: center; gap: 10px; }
-        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 8px; font-family: 'Oswald', sans-serif; font-weight: 700; width: 28px; height: 28px; font-size: 14px;}
-        .rank-other { background: var(--metric-bg); color: var(--text-secondary); font-family: 'Manrope', sans-serif; }
-        .symbol-name { font-size: 18px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }
-        .signal-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
-        .sig-cheap { background: var(--success-bg); color: var(--success-text); }
-        .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
-        .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
-
-        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--metric-border); }
-        .m-label { font-size: 10px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
-        .m-row { display: flex; justify-content: space-between; align-items: baseline; }
-        .m-curr { font-size: 15px; font-weight: 800; color: var(--text-primary); }
-        .m-avg { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
-        .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
+        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid var(--card-bg); color: #fff;}
+        .rank-other { background: var(--metric-bg); color: var(--hint-color); font-family: 'Manrope', sans-serif; }
+        
+        .screener-card-header { border-bottom: 1px dashed var(--border-color); }
+        .symbol-name { font-weight: 800; color: var(--text-color); }
+        .metric-box { background: var(--metric-bg); border: 1px solid var(--border-color); }
         .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
+
+        .premium-card { background: linear-gradient(135deg, var(--accent-color) 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
+        .premium-btn { display: block; width: 100%; padding: 15px; background-color: var(--card-bg); color: var(--accent-color); border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
     </style>
 </head>
 <body>
@@ -131,41 +176,41 @@ DIGEST_HTML_TEMPLATE = """
         </div>
         
         <div style="padding: 16px;">
-            <div style="background: rgba(0,122,255,0.05); border-radius: 12px; padding: 12px; margin-bottom: 16px;">
-                <div style="font-weight:700; color:#007aff; margin-bottom:8px; font-size:12px; text-transform: uppercase;">⚡ Tiêu điểm nóng</div>
+            <div class="ai-hot-topic">
+                <div class="ai-hot-title">⚡ Tiêu điểm nóng</div>
                 {% for item in data.ai_news.headline %}
-                <div style="margin-bottom:8px; font-size:14px; font-weight:600; line-height:1.4;">
-                    <a href="{{ item.link }}" style="text-decoration:none; color:inherit;">
-                        • {{ item.text }} <span style="color:#007aff; font-size:12px;">↗</span>
+                <div style="margin-bottom:8px; font-size:14px; font-weight:600; line-height:1.4;" class="ai-hot-text">
+                    <a href="{{ item.link }}">
+                        • {{ item.text }} <span style="color:var(--accent-color); font-size:12px;">↗</span>
                     </a>
                 </div>
                 {% endfor %}
             </div>
 
             {% if data.ai_news.macro %}
-            <div style="font-weight:700; color:#555; margin:16px 0 8px 0; font-size:12px; text-transform: uppercase;">🌊 Vĩ mô & Chính sách</div>
+            <div class="ai-macro-title">🌊 Vĩ mô & Chính sách</div>
             {% for item in data.ai_news.macro %}
-            <div style="margin-bottom:6px; font-size:13px;">
-                <a href="{{ item.link }}" style="text-decoration:none; color:#333;">• {{ item.text }}</a>
+            <div style="margin-bottom:6px; font-size:13px;" class="ai-macro-text">
+                <a href="{{ item.link }}">• {{ item.text }}</a>
             </div>
             {% endfor %}
             {% endif %}
 
             {% if data.ai_news.corporate %}
             <div style="margin-top: 20px;">
-                <div style="font-weight:800; color:#555; margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid #eee; padding-bottom: 6px; display:flex; align-items:center; gap:6px;">
+                <div class="ai-corp-header">
                     <span>🏢</span> TIN DOANH NGHIỆP
                 </div>
                 
                 <div class="list-container">
                     {% for item in data.ai_news.corporate %}
-                    <div class="list-item" onclick="viewNews('{{ item.link }}')" style="padding: 10px 0; border-bottom: 1px solid #f0f0f0; display: flex; align-items: flex-start; gap: 10px;">
-                        <div style="margin-top: 4px; min-width: 6px; height: 6px; background-color: #007aff; border-radius: 50%;"></div>
+                    <div class="ai-corp-item" onclick="viewNews('{{ item.link }}')">
+                        <div style="margin-top: 4px; min-width: 6px; height: 6px; background-color: var(--accent-color); border-radius: 50%;"></div>
                         
                         <div style="flex: 1;">
                             <div style="font-size:14px; line-height: 1.5; color: var(--text-color);">
                                 {% if item.ticker %}
-                                    <span style="background-color: #eef2ff; color: #007aff; font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 4px; border: 1px solid rgba(0,122,255,0.2);">{{ item.ticker }}</span>
+                                    <span class="ai-corp-ticker">{{ item.ticker }}</span>
                                 {% endif %}
                                 {{ item.text }}
                             </div>
@@ -176,7 +221,7 @@ DIGEST_HTML_TEMPLATE = """
             </div>
             {% endif %}
 
-            <div style="margin-top: 16px; font-style: italic; color: #666; font-size: 13px; border-top: 1px solid #eee; padding-top: 12px; background:#fafafa; padding:12px; border-radius:8px;">
+            <div class="ai-comment-box">
                 "{{ data.ai_news.comment }}"
             </div>
         </div>
@@ -279,7 +324,7 @@ DIGEST_HTML_TEMPLATE = """
             {% endfor %}
         </div>
         
-        <div style="padding: 12px; font-size: 11px; color: var(--text-secondary); text-align: center; background: var(--bg-color); border-bottom-left-radius: 20px; border-bottom-right-radius: 20px; opacity: 0.8;">
+        <div style="padding: 12px; font-size: 11px; color: var(--hint-color); text-align: center; background: var(--bg-color); border-bottom-left-radius: 20px; border-bottom-right-radius: 20px; opacity: 0.8;">
             *Xếp hạng dựa trên trung bình độ lệch P/E & P/B so với lịch sử 5 năm.
         </div>
     </div>
@@ -311,7 +356,6 @@ DIGEST_HTML_TEMPLATE = """
         // --- HÀM MỞ LINK CƠ BẢN NHẤT ---
         function viewNews(url) {
             // Mở link bằng trình duyệt mặc định (Safari/Chrome)
-            // Đảm bảo hoạt động 100% trên mọi thiết bị
             Telegram.WebApp.openLink(url);
         }
 
@@ -322,9 +366,7 @@ DIGEST_HTML_TEMPLATE = """
             const isExpanded = btn.getAttribute('data-expanded') === 'true';
             const hiddenCount = total - limit;
             let unit = 'mục';
-            if (cardId.includes('stocks')) unit = 'mã';
-            else if (cardId.includes('specialized') || cardId.includes('macro')) unit = 'tin';
-            else if (cardId.includes('reports')) unit = 'báo cáo';
+            if (cardId.includes('reports')) unit = 'báo cáo';
 
             if (!isExpanded) {
                 hiddenItems.forEach(item => {
@@ -925,47 +967,68 @@ SCREENER_HTML_TEMPLATE = r"""
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Định Giá Cổ Phiếu</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #f8f9fa; --card-bg: #ffffff; --text-primary: #111827; --text-secondary: #6b7280;
-            --metric-bg: rgba(249, 250, 251, 1); --metric-border: rgba(0,0,0,0.04);
-            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
-            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
-            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
+            --bg-color: var(--tg-theme-bg-color, #f8f9fa);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+            --text-primary: var(--tg-theme-text-color, #111827);
+            --text-secondary: var(--tg-theme-hint-color, #6b7280);
+            --metric-border: rgba(0,0,0,0.04);
+            
             --success-text: #059669; --success-bg: #d1fae5;
             --danger-text: #dc2626;  --danger-bg: #fee2e2;
             --warning-text: #d97706; --warning-bg: #fef3c7;
             --brand-gradient: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
             --pro-gradient: linear-gradient(135deg, #F59E0B 0%, #FCD34D 100%);
+
+            /* Màu Định giá LIGHT */
+            --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #fffbeb 100%); --r1-border: #fbbf24; --r1-shadow: rgba(245, 158, 11, 0.25);
+            --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #f3f4f6 100%); --r2-border: #9ca3af; --r2-shadow: rgba(156, 163, 175, 0.2);
+            --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #fff7ed 100%); --r3-border: #fdba74; --r3-shadow: rgba(234, 88, 12, 0.15);
+            --metric-bg: var(--bg-color); 
         }
-        [data-theme="dark"] {
-            --bg-color: #121212; --card-bg: #1e1e1e; --text-primary: #f9fafb; --text-secondary: #9ca3af;
-            --metric-bg: rgba(255, 255, 255, 0.05); --metric-border: rgba(255, 255, 255, 0.1);
-            --r1-bg: linear-gradient(160deg, #1e1e1e 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
-            --r2-bg: linear-gradient(160deg, #1e1e1e 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
-            --r3-bg: linear-gradient(160deg, #1e1e1e 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
-            --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
-            --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
-            --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
+
+        /* Dark Mode Overrides */
+        [data-theme="dark"], @media (prefers-color-scheme: dark) {
+            :root {
+                --text-primary: var(--tg-theme-text-color, #f9fafb);
+                --text-secondary: var(--tg-theme-hint-color, #9ca3af);
+                --metric-border: rgba(255, 255, 255, 0.1);
+                --metric-bg: rgba(255, 255, 255, 0.05);
+                
+                --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
+                --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
+                --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
+
+                --r1-bg: linear-gradient(160deg, var(--card-bg) 40%, #2d2606 100%); --r1-border: #b45309; --r1-shadow: rgba(245, 158, 11, 0.1);
+                --r2-bg: linear-gradient(160deg, var(--card-bg) 40%, #27272a 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
+                --r3-bg: linear-gradient(160deg, var(--card-bg) 40%, #2c1509 100%); --r3-border: #7c2d12; --r3-shadow: rgba(234, 88, 12, 0.1);
+            }
         }
+        
         body { font-family: 'Manrope', sans-serif; background-color: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px 16px 40px 16px; transition: all 0.3s ease; -webkit-font-smoothing: antialiased; }
-        .theme-toggle { position: absolute; top: 20px; right: 20px; background: var(--card-bg); border: 1px solid var(--text-secondary); color: var(--text-primary); padding: 6px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; cursor: pointer; opacity: 0.7; }
         .header { text-align: center; margin-bottom: 28px; margin-top: 10px;}
         .header-title { font-size: 26px; font-weight: 800; margin: 0; letter-spacing: -0.5px; background: var(--brand-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; display:inline-block; }
         .pro-badge { background: var(--pro-gradient); color: #fff; font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 12px; display: inline-flex; align-items: center; transform: translateY(-4px); box-shadow: 0 4px 10px rgba(245, 158, 11, 0.3); margin-left: 6px; }
         .header-subtitle { font-size: 13px; color: var(--text-secondary); font-weight: 500; margin-top: 4px; }
         .timestamp-badge { display: inline-block; margin-top: 8px; padding: 4px 10px; background: var(--metric-bg); border-radius: 12px; font-size: 11px; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--metric-border); }
-        .card { background: var(--card-bg); border-radius: 20px; padding: 18px; margin-bottom: 16px; position: relative; border: 1px solid var(--metric-border); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02); transition: transform 0.2s; }
+        
+        /* Card */
+        .card { border-radius: 20px; padding: 18px; margin-bottom: 16px; position: relative; border: 1px solid var(--metric-border); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02); transition: transform 0.2s; background: var(--card-bg); }
         .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 10px 25px -5px var(--r1-shadow); transform: scale(1.02); z-index: 10; }
-        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.5); font-size: 18px; width: 36px; height: 36px; border: 2px solid #fff; }
+        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.5); font-size: 18px; width: 36px; height: 36px; border: 2px solid var(--card-bg); }
         .card-rank-1::before { content: '👑'; position: absolute; top: -14px; left: 10px; font-size: 24px; transform: rotate(-15deg); z-index: 20; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
         .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 10px 25px -5px var(--r2-shadow); }
-        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.4); font-size: 16px; width: 32px; height: 32px; border: 2px solid #fff; color: #374151; }
+        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.4); font-size: 16px; width: 32px; height: 32px; border: 2px solid var(--card-bg); color: var(--text-primary); }
         .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 10px 25px -5px var(--r3-shadow); }
-        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); font-size: 16px; width: 32px; height: 32px; border: 2px solid #fff; }
-        .rank-other { background: #e5e7eb; color: #374151; font-size: 12px; border-radius: 8px; width: 24px; height: 24px; font-family: 'Manrope', sans-serif; font-weight: 800; }        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
+        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); font-size: 16px; width: 32px; height: 32px; border: 2px solid var(--card-bg); }
+        
+        .rank-other { background: var(--metric-bg); color: var(--text-secondary); font-size: 12px; border-radius: 8px; width: 24px; height: 24px; font-family: 'Manrope', sans-serif; font-weight: 800; }        
+        
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--text-secondary); opacity: 0.9; }
         .symbol-wrap { display: flex; align-items: center; gap: 12px; }
         .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 10px; font-family: 'Oswald', sans-serif; font-weight: 700; color: #fff; }
         .symbol { font-size: 20px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }
@@ -988,7 +1051,7 @@ SCREENER_HTML_TEMPLATE = r"""
         .algo-formula { background: var(--metric-bg); padding: 10px 14px; border-radius: 10px; font-family: monospace; font-weight: 700; font-size: 12px; color: var(--text-primary); margin: 12px 0; display: block; border-left: 4px solid #3b82f6; }
     </style>
 </head>
-<body>
+<body data-theme="light">
     <div class="header">
         <div><span class="header-title">Định Giá Cổ Phiếu</span><span class="pro-badge">PRO 👑</span></div>
         <div class="header-subtitle">Top cổ phiếu định giá Rẻ nhất so với Lịch sử</div>
@@ -1034,14 +1097,27 @@ SCREENER_HTML_TEMPLATE = r"""
 
     <script>
         Telegram.WebApp.expand();
+        
+        function applyTheme() {
+            const scheme = Telegram.WebApp.colorScheme;
+            const body = document.body;
+            body.setAttribute('data-theme', scheme);
+            
+            // Fix for rank 2/3 badges losing color in dark mode
+            const rank2 = document.querySelector('.card-rank-2 .rank-badge');
+            if(rank2) {
+                rank2.style.color = (scheme === 'dark') ? '#f9fafb' : '#374151';
+            }
+        }
+        
+        Telegram.WebApp.onEvent('themeChanged', applyTheme);
+        window.addEventListener('load', applyTheme);
+        
         function toggleExpand() {
             document.querySelectorAll('.hidden-item').forEach(i => { i.style.display = 'block'; i.style.animation = 'fadeIn 0.5s ease'; });
             document.getElementById('btnToggle').style.display = 'none';
         }
-        function toggleTheme() {
-            const html = document.documentElement;
-            html.setAttribute('data-theme', html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-        }
+        
         const style = document.createElement('style');
         style.innerHTML = `@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`;
         document.head.appendChild(style);
@@ -1153,8 +1229,6 @@ LOCKED_FEATURE_TEMPLATE = r"""
 
 #----------------------------------
 
-# digest_template.py
-
 EOD_HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="vi">
@@ -1172,16 +1246,36 @@ EOD_HTML_TEMPLATE = r"""
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
             --up-color: #34c759; --down-color: #ff3b30; --ref-color: #ffcc00;
+            --ai-bg: #e0f2fe; --ai-border: #007aff;
+            --border-color: rgba(0,0,0,0.05);
         }
-        body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; }
+        
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --ai-bg: #1c273b;
+                --ai-border: #007aff;
+                --text-color: var(--tg-theme-text-color, #fff);
+                --ai-content-color: #f0f9ff;
+                --border-color: rgba(255,255,255,0.1);
+            }
+            .ai-card { background: var(--ai-bg); }
+            .ai-content { color: var(--ai-content-color); }
+        }
+
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
         
         .header { text-align: center; margin-bottom: 20px; }
         .header-title { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
         .header-sub { font-size: 12px; color: var(--hint-color); }
 
-        .ai-card { background: linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%); border-left: 4px solid #007aff; border-radius: 16px; padding: 16px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,122,255,0.1); }
-        .ai-title { font-size: 13px; font-weight: 700; color: #007aff; margin-bottom: 6px; text-transform: uppercase; }
-        .ai-content { font-size: 14px; color: #334155; white-space: pre-line; }
+        .ai-card { 
+            background: var(--ai-bg); 
+            border-left: 4px solid var(--ai-border); 
+            border-radius: 16px; padding: 16px; margin-bottom: 20px; 
+            box-shadow: 0 4px 12px rgba(0,122,255,0.1); 
+        }
+        .ai-title { font-size: 13px; font-weight: 700; color: var(--ai-border); margin-bottom: 6px; text-transform: uppercase; }
+        .ai-content { font-size: 14px; color: var(--text-color); white-space: pre-line; }
 
         .market-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
         .m-card { background-color: var(--card-bg); border-radius: 16px; padding: 12px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04); cursor: pointer; transition: transform 0.1s; }
@@ -1192,7 +1286,7 @@ EOD_HTML_TEMPLATE = r"""
         .t-up { color: var(--up-color); } .t-down { color: var(--down-color); } .t-ref { color: var(--ref-color); }
 
         .section-card { background-color: var(--card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.04); padding: 0; }
-        .p-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        .p-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border-color); }
         .p-item:last-child { border-bottom: none; }
         .p-sym { font-size: 16px; font-weight: 700; }
         .p-market { font-size: 11px; color: var(--hint-color); }
@@ -1201,9 +1295,11 @@ EOD_HTML_TEMPLATE = r"""
         .p-price { font-size: 16px; font-weight: 600; }
         .p-badge { font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 4px; min-width: 50px; text-align: center; }
         .val-row { font-size: 11px; color: var(--hint-color); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+        
+        /* Màu badge */
         .bg-up { background: rgba(52,199,89,0.15); color: var(--up-color); }
         .bg-down { background: rgba(255,59,48,0.15); color: var(--down-color); }
-        .bg-ref { background: rgba(255,204,0,0.15); color: #d4a017; }
+        .bg-ref { background: rgba(255,204,0,0.15); color: #d4a017; } /* Màu vàng cố định vì ref không đổi */
 
         .btn-chart { background: none; border: none; padding: 4px 0 4px 8px; cursor: pointer; font-size: 16px; opacity: 0.7; }
 
@@ -1312,19 +1408,45 @@ EOD_HTML_TEMPLATE = r"""
 
     <script>
         Telegram.WebApp.expand();
-        window.addEventListener('load', function() { document.body.classList.add('loaded'); });
+        window.addEventListener('load', function() { 
+            document.body.classList.add('loaded'); 
+            // Cần resize lại Plotly khi mở modal.
+            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
+        });
+
+        function applyChartTheme() {
+            // Logic đổi màu Plotly (đã có trong _create_daily_chart)
+            const chartDivs = document.querySelectorAll('.plotly-graph-div');
+            if (!chartDivs.length) return;
+
+            const scheme = Telegram.WebApp.colorScheme;
+            const style = getComputedStyle(document.body);
+            const textColor = style.getPropertyValue('--text-color').trim();
+            const hintColor = style.getPropertyValue('--hint-color').trim();
+            const gridColor = (scheme === 'dark') ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)';
+
+            const update = {
+                'font.color': textColor,
+                'xaxis.gridcolor': gridColor,
+                'yaxis.gridcolor': gridColor,
+                'xaxis.tickfont.color': hintColor,
+                'yaxis.tickfont.color': hintColor
+            };
+
+            chartDivs.forEach(div => Plotly.relayout(div, update));
+        }
 
         function openModal(id) {
             const modal = document.getElementById('modal-' + id);
             if (modal) {
                 modal.classList.add('active');
                 
-                // 🔥 FIX CHÍNH: Trigger resize cho Plotly khi modal hiện ra
-                // Delay 50ms để đảm bảo CSS transition đã bắt đầu và container có kích thước
                 setTimeout(() => {
                     const chartDiv = modal.querySelector('.plotly-graph-div');
                     if (chartDiv && window.Plotly) {
                         Plotly.Plots.resize(chartDiv);
+                        // Trigger theme update on resize as well
+                        applyChartTheme(); 
                     }
                 }, 50);
             }
