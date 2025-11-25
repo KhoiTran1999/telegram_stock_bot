@@ -1954,6 +1954,19 @@ def get_stock_alert_enabled_map() -> dict[int, bool]:
             rows = cur.fetchall()
     return {int(r[0]): bool(r[1]) for r in rows}
 
+def get_users_with_stock_alert_off() -> set[int]:
+    """Lấy danh sách chat_id của những người ĐÃ TẮT Stock Alert"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Chỉ lấy những dòng có setting = FALSE rõ ràng
+            cur.execute("""
+                SELECT chat_id
+                FROM bot_user_settings
+                WHERE (settings ->> 'stock_alert_enabled')::boolean = FALSE
+            """)
+            rows = cur.fetchall()
+    return {int(r[0]) for r in rows}
+
 def set_stock_alert_enabled(chat_id: int, enabled: bool):
     """Cập nhật trạng thái bật/tắt Stock Alert"""
     with get_conn() as conn:

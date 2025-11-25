@@ -102,6 +102,7 @@ from db_utils import (
     get_vn30f1m_enabled_map,
     set_vn30f1m_enabled,
     get_stock_alert_enabled_map,
+    get_users_with_stock_alert_off,
     set_stock_alert_enabled,
     get_total_revenue_real,
     update_user_admin_note,
@@ -255,7 +256,7 @@ _vn30f1m_date: datetime.date | None = None
 
 # Cache danh sách User BẬT tính năng
 _vn30f1m_enabled_cache: set[int] = set() 
-_stock_alert_enabled_cache: set[int] = set() # <--- MỚI: Cache Stock Alert
+_stock_alert_disabled_cache: set[int] = set() # <--- MỚI: Cache Stock Alert
 
 def reload_vn30f1m_enabled_cache():
     """Load lại tập chat_id đang bật nhận tin VN30 từ DB vào RAM."""
@@ -264,11 +265,10 @@ def reload_vn30f1m_enabled_cache():
     _vn30f1m_enabled_cache = {cid for cid, en in mp.items() if en}
 
 def reload_stock_alert_enabled_cache():
-    """Load lại tập chat_id đang bật nhận tin Stock Alert vào RAM."""
-    global _stock_alert_enabled_cache
-    mp = get_stock_alert_enabled_map()
-    # Lưu ý: Logic ở DB là mặc định True, nên cache này sẽ chứa hầu hết user
-    _stock_alert_enabled_cache = {cid for cid, en in mp.items() if en}
+    """Load danh sách người TẮT (Blacklist)"""
+    global _stock_alert_disabled_cache
+    # Gọi hàm mới viết bên db_utils
+    _stock_alert_disabled_cache = get_users_with_stock_alert_off() # Bỏ asyncio.run nếu gọi trong hàm sync, hoặc dùng await nếu async
 
 # 🗂 Thư mục tạm dùng chung cho backup/restore (tự động phù hợp Windows / Linux)
 TMP_DIR = tempfile.gettempdir()
@@ -2696,28 +2696,22 @@ async def stock_price_fetcher_loop():
 
 async def alert_loop():
     """
-    (TÁC VỤ 2 - TICKER - FIXED)
-    - Mốc so sánh ban đầu LUÔN LÀ 0.0 (Giá tham chiếu).
-    - Báo khi giá thay đổi >= 2% so với mốc gần nhất.
-    - Đã thêm logic: Giới hạn Free User (1 mã) & Check Bật/Tắt Setting.
+    (TÁC VỤ 2 - TICKER - PRODUCTION MODE)
+    Đã dọn dẹp log debug dư thừa.
     """
     vn_tz = pytz.timezone(TIMEZONE)
-
-    log.info(f"[{INSTANCE_ID}][TICKER_STOCK] Bắt đầu. Mốc khởi tạo = GIÁ THAM CHIẾU (0%).")
+    log.info(f"[{INSTANCE_ID}][TICKER] 🚀 Bắt đầu Alert Loop (Production).")
     
-    # Load cache setting lần đầu khi khởi động loop
     reload_stock_alert_enabled_cache()
 
     while True:
         now = datetime.datetime.now(vn_tz)
 
-        # 1. Kiểm tra điều kiện chạy
+        # 1. Check điều kiện chạy
         if not BOT_ACTIVE:
-            await asyncio.sleep(30)
-            continue
+            await asyncio.sleep(30); continue
         if not in_session_vietnam():
-            await asyncio.sleep(60)
-            continue
+            await asyncio.sleep(60); continue
 
         loop_start = now
         try:
@@ -2725,153 +2719,119 @@ async def alert_loop():
             quote_cache = _stock_current_price_cache
             all_state = get_state_for_all()
 
-            if not all_watch or not quote_cache:
-                await asyncio.sleep(TICKER_INTERVAL_SECONDS)
+            # Chỉ báo Warning nếu Cache rỗng (để biết Fetcher có vấn đề không)
+            if not quote_cache:
+                log.warning(f"[{INSTANCE_ID}][TICKER] ⚠️ Quote Cache RỖNG! Chờ Fetcher...")
+                await asyncio.sleep(5)
                 continue
 
-            # Lấy danh sách Pro mới nhất để check quyền hạn
-            try:
-                pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-            except Exception:
-                pro_chat_ids = set()
+            pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids) or set()
 
+            # Duyệt qua từng user
             for chat_key, user_block in all_watch.items():
                 try:
                     chat_id = int(chat_key)
-                except Exception:
-                    continue
+                except: continue
 
-                watch_list = user_block.get("list", []) or []
-                if not watch_list:
-                    continue
+                watch_list = user_block.get("list", [])
+                if not watch_list: continue
 
-                # === 🔥 LOGIC 1: PHÂN QUYỀN & CẮT DANH SÁCH 🔥 ===
-                # Nếu là Pro hoặc Admin -> Dùng full danh sách
-                # Nếu là Free -> Chỉ lấy mã đầu tiên (watch_list[:1])
+                # Logic phân quyền (Pro/Free)
                 is_pro = (chat_id in pro_chat_ids) or (chat_id == ADMIN_ID)
-                
-                if is_pro:
-                    processing_list = watch_list
-                else:
-                    # Free user chỉ được xử lý mã đầu tiên trong danh sách
-                    processing_list = watch_list[:1] if watch_list else []
+                processing_list = watch_list if is_pro else (watch_list[:1] if watch_list else [])
 
-                if chat_key not in all_state:
-                    all_state[chat_key] = {}
+                if chat_key not in all_state: all_state[chat_key] = {}
                 personal_state = all_state[chat_key]
-
-                messages: list[str] = []
-
-                # Tạo danh sách chứa các nút bấm
+                
+                messages = []
                 buttons = []
 
-                # Chỉ duyệt qua các mã được phép xử lý
                 for sym in processing_list:
                     sym_u = str(sym).upper().strip()
-                    if not sym_u:
-                        continue
-
                     quote = quote_cache.get(sym_u)
-                    if not quote:
-                        continue
+                    if not quote: continue # Bỏ qua âm thầm nếu chưa có giá
 
                     price = quote.get("price")
-                    pct = quote.get("pct")  # pct = % so với Tham Chiếu
+                    pct = quote.get("pct")
 
-                    if price is None or pct is None:
-                        continue
+                    if price is None or pct is None: continue
 
-                    # === QUẢN LÝ TRẠNG THÁI (STATE) ===
+                    # State
                     state_entry = personal_state.get(sym_u, {})
-                    last_alert_at_str = state_entry.get("last_alert_at")
                     last_pct = state_entry.get("last_pct")
+                    last_alert_at = state_entry.get("last_alert_at") 
 
-                    # Parse thời gian alert cuối
-                    last_alert_at = None
-                    if last_alert_at_str:
+                    # Reset logic đầu ngày
+                    is_new_day = False
+                    if last_alert_at:
                         try:
-                            last_alert_at = datetime.datetime.fromisoformat(last_alert_at_str)
-                            if last_alert_at.tzinfo is None:
-                                last_alert_at = vn_tz.localize(last_alert_at)
-                        except Exception:
-                            last_alert_at = None
+                            dt_last = datetime.datetime.fromisoformat(last_alert_at)
+                            if dt_last.date() != now.date(): is_new_day = True
+                        except: is_new_day = True
+                    
+                    if last_pct is None or is_new_day:
+                        last_pct = 0.0
 
-                    # Reset mốc về 0.0 nếu qua ngày mới
-                    if last_pct is None or (last_alert_at and last_alert_at.date() != now.date()):
-                        last_pct = 0.0 
-                        last_alert_at = None 
-
-                    # === TÍNH TOÁN BIẾN ĐỘNG ===
+                    # Tính toán biến động
                     delta_pct = float(pct) - float(last_pct)
-                    should_alert = abs(delta_pct) >= 2.0 # Ngưỡng 2%
+                    should_alert = abs(delta_pct) >= 2.0
 
                     if should_alert:
-                        # 1. Chuẩn bị dữ liệu hiển thị
+                        # Log ngắn gọn khi có biến động
+                        log.info(f"[{INSTANCE_ID}][TICKER] 🚨 Trigger {sym_u} (User: {chat_id}) | Delta: {delta_pct:.2f}%")
+                        
                         icon = "🟢" if pct >= 0 else "🔴"
                         direction = "tăng" if pct >= 0 else "giảm"
-                        
                         price_str = f"{float(price):,.0f}".replace(",", ".")
                         pct_str = f"{float(pct):+.2f}%"
-                        
                         fun_line = random.choice(FUN_UP if pct >= 0 else FUN_DOWN)
 
-                        # 2. Tạo nội dung tin nhắn
                         msg = (
                             f"{icon} * {sym_u} {direction} {pct_str} Giá hiện tại: {price_str}*\n"
                             f"_{fun_line}_"
                         )
                         
-                        # Nút soi chart
+                        # Nút bấm
                         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
                         chart_url = f"{base_url}/chart/{sym_u}"
-
-                        # Tạo nút và thêm vào danh sách (Mỗi mã 1 hàng)
-                        buttons.append([
-                            InlineKeyboardButton(f"📊 Soi Chart {sym_u}", web_app=WebAppInfo(url=chart_url))
-                        ])
+                        buttons.append([InlineKeyboardButton(f"📊 Soi Chart {sym_u}", web_app=WebAppInfo(url=chart_url))])
                         
-                        # Lưu ý: Ở đây mình không attach button vào từng msg để gộp tin cho gọn
                         messages.append(msg)
                         
-                        # 3. Cập nhật mốc mới vào State
+                        # Update state
                         personal_state[sym_u] = {
                             "last_pct": float(pct),
-                            "last_alert_at": now.isoformat(),
+                            "last_alert_at": now.isoformat()
                         }
                     
-                    # Lưu mốc 0.0 nếu chưa có alert nào trong ngày
-                    elif sym_u not in personal_state or (last_alert_at is None and state_entry.get("last_pct") != 0.0):
-                         personal_state[sym_u] = {
-                            "last_pct": 0.0,
-                            "last_alert_at": state_entry.get("last_alert_at")
-                        }
+                    # Update keep-alive state for 0.0
+                    elif sym_u not in personal_state or (state_entry.get("last_pct") != 0.0 and is_new_day):
+                         personal_state[sym_u] = {"last_pct": 0.0, "last_alert_at": now.isoformat()}
 
-               # === LOGIC GỬI TIN ===
-            if messages and (chat_id in _stock_alert_enabled_cache):
-                header = (
-                    "--------------------------------\n"
-                    f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
-                )
-                messages_text = "\n".join(messages)
-                body = messages_text + "\n" + header
+                # Gửi tin (Batch)
+                if messages and (chat_id not in _stock_alert_disabled_cache):
+                    header = f"--------------------------------\n⏰ *Cảnh báo {now.strftime('%H:%M')}*"
+                    body = "\n".join(messages) + "\n" + header
+                    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+                    
+                    try:
+                        _stock_broadcast_queue.put_nowait({
+                            "chat_id": chat_id, 
+                            "body": body, 
+                            "markup": reply_markup
+                        })
+                        # Log xác nhận đã đẩy vào queue
+                        log.info(f"📨 Đã đẩy tin nhắn vào Queue cho user {chat_id}")
+                    except: pass
                 
-                # Tạo Markup từ danh sách nút đã gom
-                reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-
-                try:
-                    # 🔥 QUAN TRỌNG: Đẩy cả 'markup' vào queue
-                    _stock_broadcast_queue.put_nowait({
-                        "chat_id": chat_id, 
-                        "body": body,
-                        "markup": reply_markup 
-                    })
-                except asyncio.QueueFull:
-                        pass
+                elif messages:
+                    # Log warning nhẹ để biết tại sao user không nhận được tin (để debug nếu user hỏi)
+                    log.info(f"⛔ User {chat_id} có tin nhắn nhưng đã TẮT Stock Alert.")
 
             save_state_for_all(all_state)
 
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}][TICKER] Lỗi: {e}")
+            log.error(f"[{INSTANCE_ID}][TICKER] Lỗi Exception: {e}")
 
         elapsed = (datetime.datetime.now(vn_tz) - loop_start).total_seconds()
         delay = max(TICKER_INTERVAL_SECONDS - elapsed, 0.5)
