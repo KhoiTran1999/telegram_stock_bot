@@ -59,41 +59,25 @@ from db_utils import (
     get_bot_active,
     set_bot_active,
     log_command_usage,
-    get_command_stats,
-    cleanup_old_pending_orders,
     save_bot_message,
     get_bot_messages_in_range,
     delete_bot_messages_in_range,
-    load_stock_value_cache,
-    has_news_seen,
-    mark_news_seen,         
-    has_bctc_notified,
-    mark_bctc_notified,
     export_core_data,
     import_core_data,
-    get_last_restore_month,
     get_conn,
     add_paid_user,
     is_user_pro,
     deactivate_paid_user,
     remove_paid_user,
     get_all_pro_chat_ids,
-    cleanup_old_news_seen,
     get_user_pro_expiry,
-    has_report_seen,
-    mark_report_seen,
-    get_recent_bctc_notified,
-    get_recent_analysis_reports,
-    get_recent_news_seen,
     create_pending_order,
     get_order_by_id,
     mark_order_as_paid,
     save_bot_message,
     get_messages_to_cleanup,
     delete_bot_log_record,
-    get_latest_bot_message_id,
     save_historical_valuation_to_redis,
-    get_historical_valuation_from_redis,
     upsert_user_info,
     get_admin_dashboard_data,
     get_user_orders,
@@ -102,7 +86,6 @@ from db_utils import (
     get_vn30f1m_enabled_map,
     set_vn30f1m_enabled,
     get_stock_alert_enabled_map,
-    get_users_with_stock_alert_off,
     set_stock_alert_enabled,
     get_total_revenue_real,
     update_user_admin_note,
@@ -110,6 +93,7 @@ from db_utils import (
     set_user_ban_status,
     check_trial_eligibility,
     activate_trial_package,
+    get_digest_from_redis,
 )
 import psutil
 import time
@@ -146,6 +130,7 @@ from chart_utils import (
     draw_line_chart_fixed_ui,
     draw_orderbook_fixed_ui,
     generate_chart_html,
+    generate_mini_chart,
 )
 from decimal import Decimal
 from functools import wraps
@@ -160,8 +145,7 @@ def make_progress_bar(percent: int, width: int = 8) -> str:
 
 # ANTI-SPAM & LOCKING
 _user_last_action_time = {}
-_processing_users = set()
-SPAM_COOLDOWN = 1.5  # Giây
+SPAM_COOLDOWN = 1  # Giây
 
 def is_user_spamming(user_id: int) -> bool:
     """
@@ -199,7 +183,7 @@ def anti_spam_check(func):
         if is_user_spamming(user_id):
             if update.callback_query:
                 try: 
-                    await update.callback_query.answer("⏳ Đang xử lý, bình tĩnh...", show_alert=False)
+                    await update.callback_query.answer("⏳ Bình tĩnh, bấm chậm lại...", show_alert=False)
                 except: pass
             return 
             
@@ -209,6 +193,11 @@ def anti_spam_check(func):
 
 # --- DECORATOR 2: KHÓA TÁC VỤ NẶNG (Cho /report, /info...) ---
 def task_locked(func):
+    """
+    Decorator khóa tác vụ dùng Redis.
+    Cải tiến: Tự động mở khóa NGAY LẬP TỨC sau khi hàm chạy xong.
+    TTL 45s chỉ là phương án dự phòng nếu server bị sập.
+    """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if not update.effective_chat:
@@ -216,27 +205,34 @@ def task_locked(func):
             
         chat_id = update.effective_chat.id
         
-        # Check Lock
-        if chat_id in _processing_users:
-            if update.callback_query:
-                try: await update.callback_query.answer("⏳ Đang xử lý lệnh trước đó...", show_alert=True)
-                except: pass
-            else:
-                try: await context.bot.send_message(chat_id, "⏳ Bot đang bận xử lý lệnh trước. Vui lòng đợi xong nhé!")
-                except: pass
-            return
-
-        # Lock
-        _processing_users.add(chat_id)
-        
         try:
-            return await func(update, context, *args, **kwargs)
-        finally:
-            # Unlock
-            if chat_id in _processing_users:
-                _processing_users.remove(chat_id)
-    return wrapper
+            r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+            lock_key = f"lock:user_task:{chat_id}"
+            
+            # 1. Thử đặt khóa (Nếu đã có khóa -> Chặn)
+            is_locked = r.set(lock_key, "1", nx=True, ex=45)
+            
+            if not is_locked:
+                # Nếu bị khóa, âm thầm bỏ qua hoặc báo nhẹ
+                # (Không gửi alert popup để tránh làm phiền nếu user lỡ bấm đúp)
+                return
 
+            # 2. Chạy hàm chính
+            try:
+                return await func(update, context, *args, **kwargs)
+            except Exception as e:
+                raise e
+            finally:
+                # 3. QUAN TRỌNG: Xóa khóa ngay lập tức dù thành công hay thất bại
+                # Để user có thể bấm nút tiếp theo ngay
+                r.delete(lock_key)
+            
+        except Exception as e:
+            # Fallback: Nếu Redis lỗi, cho chạy luôn
+            log.error(f"Redis Lock Error: {e}")
+            return await func(update, context, *args, **kwargs)
+
+    return wrapper
 # ==============================================
 # CẤU HÌNH CƠ BẢN
 # ==============================================
@@ -249,6 +245,15 @@ ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
+REDIS_CHANNEL_INBOUND = 'worker_inbound'
+
+def push_to_worker(payload):
+    """Gửi lệnh sang Worker"""
+    try:
+        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        r.publish(REDIS_CHANNEL_INBOUND, json.dumps(payload))
+    except Exception as e:
+        log.error(f"Push Worker Error: {e}")
 
 # 🔥 CACHE DANH SÁCH ĐEN (Lưu trong RAM để check siêu nhanh)
 BANNED_CACHE = set()
@@ -271,149 +276,6 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("bot")
 log.info(f"[BOOT] Instance {INSTANCE_ID} starting...")
 
-# ==============================================
-# CẤU HÌNH GEMINI MULTI-KEY (CHÍNH/PHỤ)
-# ==============================================
-# Lấy danh sách key từ môi trường, lọc bỏ key rỗng
-_k1 = os.getenv("GEMINI_API_KEY")
-_k2 = os.getenv("GEMINI_API_KEY_2")
-
-GEMINI_KEYS = [k for k in [_k1, _k2] if k]
-
-# Giữ biến này để tương thích với các đoạn check cũ (True nếu có ít nhất 1 key)
-GEMINI_API_KEY = GEMINI_KEYS[0] if GEMINI_KEYS else None
-
-if not GEMINI_KEYS:
-    log.warning("⚠️ CHƯA CẤU HÌNH GEMINI_API_KEY nào cả! Các tính năng AI sẽ không hoạt động.")
-else:
-    log.info(f"[{INSTANCE_ID}] Đã cấu hình {len(GEMINI_KEYS)} API Key cho Gemini.")
-
-# --- HÀM WRAPPER GỌI GEMINI AN TOÀN (Tự động đổi key) ---
-def call_gemini_safe(model_id: str, contents: str, config: dict = None) -> str:
-    """
-    Hàm gọi Gemini có cơ chế Failover:
-    - Thử Key 1 -> Nếu lỗi -> Thử Key 2 -> ...
-    - Trả về text kết quả hoặc raise Exception nếu tất cả đều lỗi.
-    """
-    last_error = None
-    
-    for i, api_key in enumerate(GEMINI_KEYS):
-        try:
-            # Khởi tạo client với key hiện tại
-            client = genai.Client(api_key=api_key)
-            
-            # Gọi API (Sync)
-            resp = client.models.generate_content(
-                model=model_id,
-                contents=contents,
-                config=config
-            )
-            
-            text = getattr(resp, "text", "").strip()
-            if not text:
-                raise ValueError("Gemini trả về nội dung rỗng.")
-                
-            return text
-
-        except Exception as e:
-            # Che giấu key khi log để bảo mật
-            masked_key = api_key[:5] + "..." + api_key[-4:]
-            log.warning(f"[{INSTANCE_ID}] ⚠️ Gemini Key {i+1} ({masked_key}) gặp lỗi: {e}. Đang thử key tiếp theo...")
-            last_error = e
-            continue # Chuyển sang key tiếp theo trong vòng lặp
-            
-    # Nếu chạy hết vòng lặp mà vẫn không được
-    log.error(f"[{INSTANCE_ID}] ❌ TẤT CẢ GEMINI KEYS ĐỀU THẤT BẠI.")
-    raise last_error
-
-# --- DÁN ĐÈ LÊN HÀM summarize_daily_news_with_ai CŨ ---
-
-async def summarize_daily_news_with_ai(news_items: list) -> dict | None:
-    """
-    Phiên bản ULTIMATE: Tối ưu hóa tư duy nhà đầu tư, dynamic tags và chống trùng lặp.
-    """
-    if not news_items:
-        return None
-
-    # 1. Chuẩn bị dữ liệu thô (Kèm NHÃN GỢI Ý từ Code)
-    # Tăng nhẹ giới hạn lên 90 tin để bao phủ rộng hơn
-    items_to_process = news_items[:90]
-    raw_text = ""
-    for i, item in enumerate(items_to_process, 1):
-        source_hint = f"[{item.get('source', 'N/A').upper()}]"
-        raw_text += f"{i}. {source_hint} {item['title']} -- Link: {item['link']}\n"
-
-    # 2. PROMPT "ULTIMATE"
-    prompt = f"""
-Bạn là Giám đốc Chiến lược (Chief Strategy Officer) của một quỹ đầu tư lớn tại Việt Nam.
-Nhiệm vụ: Soạn thảo bản tin "Market Intelligence" gửi cho các nhà đầu tư VIP vào đầu ngày.
-
-DỮ LIỆU ĐẦU VÀO (Kèm gợi ý [TAG] từ robot thu thập):
-{raw_text}
-
----
-### 🧠 QUY TRÌNH TƯ DUY XỬ LÝ (Chain-of-Thought):
-
-1.  **THẨM ĐỊNH & SÀNG LỌC (Strict Filtering):**
-    * **Loại bỏ ngay:** Tin rác, tin quảng cáo, tin đời sống/pháp luật (vụ án, thẩm mỹ viện, tai nạn), tin trùng lặp.
-    * **Phân loại lại (Re-classify):** Đừng tin hoàn toàn vào [TAG] của robot.
-        * Tin về *Tỉnh/Thành phố, Bộ ngành, Lãi suất, Giá vàng/Dầu* -> Bắt buộc là **MACRO**.
-        * Tin về *Công ty niêm yết, Tập đoàn lớn* -> Bắt buộc là **CORPORATE**.
-
-2.  **CHẤM ĐIỂM TÁC ĐỘNG (Impact Scoring):**
-    * Chỉ chọn tin có khả năng làm giá cổ phiếu biến động (Score >= 6).
-
-3.  **VIẾT NỘI DUNG (Investor Style):**
-    * Không viết kiểu báo chí ("cho biết", "theo đó"). Viết kiểu dân tài chính: Ngắn, trực diện, tập trung vào con số/kết quả.
-    * Ví dụ: Thay vì "VNM công bố trả cổ tức", viết "VNM chốt quyền cổ tức 15% tiền mặt".
-
----
-### 📝 YÊU CẦU ĐẦU RA (JSON FORMAT):
-
-{{
-  "headline": [
-    // Chọn ĐÚNG 3 tin chấn động nhất thị trường (Score 9-10).
-    // Yêu cầu: Dynamic Tag (VD: "Vĩ mô", "Bank", "BĐS", "Thế giới"). KHÔNG dùng tag "HOT" chung chung.
-    {{ "text": "Nội dung tóm tắt...", "link": "URL", "tag": "Tên Nhóm Tin" }}
-  ],
-  
-  "corporate": [
-    // Tối đa 8 tin doanh nghiệp tiêu biểu nhất.
-    // QUAN TRỌNG: Không lặp lại tin đã đưa vào mục "headline".
-    {{ 
-      "ticker": "ABC", // BẮT BUỘC suy luận mã 3 chữ cái (VD: HPG, VHM, STB). Nếu không chắc chắn 100%, để null.
-      "text": "Nội dung tóm tắt (tập trung KQKD, Cổ tức, Dự án)", 
-      "link": "URL" 
-    }}
-  ],
-  
-  "macro": [
-    // Tối đa 5 tin vĩ mô quan trọng nhất.
-    // QUAN TRỌNG: Không lặp lại tin đã đưa vào mục "headline".
-    {{ "text": "Nội dung tóm tắt...", "link": "URL" }}
-  ],
-  
-  "sentiment_score": 7, // Thang điểm: 1-3 (Tiêu cực), 4-6 (Thận trọng/Trung lập), 7-10 (Tích cực/Hưng phấn).
-  "comment": "Nhận định xu hướng dòng tiền và tâm lý thị trường dựa trên các tin trên (dưới 20 từ)."
-}}
-"""
-
-    # 3. Gọi Gemini (Giữ nguyên)
-    try:
-        config = {"response_mime_type": "application/json"}
-        json_str = await asyncio.to_thread(
-            call_gemini_safe,
-            model_id="gemini-2.5-pro", 
-            contents=prompt,
-            config=config
-        )
-        clean_json_str = json_str.replace("```json", "").replace("```", "").strip()
-        import json
-        return json.loads(clean_json_str)
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi tóm tắt JSON AI: {e}")
-        return None
-
 # Lấy Token bảo mật của SePay từ .env
 SEPAY_TOKEN = os.getenv("SEPAY_TOKEN")
 if not SEPAY_TOKEN:
@@ -428,256 +290,6 @@ SEPAY_QR_ACC = os.getenv("SEPAY_QR_ACC")
 BOT_ACTIVE = None  # Sẽ được load từ DB trong main()
 
 initial_active = None  # Trạng thái bot lúc khởi động (dùng trong lifespan)
-
-_last_weekly_run_date = None
-
-ALERT_STATE = {}
-
-# Thời gian giãn cách giữa 2 lần báo cho cùng 1 mã (giây)
-ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 phút
-
-# Ngưỡng bước biến động so với mốc gần nhất (tính theo %)
-ALERT_PCT_STEP = 2.0  # Mỗi khi biến động >= 2% so với mốc gần nhất thì báo
-
-# Câu thoại ngẫu nhiên (thông báo + cà khịa nhẹ 😏)
-FUN_UP = [
-    "Tăng mạnh quá, chắc lại kéo để xả cho F0 rồi 😏",
-    "Bò điên quay lại rồi, ai bán non sáng nay chắc tiếc 😬",
-    "Giá đang bay, chắc tin tốt sắp ra... hoặc tin xấu chưa ra 🤔",
-    "Tăng kiểu này là mai báo lại đăng 'nhà đầu tư lạc quan trở lại' 📈",
-    "Đang kéo index cho đẹp bảng điện chứ gì, nhìn quen lắm 😎",
-    "Cổ phiếu tăng mà tài khoản vẫn chưa về bờ, lạ ghê 😅",
-    "Lại xanh, chắc đội lái muốn test lòng tin nhà đầu tư 💚",
-    "Cứ tăng thế này là lại có người tự tin all-in rồi 🤑",
-    "Thị trường tăng, ai cũng nghĩ mình là thiên tài đầu tư 🧠",
-    "Tăng cho vui thôi, còn giữ được bao lâu thì hên xui 😏",
-]
-
-FUN_DOWN = [
-    "Giảm rồi, ai bảo không chốt khi còn đỉnh 😏",
-    "Đỏ nhẹ cho vui thôi, mai giảm mạnh hơn 😬",
-    "Thị trường rơi mà vẫn bình tĩnh à, chắc chưa margin 😎",
-    "Giá giảm, lòng tin nhà đầu tư cũng giảm theo 📉",
-    "Mới hôm qua còn hô 'mua thêm', nay lại hỏi 'có nên cắt chưa' 🤣",
-    "Cú chỉnh nhẹ cho nhớ đời luôn 🩸",
-    "Giảm kiểu này là bắt đầu đổ lỗi cho FED rồi đó 😅",
-    "Đỏ rực vậy mà vẫn nói 'đi ngang tích lũy' 😏",
-    "Cổ phiếu giảm, môi giới bỗng nhiên im lặng lạ thường 📞",
-    "Thị trường kiểm tra độ kiên nhẫn của anh em... và anh em lại rớt test 😭",
-]
-
-# ==============================================
-# TIN TỨC (RSS)
-# ==============================================
-NEWS_FEED_TYPE_SPECIALIZED = "SPECIALIZED"
-NEWS_FEED_TYPE_MACRO = "MACRO"
-
-# 1. Tin chuyên ngành (Quét từ khóa)
-RSS_FEEDS_SPECIALIZED = {
-    "CHUNG_KHOAN": [
-        "https://vneconomy.vn/chung-khoan.rss",
-        "https://vneconomy.vn/tai-chinh.rss",
-        "https://vneconomy.vn/kinh-te-so.rss",
-        "https://vneconomy.vn/dau-tu.rss",
-        "https://vietstock.vn/830/chung-khoan/co-phieu.rss",
-        "https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo.rss",
-        "https://vietstock.vn/3358/chung-khoan/etf-va-cac-quy.rss",
-        "https://vietstock.vn/145/chung-khoan/y-kien-chuyen-gia.rss",
-        "https://vietstock.vn/582/nhan-dinh-phan-tich/phan-tich-co-ban.rss",
-        "https://vneconomy.vn/tin-moi.rss",
-        "https://vneconomy.vn/tieu-diem.rss",
-    ],
-    "DOANH_NGHIEP": [
-        "https://vneconomy.vn/nhip-cau-doanh-nghiep.rss",
-        "https://vneconomy.vn/thi-truong.rss",
-        "https://vneconomy.vn/tieu-dung.rss",
-        "https://vneconomy.vn/dan-sinh.rss",
-        "https://vneconomy.vn/kinh-te-xanh.rss",
-        "https://vneconomy.vn/cong-nghe-startup.rss",
-        "https://vietstock.vn/737/doanh-nghiep/hoat-dong-kinh-doanh.rss",
-        "https://vietstock.vn/738/doanh-nghiep/co-tuc.rss",
-        "https://vietstock.vn/764/doanh-nghiep/tang-von-m-a.rss",
-        "https://vietstock.vn/746/doanh-nghiep/ipo-co-phan-hoa.rss",
-
-    ],
-    "BAT_DONG_SAN": [
-        "https://vneconomy.vn/dau-tu-ha-tang.rss",
-        "https://vneconomy.vn/dia-oc.rss",
-        "https://vietstock.vn/4220//bat-dong-san/thi-truong-nha-dat.rss",
-        "https://vietstock.vn/4222/bat-dong-san/du-an.rss",
-        "https://vietstock.vn/4266/bat-dong-san/bao-hiem-va-thue-nha-dat.rss",
-
-    ],
-}
-
-# 2. Tin vĩ mô (Broadcast cho tất cả)
-RSS_FEEDS_MACRO = [
-    "https://vneconomy.vn/tin-moi.rss",
-    "https://vneconomy.vn/tieu-diem.rss",
-    "https://vietstock.vn/143/chung-khoan/chinh-sach.rss",
-    "https://vietstock.vn/16312/tai-chinh/tai-san-so.rss",
-    "https://vietstock.vn/761/kinh-te/vi-mo.rss",
-]
-
-# Chu kỳ quét RSS (giây)
-NEWS_SPECIALIZED_INTERVAL_SECONDS = 30 * 60   # 30 phút
-NEWS_MACRO_INTERVAL_SECONDS = 60 * 60        # 60 phút
-
-# Số bài tối đa gửi cho mỗi user / mỗi vòng quét tin
-NEWS_MAX_ARTICLES_PER_CHAT = 3          # tin chuyên ngành
-NEWS_MACRO_MAX_ARTICLES_PER_RUN = 3     # tin vĩ mô (broadcast)
-
-# Số bài RSS tối đa xử lý mỗi vòng (sau khi gộp & sort theo published)
-NEWS_MAX_RSS_ENTRIES_PER_RUN = 80
-
-# Map symbol -> list keyword (mã + tên doanh nghiệp)
-COMPANY_KEYWORDS: dict[str, list[str]] = {}
-
-# Thời gian tối đa coi bài báo là "tươi" (theo pubDate)
-MAX_NEWS_AGE_DAYS = 14  # chỉ gửi bài trong 14 ngày gần nhất
-
-def is_fresh_news(
-    pub_dt: datetime.datetime | None,
-    now: datetime.datetime | None = None,
-) -> bool:
-    """
-    Trả về True nếu bài đủ "tươi" theo ngưỡng MAX_NEWS_AGE_DAYS.
-
-    - Nếu pub_dt = None -> cho qua (coi là tươi, vì không có thông tin ngày).
-    - Nếu pubDt cũ hơn MAX_NEWS_AGE_DAYS ngày -> False.
-    """
-    if pub_dt is None:
-        return True
-
-    vn_tz = pytz.timezone(TIMEZONE)
-
-    # Bổ sung timezone nếu thiếu
-    if pub_dt.tzinfo is None:
-        pub_dt = vn_tz.localize(pub_dt)
-
-    if now is None:
-        now = datetime.datetime.now(vn_tz)
-    else:
-        # nếu now không có tz thì cũng gắn VN TZ
-        if now.tzinfo is None:
-            now = vn_tz.localize(now)
-
-    age = now - pub_dt
-    return age.days <= MAX_NEWS_AGE_DAYS
-
-
-
-def load_company_keywords_from_csv(path: str = "ssi_master_list.csv") -> dict[str, list[str]]:
-    """
-    Đọc danh sách công ty từ file CSV (cột: symbol, name, industry, floor),
-    trả về dict[symbol] = [symbol, tên đầy đủ, tên rút gọn].
-    """
-    mapping: dict[str, list[str]] = {}
-    try:
-        with open(path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return {}
-
-            for row in reader:
-                sym = (row.get("symbol") or "").strip().upper()
-                name = (row.get("name") or "").strip()
-                if not sym or not name:
-                    continue
-
-                # Tạo tên rút gọn bằng cách bỏ bớt mấy từ phổ biến
-                short = re.sub(
-                    r"\b(Công ty|Cổ phần|Tập đoàn|TNHH|Ngân hàng|Thương mại|Đầu tư|Phát triển|Kỹ thuật|Tài chính)\b",
-                    "",
-                    name,
-                    flags=re.IGNORECASE,
-                )
-                short = re.sub(r"\s+", " ", short).strip()
-
-                keywords = {sym}
-                keywords.add(name)
-                if len(short) > 2:
-                    keywords.add(short)
-
-                mapping[sym] = [k for k in keywords if len(k) > 2]
-
-        log.info(f"[{INSTANCE_ID}][COMPANY] Đã load {len(mapping)} công ty từ {path}.")
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][COMPANY] Lỗi đọc CSV {path}: {e}")
-    return mapping
-
-def fetch_rss_entries_for_urls(urls: list[str]) -> list[dict[str, Any]]:
-    """
-    Đọc danh sách RSS, trả về list các dict:
-    {
-        'title': str,
-        'link': str,
-        'summary': str,
-        'published': datetime | None (Asia/Ho_Chi_Minh),
-        'source': str,
-    }
-
-    ⚠️ Quan trọng: GỘP THEO LINK
-    - Nếu 1 bài xuất hiện trong nhiều feed khác nhau → chỉ giữ 1 bản ghi theo link.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    by_link: dict[str, dict[str, Any]] = {}
-
-    for url in urls:
-        try:
-            feed = feedparser.parse(url)
-            source_title = getattr(feed.feed, "title", None) or url
-
-            for entry in getattr(feed, "entries", []):
-                title = (getattr(entry, "title", "") or "").strip()
-                link = (getattr(entry, "link", "") or "").strip()
-                if not title or not link:
-                    continue
-
-                summary = (getattr(entry, "summary", "") or "").strip()
-
-                published_dt = None
-                published_parsed = getattr(entry, "published_parsed", None)
-                if published_parsed:
-                    try:
-                        ts = time.mktime(published_parsed)
-                        published_dt = datetime.datetime.fromtimestamp(ts, vn_tz)
-                    except Exception:
-                        published_dt = None
-
-                # Nếu đã có link này rồi → chỉ cập nhật thêm nguồn (source) nếu muốn
-                if link in by_link:
-                    # Gộp tên nguồn lại cho vui, không bắt buộc
-                    old_source = by_link[link].get("source") or ""
-                    if source_title and source_title not in old_source:
-                        by_link[link]["source"] = (
-                            old_source + " | " + source_title if old_source else source_title
-                        )
-                    # Không cần làm gì thêm
-                    continue
-
-                by_link[link] = {
-                    "title": title,
-                    "link": link,
-                    "summary": summary,
-                    "published": published_dt,
-                    "source": source_title,
-                }
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][RSS] Lỗi đọc RSS {url}: {e}")
-
-    items = list(by_link.values())
-
-    # Sắp xếp bài mới nhất lên trên
-    def _sort_key(it: dict[str, Any]):
-        dt = it.get("published")
-        if isinstance(dt, datetime.datetime):
-            return dt
-        return datetime.datetime(1970, 1, 1, tzinfo=vn_tz)
-
-    items.sort(key=_sort_key, reverse=True)
-    return items
 
 # ==============================================
 # HÀM TIỆN ÍCH
@@ -705,6 +317,35 @@ async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'G
         pass
     except Exception as e:
         log.error(f"[Telegram Send Error] chat={chat_id}: {e}")
+
+async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
+    """
+    [UPDATED] Sáng: Tháo ghim TOÀN BỘ tin cũ (Digest + EOD) -> Gửi tin mới -> Ghim tin mới.
+    Dùng unpin_all_chat_messages để đảm bảo không còn tin rác cũ đọng lại.
+    """
+    # 1. Tháo ghim TOÀN BỘ các tin cũ trong chat để làm sạch bảng tin
+    try:
+        # Lệnh này sẽ gỡ ghim Digest cũ, EOD cũ và mọi tin ghim khác
+        await bot.unpin_all_chat_messages(chat_id=chat_id)
+    except Exception as e:
+        # Bỏ qua lỗi nếu chat chưa có tin ghim nào hoặc bot không đủ quyền (hiếm gặp)
+        # log.warning(f"[{INSTANCE_ID}] Lỗi unpin_all cho {chat_id}: {e}")
+        pass
+
+    # 2. Gửi tin mới (Lưu ý: msg_type='DAILY_DIGEST')
+    msg = await send_md(bot, chat_id, text, msg_type='DAILY_DIGEST', reply_markup=reply_markup)
+
+    # 3. Ghim tin mới
+    if msg:
+        try:
+            await bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                disable_notification=True 
+            )
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] Lỗi ghim Digest mới cho {chat_id}: {e}")
+
 
 async def safe_edit_message(query, text, reply_markup, parse_mode="Markdown"):
     """
@@ -780,201 +421,8 @@ def load_industry_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, s
 
     return mapping
 
-def get_state_for_all():
-    return ALERT_STATE
 
 # --- HELPER CHO SCREENER MEAN REVERSION ---
-def _clean_vnstock_columns(df):
-    """Chuẩn hóa tên cột vnstock (MultiIndex) -> tên đơn giản."""
-    new_columns = []
-    for col in df.columns:
-        if isinstance(col, tuple): col_name = col[-1]
-        else: col_name = str(col)
-        clean_name = col_name.lower().strip().replace('/', '').replace(' ', '_').replace('(', '').replace(')', '')
-        new_columns.append(clean_name)
-    df.columns = new_columns
-    return df
-
-async def calculate_historical_valuation_task():
-    """
-    TÁC VỤ NẶNG: Tính trung bình P/E, P/B 5 năm cho toàn thị trường.
-    Đã FIX: Áp dụng _clean_vnstock_columns để xử lý MultiIndex.
-    """
-    log.info(f"[{INSTANCE_ID}] 🧮 Bắt đầu tính toán định giá lịch sử (Mean Reversion)...")
-    
-    # 1. BỌC TRY/EXCEPT TỔNG QUÁT ĐỂ NGĂN TASK SẬP
-    try:
-        # 1. Lấy danh sách mã (Lọc sơ bộ để giảm tải)
-        screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
-        
-        # --- LOGIC LỌC CƠ SỞ (Giữ nguyên) ---
-        MIN_MARKET_CAP = 5000 
-        MIN_TRADING_VAL = 10 
-        screener['market_cap'] = pd.to_numeric(screener['market_cap'], errors='coerce').fillna(0)
-        liq_col = 'total_trading_value'
-        if 'avg_trading_value_20d' in screener.columns:
-            liq_col = 'avg_trading_value_20d' 
-        screener[liq_col] = pd.to_numeric(screener[liq_col], errors='coerce').fillna(0)
-
-        valid_df = screener[
-            (screener['market_cap'] >= MIN_MARKET_CAP) & 
-            (screener[liq_col] >= MIN_TRADING_VAL)
-        ]
-        valid_tickers = valid_df['ticker'].tolist()
-        log.info(f"[{INSTANCE_ID}] Tìm thấy {len(valid_tickers)} mã đủ tiêu chuẩn (Vốn hóa > {MIN_MARKET_CAP} tỷ, GTGD > {MIN_TRADING_VAL} tỷ).")
-        
-        history_data = {}
-        count = 0
-        consecutive_errors = 0 
-
-        # 2. Loop và tính toán
-        for i, sym in enumerate(valid_tickers):
-            
-            # 🔥 [RATE LIMIT] Nghỉ dài hơn sau mỗi 20 mã
-            if i > 0 and i % 20 == 0:
-                log.info(f"[{INSTANCE_ID}] 💤 Đã xử lý {i} mã. Nghỉ 5s để tránh Rate Limit...")
-                await asyncio.sleep(5) 
-
-            # 🔥 [RATE LIMIT] Nếu gặp lỗi liên tiếp > 5 lần (bị chặn IP)
-            if consecutive_errors > 5:
-                log.warning(f"[{INSTANCE_ID}] ⚠️ Phát hiện bị chặn liên tục. Ngủ 120s để cooldown...")
-                await asyncio.sleep(120) 
-                consecutive_errors = 0 
-
-            # BỌC TRY/EXCEPT TỪNG MÃ
-            try:
-                # Gọi Finance lấy dữ liệu năm (có timeout)
-                fin_df = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi')),
-                    timeout=30.0 
-                )
-                
-                if fin_df is not None and not fin_df.empty:
-                    
-                    # 🔥🔥🔥 FIX: GỌI HÀM LÀM SẠCH CỘT Ở ĐÂY 🔥🔥🔥
-                    fin_df = _clean_vnstock_columns(fin_df) 
-                    
-                    df_5y = fin_df.head(5) 
-                    
-                    # Ép kiểu số (Tên cột đã được làm sạch thành 'pe' và 'pb')
-                    pe_series = pd.to_numeric(df_5y['pe'], errors='coerce')
-                    pb_series = pd.to_numeric(df_5y['pb'], errors='coerce')
-                    
-                    # Lọc bỏ giá trị âm/0 (lỗ)
-                    pe_series = pe_series[pe_series > 0]
-                    pb_series = pb_series[pb_series > 0]
-                    
-                    if len(pe_series) >= 3 and len(pb_series) >= 3:
-                        history_data[sym] = {
-                            'pe_avg': pe_series.mean(),
-                            'pb_avg': pb_series.mean()
-                        }
-                        count += 1
-                        consecutive_errors = 0 
-                
-                # 🔥 [RATE LIMIT] Tăng delay cơ bản 
-                await asyncio.sleep(1.5) 
-                
-            except asyncio.TimeoutError:
-                consecutive_errors += 1
-                log.warning(f"Lỗi tính toán {sym}: Timeout (30s). Nghỉ 5s rồi thử mã kế tiếp.")
-                await asyncio.sleep(5.0)
-                continue
-            except Exception as e:
-                consecutive_errors += 1
-                log.warning(f"Lỗi tính toán {sym} (Exception: {type(e).__name__}): {e}")
-                # Nếu lỗi từng mã lẻ tẻ, nghỉ 5s rồi thử mã kế tiếp
-                await asyncio.sleep(5.0)
-                continue
-        
-        # 3. Lưu vào Redis
-        if history_data:
-            await asyncio.to_thread(save_historical_valuation_to_redis, history_data)
-            log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất tính toán. Đã lưu dữ liệu lịch sử cho {count} mã.")
-        else:
-            log.warning(f"[{INSTANCE_ID}] ⚠️ Không tính được dữ liệu lịch sử nào.")
-            
-    # XỬ LÝ LỖI TỔNG QUÁT (Task sẽ ngủ 120s rồi thoát khỏi hàm, không raise)
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] ❌ LỖI NGHIÊM TRỌNG (Mean Reversion Task) - Dừng 120s rồi thoát: {e}")
-        await asyncio.sleep(120)
-
-async def get_top_mean_reversion_stocks(limit=5):
-    """
-    Lấy Top cổ phiếu rẻ nhất theo chiến lược Mean Reversion cho Digest.
-    Trả về danh sách các dict chứa đầy đủ thông tin định dạng cho UI.
-    """
-    try:
-        # 1. Lấy dữ liệu lịch sử từ Redis
-        hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
-        if not hist_data:
-            log.warning(f"[{INSTANCE_ID}] Digest: Chưa có dữ liệu định giá lịch sử. Đang kích hoạt tính toán...")
-            asyncio.create_task(calculate_historical_valuation_task())
-            return []
-
-        # 2. Lấy dữ liệu hiện tại từ Screener API
-        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
-        
-        processed_items = []
-        
-        for index, row in screener_df.iterrows():
-            sym = row['ticker']
-            if sym not in hist_data: continue
-            
-            try:
-                pe_cur = float(row['pe'])
-                pb_cur = float(row['pb'])
-            except: continue
-
-            pe_avg = hist_data[sym]['pe_avg']
-            pb_avg = hist_data[sym]['pb_avg']
-            
-            # 🔥 [FIX]: Loại bỏ cổ phiếu lỗ (PE âm) hoặc lỗi dữ liệu (<= 0)
-            if pe_cur <= 0 or pb_cur <= 0: continue
-            if pe_avg <= 0 or pb_avg <= 0: continue
-
-            # --- TÍNH TOÁN LOGIC ---
-            pe_discount = (pe_cur - pe_avg) / pe_avg
-            pb_discount = (pb_cur - pb_avg) / pb_avg
-            avg_discount = (pe_discount + pb_discount) / 2
-            
-            # Helper định dạng UI
-            def get_ui_meta(discount):
-                pct_val = abs(discount) * 100
-                if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
-                elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
-                else: 
-                    sign = "▲" if discount > 0 else "▼"
-                    return "", f"{sign} {pct_val:.1f}%"
-
-            pe_class, pe_diff_str = get_ui_meta(pe_discount)
-            pb_class, pb_diff_str = get_ui_meta(pb_discount)
-            
-            if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
-            elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
-            else: signal_class, signal_text = "sig-fair", "Hợp lý"
-            
-            processed_items.append({
-                "symbol": sym,
-                "avg_discount_raw": avg_discount,
-                "pe_cur": f"{pe_cur:.1f}", "pe_avg": f"{pe_avg:.1f}",
-                "pe_class": pe_class, "pe_diff_str": pe_diff_str,
-                "pb_cur": f"{pb_cur:.1f}", "pb_avg": f"{pb_avg:.1f}",
-                "pb_class": pb_class, "pb_diff_str": pb_diff_str,
-                "signal_class": signal_class, "signal_text": signal_text
-            })
-
-        # 3. Sắp xếp (Rẻ nhất lên đầu)
-        processed_items.sort(key=lambda x: x['avg_discount_raw'])
-        return processed_items[:limit]
-
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi get_top_mean_reversion_stocks: {e}")
-        return []
-
-def save_state_for_all(all_state):
-    global ALERT_STATE
-    ALERT_STATE = all_state
 
 async def cleanup_after_eod():
     """
@@ -1025,51 +473,6 @@ async def cleanup_after_eod():
             log.error(f"[CLEANUP] Error loop item: {e}")
 
     log.info(f"[CLEANUP] ✅ Hoàn tất. Đã xóa {count_deleted}/{len(records)} tin nhắn.")
-
-def in_session_vietnam() -> bool:
-    """Giờ giao dịch Việt Nam: 09:15–11:30, 13:00–14:45 (T2–T6)."""
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    weekday = now.weekday()
-    if weekday > 4:
-        return False
-    hm = now.hour * 60 + now.minute
-    return (555 <= hm <= 690) or (780 <= hm <= 887)
-
-# Thời điểm gửi thông báo trước giờ mở/đóng phiên (giờ VN)
-NOTICE_SPECS = [
-    {
-        "label": "MORNING_OPEN",
-        "hour": 9,
-        "minute": 10,  # trước mở phiên sáng 5 phút (09:10)
-        "text": "⏰ Phiên sáng sắp mở lúc 09:15. Bạn tranh thủ xem lại danh mục và các mức giá mục tiêu nhé.",
-    },
-    {
-        "label": "MORNING_CLOSE",
-        "hour": 11,
-        "minute": 25,  # trước đóng phiên sáng 5 phút (11:25)
-        "text": "🔔 Phiên sáng sắp kết thúc lúc 11:30. Bạn cân nhắc các lệnh còn treo nhé.",
-    },
-    {
-        "label": "AFTERNOON_OPEN",
-        "hour": 12,
-        "minute": 55,  # trước mở phiên chiều 5 phút (12:55)
-        "text": "⏰ Phiên chiều sắp mở lúc 13:00. Nhớ kiểm tra lại danh mục và chiến lược giao dịch.",
-    },
-    {
-        "label": "AFTERNOON_CLOSE",
-        "hour": 14,
-        "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
-        "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:45... Hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
-    },
-    {
-        "label": "EOD_SUMMARY",
-        "hour": 15,
-        "minute": 00,  # Tổng kết cuối phiên
-        "text": "📊 Tổng kết cuối phiên: StockBot đang gửi báo cáo danh mục của bạn...",
-    },
-]
-
 
 def get_git_deploy_info() -> str | None:
     """
@@ -1178,897 +581,7 @@ async def track_user_activity(update: Update):
             user.username, 
             user.full_name
         )
-
-# ==============================================
-# EOD SUMMARY MỚI (WEB APP + AI)
-# ==============================================
-
-async def call_gemini_eod_insight(market_data: dict) -> str:
-    """
-    Gọi Gemini nhận định thị trường cuối ngày (Multi-Key Support).
-    Trả về JSON string chứa field 'ai_comment'.
-    """
-    if not GEMINI_KEYS:
-        return "AI chưa được cấu hình."
-
-    prompt = f"""
-    Đóng vai một chuyên gia theo phương pháp Wyckoff sắc sảo và thực chiến.
-    Hãy phân tích dữ liệu kết phiên hôm nay:
-    {json.dumps(market_data, ensure_ascii=False)}
-
-    Yêu cầu nội dung (Tối đa 200 từ):
-    1. 🎯 Bắt mạch thị trường: Nhận định xu hướng dựa trên sự tăng giảm Điểm số và Khối lượng (Volume).
-       - Giá tăng + Vol tăng => Tiền vào mạnh?
-       - Giá tăng + Vol thấp => Kéo rướn/Xanh vỏ đỏ lòng?
-       - Giá giảm + Vol cao => Xả hàng/Phân phối?
-       - Giá giảm + Vol thấp => Tiết cung/Cạn lực bán?
-    2. 🔥 Một chút đánh giá về Vĩ mô hiện tại.
-    3. 🌪️ Tâm lý: Đánh giá tâm lý đám đông (Hưng phấn, Sợ hãi hay Thận trọng).
-    3. 💡 Hành động ngày mai: Đưa ra "Key Action" ngắn gọn (VD: "Canh chốt lời", "Mua thăm dò", "Quan sát mốc X", "Ngồi im giữ tiền").
-
-    Yêu cầu văn phong:
-    - Giọng văn "bụi bặm", chuyên nghiệp kiểu dân trader (dùng từ như: rút chân, nổ vol, cạn cung, fomo, bull trap...).
-    - Dùng emoji sinh động để nhấn mạnh.
-
-    OUTPUT JSON FORMAT:
-    {{ "ai_comment": "Nội dung nhận định..." }}
-"""
-    
-    try:
-        # SỬ DỤNG call_gemini_safe TRONG THREAD
-        text = await asyncio.to_thread(
-            call_gemini_safe,
-            model_id="gemini-2.5-pro",
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        
-        if text:
-            data = json.loads(text)
-            return data.get("ai_comment", "")
-            
-    except Exception as e:
-        log.error(f"[EOD] Lỗi Gemini Multi-Key: {e}")
-        
-    return "Thị trường biến động. Hãy quan sát kỹ dòng tiền."
-
-# --- HELPER FORMAT EOD ---
-def fmt_price(p):
-    """Giá: 26500 -> 26.500"""
-    if p is None: return "--"
-    return f"{int(p):,}".replace(",", ".")
-
-def fmt_volume(v):
-    """Vol: 1500000 -> 1.5M"""
-    if v is None: return "--"
-    if v >= 1_000_000: return f"{v/1_000_000:.1f}M"
-    if v >= 1_000: return f"{v/1_000:.0f}K"
-    return str(int(v))
-
-def fmt_value(v):
-    """Value: 150 tỷ -> 150 Tỷ"""
-    if v is None or v == 0: return "--"
-    if v >= 1_000_000_000: return f"{v/1_000_000_000:.0f} Tỷ"
-    if v >= 1_000_000: return f"{v/1_000_000:.0f} Tr"
-    return "--"
-
-# --- FETCHER RIÊNG CHO EOD (Dùng Quote History 1D) ---
-async def fetch_full_eod_data(symbols):
-    """
-    Lấy dữ liệu EOD đầy đủ: Giá, %, Vol, Value.
-    Tự động fix lỗi đơn vị giá (x1000).
-    """
-    if not symbols: return []
-    
-    async def _get_one(sym):
-        try:
-            def _call_api():
-                # Lấy 5 ngày gần nhất để chắc chắn có dữ liệu
-                today = datetime.datetime.now()
-                start_d = (today - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-                end_d = today.strftime('%Y-%m-%d')
-                
-                quote = Quote(symbol=sym, source='VCI')
-                return quote.history(start=start_d, end=end_d, interval='1D')
-
-            df = await asyncio.to_thread(_call_api)
-            
-            if df is None or df.empty: return None
-
-            # Lấy dòng mới nhất
-            last = df.iloc[-1]
-            close = float(last['close'])
-            volume = float(last['volume'])
-            
-            # [FIX QUAN TRỌNG] Nếu giá < 500 (tức là đơn vị nghìn), nhân 1000
-            if close < 500:
-                close *= 1000
-
-            # Tính giá trị ước tính
-            trading_val = close * volume
-
-            # Tính % thay đổi
-            pct = 0.0
-            if len(df) >= 2:
-                prev = float(df.iloc[-2]['close'])
-                if prev < 500: prev *= 1000 # Fix cả giá tham chiếu
-                
-                if prev > 0:
-                    pct = ((close - prev) / prev) * 100
-
-            # Màu sắc
-            bg_cls = "bg-ref"
-            text_cls = "t-ref"
-            sign = ""
-            
-            if pct > 0:
-                bg_cls = "bg-up"; text_cls = "t-up"; sign = "+"
-            elif pct < 0:
-                bg_cls = "bg-down"; text_cls = "t-down"
-
-            return {
-                "symbol": sym,
-                "price": fmt_price(close),
-                "pct": f"{sign}{pct:.2f}",
-                "vol_str": fmt_volume(volume),
-                "val_str": fmt_value(trading_val),
-                "bg_cls": bg_cls,
-                "text_cls": text_cls
-            }
-        except Exception as e:
-            log.warning(f"[EOD_FETCH] Lỗi mã {sym}: {e}")
-            return None
-
-    # Chạy song song tất cả các mã
-    tasks = [_get_one(s) for s in symbols]
-    results = await asyncio.gather(*tasks)
-    return [r for r in results if r]
-
-from chart_utils import generate_mini_chart
-
-async def send_eod_summary():
-    """
-    [UPDATED V3] Gửi EOD Summary + AI + Charts (Modal).
-    Tối ưu hiệu năng: Vẽ biểu đồ song song.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    today_str = now.strftime("%d/%m/%Y")
-    
-    log.info(f"[{INSTANCE_ID}][EOD] 🚀 Bắt đầu quy trình EOD Summary (With Charts)...")
-
-    # --- 1. KHỞI TẠO TASK VẼ CHART THỊ TRƯỜNG (Song song) ---
-    # Chúng ta vẽ chart ngay khi bắt đầu để tiết kiệm thời gian
-    task_chart_vni = generate_mini_chart("VNINDEX")
-    task_chart_v30 = generate_mini_chart("VN30")
-
-    # --- 2. LẤY DỮ LIỆU INDEX ---
-    def _get_index_data(symbol):
-        try:
-            q = Quote(symbol=symbol, source='VCI')
-            df = q.history(start=(now - datetime.timedelta(days=5)).strftime('%Y-%m-%d'), 
-                           end=now.strftime('%Y-%m-%d'), interval='1D')
-            if df is None or len(df) < 2: return None
-            
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
-            
-            price = float(last['close'])
-            change = price - float(prev['close'])
-            pct = (change / float(prev['close'])) * 100
-            
-            cls = "t-ref"
-            if change > 0: cls = "t-up"
-            elif change < 0: cls = "t-down"
-            sign = "+" if change > 0 else ""
-            
-            return {
-                "price": f"{price:,.2f}",
-                "change_str": f"{sign}{change:,.2f} ({sign}{pct:.2f}%)",
-                "cls": cls,
-                "raw_price": price, "raw_change": change, "raw_vol": float(last['volume'])
-            }
-        except Exception: return None
-
-    # Chạy song song lấy số liệu Index
-    vni_data, v30_data = await asyncio.gather(
-        asyncio.to_thread(_get_index_data, 'VNINDEX'),
-        asyncio.to_thread(_get_index_data, 'VN30')
-    )
-
-    # Chờ Chart thị trường xong
-    chart_vni_html, chart_v30_html = await asyncio.gather(task_chart_vni, task_chart_v30)
-
-    # Đóng gói market_data (Kèm Chart HTML)
-    market_data = {
-        "vnindex": vni_data if vni_data else {"price": "---", "change_str": "---", "cls": "t-ref"},
-        "vn30": v30_data if v30_data else {"price": "---", "change_str": "---", "cls": "t-ref"}
-    }
-    # Gán chart vào dict
-    market_data["vnindex"]["chart_html"] = chart_vni_html
-    market_data["vn30"]["chart_html"] = chart_v30_html
-
-    # --- 3. GỌI AI INSIGHT ---
-    ai_comment = "Thị trường đang biến động. Hãy quan sát kỹ dòng tiền."
-    if vni_data:
-        try:
-            ai_comment = await call_gemini_eod_insight(market_data)
-        except Exception as e:
-            log.error(f"[EOD] Lỗi gọi AI: {e}")
-    market_data["ai_comment"] = ai_comment
-
-    # --- 4. LẤY DANH SÁCH USER & STOCK ---
-    try:
-        all_watch = await asyncio.to_thread(get_all_watch)
-        if not all_watch: return
-    except Exception: return
-
-    all_symbols = set()
-    for block in all_watch.values():
-        for s in block.get("list", []):
-            if len(str(s)) == 3: all_symbols.add(str(s).upper())
-    
-    if not all_symbols: return
-    
-    # Fetch số liệu Stock
-    stock_data_list = await fetch_full_eod_data(list(all_symbols))
-    
-    # --- 5. VẼ CHART CỔ PHIẾU (SONG SONG) ---
-    # Tạo dict map symbol -> task vẽ chart
-    stock_chart_tasks = {item['symbol']: generate_mini_chart(item['symbol']) for item in stock_data_list}
-    
-    # Chạy tất cả
-    chart_results = await asyncio.gather(*stock_chart_tasks.values())
-    
-    # Map kết quả HTML vào lại stock_data_list
-    chart_map = dict(zip(stock_chart_tasks.keys(), chart_results))
-    
-    for item in stock_data_list:
-        sym = item['symbol']
-        item['chart_html'] = chart_map.get(sym, "") # Gán HTML chart vào item
-
-    # Tạo Map để lookup nhanh
-    stock_map = {item['symbol']: item for item in stock_data_list}
-
-    # --- 6. GỬI TIN ---
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-    tasks = []
-
-    for chat_key, block in all_watch.items():
-        try:
-            chat_id = int(chat_key)
-            watch_list = block.get("list", [])
-            if not watch_list: continue
-
-            user_stocks_ready = []
-            for sym in watch_list:
-                sym_u = str(sym).upper()
-                if sym_u in stock_map:
-                    user_stocks_ready.append(stock_map[sym_u])
-            
-            if not user_stocks_ready: continue
-
-            # Payload
-            payload = {
-                "market_data": market_data,
-                "user_stocks": user_stocks_ready,
-                "generated_at": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m"),
-                "is_pro": True # Giả định là Pro để hiện full tính năng
-            }
-
-            digest_id = uuid.uuid4().hex
-            r = get_redis()
-            r.set(f"digest_web:eod_web:{digest_id}", json.dumps(payload), ex=86400)
-            
-            web_app_url = f"{base_url}/eod/{digest_id}"
-            
-            kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📊 Xem Tổng Kết & Biểu Đồ", web_app=WebAppInfo(url=web_app_url))
-            ]])
-            
-            vni_text = f"VN-INDEX: {market_data['vnindex']['price']} {market_data['vnindex']['change_str']}"
-            msg_text = (
-                f"🇻🇳 *Tổng kết phiên {today_str}*\n"
-                f"{vni_text}\n"
-                f"👉 Nhấn nút để xem chi tiết & soi biểu đồ."
-            )
-            
-            sent_msg = await send_md(tg_app.bot, chat_id, msg_text, reply_markup=kb, msg_type='EOD_SUMMARY')
-            
-            if sent_msg:
-                try:
-                    await tg_app.bot.pin_chat_message(
-                        chat_id=chat_id, message_id=sent_msg.message_id, disable_notification=True
-                    )
-                except: pass
-            
-            tasks.append(asyncio.create_task(asyncio.sleep(0)))
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][EOD] Lỗi gửi cho {chat_key}: {e}")
-
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-        
-    log.info(f"[{INSTANCE_ID}][EOD] ✅ Hoàn tất gửi EOD (Modal Chart).")
-    
-    await asyncio.sleep(10)
-    asyncio.create_task(cleanup_after_eod())
-
-def get_next_notice_after(now: datetime.datetime):
-    """
-    Tìm mốc thông báo tiếp theo (mở/đóng phiên) sau thời điểm 'now'
-    ở các ngày làm việc kế tiếp (bỏ qua T7, CN).
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    candidates = []
-
-    for offset in range(0, 7):  # tối đa nhìn trước 1 tuần là đủ
-        day = now.date() + datetime.timedelta(days=offset)
-        if day.weekday() > 4:  # 5 = T7, 6 = CN
-            continue
-        for spec in NOTICE_SPECS:
-            dt = vn_tz.localize(
-                datetime.datetime(day.year, day.month, day.day, spec["hour"], spec["minute"])
-            )
-            if dt > now:
-                candidates.append((dt, spec))
-
-    if not candidates:
-        return None, None
-
-    # lấy mốc gần nhất
-    dt, spec = min(candidates, key=lambda x: x[0])
-    return dt, spec
-
-async def session_notice_loop():
-    """
-    Loop riêng để gửi thông báo:
-    - Sắp mở phiên sáng / chiều
-    - Sắp đóng phiên sáng / chiều
-    Chạy song song với alert_loop, không ảnh hưởng gì tới lệnh Telegram.
-    
-    (ĐÃ SỬA LỖI BLOCKING I/O)
-    """
-    
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # ❗️ KIỂM TRA TRẠNG THÁI BOT
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][SESSION {loop_id}] [thông báo sắp mở / sắp đóng phiên] Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue # Quay lại vòng lặp, kiểm tra BOT_ACTIVE tiếp
-
-        next_dt, spec = get_next_notice_after(now)
-        if not next_dt or not spec:
-            # Trường hợp hiếm: không tìm được mốc, ngủ 1 giờ rồi tính lại
-            log.warning(f"[{INSTANCE_ID}][SESSION {loop_id}] Không tìm được mốc thông báo, sleep 3600s")
-            await asyncio.sleep(3600)
-            continue
-
-        delay = max((next_dt - now).total_seconds(), 1)
-        log.info(
-            f"[{INSTANCE_ID}][SESSION {loop_id}] Chờ {delay:.0f}s để gửi thông báo {spec['label']} lúc {next_dt}"
-        )
-        await asyncio.sleep(delay)
-
-        # ❗️ KIỂM TRA LẦN NỮA SAU KHI NGỦ DẬY
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][SESSION {loop_id}] Thức dậy nhưng bot TẮT, bỏ qua thông báo.")
-            continue
-
-                # Đến giờ thông báo
-        try:
-            label = spec.get("label")
-            if label == "EOD_SUMMARY":
-                # 🔔 15:00 – Tổng kết cuối phiên
-                await send_eod_summary()
-
-                # Chờ 1 chút cho EOD đi hết rồi mới dọn dẹp
-                await asyncio.sleep(10) 
-                asyncio.create_task(cleanup_after_eod())
-                # =========================
-            else:
-                # Các mốc khác: broadcast câu text cố định
-                await broadcast_to_all_watchers(spec["text"], target_audience="all", msg_type="SESSION_NOTICE")
-        except Exception as e:
-            log.error(f"[{INSTANCE_ID}][SESSION {loop_id}] Lỗi khi xử lý thông báo {label}: {e}")
-
-
-def next_session_start(now: datetime.datetime) -> datetime.datetime:
-    """
-    Tính thời điểm bắt đầu phiên giao dịch tiếp theo:
-    - Nếu trước 09:15 -> 09:15 hôm nay
-    - Nếu giữa 11:30–13:00 -> 13:00 hôm nay
-    - Nếu sau 14:47 hoặc cuối tuần -> 09:15 ngày làm việc tiếp theo
-    Hàm này dùng để cho alert_loop ngủ lâu hơn ngoài giờ giao dịch.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    if now.tzinfo is None:
-        now = vn_tz.localize(now)
-
-    weekday = now.weekday()
-    hm = now.hour * 60 + now.minute  # phút trong ngày
-    date = now.date()
-
-    def at(d: datetime.date, hour: int, minute: int):
-        return vn_tz.localize(datetime.datetime(d.year, d.month, d.day, hour, minute))
-
-    # Nếu là T7 hoặc CN -> nhảy tới thứ 2, 09:15
-    if weekday > 4:
-        days_ahead = (7 - weekday) % 7
-        if days_ahead == 0:
-            days_ahead = 1
-        next_date = date + datetime.timedelta(days=days_ahead)
-        return at(next_date, 9, 15)
-
-    # Thứ 2–6
-    if hm < 555:  # trước 09:15
-        return at(date, 9, 15)
-
-    if 690 < hm < 780:  # giữa 11:30–13:00
-        return at(date, 13, 0)
-
-    if hm >= 887:  # sau 14:47 -> sang ngày làm việc tiếp theo 09:15
-        next_date = date + datetime.timedelta(days=1)
-        while next_date.weekday() > 4:
-            next_date = next_date + datetime.timedelta(days=1)
-        return at(next_date, 9, 15)
-
-    # Trường hợp còn lại lý thuyết là đang trong phiên, không nên gọi hàm này,
-    # fallback: cho 15s nữa.
-    return now + datetime.timedelta(seconds=15)
-
-
-def pick_new_level(value: float | None, levels: list[float]):
-    if value is None:
-        return None
-    chosen = None
-    for lvl in levels:
-        if lvl > 0 and value >= lvl:
-            if chosen is None or lvl > chosen:
-                chosen = lvl
-        elif lvl < 0 and value <= lvl:
-            if chosen is None or lvl < chosen:
-                chosen = lvl
-    return chosen
-
-def same_sign(a: float, b: float) -> bool:
-    """Hai số cùng dấu (cùng dương hoặc cùng âm) hay không."""
-    return (a > 0 and b > 0) or (a < 0 and b < 0)
-
-
-def get_quote(symbol: str):
-    """Lấy giá realtime của 1 mã cổ phiếu hoặc index."""
-    try:
-        trading = Trading(source="VCI")
-        df = trading.price_board([symbol])
-        if df is None or len(df) == 0:
-            return None
-        row = df.iloc[0]
-
-        def norm(x):
-            if x is None:
-                return None
-            try:
-                if hasattr(x, "item"):
-                    x = x.item()
-            except Exception:
-                pass
-            if isinstance(x, float) and math.isnan(x):
-                return None
-            return x
-
-        match_price = norm(row.get(("match", "match_price")))
-        ref_price = norm(
-            row.get(("match", "reference_price"))
-            if ("match", "reference_price") in row
-            else row.get(("listing", "ref_price"))
-        )
-
-        price = match_price if match_price is not None else ref_price
-        change_abs = (
-            float(match_price) - float(ref_price)
-            if match_price is not None and ref_price is not None
-            else None
-        )
-        pct_change = (
-            ((float(match_price) - float(ref_price)) / float(ref_price)) * 100.0
-            if match_price and ref_price and ref_price != 0
-            else None
-        )
-
-        out = {"price": price, "pct": pct_change, "change_abs": change_abs}
-        
-        # Làm đẹp log: hiển thị phần trăm, giá, và thay đổi tuyệt đối gọn hơn
-        price_display = (
-            f"{float(out['price']):,.0f}".replace(",", ".")
-            if out.get("price") is not None
-            else "None"
-        )
-        pct_display = (
-            f"{out['pct']:+.2f}%" if out.get("pct") is not None else "None"
-        )
-        change_abs_display = (
-            f"{int(out['change_abs']):,}".replace(",", ".")
-            if out.get("change_abs") is not None
-            else "None"
-        )
-
-
-        return out
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] [QUOTE FAIL] {symbol}: {e}")
-        return None
-
-
-def get_perf_history(symbol: str):
-    """
-    Lấy hiệu suất giá (Ngày/Tuần/Tháng).
-    (ĐÃ SỬA: Fallback VCI -> TCBS)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    today = datetime.datetime.now(vn_tz).date()
-    start_date = (today - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
-    
-    df = None
-    
-    # --- CÁCH 1: THỬ VCI ---
-    try:
-        quote = Quote(symbol=symbol, source="VCI")
-        df = quote.history(start=start_date, end=end_date, interval="1D")
-    except Exception:
-        pass # Lỗi thì bỏ qua, xuống cách 2
-        
-    # --- CÁCH 2: THỬ TCBS (Nếu VCI tạch) ---
-    if df is None or df.empty:
-        try:
-            quote = Quote(symbol=symbol, source="TCBS")
-            df = quote.history(start=start_date, end=end_date, interval="1D")
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] [PERF FAIL] {symbol}: Cả VCI và TCBS đều lỗi: {e}")
-            return None
-
-    if df is None or len(df) == 0:
-        return None
-
-    # Chuẩn hoá dữ liệu (TCBS và VCI có thể khác tên cột, vnstock3 thường chuẩn hóa về lower)
-    # Đảm bảo có cột 'time' và 'close'
-    try:
-        df.columns = [c.lower() for c in df.columns] # Force lower case
-        if 'time' not in df.columns or 'close' not in df.columns:
-            return None
-            
-        df["time"] = pd.to_datetime(df["time"])
-        df = df.sort_values("time").reset_index(drop=True)
-
-        last = df.iloc[-1]
-        last_date = last["time"].date()
-        
-        # Xử lý đơn vị giá (TCBS có thể trả về 26.5 thay vì 26500)
-        price = float(last["close"])
-        if price < 500: price *= 1000
-        
-        # Hàm tìm giá quá khứ
-        def find_price_before(target_date: datetime.date):
-            sub = df[df["time"].dt.date <= target_date]
-            if sub.empty: return None
-            val = float(sub.iloc[-1]["close"])
-            if val < 500: val *= 1000
-            return val
-
-        # % NGÀY
-        prev_price = find_price_before(last_date - datetime.timedelta(days=1))
-        day_pct = (price - prev_price) / prev_price * 100.0 if prev_price else None
-
-        # % TUẦN (7 ngày)
-        week_price = find_price_before(last_date - datetime.timedelta(days=7))
-        week_pct = (price - week_price) / week_price * 100.0 if week_price else None
-
-        # % THÁNG (30 ngày)
-        month_price = find_price_before(last_date - datetime.timedelta(days=30))
-        month_pct = (price - month_price) / month_price * 100.0 if month_price else None
-
-        return {
-            "price": int(price),
-            "day_pct": day_pct,
-            "week_pct": week_pct,
-            "month_pct": month_pct,
-        }
-
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] [PERF ERROR] {symbol}: {e}")
-        return None
-
-def format_perf_line(sym: str, perf: dict) -> str:
-    price = perf.get("price")
-    day_pct = perf.get("day_pct")
-    week_pct = perf.get("week_pct")
-    month_pct = perf.get("month_pct")
-
-    price_str = f"{price} vnđ" if price is not None else "N/A"
-    day_str = f"{day_pct:+.2f}%" if day_pct is not None else "N/A"
-    week_str = f"{week_pct:+.2f}%" if week_pct is not None else "N/A"
-    month_str = f"{month_pct:+.2f}%" if month_pct is not None else "N/A"
-
-    return (
-        f"- {sym}: giá hiện tại {price_str}, "
-        f"ngày {day_str}, tuần {week_str}, tháng {month_str}"
-    )
-
-# HELPER: PHÂN LOẠI LỖI VÀ NOTIFY ADMIN
-def classify_error_quota(e: Exception) -> bool:
-    """
-    Thử đoán xem lỗi có liên quan đến quota / rate limit hay không.
-    Dùng best-effort dựa trên nội dung message.
-    """
-    msg = (str(e) or "").lower()
-    quota_keywords = [
-        "quota",
-        "rate limit",
-        "resourceexhausted",
-        "429",
-        "too many requests",
-        "exceeded",
-    ]
-    return any(kw in msg for kw in quota_keywords)
-
-
-# Lưu các cache_key đã gửi lỗi cho Admin để tránh spam
-REPORTED_REPORT_ERROR_KEYS: set[str] = set()
-async def notify_admin_report_error_once(
-    bot,
-    cache_key: str,
-    error: Exception,
-) -> None:
-    """
-    Gửi thông báo lỗi tạo báo cáo danh mục cho Admin, mỗi cache_key chỉ gửi 1 lần.
-    """
-    global REPORTED_REPORT_ERROR_KEYS
-
-    if ADMIN_ID is None:
-        return
-
-    key = cache_key or "UNKNOWN"
-    if key in REPORTED_REPORT_ERROR_KEYS:
-        return
-
-    REPORTED_REPORT_ERROR_KEYS.add(key)
-
-    # Giới hạn chi tiết lỗi để tránh message admin cũng quá dài
-    err_detail = str(error)
-    if len(err_detail) > 1500:
-        err_detail = err_detail[:1500] + " ...[truncated]"
-
-    msg = (
-        f"⚠️ Lỗi khi gọi Gemini tạo báo cáo danh mục cho key `{key}`:\n"
-        f"- Loại lỗi: {type(error).__name__}\n"
-        f"- Chi tiết: {err_detail}"
-    )
-
-    try:
-        await bot.send_message(chat_id=ADMIN_ID, text=msg)
-    except Exception as e2:
-        log.warning(
-            f"[{INSTANCE_ID}] Lỗi khi gửi thông báo báo cáo lỗi cho Admin: {e2}"
-        )
-
-# =====================================================
-# HELPER CHO AI REPORT: INJECT REALTIME DATA TỪ REDIS
-# =====================================================
-
-async def get_financial_context_string(symbols: list[str]) -> str:
-    """
-    [MỚI] Tạo dữ liệu đầu vào cho AI dựa trên chiến lược Mean Reversion.
-    Kết hợp: Screener API Realtime + Redis Cache Lịch sử 5 năm.
-    """
-    if not symbols: return ""
-
-    # 1. Lấy dữ liệu Lịch sử (Redis)
-    hist_data = await asyncio.to_thread(get_historical_valuation_from_redis) or {}
-    
-    # 2. Lấy dữ liệu Hiện tại (Snapshot Screener)
-    try:
-        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] Lỗi lấy Screener context: {e}")
-        screener_df = None
-
-    lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH (REALTIME vs TRUNG BÌNH 5 NĂM):**"]
-    lines.append("(Sử dụng số liệu dưới đây để đánh giá Đắt/Rẻ theo Mean Reversion)")
-    lines.append("-" * 60)
-
-    # Map dữ liệu để tra cứu nhanh
-    curr_map = {}
-    if screener_df is not None and not screener_df.empty:
-        screener_df['ticker'] = screener_df['ticker'].astype(str).str.upper().str.strip()
-        curr_map = screener_df.set_index('ticker').to_dict('index')
-
-    for sym in symbols:
-        sym_u = sym.upper()
-        lines.append(f"📌 **{sym_u}**:")
-        
-        curr = curr_map.get(sym_u, {})
-        hist = hist_data.get(sym_u, {})
-        
-        # Chỉ số
-        pe_cur = float(curr.get('pe', 0) or 0)
-        pb_cur = float(curr.get('pb', 0) or 0)
-        pe_avg = float(hist.get('pe_avg', 0) or 0)
-        pb_avg = float(hist.get('pb_avg', 0) or 0)
-
-        info = []
-        if pe_cur > 0 and pe_avg > 0:
-            diff = (pe_cur - pe_avg) / pe_avg * 100
-            state = "RẺ HƠN" if diff < 0 else "ĐẮT HƠN"
-            info.append(f"   - P/E: {pe_cur:.1f}x (TB 5 năm: {pe_avg:.1f}x) -> {state} {abs(diff):.1f}%")
-        
-        if pb_cur > 0 and pb_avg > 0:
-            diff = (pb_cur - pb_avg) / pb_avg * 100
-            state = "RẺ HƠN" if diff < 0 else "ĐẮT HƠN"
-            info.append(f"   - P/B: {pb_cur:.1f}x (TB 5 năm: {pb_avg:.1f}x) -> {state} {abs(diff):.1f}%")
-
-        if not info:
-            lines.append("   ⚠️ (Thiếu dữ liệu lịch sử hoặc lỗ)")
-        else:
-            lines.extend(info)
-
-    lines.append("-" * 60)
-    return "\n".join(lines)
-
-def call_chatgpt_for_report(symbols: list[str]) -> str:
-    """
-    (PHIÊN BẢN MỚI - MEAN REVERSION CONTEXT)
-    Gọi Gemini tạo báo cáo danh mục với dữ liệu so sánh lịch sử.
-    """
-    if not GEMINI_KEYS:
-        raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
-
-    # Giới hạn số mã để đảm bảo tốc độ
-    if len(symbols) > 6:
-        symbols = symbols[:6]
-
-    # --- 1. TẠO CONTEXT (Dùng hàm async mới viết ở trên) ---
-    # Vì hàm call_chatgpt_for_report thường được gọi trong to_thread (sync wrapper),
-    # nên ta cần chạy hàm async này trong event loop hiện tại hoặc loop mới.
-    
-    try:
-        # Cách gọi async function từ trong hàm sync (chạy trong thread)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        context_str = loop.run_until_complete(get_financial_context_string(symbols))
-        loop.close()
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi tạo context tài chính cho AI: {e}")
-        context_str = ""
-
-    # --- 2. CHUẨN BỊ PROMPT ---
-    symbols_str = ", ".join(symbols)
-    vn_tz = pytz.timezone(TIMEZONE)
-    date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
-
-    prompt = f"""
-Bạn là chuyên gia phân tích chứng khoán Việt Nam theo trường phái **Mean Reversion** (Đầu tư giá trị dựa trên sự đảo chiều về trung bình).
-Hãy phân tích danh mục đầu tư: {symbols_str} (Ngày báo cáo: {date_str}).
-
-{context_str}
-
-YÊU CẦU FORMAT OUTPUT (JSON THUẦN):
-{{
-  "general_market_comment": "Đoạn văn (khoảng 3-4 câu) tổng quan về thị trường và định hướng danh mục.",
-  "portfolio_health_score": 8.5, 
-  "stocks": [
-    {{
-      "symbol": "MÃ",
-      "industry": "Tên ngành",
-      "action": "Mua / Nắm giữ / Hạ tỷ trọng / Theo dõi",
-      "analysis": "Phân tích chi tiết (1000-1200 ký tự). BẮT BUỘC trình bày thành các ý gạch đầu dòng (•), mỗi ý xuống dòng (\\n) riêng biệt. Nội dung phải bao hàm các khía cạnh sau:\\n• KQKD & Lợi thế: Tăng trưởng doanh thu/LN, thị phần, biên lợi nhuận...\\n• Động lực (Catalyst): Dự án mới, game M&A, chính sách ủng hộ...\\n• Định giá: So sánh P/E, P/B với trung bình ngành (đã cung cấp ở trên) để kết luận Đắt/Rẻ.\\n• Rủi ro: Pháp lý, tỷ giá, chi phí đầu vào...",
-      "key_metrics": "Tóm tắt chỉ số (VD: P/E 10.x (TB 15.x)"
-    }}
-  ]
-}}
-
-LƯU Ý:
-1. **QUAN TRỌNG:** Nếu P/E hoặc P/B thấp hơn trung bình 5 năm > 10%, hãy coi đó là tín hiệu tích cực (Rẻ). Ngược lại là rủi ro (Đắt).
-2. Trường `analysis` là MỘT CHUỖI VĂN BẢN (String) chứa các ký tự xuống dòng (\\n) để tách ý, KHÔNG được là object JSON.
-3. Giọng văn: Khách quan, sắc sảo, dựa trên số liệu.
-4. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU TÀI CHÍNH'.
-"""
-
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Mean Reversion): {symbols_str}")
-
-    try:
-        raw_text = call_gemini_safe(
-            model_id="gemini-2.5-flash",
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        # 🔥 FIX QUAN TRỌNG: Xóa markdown fences
-        return raw_text.replace("```json", "").replace("```", "").strip()
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report: {e}")
-        raise e
-
-# ==============================================
-# HÀM GỌI GEMINI CHO HỒ SƠ DOANH NGHIỆP (/info)
-# ==============================================
-
-def call_gemini_for_profile(symbol: str) -> str:
-    """
-    (PHIÊN BẢN JSON - MULTI-KEY) Gọi Gemini tạo hồ sơ doanh nghiệp.
-    """
-    if not GEMINI_KEYS:
-        raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
-
-    sym = symbol.upper().strip()
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Multi-Key) cho hồ sơ: {sym}")
-
-    prompt = f"""
-Bạn là chuyên gia phân tích doanh nghiệp tại thị trường chứng khoán Việt Nam.
-Hãy tạo một "Hồ sơ Doanh nghiệp" chi tiết cho mã cổ phiếu: {sym}
-
-YÊU CẦU FORMAT:
-Trả về **JSON thuần**. Cấu trúc bắt buộc gồm các keys sau:
-{{
-  "overview": "Tên đầy đủ, ngành nghề, lịch sử tóm tắt...",
-  "products": "Các sản phẩm/dịch vụ cốt lõi...",
-  "business_model": "Cách tạo ra lợi nhuận, khách hàng (B2B/B2C)...",
-  "market_position": "Thị phần, vị thế trong ngành, đối thủ...",
-  "value_chain": "Tự chủ nguyên liệu, gia công hay phân phối...",
-  "moat": "Lợi thế cạnh tranh (thương hiệu, chi phí, công nghệ)...",
-  "risks": "Rủi ro đặc thù (nguyên liệu, tỷ giá, pháp lý)...",
-  "leadership": "Ban lãnh đạo chủ chốt và cơ cấu cổ đông..."
-}}
-
-YÊU CẦU NỘI DUNG:
-- Các trường nội dung phải trình bày gãy gọn, dùng ký tự xuống dòng (\\n) và gạch đầu dòng (•) để tách ý.
-- Giọng văn khách quan, KHÔNG khuyến nghị mua bán.
-"""
-
-    try:
-        # GỌI HÀM WRAPPER TRỰC TIẾP
-        return call_gemini_safe(
-            model_id="gemini-2.5-flash-lite",
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-
-    except Exception as e:
-        # log.error(...) -> để hàm gọi bên ngoài lo
-        raise e
-
-#--------------------------------------------
-
-def seconds_until_next_weekly_report():
-    """
-    Tính số giây tới 09:00 sáng Chủ Nhật gần nhất (report tuần).
-    - Nếu hôm nay là Chủ Nhật và giờ < 09:00 -> lấy 09:00 hôm nay.
-    - Ngược lại -> 09:00 Chủ Nhật tuần kế tiếp.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-
-    # Chủ Nhật = 6 trong weekday()
-    SUNDAY = 6
-    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
-
-    if now.weekday() != SUNDAY or now >= target:
-        # Tìm Chủ Nhật kế tiếp
-        days_ahead = (SUNDAY - now.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        next_date = now.date() + datetime.timedelta(days=days_ahead)
-        target = datetime.datetime(
-            next_date.year, next_date.month, next_date.day, 9, 0, 0, tzinfo=vn_tz
-        )
-
-    return max((target - now).total_seconds(), 0)
-
+ 
 # =============================================
 # HÀM XỬ LÝ TIN NHẮN KHÔNG RÕ NGHĨA
 # =============================================
@@ -2268,8 +781,16 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
     elif data.startswith("btn_info_"):
+        # 1. Báo cho Telegram biết đã nhận lệnh (Tắt vòng quay loading trên nút)
+        await query.answer("⏳ Đang lấy dữ liệu...")
+        
+        # 2. Lấy mã cổ phiếu từ callback_data (vd: btn_info_HPG -> HPG)
         symbol = data.split("_")[2]
+        
+        # 3. Giả lập tham số context.args để gọi hàm cmd_info
         context.args = [symbol]
+        
+        # 4. Gọi hàm xử lý chính
         await cmd_info(update, context)
 
     elif data == "btn_upgrade": await cmd_upgrade(update, context)
@@ -2363,69 +884,80 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         kb = [[InlineKeyboardButton("📄 Soi hồ sơ", callback_data=f"btn_info_{symbol}"), InlineKeyboardButton("🗑️ Xóa", callback_data=f"btn_del_{symbol}")], [InlineKeyboardButton("🔙 Quay lại", callback_data="back_to_list")]]
         await safe_edit_message(query, f"⚙️ **{symbol}**", InlineKeyboardMarkup(kb))
 
+#------------------------------------------------------
 
-# =====================================================================
-# =============== VALUE SCREENER (VNSTOCK API VERSION) ================
-# =====================================================================
-
-# -------------------------- Redis Helper --------------------------
-
-def _ttl_until_midnight() -> int:
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    midnight = (now + datetime.timedelta(days=1)).replace(
-        hour=0, minute=0, second=3, microsecond=0
-    )
-    return max(60, int((midnight - now).total_seconds()))
-
-def seconds_until_next_weekday_screener():
+def escape_markdown_v2(text: str) -> str:
     """
-    Tính số giây tới 09:00 sáng ngày làm việc (T2-T6) tiếp theo.
+    Escape tất cả ký tự đặc biệt theo Markdown V2:
+    _ * [ ] ( ) ~ ` > # + - = | { } . !
+    Dùng được cả với Markdown v1.
     """
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    
-    target_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    if text is None:
+        text = ""
+    return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', str(text))
 
-    # Nếu hôm nay là T2-T6 và chưa tới 9h sáng
-    if 0 <= now.weekday() <= 4 and now < target_time:
-        target = target_time
-    else:
-        # Ngược lại, tìm ngày T2-T6 tiếp theo
-        days_ahead = 1
-        next_date = now.date() + datetime.timedelta(days=days_ahead)
-        while next_date.weekday() > 4: # Bỏ qua T7 (5), CN (6)
-            next_date += datetime.timedelta(days=1)
-        
-        target = datetime.datetime(
-            next_date.year, next_date.month, next_date.day, 9, 0, 0, tzinfo=vn_tz
+async def reply_md(update: Update, text: str, **kwargs):
+    """
+    Gửi tin nhắn Markdown an toàn.
+    Tự động phát hiện context là Message hay CallbackQuery để reply đúng chỗ.
+    """
+    from telegram.error import BadRequest
+
+    # --- SỬA ĐỔI QUAN TRỌNG ---
+    # Dùng update.effective_message thay vì update.message
+    # effective_message hoạt động cho cả tin nhắn thường lẫn nút bấm
+    message = update.effective_message 
+    if not message:
+        log.warning("[reply_md] Không tìm thấy message để reply.")
+        return
+    # --------------------------
+
+    async def _send(raw_text: str):
+        return await message.reply_text(
+            raw_text,
+            parse_mode="Markdown",
+            **kwargs,
         )
 
-    return max((target - now).total_seconds(), 0)
+    try:
+        return await _send(text)
+    except BadRequest as e:
+        msg = str(e)
+        logging.warning(f"[Markdown error] {e} | text_len={len(text)}")
 
-def format_roe_pct(roe_decimal: float | None) -> str:
-    """
-    ROE trong DB là dạng thập phân (0.111 = 11.1%).
-    - Nếu < 1%: in 2 chữ số thập phân
-    - Nếu >= 1%: in 1 chữ số thập phân
-    """
-    if roe_decimal is None or math.isnan(roe_decimal):
-        return "N/A"
-    pct = roe_decimal * 100.0
-    if abs(pct) < 1:
-        return f"{pct:.2f}%"
-    return f"{pct:.1f}%"
+        # 1) Nếu lỗi do quá dài -> chia nhỏ
+        if "Message is too long" in msg:
+            MAX_LEN = 4000
 
-# ==============================================
-# SMART DATA FETCHER (Async + Timeout 20s)
-# ==============================================
-# Biến toàn cục để lưu trạng thái chặn VCI theo ngày
-# Nếu _vci_blocked_date == hôm nay -> Bỏ qua VCI
-_vci_blocked_date = None 
+            chunks = []
+            remaining = text
+            while remaining:
+                if len(remaining) <= MAX_LEN:
+                    chunks.append(remaining)
+                    break
 
-# ==============================================
-# SMART DATA FETCHER (Final Version: Circuit Breaker + TCBS 1m/1D)
-# ==============================================
+                split_pos = remaining.rfind("\n\n", 0, MAX_LEN)
+                if split_pos == -1:
+                    split_pos = remaining.rfind("\n", 0, MAX_LEN)
+                if split_pos == -1:
+                    split_pos = MAX_LEN
+
+                chunks.append(remaining[:split_pos])
+                remaining = remaining[split_pos:]
+
+            last_msg = None
+            for idx, chunk in enumerate(chunks, start=1):
+                try:
+                    last_msg = await _send(chunk)
+                except BadRequest as e2:
+                    safe_chunk = escape_markdown_v2(chunk)
+                    last_msg = await _send(safe_chunk)
+
+            return last_msg
+
+        # 2) Các lỗi parse khác -> escape toàn bộ rồi gửi lại
+        safe_text = escape_markdown_v2(text)
+        return await _send(safe_text)
 
 async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
     """
@@ -2536,1499 +1068,6 @@ async def fetch_data_smart(symbols: list[str]) -> dict[str, dict]:
         
     return results
 
-def get_index_eod_vci(symbol: str):
-    """
-    Lấy dữ liệu EOD (Close, Change, Volume) từ VCI History.
-    Dùng cho EOD Summary để đảm bảo độ ổn định và có Volume.
-    """
-    try:
-        # Lấy 5 ngày gần nhất để chắc chắn có dữ liệu tính tham chiếu
-        today = datetime.datetime.now().date()
-        start_date = (today - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-        
-        # Gọi API VCI History
-        quote = Quote(symbol=symbol, source="VCI")
-        df = quote.history(start=start_date, end=end_date, interval="1D")
-        
-        if df is None or df.empty or len(df) < 2:
-            return None
-
-        # Lấy dòng mới nhất và dòng liền trước
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        price = float(last['close'])
-        ref_price = float(prev['close'])
-        change = price - ref_price
-        pct = 0.0
-        if ref_price > 0:
-            pct = (change / ref_price) * 100.0
-        volume = float(last['volume'])
-        
-        return {
-            "price": price,
-            "change": change,
-            "pct": pct,
-            "volume": volume
-        }
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] Lỗi lấy EOD VCI cho {symbol}: {e}")
-        return None
-
-
-# ==============================================
-# BÁO CÁO TUẦN 09:00 CHỦ NHẬT (CÓ CACHE + RETRY)
-# ==============================================
-async def execute_weekly_report(admin_update: Update | None = None):
-    """
-    (PHIÊN BẢN WEB APP JSON)
-    Chạy, tính toán và gửi báo cáo tuần (Pro + Admin).
-    Gửi nút mở Web App thay vì tin nhắn text dài.
-    """
-    global INSTANCE_ID, log, tg_app, BOT_ACTIVE, GEMINI_API_KEY, ADMIN_ID
-
-    instance_label = f"[{INSTANCE_ID}][EXEC_WEEKLY]"
-    admin_chat_id = admin_update.effective_chat.id if admin_update else None
-    vn_tz = pytz.timezone(TIMEZONE)
-    
-    try:
-        log.info(f"{instance_label} Bắt đầu chạy (trigger by: {'Admin' if admin_chat_id else 'Scheduler'}).")
-        if admin_chat_id:
-            await tg_app.bot.send_message(admin_chat_id, "⏳ Bắt đầu chạy tác vụ gửi Weekly Report (Web App Mode)...")
-
-        if not BOT_ACTIVE:
-            log.info(f"{instance_label} Bot TẮT, huỷ tác vụ.")
-            return
-
-        if not GEMINI_API_KEY:
-            log.warning(f"{instance_label} Chưa có GEMINI_API_KEY, bỏ qua.")
-            return
-
-        # 1. Lấy dữ liệu user
-        all_watch = await asyncio.to_thread(get_all_watch)
-        pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-
-        if not all_watch:
-            log.info(f"{instance_label} Không có user nào theo dõi, bỏ qua.")
-            return
-
-        sent_count = 0
-        skipped_count = 0
-        error_count = 0
-
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-
-        # 2. Duyệt qua từng user
-        for chat_key, user_block in all_watch.items():
-            if not BOT_ACTIVE:
-                log.info(f"{instance_label} Bot TẮT giữa chừng, dừng gửi.")
-                break
-
-            try:
-                chat_id = int(chat_key)
-            except: continue
-            
-            # === LOGIC PAYWALL: Chỉ gửi cho Pro & Admin ===
-            if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
-                skipped_count += 1
-                continue
-
-            watch_list = user_block.get("list", []) or []
-            # Lọc bỏ index (VN...) và giới hạn 6 mã để đảm bảo JSON ổn định
-            symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
-            
-            if not symbols:
-                skipped_count += 1
-                continue
-            
-            # Cắt ngắn danh sách nếu quá dài (giống logic /report)
-            if len(symbols) > 6:
-                symbols = symbols[:6]
-
-            cache_key = make_report_cache_key(symbols)
-            
-            # === KIỂM TRA CACHE ===
-            # Logic: 
-            # - Nếu đã có cache JSON hợp lệ (do user tự chạy /report trước đó) -> Dùng lại.
-            # - Nếu chưa có -> Gọi AI tạo mới -> Lưu Cache.
-            
-            # Max age ~6.9 ngày (để đảm bảo báo cáo tuần luôn mới nếu chưa có trong tuần)
-            cached = get_report_from_redis(cache_key, max_age_days=6.9)
-            
-            json_text = None
-            
-            if cached is not None:
-                # Cache HIT
-                text_val, generated_at, is_error, wait_sec = cached
-                if not is_error:
-                    json_text = text_val
-                    log.info(f"{instance_label} Dùng lại cache có sẵn cho {chat_id}.")
-                else:
-                    # Cache lỗi -> Bỏ qua user này để tránh spam lỗi, hoặc retry (ở đây chọn retry gọi AI)
-                    log.info(f"{instance_label} Cache cũ bị lỗi, sẽ gọi AI lại cho {chat_id}.")
-            
-            # Nếu chưa có nội dung (Cache MISS), gọi AI
-            if not json_text:
-                try:
-                    start = time.time()
-                    # Gọi hàm call_chatgpt_for_report (đã update trả về JSON)
-                    json_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-                    duration = time.time() - start
-                    
-                    # Lưu vào Redis
-                    save_report_to_redis(cache_key, json_text, source="weekly_loop")
-                    log.info(f"{instance_label} Gemini JSON done in {duration:.1f}s cho {chat_id}")
-                    
-                except Exception as e:
-                    log.error(f"{instance_label} Lỗi gọi AI cho {chat_id}: {e}")
-                    # Lưu cache lỗi để tránh retry liên tục nếu user spam
-                    save_report_to_redis(
-                        cache_key, str(e), source="weekly_error", is_error=True, wait_sec=120
-                    )
-                    error_count += 1
-                    continue # Bỏ qua user này, sang người kế tiếp
-
-            # === GỬI TIN NHẮN WEB APP ===
-            if json_text:
-                try:
-                    web_app_url = f"{base_url}/report/view/{cache_key}?chat_id={chat_id}"
-                    
-                    kb = InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📊 Xem Báo Cáo Tuần", web_app=WebAppInfo(url=web_app_url))
-                    ]])
-                    
-                    now_str = datetime.datetime.now(vn_tz).strftime('%d/%m')
-                    msg = (
-                        f"🗞 *Báo cáo danh mục tuần {now_str}*\n"
-                        f"Phân tích chuyên sâu cho: *{', '.join(symbols)}*\n\n"
-                        f"👉 Nhấn nút bên dưới để xem chi tiết nhận định thị trường và cổ phiếu của bạn."
-                    )
-                    
-                    await send_md(tg_app.bot, chat_id, msg, reply_markup=kb)
-                    sent_count += 1
-                    
-                except Exception as e:
-                    log.warning(f"{instance_label} Lỗi gửi tin Telegram cho {chat_id}: {e}")
-
-            # Sleep nhẹ để tránh flood
-            await asyncio.sleep(2)
-
-        final_msg = f"Hoàn tất Weekly Report — Gửi: {sent_count} | Bỏ qua: {skipped_count} | Lỗi: {error_count}."
-        log.info(f"{instance_label} {final_msg}")
-        
-        if admin_chat_id:
-            await tg_app.bot.send_message(admin_chat_id, f"✅ {final_msg}")
-
-    except Exception as e:
-        log.error(f"{instance_label} Lỗi tổng quát: {e}")
-        if admin_chat_id:
-            try:
-                await tg_app.bot.send_message(admin_chat_id, f"❌ Lỗi tổng quát Weekly: {e}")
-            except: pass
-
-async def weekly_report_loop():
-    """
-    Gửi báo cáo danh mục vào 09:00 sáng Chủ Nhật.
-    Đã fix lỗi gửi kép bằng cách kiểm tra ngày chạy (_last_weekly_run_date).
-    """
-    global _last_weekly_run_date
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
-    log.info(f"[{INSTANCE_ID}][WEEKLY] Khởi động loop báo cáo tuần (09:00 CN).")
-
-    while True:
-        loop_id += 1
-        # 1. Tính thời gian ngủ tới 09:00 CN tiếp theo
-        wait_sec = seconds_until_next_weekly_report()
-        
-        # Log nhẹ để biết bao lâu nữa chạy
-        next_run_dt = datetime.datetime.now(vn_tz) + datetime.timedelta(seconds=wait_sec)
-        log.info(f"[{INSTANCE_ID}][WEEKLY {loop_id}] Ngủ {wait_sec/3600:.1f}h tới {next_run_dt.strftime('%H:%M %d/%m')}")
-        
-        await asyncio.sleep(wait_sec)
-
-        # 2. Thức dậy! Kiểm tra điều kiện
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][WEEKLY] Thức dậy nhưng Bot TẮT. Bỏ qua.")
-            await asyncio.sleep(60)
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-        today_str = now.strftime("%Y-%m-%d")
-
-        # Điều kiện 1: Phải là Chủ Nhật (0=T2, 6=CN)
-        if now.weekday() != 6:
-            log.warning(f"[{INSTANCE_ID}][WEEKLY] Thức dậy nhưng không phải Chủ Nhật? (Now: {now})")
-            await asyncio.sleep(60)
-            continue
-
-        # Điều kiện 2: Phải đúng giờ (trong khoảng 09:00 - 09:59) để tránh chạy sai giờ
-        if now.hour != 9:
-             log.warning(f"[{INSTANCE_ID}][WEEKLY] Thức dậy nhưng sai giờ (Now: {now.hour}h). Bỏ qua.")
-             await asyncio.sleep(60)
-             continue
-
-        # 🔥 [FIX LỖI GỬI KÉP]: Kiểm tra xem hôm nay đã chạy chưa?
-        if _last_weekly_run_date == today_str:
-            log.info(f"[{INSTANCE_ID}][WEEKLY] Hôm nay ({today_str}) đã chạy rồi. Không chạy lại.")
-            # Ngủ 1 tiếng để chắc chắn qua khỏi khung giờ 9h
-            await asyncio.sleep(3600)
-            continue
-
-        # 3. Chạy báo cáo
-        try:
-            log.info(f"[{INSTANCE_ID}][WEEKLY] 🚀 Bắt đầu chạy Weekly Report cho ngày {today_str}...")
-            
-            # Gọi hàm thực thi
-            await execute_weekly_report(admin_update=None)
-            
-            # ✅ Đánh dấu là đã chạy hôm nay
-            _last_weekly_run_date = today_str
-            
-        except Exception as e:
-            log.error(f"[{INSTANCE_ID}][WEEKLY] ❌ Lỗi nghiêm trọng: {e}")
-            await asyncio.sleep(300)
-
-# ===============================================================
-# HÀM HELPER TÍNH GIỜ QUÉT (Dùng chung cho cả 2 loop tin tức)
-# ===============================================================
-def get_seconds_until_next_scan(now: datetime.datetime, target_hours: list[int]) -> float:
-    """
-    Tính số giây từ 'now' đến mốc giờ cố định tiếp theo trong danh sách target_hours.
-    Ví dụ: target_hours=[6, 18] -> Sẽ trả về giây tới 06:00 hoặc 18:00 gần nhất.
-    """
-    candidates = []
-    for h in target_hours:
-        # Tạo mốc giờ h:00:00 hôm nay
-        t = now.replace(hour=h, minute=0, second=0, microsecond=0)
-        # Nếu giờ này đã qua, dời sang ngày mai
-        if t <= now:
-            t += datetime.timedelta(days=1)
-        candidates.append(t)
-    
-    # Lấy mốc thời gian gần nhất trong tương lai
-    next_run = min(candidates)
-    return (next_run - now).total_seconds()
-
-
-# ===============================================================
-# 1. LOOP TIN CHUYÊN NGÀNH (Sửa đổi: Quét 06:00 & 18:00)
-# ===============================================================
-async def news_specialized_loop():
-    """
-    Quét RSS chuyên ngành 2 LẦN/NGÀY (06:00 và 18:00).
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    
-    # 🕒 CẤU HÌNH GIỜ QUÉT (Sáng & Chiều)
-    SCAN_HOURS = [6, 18] 
-
-    all_specialized_urls: list[str] = []
-    for urls in RSS_FEEDS_SPECIALIZED.values():
-        all_specialized_urls.extend(urls)
-
-    log.info(f"[{INSTANCE_ID}][NEWS_SPEC] Đã chuyển sang chế độ quét theo lịch: {SCAN_HOURS}h hàng ngày.")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. TÍNH TOÁN THỜI GIAN NGỦ TỚI PHIÊN TIẾP THEO
-        # Nếu bot vừa khởi động (loop_id=1), ta có thể cho chạy ngay hoặc chờ. 
-        # Ở đây mình chọn logic: Chờ đúng giờ mới chạy để tiết kiệm resource.
-        wait_seconds = get_seconds_until_next_scan(now, SCAN_HOURS)
-        next_run_str = (now + datetime.timedelta(seconds=wait_seconds)).strftime("%H:%M %d/%m")
-        
-        log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Ngủ {wait_seconds/3600:.1f}h. Quét tiếp theo lúc: {next_run_str}")
-        
-        await asyncio.sleep(wait_seconds)
-
-        # 2. THỨC DẬY & KIỂM TRA ACTIVE
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Đến giờ quét nhưng Bot đang TẮT.")
-            await asyncio.sleep(60) # Chờ 1 phút rồi check lại schedule
-            continue
-
-        # 3. THỰC HIỆN QUÉT (Logic cũ giữ nguyên)
-        try:
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] 🟢 Bắt đầu quét tin chuyên ngành...")
-            
-            entries = await asyncio.to_thread(
-                fetch_rss_entries_for_urls, all_specialized_urls
-            )
-            
-            # Giới hạn số lượng để xử lý nhanh
-            if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
-                entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
-
-            new_entries = []
-            scan_now = datetime.datetime.now(vn_tz) # Lấy giờ thực tế lúc quét
-            
-            for it in entries:
-                link = (it.get("link") or "").strip()
-                if not link: continue
-                
-                # Check tươi mới & Check đã xem
-                pub_dt = it.get("published")
-                if not is_fresh_news(pub_dt, scan_now): continue
-                
-                is_seen = await asyncio.to_thread(
-                    has_news_seen,
-                    NEWS_FEED_TYPE_SPECIALIZED,
-                    link,
-                )
-                if not is_seen:
-                    new_entries.append(it)
-            
-            if not new_entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài mới.")
-                continue
-
-            # Lưu vào DB (Chỉ thu thập)
-            unique_count = 0
-            for it in new_entries:
-                await asyncio.to_thread(
-                    mark_news_seen,
-                    NEWS_FEED_TYPE_SPECIALIZED,
-                    link=it["link"],
-                    guid=None,
-                    title=it["title"],
-                    published=it["published"],
-                )
-                unique_count += 1
-
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] ✅ Đã lưu {unique_count} tin mới (chờ Digest sáng).")
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Lỗi tổng quát: {e}")
-        
-        # (Sau khi quét xong, vòng lặp quay lại đầu -> tính giờ ngủ tiếp theo)
-
-
-# ===============================================================
-# 2. LOOP TIN VĨ MÔ (Sửa đổi: Quét 06:00 & 18:00)
-# ===============================================================
-async def news_macro_loop():
-    """
-    Quét RSS vĩ mô 2 LẦN/NGÀY (06:00 và 18:00).
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    
-    # 🕒 CẤU HÌNH GIỜ QUÉT
-    SCAN_HOURS = [6, 18]
-
-    log.info(f"[{INSTANCE_ID}][NEWS_MACRO] Đã chuyển sang chế độ quét theo lịch: {SCAN_HOURS}h hàng ngày.")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. TÍNH TOÁN THỜI GIAN NGỦ
-        wait_seconds = get_seconds_until_next_scan(now, SCAN_HOURS)
-        next_run_str = (now + datetime.timedelta(seconds=wait_seconds)).strftime("%H:%M %d/%m")
-
-        log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Ngủ {wait_seconds/3600:.1f}h. Quét tiếp theo lúc: {next_run_str}")
-        
-        await asyncio.sleep(wait_seconds)
-
-        # 2. THỨC DẬY & KIỂM TRA ACTIVE
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đến giờ quét nhưng Bot đang TẮT.")
-            await asyncio.sleep(60)
-            continue
-
-        # 3. THỰC HIỆN QUÉT (Logic cũ giữ nguyên)
-        try:
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] 🟢 Bắt đầu quét tin vĩ mô...")
-
-            entries = await asyncio.to_thread(
-                fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
-            )
-            
-            if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
-                entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
-
-            new_entries = []
-            scan_now = datetime.datetime.now(vn_tz)
-            
-            for it in entries:
-                link = (it.get("link") or "").strip()
-                if not link: continue
-                
-                pub_dt = it.get("published")
-                if not is_fresh_news(pub_dt, scan_now): continue
-                
-                is_seen = await asyncio.to_thread(
-                    has_news_seen,
-                    NEWS_FEED_TYPE_MACRO,
-                    link,
-                )
-                if not is_seen:
-                    new_entries.append(it)
-            
-            if not new_entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài mới.")
-                continue
-
-            # Lưu vào DB
-            unique_count = 0
-            for it in new_entries:
-                await asyncio.to_thread(
-                    mark_news_seen,
-                    NEWS_FEED_TYPE_MACRO,
-                    link=it["link"],
-                    guid=None,
-                    title=it["title"],
-                    published=it["published"],
-                )
-                unique_count += 1
-            
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] ✅ Đã lưu {unique_count} tin vĩ mô mới.")
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
-
-async def news_cleanup_loop():
-    """
-    Loop dọn dẹp định kỳ mỗi 24h:
-    1. Xoá news_seen cũ (> 180 ngày).
-    2. Xoá đơn hàng PENDING treo (> 3 ngày).
-    """
-    RETENTION_DAYS_NEWS = 180
-    RETENTION_DAYS_ORDERS = 3  # Xóa đơn treo sau 3 ngày
-    INTERVAL_SECONDS = 24 * 60 * 60  # 24 giờ
-
-    while True:
-        try:
-            # 1. Dọn News (Code cũ)
-            deleted_news = await asyncio.to_thread(
-                cleanup_old_news_seen,
-                RETENTION_DAYS_NEWS,
-            )
-            if deleted_news > 0:
-                log.info(f"[MAINTENANCE] Đã xoá {deleted_news} bản ghi news_seen cũ.")
-
-            # 2. 🔥 [MỚI] Dọn đơn hàng PENDING quá hạn
-            deleted_orders = await asyncio.to_thread(
-                cleanup_old_pending_orders,
-                RETENTION_DAYS_ORDERS
-            )
-            if deleted_orders > 0:
-                log.info(f"[MAINTENANCE] 🧹 Đã xóa {deleted_orders} đơn hàng PENDING quá hạn (> {RETENTION_DAYS_ORDERS} ngày).")
-
-        except Exception as e:
-            log.warning(f"[MAINTENANCE] Lỗi khi dọn dẹp DB: {e}")
-
-        await asyncio.sleep(INTERVAL_SECONDS)
-
-# ==============================
-# BÁO CÁO TÀI CHÍNH (BCTC) LOOP
-# ==============================
-
-BCTC_MONTHS = [1, 4, 5, 10] # Tháng có thể ra BCTC
-
-# Ngày bắt đầu check trong từng tháng (có thể chỉnh)
-BCTC_START_DAY_BY_MONTH = {
-    1: 1,   # Tháng 1 -> BCTC Quý 4 năm trước
-    4: 1,   # Tháng 4 -> BCTC Quý 1
-    5: 1,   # Tháng 5 -> BCTC Quý 2
-    10: 1,  # Tháng 10 -> BCTC Quý 3
-}
-
-
-def get_bctc_period_for_date(dt: datetime.datetime) -> tuple[int, int] | None:
-    """
-    Map tháng hiện tại sang (year, quarter) BCTC tương ứng:
-    - Tháng 1  -> BCTC Quý 4 năm trước
-    - Tháng 4  -> BCTC Quý 1 năm nay
-    - Tháng 5  -> BCTC Quý 2 năm nay
-    - Tháng 10 -> BCTC Quý 3 năm nay
-    """
-    m = dt.month
-    y = dt.year
-    if m == 1:
-        return y - 1, 4
-    if m == 4:
-        return y, 1
-    if m == 5:
-        return y, 2
-    if m == 10:
-        return y, 3
-    return None
-
-
-def get_next_bctc_period_2am(now: datetime.datetime, vn_tz) -> datetime.datetime:
-    """
-    Tính mốc 02:00 sáng đầu kỳ quý sau (tháng BCTC kế tiếp).
-    Dùng BCTC_START_DAY_BY_MONTH làm ngày bắt đầu.
-    """
-    months = BCTC_MONTHS
-    year = now.year
-
-    # Tìm tháng BCTC tiếp theo
-    for _ in range(3):  # tối đa nhảy 2 năm là dư
-        for m in months:
-            start_day = BCTC_START_DAY_BY_MONTH.get(m, 1)
-            target_naive = datetime.datetime(year, m, start_day, 2, 0, 0)
-            target = vn_tz.localize(target_naive)
-            if target > now:
-                return target
-        year += 1  # nếu chưa tìm thấy trong năm hiện tại thì sang năm sau
-
-    # fallback: nếu có gì sai sai thì cho ngủ 1 ngày
-    return now + datetime.timedelta(days=1)
-
-
-async def sleep_until(dt_target: datetime.datetime, vn_tz):
-    """
-    Ngủ đến thời điểm dt_target (local VN).
-    Cắt nhỏ nếu khoảng cách quá dài để tránh sleep quá lâu 1 lần.
-    """
-    while True:
-        now = datetime.datetime.now(vn_tz)
-        seconds = (dt_target - now).total_seconds()
-        if seconds <= 0:
-            break
-        # ngủ tối đa 1 giờ mỗi lần cho an toàn
-        await asyncio.sleep(min(seconds, 3600))
-
-async def financial_Statements_notice_loop():
-    """
-    (ĐÃ SỬA) Quét BCTC và chỉ thông báo cho user Pro + Admin.
-    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN 8:00)
-    """
-
-    vn_tz = pytz.timezone(TIMEZONE)
-
-    while True:
-
-        # ... (Toàn bộ logic kiểm tra BOT_ACTIVE, tính toán kỳ BCTC,
-        #      ngủ đến 02:00 sáng giữ nguyên) ...
-        
-        now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-        period = get_bctc_period_for_date(now)
-        period_label = f"Quý {period[1]}/{period[0]}" if period else "N/A"
-        log.info(
-            f"[{INSTANCE_ID}][BCTC] Loop BCTC đang chạy – now = {now.strftime('%Y-%m-%d %H:%M:%S')}, "
-            f"period = {period_label}"
-        )
-
-        if not BOT_ACTIVE:
-            await asyncio.sleep(60)
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-
-        if now.month not in BCTC_MONTHS:
-            target = get_next_bctc_period_2am(now, vn_tz)
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Không phải tháng BCTC (tháng {now.month}), "
-                f"ngủ tới {target}."
-            )
-            await sleep_until(target, vn_tz)
-            continue
-
-        period = get_bctc_period_for_date(now)
-        if not period:
-            log.warning(f"[{INSTANCE_ID}][BCTC] Không map được kỳ BCTC, sleep 1 ngày.")
-            await asyncio.sleep(24 * 3600)
-            continue
-
-        year, quarter = period
-        period_label = f"Quý {quarter}/{year}"
-        month = now.month
-        start_day = BCTC_START_DAY_BY_MONTH.get(month, 1)
-
-        first_2am_this_month = vn_tz.localize(
-            datetime.datetime(now.year, month, start_day, 2, 0, 0)
-        )
-        if now < first_2am_this_month:
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Tháng {month} nhưng mới ngày {now.day}, "
-                f"ngủ tới {first_2am_this_month} để bắt đầu crawl BCTC {period_label}."
-            )
-            await sleep_until(first_2am_this_month, vn_tz)
-            continue
-
-        today = now.date()
-        two_am_today = vn_tz.localize(
-            datetime.datetime(today.year, today.month, today.day, 2, 0, 0)
-        )
-
-        # ❗️ SỬA: XÓA BIẾN eight_am_today VÌ KHÔNG CẦN NỮA
-        # eight_am_today = vn_tz.localize(
-        #     datetime.datetime(today.year, today.month, today.day, 8, 0, 0)
-        # )
-
-        now = datetime.datetime.now(vn_tz)
-        if now < two_am_today:
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Hôm nay {today} chưa tới 02:00, ngủ tới {two_am_today}."
-            )
-            await sleep_until(two_am_today, vn_tz)
-
-        # 1.1️⃣ 02:00 -> CRAWL BCTC (Giữ nguyên logic crawl)
-        log.info(f"[{INSTANCE_ID}][BCTC] 02:00 – bắt đầu crawl BCTC {period_label} cho hôm nay.")
-
-        try:
-            all_watch = await asyncio.to_thread(get_all_watch)
-            pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][BCTC] Lỗi get_all_watch: {e}")
-            tomorrow = today + datetime.timedelta(days=1)
-            target = vn_tz.localize(
-                datetime.datetime(tomorrow.year, tomorrow.month, tomorrow.day, 2, 0, 0)
-            )
-            await sleep_until(target, vn_tz)
-            continue
-
-        symbol_set: set[str] = set()
-        for chat_key, info in all_watch.items():
-            try:
-                chat_id = int(chat_key)
-                if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
-                    continue
-            except Exception:
-                continue
-
-            syms = info.get("list") if isinstance(info, dict) else info
-            if not syms:
-                continue
-            for sym in syms:
-                s = str(sym).upper().strip()
-                if s:
-                    symbol_set.add(s)
-
-        pending_after = 0
-        for sym in sorted(symbol_set):
-            try:
-                already = await asyncio.to_thread(
-                    has_bctc_notified, sym, year, quarter
-                )
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi has_bctc_notified({sym}): {e}"
-                )
-                continue
-            if already:
-                continue
-
-            try:
-                available = await asyncio.to_thread(
-                    check_bctc_available, sym, year, quarter
-                )
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi check_bctc_available({sym}): {e}"
-                )
-                pending_after += 1
-                continue
-            if not available:
-                pending_after += 1
-                continue
-
-            try:
-                # Chỉ đánh dấu, KHÔNG add vào queue gửi 8:00 nữa
-                await asyncio.to_thread(mark_bctc_notified, sym, year, quarter)
-                
-                # ❗️ SỬA: XÓA DÒNG NÀY
-                # await asyncio.to_thread(add_bctc_queue, sym, year, quarter, today)
-                
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi mark_bctc_notified({sym}, Q{quarter}/{year}): {e}"
-                )
-
-            await asyncio.sleep(0.2)
-
-        still_pending = pending_after > 0
-        log.info(
-            f"[{INSTANCE_ID}][BCTC] Crawl xong BCTC (chỉ cho Pro user) {period_label} hôm nay. "
-            f"still_pending = {still_pending}."
-        )
-
-        # ❗️ SỬA: XÓA TOÀN BỘ KHỐI LOGIC GỬI TIN LÚC 8:00
-        # (Xóa từ "Đợi tới 08:00" đến hết "clear_bctc_queue_entry")
-        
-        # 3️⃣ Quyết định ngủ tới khi nào (Giữ nguyên)
-        now = datetime.datetime.now(vn_tz)
-        if still_pending:
-            tomorrow = today + datetime.timedelta(days=1)
-            target = vn_tz.localize(
-                datetime.datetime(
-                    tomorrow.year, tomorrow.month, tomorrow.day, 2, 0, 0
-                )
-            )
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Vẫn còn mã (của Pro) chưa có BCTC {period_label}, "
-                f"ngủ tới {target}."
-            )
-            await sleep_until(target, vn_tz)
-        else:
-            target = get_next_bctc_period_2am(now, vn_tz)
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Đã hoàn thành BCTC {period_label} cho tất cả mã (của Pro), "
-                f"ngủ tới {target} (kỳ quý sau)."
-            )
-            await sleep_until(target, vn_tz)
-
-#-------------------------------------------
-def get_next_7am(now: datetime.datetime, vn_tz) -> datetime.datetime:
-    """
-    Tính mốc 07:00 sáng tiếp theo (cho vòng lặp quét báo cáo).
-    - Nếu hôm nay < 07:00 -> 07:00 hôm nay.
-    - Nếu hôm nay >= 07:00 -> 07:00 ngày mai.
-    """
-    # 1. Xác định 07:00 hôm nay
-    target_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
-    
-    # 2. Nếu đã qua 07:00 hôm nay, mục tiêu là 07:00 ngày mai
-    if now >= target_today:
-        target_tomorrow = target_today + datetime.timedelta(days=1)
-        return target_tomorrow
-    
-    # 3. Nếu chưa tới 07:00 hôm nay, mục tiêu là hôm nay
-    else:
-        return target_today
-
-async def analysis_report_loop():
-    """
-    (TÍNH NĂNG MỚI - ĐÃ SỬA)
-    Quét báo cáo phân tích 1 LẦN/NGÀY lúc 07:00 SÁNG.
-    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
-    (SỬA LẦN 3: GỠ PAYWALL - THU THẬP CHO TẤT CẢ USER)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    warmed_up = False 
-
-    while True:
-        loop_id += 1
-        loop_label = f"[{INSTANCE_ID}][REPORT_SCAN {loop_id}]"
-        now = datetime.datetime.now(vn_tz)
-
-        if not BOT_ACTIVE:
-            log.info(f"{loop_label} Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue
-            
-        try:
-            # ... (Logic chờ 7:00 sáng giữ nguyên) ...
-            target_7am = get_next_7am(now, vn_tz)
-            log.info(f"{loop_label} Đang chờ cho đến {target_7am.strftime('%Y-%m-%d %H:%M')}.")
-            await sleep_until(target_7am, vn_tz)
-            
-            if not BOT_ACTIVE:
-                log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
-                continue
-            
-            log.info(f"{loop_label} 07:00! Bắt đầu quét báo cáo...")
-
-            # 1. GATHER
-            # ❗️ SỬA: GỠ BỎ PAYWALL (1)
-            # pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-            all_watch = await asyncio.to_thread(get_all_watch)
-
-            # 2. MAP
-            # ❗️ SỬA: Đổi tên biến (không còn là "pro" nữa)
-            all_symbol_set: set[str] = set()
-
-            for chat_key, user_block in all_watch.items():
-                try:
-                    chat_id = int(chat_key)
-                except Exception:
-                    continue
-                
-                # ❗️ SỬA: GỠ BỎ PAYWALL (2)
-                # (Không cần check if chat_id == ADMIN_ID or chat_id in pro_chat_ids)
-                watch_list = user_block.get("list", []) or []
-                for sym in watch_list:
-                    s = str(sym).upper().strip()
-                    if s and len(s) == 3:
-                        all_symbol_set.add(s)
-
-            # ❗️ SỬA: Cập nhật log
-            if not all_symbol_set:
-                log.info(f"{loop_label} Không có mã nào trong watchlist, bỏ qua lần quét này.")
-                continue 
-
-            log.info(f"{loop_label} Bắt đầu quét báo cáo cho {len(all_symbol_set)} mã (tất cả user).")
-            
-            # 3. FETCH & PROCESS
-            # ❗️ SỬA: Lặp qua all_symbol_set
-            for symbol in sorted(all_symbol_set):
-                if not BOT_ACTIVE: 
-                    log.info(f"{loop_label} Bot TẮT giữa chừng, dừng quét.")
-                    break
-                
-                # ... (Logic bên trong (company.reports, mark_report_seen) giữ nguyên) ...
-                try:
-                    company = Company(symbol=symbol)
-                    df = await asyncio.to_thread(company.reports)
-                    
-                    if df is None or df.empty:
-                        log.info(f"{loop_label} Không có báo cáo cho {symbol}.")
-                        await asyncio.sleep(3) 
-                        continue
-                    
-                    log.info(f"{loop_label} Tìm thấy {len(df)} báo cáo cho {symbol}. Đang lọc...")
-
-                    # 4. CHECK & MARK
-                    for row in df.itertuples():
-                        title = getattr(row, "name", "")
-                        link = getattr(row, "link", "")
-                        date_str = getattr(row, "date", "")
-                        
-                        if not link or not date_str:
-                            continue 
-
-                        is_seen = await asyncio.to_thread(has_report_seen, link, date_str)
-                        
-                        if not is_seen:
-                            await asyncio.to_thread(
-                                mark_report_seen, symbol, link, title, date_str
-                            )
-                            
-                            if not warmed_up:
-                                log.info(f"{loop_label} (Warm-up) Đã đánh dấu: {symbol} - {title}")
-                            else:
-                                log.info(f"{loop_label} (MỚI) Phát hiện: {symbol} - {title}")
-                            
-                            await asyncio.sleep(0.2) 
-
-                except Exception as e:
-                    log.warning(f"{loop_label} Lỗi khi xử lý mã {symbol}: {e}")
-
-                await asyncio.sleep(3) 
-            
-            warmed_up = True
-            
-            log.info(f"{loop_label} Đã quét xong báo cáo phân tích (chỉ thu thập).")
-
-        except Exception as e:
-            log.error(f"{loop_label} Lỗi nghiêm trọng: {e}")
-            await asyncio.sleep(600)
-        
-        log.info(f"{loop_label} Hoàn tất lần quét 07:00 (chỉ thu thập).")
-
-#-------------------------------------------
-
-async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
-    """
-    [UPDATED] Sáng: Tháo ghim TOÀN BỘ tin cũ (Digest + EOD) -> Gửi tin mới -> Ghim tin mới.
-    Dùng unpin_all_chat_messages để đảm bảo không còn tin rác cũ đọng lại.
-    """
-    # 1. Tháo ghim TOÀN BỘ các tin cũ trong chat để làm sạch bảng tin
-    try:
-        # Lệnh này sẽ gỡ ghim Digest cũ, EOD cũ và mọi tin ghim khác
-        await bot.unpin_all_chat_messages(chat_id=chat_id)
-    except Exception as e:
-        # Bỏ qua lỗi nếu chat chưa có tin ghim nào hoặc bot không đủ quyền (hiếm gặp)
-        # log.warning(f"[{INSTANCE_ID}] Lỗi unpin_all cho {chat_id}: {e}")
-        pass
-
-    # 2. Gửi tin mới (Lưu ý: msg_type='DAILY_DIGEST')
-    msg = await send_md(bot, chat_id, text, msg_type='DAILY_DIGEST', reply_markup=reply_markup)
-
-    # 3. Ghim tin mới
-    if msg:
-        try:
-            await bot.pin_chat_message(
-                chat_id=chat_id,
-                message_id=msg.message_id,
-                disable_notification=True 
-            )
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] Lỗi ghim Digest mới cho {chat_id}: {e}")
-
-async def daily_user_digest_loop():
-    """
-    Gửi bản tin tổng hợp (Digest) 7:00 sáng.
-    (ĐÃ TỐI ƯU: Không tính toán nặng nữa, chỉ lấy từ Redis do Nightly Loop đã làm)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
-    while True:
-        loop_id += 1
-        loop_label = f"[{INSTANCE_ID}][USER_DIGEST {loop_id}]"
-        now_local = datetime.datetime.now(vn_tz)
-
-        if not BOT_ACTIVE:
-            log.info(f"{loop_label} Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue
-
-        # 1️⃣ Đợi tới 07:00 sáng
-        target_7am = get_next_7am(now_local, vn_tz)
-        log.info(f"{loop_label} Đang chờ đến {target_7am.strftime('%Y-%m-%d %H:%M')} (VN).")
-        await sleep_until(target_7am, vn_tz)
-
-        if not BOT_ACTIVE: continue
-        
-        log.info(f"{loop_label} 07:00! Bắt đầu quy trình Digest...")
-
-        # 🔥 [THAY ĐỔI]: KHÔNG tính toán ở đây nữa.
-        # Nightly Loop (02:00) đã làm việc này và lưu vào Redis rồi.
-        # Hàm get_top_mean_reversion_stocks bên dưới sẽ tự đọc Redis.
-        
-        log.info(f"{loop_label} Bắt đầu thu thập dữ liệu gửi đi...")
-
-        # 2️⃣ Thu thập dữ liệu (Song song)
-        try:
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            since_utc = now_utc - datetime.timedelta(hours=24)
-
-            (
-                bctc_rows,
-                report_rows,
-                macro_rows,
-                spec_rows,
-                all_watch,
-                pro_chat_ids,
-                top_value_stocks,
-            ) = await asyncio.gather(
-                asyncio.to_thread(get_recent_bctc_notified, since_utc),
-                asyncio.to_thread(get_recent_analysis_reports, since_utc),
-                asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
-                asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
-                asyncio.to_thread(get_all_watch),
-                asyncio.to_thread(get_all_pro_chat_ids),
-                get_top_mean_reversion_stocks(limit=5), # <--- Hàm này sẽ lấy cache Redis đêm qua
-            )
-            
-        except Exception as e:
-            log.error(f"{loop_label} Lỗi nghiêm trọng khi gather data: {e}")
-            await asyncio.sleep(600) 
-            continue
-
-        # ... (PHẦN CÒN LẠI CỦA HÀM GIỮ NGUYÊN KHÔNG ĐỔI) ...
-        # ... (Logic AI News, Payload, Gửi tin...)
-        
-        # ============================================================
-        # 🔥 XỬ LÝ TIN TỨC AI
-        # ============================================================
-        ai_news_data = None
-        ai_telegram_text = ""
-
-        all_news_items = []
-        for row in macro_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Vĩ mô"})
-        for row in spec_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Doanh nghiệp"})
-
-        if all_news_items:
-            log.info(f"{loop_label} 🤖 Đang gọi AI tóm tắt {len(all_news_items)} tin tức...")
-            try:
-                ai_news_data = await summarize_daily_news_with_ai(all_news_items)
-                if ai_news_data:
-                    lines = []
-                    if ai_news_data.get('headline'):
-                        lines.append("⚡ *TIÊU ĐIỂM*")
-                        for item in ai_news_data['headline']:
-                            lines.append(f"• {item['text']}")
-                    if ai_news_data.get('comment'):
-                        lines.append(f"\n🧠 *AI:* {ai_news_data['comment']}")
-                    ai_telegram_text = "\n".join(lines)
-            except Exception as e:
-                log.error(f"{loop_label} Lỗi AI Summary: {e}")
-
-        if not ai_telegram_text:
-            ai_telegram_text = "_Hôm nay thị trường khá yên ắng, chưa có tin nổi bật._"
-
-        # ============================================================
-        # XỬ LÝ DỮ LIỆU KHÁC
-        # ============================================================
-
-        bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
-        reports_by_sym = {}
-        for (s, t, l, p, c) in report_rows: reports_by_sym.setdefault(str(s).upper(), []).append((t, l, p))
-        
-        watch_to_chats = {}
-        for chat_key, user_block in all_watch.items():
-            try: chat_id = int(chat_key)
-            except: continue
-            for sym in user_block.get("list", []) or []:
-                watch_to_chats.setdefault(str(sym).upper().strip(), []).append(chat_id)
-
-        digest_payloads = {}
-        def _get_payload(cid):
-            if cid not in digest_payloads:
-                digest_payloads[cid] = {
-                    "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
-                    "ai_news": ai_news_data, 
-                    "value_stocks": [], "bctc": [], "reports": []
-                }
-            return digest_payloads[cid]
-
-        # 🔥 [FIX 2]: KHỞI TẠO PAYLOAD CHO TẤT CẢ USER CÓ WATCHLIST
-        # Để đảm bảo dù Screener timeout hay không có BCTC, họ vẫn nhận được Tin Tức AI
-        if all_watch:
-            for chat_key in all_watch.keys():
-                try:
-                    cid = int(chat_key)
-                    _get_payload(cid) # Gọi hàm này để init dict cho user
-                except: continue
-
-        # Fill dữ liệu chi tiết
-        if top_value_stocks:
-            for cid in all_watch.keys():
-                try: cid = int(cid)
-                except: continue
-                if cid in pro_chat_ids or cid == ADMIN_ID: 
-                    _get_payload(cid)["value_stocks"] = top_value_stocks
-
-        if bctc_rows:
-            for sym, (y, q, t) in bctc_by_sym.items():
-                t_str = t.astimezone(vn_tz).strftime("%H:%M %d/%m")
-                for cid in watch_to_chats.get(sym, []):
-                    pl = _get_payload(cid)
-                    is_locked = not pl["is_pro"]
-                    if not is_locked or not any(x['symbol'] == sym for x in pl["bctc"]):
-                        pl["bctc"].append({"symbol": sym, "year": y, "quarter": q, "time": t_str, "is_locked": is_locked})
-
-        if report_rows:
-            for sym, r_list in reports_by_sym.items():
-                for cid in watch_to_chats.get(sym, []):
-                    pl = _get_payload(cid)
-                    last = r_list[0]; t_str = last[2].astimezone(vn_tz).strftime("%H:%M %d/%m") if last[2] else ""
-                    if pl["is_pro"]:
-                        for (title, link, pub) in r_list:
-                            ts = pub.astimezone(vn_tz).strftime("%H:%M %d/%m") if pub else ""
-                            pl["reports"].append({"symbol": sym, "title": title, "link": link, "time": ts, "is_locked": False})
-                    else:
-                        if not any(x['symbol'] == sym for x in pl["reports"]):
-                            pl["reports"].append({"symbol": sym, "title": "Báo cáo phân tích (Pro)", "link": "#", "time": t_str, "is_locked": True})
-
-        # 4️⃣ GỬI TIN NHẮN
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        tasks = []
-        sent_count = 0
-
-        for chat_id, data in digest_payloads.items():
-            try:
-                digest_id = uuid.uuid4().hex
-                await asyncio.to_thread(save_digest_to_redis, digest_id, data)
-                web_app_url = f"{base_url}/digest/{digest_id}"
-                
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton(text="📰 Xem Chi Tiết (Web App) 🚀", web_app=WebAppInfo(url=web_app_url))]])
-                
-                msg_text = (
-                    f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
-                    f"{ai_telegram_text}\n\n"
-                    f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
-                )
-                
-                tasks.append(send_digest_with_pin(tg_app.bot, chat_id, msg_text, kb))
-                sent_count += 1
-            except Exception as e:
-                log.warning(f"{loop_label} Lỗi tạo task gửi cho {chat_id}: {e}")
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-            
-        log.info(f"{loop_label} Hoàn tất gửi Digest cho {sent_count} user.")
-
-async def nightly_valuation_loop():
-    """
-    Chạy tính toán định giá Mean Reversion vào 02:00 sáng mỗi ngày.
-    Lưu kết quả vào Redis để 07:00 sáng Digest chỉ việc lấy ra dùng.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
-    log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Khởi động loop tính toán đêm (02:00).")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. Tính thời gian ngủ tới 02:00 sáng hôm sau (hoặc hôm nay nếu chưa tới)
-        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target += datetime.timedelta(days=1)
-        
-        wait_sec = (target - now).total_seconds()
-        log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL {loop_id}] Ngủ {wait_sec/3600:.1f}h tới {target.strftime('%Y-%m-%d %H:%M')} để tính định giá.")
-        
-        await asyncio.sleep(wait_sec)
-
-        # 2. Thức dậy & Kiểm tra
-        if not BOT_ACTIVE:
-            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Bot đang TẮT, bỏ qua lần chạy này.")
-            await asyncio.sleep(60)
-            continue
-
-        # 3. Chạy tính toán (Task nặng)
-        try:
-            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] 🌙 02:00! Bắt đầu tính toán Historical Valuation...")
-            # Gọi trực tiếp và chờ cho xong (vì lúc này đêm khuya, không sợ block ai)
-            await calculate_historical_valuation_task()
-            
-        except Exception as e:
-            log.error(f"[{INSTANCE_ID}][NIGHTLY_VAL] ❌ Lỗi: {e}")
-            await asyncio.sleep(300) # Ngủ 5p tránh lỗi lặp
-
-#-------------------------------------------
-async def restore_reminder_loop():
-    """
-    Nhắc admin vào ngày 7 hằng tháng về việc backup/restore DB.
-
-    Logic:
-    - Nếu tháng hiện tại CHƯA có record /restore_core (get_last_restore_month != current YYYY-MM):
-        · Từ ngày 7 trở đi: nhắc admin.
-        · Lần nhắc đầu tiên mỗi tháng:
-            + Tự động backup core data và gửi file JSON cho admin.
-            + Gửi hướng dẫn chi tiết các bước đổi DB + restore.
-        · Sau lần đầu: cứ mỗi 1 giờ nhắc lại 1 lần (tin nhắn ngắn, có thể để silent).
-    - Khi admin chạy /restore_core thành công:
-        · mark_restore_done_now() -> tháng đó coi như đã xong, loop ngừng nhắc.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    last_reminder_at = None  # datetime trong timezone VN
-    full_msg_sent_for_month = None  # 'YYYY-MM' đã gửi hướng dẫn + auto backup
-
-    while True:
-        loop_id += 1
-
-        # Nếu chưa set ADMIN_ID => không làm gì
-        if ADMIN_ID is None:
-            await asyncio.sleep(3600)
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-        month_key = now.strftime("%Y-%m")
-
-        # Lấy tháng gần nhất đã restore từ DB (blocking -> chạy trong thread)
-        try:
-            last_restore_month = await asyncio.to_thread(get_last_restore_month)
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][RESTORE_REMIND {loop_id}] Lỗi get_last_restore_month: {e}")
-            last_restore_month = None
-
-        needs_restore = (last_restore_month != month_key)
-
-        # Nếu tháng này đã restore rồi -> reset state, ngủ tiếp 1h
-        if not needs_restore:
-            full_msg_sent_for_month = None
-            last_reminder_at = None
-            await asyncio.sleep(3600)
-            continue
-
-        # Chưa restore, nhưng chưa tới ngày 7 => ngủ 1h
-        if now.day < 7:
-            await asyncio.sleep(3600)
-            continue
-
-        # Từ ngày 7 trở đi và chưa restore:
-        # Đảm bảo tối thiểu 1h giữa các lần nhắc
-        if last_reminder_at is not None:
-            delta = (now - last_reminder_at).total_seconds()
-            if delta < 3600:
-                await asyncio.sleep(300)  # check lại sau 5 phút
-                continue
-
-        try:
-            # Lần nhắc ĐẦU TIÊN của tháng -> auto backup + hướng dẫn chi tiết
-            if full_msg_sent_for_month != month_key:
-                # 1) Export core data
-                payload = await asyncio.to_thread(export_core_data)
-
-                # 2) Lưu file tạm
-                ts = now.strftime("%Y%m%d_%H%M%S")
-                filename = f"stockbot_core_backup_{month_key}_{ts}.json"
-                tmp_path = os.path.join(TMP_DIR, filename)
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, ensure_ascii=False, indent=2)
-
-                # 3) Gửi file backup auto
-                await tg_app.bot.send_document(
-                    chat_id=ADMIN_ID,
-                    document=open(tmp_path, "rb"),
-                    filename=filename,
-                    caption=(
-                        f"📦 Auto backup dữ liệu core tháng {month_key} (lúc {ts}).\n"
-                        "- Bao gồm: bot_watch, news_pref, bot_config, bctc_notified.\n"
-                        "- Dùng file này cho /restore_core sau khi bạn tạo DB Postgres mới trên Render."
-                    ),
-                )
-
-                # 4) Gửi hướng dẫn chi tiết
-                instructions = (
-                    f"⚠️ *Nhắc định kỳ ngày 7 hằng tháng: KIỂM TRA RESTORE DATABASE*\n\n"
-                    f"Hiện tại bot *chưa ghi nhận* lần chạy lệnh `/restore_core` cho tháng *{month_key}*.\n\n"
-                    "👉 Quy trình đề xuất để đổi database Render (bản free ~30 ngày):\n\n"
-                    "1️⃣ *Export env từ database cũ trước và tạo database Postgres mới trên Render*\n"
-                    "   • Vào trang Render → Postgres → New Database.\n\n"
-                    "2️⃣ *Cập nhật biến môi trường `DATABASE_URL` cho web service*\n"
-                    "   • Mở web service của bot trên Render.\n"
-                    "   • Vào tab Environment.\n"
-                    "   • Dán Internal Database URL của DB mới vào biến `DATABASE_URL`.\n"
-                    "   • Bấm Save Changes.\n\n"
-                    "3️⃣ *Restart / redeploy web service*\n"
-                    "   • Bấm Manual Deploy → Clear build cache (hoặc Restart service).\n"
-                    "   • Chờ bot khởi động lại (log có dòng đã set webhook).\n\n"
-                    "4️⃣ *Restore dữ liệu core từ file backup*\n"
-                    "   • Dùng file backup `.json` (auto backup ngày hôm nay hoặc tạo mới bằng lệnh `/backup_core`).\n"
-                    "   • Gửi file đó cho bot, trong phần caption gõ: `/restore_core`.\n"
-                    "   • Hoặc: gửi file trước, rồi reply `/restore_core` vào tin nhắn chứa file.\n"
-                    "   • Bot sẽ khôi phục: watchlist của user, cài đặt tin tức, cấu hình bot, trạng thái BCTC đã thông báo.\n\n"
-                    f"✅ Sau khi hoàn tất bước 4, bot sẽ coi *tháng {month_key}* đã restore xong và *dừng nhắc mỗi giờ*.\n"
-                )
-
-                await send_md(
-                    tg_app.bot,
-                    ADMIN_ID,
-                    instructions,
-                )
-
-                full_msg_sent_for_month = month_key
-
-            else:
-                # Các lần nhắc tiếp theo trong tháng: tin nhắn ngắn, gửi silent cho đỡ ồn
-                short_msg = (
-                    f"⏰ Nhắc lại: Tháng {month_key} bạn vẫn *chưa chạy* `/restore_core`.\n"
-                    "Khi nào rảnh hãy:\n"
-                    "1) Tạo DB Postgres mới trên Render,\n"
-                    "2) Cập nhật `DATABASE_URL` của web service,\n"
-                    "3) Restart service,\n"
-                    "4) Gửi file backup `.json` kèm caption `/restore_core` để khôi phục dữ liệu core."
-                )
-                await send_md(
-                    tg_app.bot,
-                    ADMIN_ID,
-                    short_msg,
-                    disable_notification=True,  # nhắc im lặng để đỡ phiền
-                )
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][RESTORE_REMIND {loop_id}] Lỗi khi nhắc admin: {e}")
-
-        last_reminder_at = datetime.datetime.now(vn_tz)
-        await asyncio.sleep(300)  # sau 5 phút check lại
-
-
-def clean_html_text(raw: str) -> str:
-    """
-    Làm sạch text lấy từ RSS:
-    - Giải mã entity HTML (&#xxx; → ký tự, &amp; → & ...)
-    - Sửa luôn trường hợp thiếu '&' (Ng#224;nh → Ngành)
-    - Bỏ tag HTML
-    - Gom khoảng trắng
-    """
-    if not raw:
-        return ""
-
-    text = str(raw)
-
-    # 1) Giải mã entity chuẩn: &#224; → à, &amp; → &
-    text = html.unescape(text)
-
-    # 2) Sửa dạng thiếu '&': Ng#224;nh → Ngành
-    def fix_num_entity(m: re.Match) -> str:
-        try:
-            code = int(m.group(1))
-            return chr(code)
-        except Exception:
-            return m.group(0)
-
-    text = re.sub(r"#(\d+);", fix_num_entity, text)
-
-    # 3) Bỏ thẻ HTML (<p>, <br>, <strong>...)
-    text = re.sub(r"<[^>]+>", " ", text)
-
-    # 4) Gom khoảng trắng và trim
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text
-
-# ==============================
-# BÁO CÁO TÀI CHÍNH (BCTC) Function
-# ==============================
-
-# Chu kỳ wake-up khi đang trong tháng BCTC (10 phút)
-BCTC_ACTIVE_LOOP_SLEEP = 600
-# Khi ngoài tháng BCTC: ngủ 6 tiếng
-BCTC_OUTSIDE_LOOP_SLEEP = 6 * 3600
-    
-def infer_latest_quarter_from_df(df: pd.DataFrame) -> tuple[int, int] | None:
-    """
-    Lấy (year, quarter) mới nhất từ DataFrame BCTC.
-
-    Dựa trên 2 cột:
-    - 'year'
-    - 'quarter'
-    """
-    if df is None or df.empty:
-        return None
-
-    if "year" not in df.columns or "quarter" not in df.columns:
-        log.warning(f"[BCTC] DF không có cột 'year' / 'quarter'. Columns = {list(df.columns)}")
-        return None
-
-    try:
-        tmp = df[["year", "quarter"]].dropna()
-        if tmp.empty:
-            return None
-
-        tmp["_y"] = tmp["year"].astype(int)
-        tmp["_q"] = tmp["quarter"].astype(int)
-
-        row = tmp.sort_values(["_y", "_q"]).iloc[-1]
-        return int(row["_y"]), int(row["_q"])
-    except Exception as e:
-        log.warning(f"[BCTC] infer_latest_quarter_from_df lỗi: {e}")
-        return None
-
-
-def check_bctc_available(symbol: str, target_year: int, target_quarter: int) -> bool:
-    """
-    True nếu vnstock đã có BCTC quý (target_year, target_quarter) cho mã này.
-
-    Logic:
-    - Gọi Finance(symbol, source='TCBS')
-    - Lấy income_statement & balance_sheet theo kỳ 'quarter'
-    - Đoán quý mới nhất từ 2 bảng này
-    - Nếu quý mới nhất >= quý cần tìm -> coi như đã có BCTC
-    """
-    sym = str(symbol).upper().strip()
-    if not sym:
-        return False
-
-    try:
-        fin = Finance(symbol=sym, source="TCBS")
-    except Exception as e:
-        log.warning(f"[BCTC] Lỗi tạo Finance({sym}): {e}")
-        return False
-
-    dfs: list[pd.DataFrame] = []
-
-    # KQKD theo quý
-    try:
-        is_df = fin.income_statement(period="quarter", lang="vi", dropna=False)
-        dfs.append(is_df)
-    except Exception as e:
-        log.debug(f"[BCTC] income_statement(quater) lỗi cho {sym}: {e}")
-
-    # CĐKT theo quý
-    try:
-        bs_df = fin.balance_sheet(period="quarter", lang="vi", dropna=False)
-        dfs.append(bs_df)
-    except Exception as e:
-        log.debug(f"[BCTC] balance_sheet(quater) lỗi cho {sym}: {e}")
-
-    if not dfs:
-        return False
-
-    latest_yq: tuple[int, int] | None = None
-
-    for df in dfs:
-        yq = infer_latest_quarter_from_df(df)
-        if not yq:
-            continue
-
-        if latest_yq is None:
-            latest_yq = yq
-        else:
-            ly, lq = latest_yq
-            cy, cq = yq
-            if (cy > ly) or (cy == ly and cq > lq):
-                latest_yq = yq
-
-    if not latest_yq:
-        return False
-
-    latest_y, latest_q = latest_yq
-    log.info(
-        f"[BCTC] {sym} – quý mới nhất: Q{latest_q}/{latest_y}, "
-        f"đang so với Q{target_quarter}/{target_year}"
-    )
-
-    # Nếu quý mới nhất >= quý cần tìm → xem như đã có BCTC của quý đó
-    return (latest_y > target_year) or (
-        latest_y == target_year and latest_q >= target_quarter
-    )
-
-
-#------------------------------------------------------
-
-def escape_markdown_v2(text: str) -> str:
-    """
-    Escape tất cả ký tự đặc biệt theo Markdown V2:
-    _ * [ ] ( ) ~ ` > # + - = | { } . !
-    Dùng được cả với Markdown v1.
-    """
-    if text is None:
-        text = ""
-    return re.sub(r'([_\*\[\]\(\)~`>\#\+\-\=\|\{\}\.\!])', r'\\\1', str(text))
-
-async def reply_md(update: Update, text: str, **kwargs):
-    """
-    Gửi tin nhắn Markdown an toàn.
-    Tự động phát hiện context là Message hay CallbackQuery để reply đúng chỗ.
-    """
-    from telegram.error import BadRequest
-
-    # --- SỬA ĐỔI QUAN TRỌNG ---
-    # Dùng update.effective_message thay vì update.message
-    # effective_message hoạt động cho cả tin nhắn thường lẫn nút bấm
-    message = update.effective_message 
-    if not message:
-        log.warning("[reply_md] Không tìm thấy message để reply.")
-        return
-    # --------------------------
-
-    async def _send(raw_text: str):
-        return await message.reply_text(
-            raw_text,
-            parse_mode="Markdown",
-            **kwargs,
-        )
-
-    try:
-        return await _send(text)
-    except BadRequest as e:
-        msg = str(e)
-        logging.warning(f"[Markdown error] {e} | text_len={len(text)}")
-
-        # 1) Nếu lỗi do quá dài -> chia nhỏ
-        if "Message is too long" in msg:
-            MAX_LEN = 4000
-
-            chunks = []
-            remaining = text
-            while remaining:
-                if len(remaining) <= MAX_LEN:
-                    chunks.append(remaining)
-                    break
-
-                split_pos = remaining.rfind("\n\n", 0, MAX_LEN)
-                if split_pos == -1:
-                    split_pos = remaining.rfind("\n", 0, MAX_LEN)
-                if split_pos == -1:
-                    split_pos = MAX_LEN
-
-                chunks.append(remaining[:split_pos])
-                remaining = remaining[split_pos:]
-
-            last_msg = None
-            for idx, chunk in enumerate(chunks, start=1):
-                try:
-                    last_msg = await _send(chunk)
-                except BadRequest as e2:
-                    safe_chunk = escape_markdown_v2(chunk)
-                    last_msg = await _send(safe_chunk)
-
-            return last_msg
-
-        # 2) Các lỗi parse khác -> escape toàn bộ rồi gửi lại
-        safe_text = escape_markdown_v2(text)
-        return await _send(safe_text)
-
-
 # Thêm tham số reply_markup vào cuối
 def send_msg_to(chat_id: int, text: str, parse_mode: str | None = "Markdown", silent: bool = False, msg_type: str = 'GENERAL', reply_markup: str | None = None):
     """
@@ -4111,105 +1150,101 @@ async def auto_on_after_delay(initial_active: bool):
             except Exception as e:
                 log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
 
-def load_seen_news_from_redis(feed_type: str, limit: int = 10) -> list[dict[str, Any]]:
-    """
-    Đọc danh sách bài đã seen từ Redis.
-    Giả sử key có dạng: news_seen:MACRO:<hash>, value là JSON {"title": "...", "published": "..."}.
-    Nếu value không phải JSON, sẽ fallback dùng raw value làm title.
-    """
-    ft = (feed_type or "").strip().upper()
-    if not ft:
-        return []
-
-    pattern = f"news_seen:{ft}:*"
-    r = get_redis()
-
-    items: list[dict[str, Any]] = []
-    for key in r.scan_iter(pattern, count=200):
-        val = r.get(key)
-        title = ""
-        published_dt = None
-
-        if val:
-            try:
-                obj = json.loads(val)
-                title = obj.get("title") or ""
-                pub_str = obj.get("published")
-                if pub_str:
-                    published_dt = datetime.datetime.fromisoformat(pub_str)
-            except Exception:
-                # Nếu không phải JSON, dùng raw value làm title
-                if isinstance(val, (bytes, bytearray)):
-                    title = val.decode("utf-8", errors="ignore")
-                else:
-                    title = str(val)
-
-        if not published_dt:
-            # Nếu không có thời gian, cho về mốc 1970 để sort cho dễ
-            published_dt = datetime.datetime(1970, 1, 1)
-
-        items.append(
-            {
-                "title": title,
-                "published": published_dt,
-            }
-        )
-
-    # Sắp xếp mới nhất trước
-    items.sort(key=lambda x: x["published"], reverse=True)
-    return items[:limit]
-
 async def redis_gateway_loop():
     """
-    [GATEWAY] Loop chuyên trách: Nghe Redis -> Gửi Telegram.
+    [GATEWAY] Loop chuyên trách: Nghe Redis -> Gửi/Sửa Telegram.
+    Phiên bản 'Bất tử': Retry Edit nếu lỗi format.
     """
     log.info(f"[{INSTANCE_ID}][GATEWAY] 🎧 Đang lắng nghe kênh '{REDIS_CHANNEL_OUTBOUND}'...")
     
     try:
-        # Kết nối Redis (Decode responses để nhận chuỗi String thay vì Bytes)
         r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
         pubsub = r.pubsub()
         pubsub.subscribe(REDIS_CHANNEL_OUTBOUND)
         
         while True:
-            # 1. Lấy tin nhắn (Non-blocking)
             message = pubsub.get_message(ignore_subscribe_messages=True)
             
             if message:
                 try:
-                    # 2. Giải mã JSON
                     raw_data = message['data']
                     payload = json.loads(raw_data)
                     
                     chat_id = payload.get('chat_id')
                     text = payload.get('text')
-                    markup_data = payload.get('reply_markup') # Nút bấm (Dict)
+                    markup_data = payload.get('reply_markup')
                     msg_type = payload.get('msg_type', 'GENERAL')
+                    
+                    # [QUAN TRỌNG] Lấy ID để sửa
+                    edit_id = payload.get('edit_id')
+
+                    # --- XỬ LÝ LOGIC DỌN DẸP ---
+                    if msg_type == "TRIGGER_CLEANUP":
+                        asyncio.create_task(cleanup_after_eod())
+                        continue
 
                     if chat_id and text:
-                        # 3. Gửi tin nhắn (Dùng lại hàm send_md)
-                        await send_md(
-                            tg_app.bot, 
-                            chat_id=chat_id, 
-                            text=text, 
-                            msg_type=msg_type,
-                            reply_markup=markup_data 
-                        )
-                        # log.info(f"✅ [GATEWAY] Đã chuyển tin tới {chat_id}")
+                        # =========================================
+                        # CHIẾN THUẬT 1: ƯU TIÊN SỬA TIN CŨ (EDIT)
+                        # =========================================
+                        if edit_id:
+                            try:
+                                # Thử 1: Sửa chuẩn Markdown
+                                await tg_app.bot.edit_message_text(
+                                    chat_id=chat_id,
+                                    message_id=edit_id,
+                                    text=text,
+                                    parse_mode="Markdown",
+                                    reply_markup=markup_data
+                                )
+                                # log.info(f"✏️ Đã sửa tin {edit_id}")
+                                continue # ✅ Thành công -> Dừng, không gửi mới
+                                
+                            except Exception as e:
+                                # log.warning(f"⚠️ Edit Markdown lỗi: {e}. Thử Plain Text...")
+                                try:
+                                    # Thử 2: Sửa bằng Plain Text (Bỏ format để chắc chắn không lỗi)
+                                    # Hàm escape_markdown_v2 giúp text không bị lỗi parse, nhưng an toàn nhất là parse_mode=None
+                                    await tg_app.bot.edit_message_text(
+                                        chat_id=chat_id,
+                                        message_id=edit_id,
+                                        text=text.replace("*", "").replace("_", ""), # Xóa sơ các ký tự MD
+                                        parse_mode=None, # Không dùng Markdown
+                                        reply_markup=markup_data
+                                    )
+                                    log.info(f"✏️ Đã sửa tin {edit_id} (Plain Text)")
+                                    continue # ✅ Thành công -> Dừng
+                                    
+                                except Exception as e2:
+                                    log.error(f"❌ Edit thất bại hoàn toàn: {e2}. Chuyển sang gửi mới.")
+                                    # Nếu cả 2 cách đều thua (ví dụ tin quá cũ), đành chịu -> Xuống gửi mới
+                        
+                        # =========================================
+                        # CHIẾN THUẬT 2: GỬI MỚI (SEND)
+                        # =========================================
+                        if msg_type in ["DIGEST", "EOD_SUMMARY"]:
+                            await send_digest_with_pin(tg_app.bot, chat_id, text, reply_markup=markup_data)
+                        else:
+                            await send_md(
+                                tg_app.bot, 
+                                chat_id=chat_id, 
+                                text=text, 
+                                msg_type=msg_type,
+                                reply_markup=markup_data
+                            )
                     
                 except json.JSONDecodeError:
-                    log.warning(f"⚠️ [GATEWAY] Lỗi JSON rác: {message['data']}")
+                    log.warning(f"⚠️ [GATEWAY] Lỗi JSON: {message['data']}")
                 except Exception as e:
-                    log.error(f"❌ [GATEWAY] Lỗi gửi tin: {e}")
+                    log.error(f"❌ [GATEWAY] Lỗi xử lý: {e}")
                 
-                continue # Xử lý tin tiếp theo ngay lập tức
+                continue
             
-            # Nếu không có tin, ngủ cực ngắn (0.1s) để đỡ tốn CPU
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
     except Exception as e:
-        log.error(f"💀 [GATEWAY] Lỗi Fatal Loop: {e}")
-        await asyncio.sleep(5) # Chờ 5s rồi thử lại nếu Redis sập
+        log.error(f"💀 [GATEWAY] Lỗi Fatal: {e}")
+        await asyncio.sleep(5)
 
 # ==============================================
 # COMMAND HANDLERS
@@ -4424,99 +1459,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_md(update,
         f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)"
     )
-
-async def cmd_vn30f1m_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    # Lấy trạng thái hiện tại (giả sử bạn có hàm helper này)
-    mp = await asyncio.to_thread(get_vn30f1m_enabled_map) 
-    enabled = bool(mp.get(chat_id, False))
-    
-    status_text = "🟢 ĐANG BẬT" if enabled else "🔴 ĐANG TẮT"
-    
-    # Tạo nút đảo ngược trạng thái
-    btn_text = "🔴 Tắt ngay" if enabled else "🟢 Bật ngay"
-    callback_action = "v30_off" if enabled else "v30_on"
-    
-    kb = [[InlineKeyboardButton(btn_text, callback_data=callback_action)]]
-    
-    await reply_md(
-        update, 
-        f"📉 **Trạng thái Phái sinh VN30F1M**\nHiện tại: {status_text}",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-
-
-async def cmd_vn30f1m_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (ĐÃ SỬA) Bật nhận cảnh báo VN30F1M.
-    Chỉ dành cho Pro User hoặc Admin.
-    """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
-        
-    chat_id = update.effective_chat.id
-    await asyncio.to_thread(log_command_usage, chat_id, "/vn30f1m_on", ADMIN_ID)
-
-    # ===============================================
-    # 💎 CHECK PAYWALL
-    # ===============================================
-    if not await check_pro_access(update, context):
-        return # Dừng lại, vì check_pro_access đã gửi tin nhắn paywall rồi
-    # -----------------------
-
-    set_vn30f1m_enabled(chat_id, True)
-    
-    await reply_md(update, "✅ (Pro) Đã *bật* nhận cảnh báo VN30F1M cho bạn.")
-
-
-async def cmd_vn30f1m_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    set_vn30f1m_enabled(chat_id, False)
-    await reply_md(update, "Đã *tắt* nhận cảnh báo VN30F1M cho bạn.")
-
-async def cmd_news_test_macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xem danh sách bài vĩ mô đã seen gần nhất trong Redis."""
-    chat_id = update.effective_chat.id
-    if chat_id != ADMIN_ID:
-        await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
-        return
-
-    await reply_md(update, "📡 Đang lấy danh sách bài *vĩ mô* từ Redis...")
-
-    entries = await asyncio.to_thread(load_seen_news_from_redis, NEWS_FEED_TYPE_MACRO, 10)
-    if not entries:
-        await reply_md(update, "❌ Không có bài vĩ mô nào trong Redis (news_seen:MACRO).")
-        return
-
-    lines = ["🧪 *Các bài vĩ mô gần nhất:*"]
-    for e in entries:
-        pub_str = e["published"].strftime("%Y-%m-%d %H:%M") if e["published"] else ""
-        lines.append(f"• {e['title']} ({pub_str})")
-
-    await reply_md(update, "\n".join(lines))
-
-async def cmd_news_test_specialized(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xem danh sách bài chuyên ngành đã seen gần nhất trong Redis."""
-    chat_id = update.effective_chat.id
-    if chat_id != ADMIN_ID:
-        await reply_md(update, "⚠️ Lệnh này chỉ dành cho admin.")
-        return
-
-    await reply_md(update, "📡 Đang lấy danh sách bài *chuyên ngành* từ Redis...")
-
-    entries = await asyncio.to_thread(load_seen_news_from_redis, NEWS_FEED_TYPE_SPECIALIZED, 10)
-    if not entries:
-        await reply_md(update, "❌ Không có bài chuyên ngành nào trong Redis (news_seen:SPECIALIZED).")
-        return
-
-    lines = ["🧪 *Các bài chuyên ngành gần nhất:*"]
-    for e in entries:
-        pub_str = e["published"].strftime("%Y-%m-%d %H:%M") if e["published"] else ""
-        lines.append(f"• {e['title']} ({pub_str})")
-
-    await reply_md(update, "\n".join(lines))
-
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ 
@@ -4915,212 +1857,102 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, f"⚠️ Lỗi khi gửi broadcast: {e}")
 
 @task_locked
-async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (PREMIUM) Bộ lọc Định giá (Mean Reversion).
-    - Free: Hiện nút mở WebApp khóa.
-    - Pro: Tính toán & Hiện nút mở WebApp kết quả.
+    Xem bộ lọc. Nếu là Pro -> Gửi lệnh sang Worker.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    
-    # 1. Xác định quyền hạn
     is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
 
-    # ==================================================================
-    # 🔴 NHÁNH 1: FREE USER (Gửi nút WebApp Locked)
-    # ==================================================================
+    # CASE 1: FREE USER (Giữ nguyên)
     if not is_pro:
-        try: await asyncio.to_thread(log_command_usage, chat_id, "/screener_value (Free)", ADMIN_ID)
-        except: pass
-        
-        # Link trỏ về route khóa
         web_app_url = f"{base_url}/screener/locked"
-        
-        kb = [
-            [InlineKeyboardButton("💎 Mở Bộ Lọc (Pro Only)", web_app=WebAppInfo(url=web_app_url))],
-            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
-        ]
-        
+        kb = [[InlineKeyboardButton("💎 Mở Bộ Lọc (Pro Only)", web_app=WebAppInfo(url=web_app_url))],
+              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
         await reply_md(
             update,
-            "💎 **Bộ Lọc Cổ Phiếu Giá Trị (Mean Reversion)**\n\n"
-            "Hệ thống quét toàn thị trường tìm mã Rẻ/Đắt so với lịch sử 5 năm.\n"
-            "👇 Nhấn nút bên dưới để xem demo tính năng.",
+            "💎 **Bộ Lọc Cổ Phiếu Giá Trị**\nQuét toàn thị trường tìm mã Rẻ/Đắt.\n👇 Xem demo tính năng.",
             reply_markup=InlineKeyboardMarkup(kb)
         )
         return
 
-    # ==================================================================
-    # 🟢 NHÁNH 2: PRO USER (Tính toán & Gửi kết quả)
-    # ==================================================================
-    try: await asyncio.to_thread(log_command_usage, chat_id, "/screener_value", ADMIN_ID)
-    except: pass
-
-    # 2. Kiểm tra dữ liệu lịch sử
-    hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
-    if not hist_data:
-        await reply_md(update, "⏳ Hệ thống đang khởi tạo dữ liệu định giá lịch sử. Vui lòng thử lại sau 2-3 phút.")
-        asyncio.create_task(calculate_historical_valuation_task())
-        return
-
-    # 3. Gửi tiến trình Loading
-    progress_msg = await reply_md(update, f"💎 **Đang phân tích định giá thị trường...**\n`[{make_progress_bar(20)}] 20%`")
+    # CASE 2: PRO USER -> Gửi lệnh sang Worker
+    # Gửi tin Loading
+    progress_msg = await reply_md(
+        update, 
+        f"💎 **Đang quét dữ liệu toàn thị trường...**\n`[{make_progress_bar(30)}] 30%`"
+    )
 
     try:
-        # 4. Lấy dữ liệu Hiện tại (Screener)
-        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
-        
-        # --- 🔥 SỬA: Bọc cập nhật giao diện để tránh crash nếu mạng lag ---
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=progress_msg.message_id,
-                text=f"📊 **Đang so sánh với dữ liệu quá khứ...**\n`[{make_progress_bar(60)}] 60%`", parse_mode="Markdown"
-            )
-        except Exception as e:
-            log.warning(f"Không update được progress bar (mạng lag), nhưng vẫn tính tiếp: {e}")
-        # -----------------------------------------------------------------
+        # Giả lập loading steps (Để tạo cảm giác mượt mà)
+        # Bước 1: Thu thập dữ liệu (30%)
+        await asyncio.sleep(0.3) 
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=progress_msg.message_id,
+            text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
+            parse_mode="Markdown"
+        )
 
-        # 5. Xử lý logic so sánh
-        processed_items = []
-        for index, row in screener_df.iterrows():
-            sym = row['ticker']
-            if sym not in hist_data: continue
-            
-            try:
-                pe_cur = float(row['pe'])
-                pb_cur = float(row['pb'])
-            except: continue
-
-            pe_avg = hist_data[sym]['pe_avg']
-            pb_avg = hist_data[sym]['pb_avg']
-            
-            # Bỏ qua mã lỗ hoặc dữ liệu sai
-            if pe_cur <= 0 or pb_cur <= 0: continue
-            if pe_avg <= 0 or pb_avg <= 0: continue
-
-            # Tính toán độ lệch
-            pe_discount = (pe_cur - pe_avg) / pe_avg
-            pb_discount = (pb_cur - pb_avg) / pb_avg
-            avg_discount = (pe_discount + pb_discount) / 2
-            
-            # Helper format hiển thị
-            def get_ui_meta(discount):
-                pct_val = abs(discount) * 100
-                if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
-                elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
-                else: 
-                    sign = "▲" if discount > 0 else "▼"
-                    return "", f"{sign} {pct_val:.1f}%"
-
-            pe_class, pe_diff_str = get_ui_meta(pe_discount)
-            pb_class, pb_diff_str = get_ui_meta(pb_discount)
-            
-            if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
-            elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
-            else: signal_class, signal_text = "sig-fair", "Hợp lý"
-
-            processed_items.append({
-                'symbol': sym,
-                'pe_cur': pe_cur, 'pe_avg': pe_avg,
-                'pe_class': pe_class, 'pe_diff_str': pe_diff_str,
-                'pb_cur': pb_cur, 'pb_avg': pb_avg,
-                'pb_class': pb_class, 'pb_diff_str': pb_diff_str,
-                'signal_class': signal_class, 'signal_text': signal_text,
-                'avg_discount': avg_discount
-            })
-
-        # 6. Sắp xếp & Lưu Cache Redis
-        processed_items.sort(key=lambda x: x['avg_discount'])
-        top_items = processed_items[:50] # Lấy Top 50 mã rẻ nhất
-
-        digest_id = uuid.uuid4().hex
-        vn_tz = pytz.timezone(TIMEZONE)
-        payload = {
-            "items": top_items,
-            "generated_time": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
-        }
-        
-        r = get_redis()
-        r.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600)
+        # Bước 2: Gọi AI (Thật)
+        await asyncio.sleep(0.3) 
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=progress_msg.message_id,
+            text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
+            parse_mode="Markdown"
+        )
 
         # Bước 3: Hoàn tất (100%)
-        # --- 🔥 SỬA: Bọc try/except ---
+        await asyncio.sleep(0.3) 
+        sent_msg = await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=progress_msg.message_id,
+            text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
+            parse_mode="Markdown"
+        )
+    
+        # Bắn lệnh
+        payload = {
+            "cmd": "GEN_SCREENER",
+            "chat_id": chat_id,
+            "loading_msg_id": sent_msg.message_id # <--- Gửi ID để Worker sửa tin
+        }
+        await asyncio.to_thread(push_to_worker, payload)
+
+    except Exception as e:
+        log.error(f"Lỗi /report: {e}")
+        # Nếu lỗi, sửa tin nhắn loading thành báo lỗi
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"✅ **Hoàn tất! Đang tạo bảng xếp hạng...**\n`[{make_progress_bar(100)}] 100%`",
+                text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
                 parse_mode="Markdown"
             )
-        except: pass
-        # ------------------------------
-            
-        await asyncio.sleep(0.5)
+        except:
+            pass
 
-        # Link trỏ về route kết quả (thêm chat_id để bảo mật route này nếu cần)
-        web_url = f"{base_url}/screener_result/{digest_id}?chat_id={chat_id}"
-        
-        await context.bot.delete_message(chat_id, progress_msg.message_id)
-        
-        kb = [[InlineKeyboardButton("🚀 Xem Bảng Xếp Hạng", web_app=WebAppInfo(url=web_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-
-        await reply_md(
-            update,
-            f"💎 **Định Giá Cổ Phiếu (Mean Reversion)**\n\n"
-            f"✅ Đã lọc được {len(processed_items)} mã tiềm năng.\n"
-            f"👉 Nhấn nút bên dưới để xem Top cổ phiếu rẻ nhất.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    except Exception as e:
-        log.error(f"Lỗi /screener_value: {e}")
-        try:
-            await context.bot.edit_message_text(chat_id, progress_msg.message_id, text="⚠️ Lỗi hệ thống. Vui lòng thử lại sau.")
-        except: pass
-
-async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    [UPDATED] Force refresh dữ liệu Mean Reversion (Lịch sử 5 năm).
-    CHẠY NGẦM (Background) để tránh Timeout do tác vụ quá dài.
+    (Admin) Ra lệnh Worker tính lại dữ liệu lịch sử.
     """
-    chat_id = update.effective_chat.id
-    if chat_id != ADMIN_ID:
+    if update.effective_user.id != ADMIN_ID:
         await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
         return
 
-    # 1. Thông báo xác nhận lệnh đã nhận
-    await reply_md(
-        update,
-        "⏳ *Đã kích hoạt tác vụ làm mới dữ liệu Mean Reversion (Chạy ngầm)...*\n"
-        "_Bot sẽ thông báo lại khi hoàn tất (dự kiến 10-15 phút)._"
-    )
+    await reply_md(update, "📡 Đã gửi lệnh Force Update tới Worker.")
 
-    # 2. Định nghĩa hàm wrapper để chạy ngầm và báo cáo kết quả sau
-    async def _background_runner():
-        try:
-            start_time = time.time()
-            # Gọi task nặng
-            await calculate_historical_valuation_task()
-            duration = time.time() - start_time
-            
-            # Gửi tin nhắn báo cáo thành công
-            await send_md(
-                context.bot, 
-                chat_id, 
-                f"✅ *Hoàn tất làm mới dữ liệu Screener!*\n⏱ Thời gian chạy: {duration/60:.1f} phút."
-            )
-        except Exception as e:
-            log.error(f"Lỗi background screener_value_clear: {e}")
-            await send_md(context.bot, chat_id, f"⚠️ Lỗi tác vụ ngầm Screener: {e}")
-
-    # 3. Đẩy vào Event Loop chạy ngầm (Không await)
-    asyncio.create_task(_background_runner())
+    payload = {
+        "cmd": "FORCE_SCREENER",
+        "admin_id": ADMIN_ID
+    }
+    await asyncio.to_thread(push_to_worker, payload)
 
 # COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
 async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5489,10 +2321,11 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_md(update, "📭 Danh mục trống. Hãy dùng `/add` để thêm mã trước nhé!")
         return
 
-    # A. Check Cache
-    cached = get_report_from_redis(cache_key)
+    # 2. Check Cache (Gateway vẫn check cache được để phản hồi nhanh)
+    cache_key = make_report_cache_key(symbols)
+    cached = await asyncio.to_thread(get_report_from_redis, cache_key)
+
     if cached and not cached[2]: # Not error
-        # ... (Phần Cache Hit giữ nguyên) ...
         text_json, generated_at, _, _ = cached
         time_str = "vừa xong"
         if generated_at:
@@ -5528,40 +2361,27 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=progress_msg.message_id,
-            text=f"🧠 **Gemini AI đang phân tích...**\n`[{make_progress_bar(60)}] 60%`",
+            text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
             parse_mode="Markdown"
         )
 
-        # --- GỌI HÀM NẶNG ---
-        json_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-        save_report_to_redis(cache_key, json_text, source="on_demand")
-        # --------------------
-
         # Bước 3: Hoàn tất (100%)
-        await context.bot.edit_message_text(
+        sent_msg = await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=progress_msg.message_id,
-            text=f"✅ **Hoàn tất! Đang tạo báo cáo...**\n`[{make_progress_bar(100)}] 100%`",
+            text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
             parse_mode="Markdown"
         )
         await asyncio.sleep(0.5) # Dừng xíu để user thấy 100%
 
-        # Xóa tin nhắn loading
-        await context.bot.delete_message(chat_id, progress_msg.message_id)
-        
-        # Gửi kết quả cuối cùng
-        kb = [
-            [InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
-            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
-        ]
-        
-        await reply_md(
-            update, 
-            f"🚀 **Phân tích hoàn tất!**\n"
-            f"Đã xử lý xong danh mục: *{', '.join(symbols)}*\n"
-            f"Nhấn nút bên dưới để xem báo cáo.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+        # Bắn lệnh
+        payload = {
+            "cmd": "GEN_REPORT",
+            "chat_id": chat_id,
+            "symbols": symbols,
+            "loading_msg_id": sent_msg.message_id
+        }
+        await asyncio.to_thread(push_to_worker, payload)
 
     except Exception as e:
         log.error(f"Lỗi /report: {e}")
@@ -5652,30 +2472,29 @@ async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @task_locked
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (UX PRO) Soi hồ sơ doanh nghiệp với Progress Bar.
+    (Gateway) Nhận lệnh /info -> Check Cache -> Nếu thiếu thì gọi Worker.
     """
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
         return
 
-    if not update.effective_chat: return
     chat_id = update.effective_chat.id
 
+    # 1. Parse Argument
     if not context.args:
-        # Fallback nếu user gõ sai
         kb = [[InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
         await reply_md(update, "⚠️ Cách dùng: `/info <MÃ>` (VD: `/info FPT`)", reply_markup=InlineKeyboardMarkup(kb))
         return
 
     symbol = context.args[0].strip().upper()
     
-    # 1. Xác định trạng thái Pro
+    # 2. Check Paywall (Giữ nguyên logic chặn Free user ở Gateway để đỡ tốn resource Worker)
     is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+    base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
     web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
 
-    # --- NHÁNH 1: FREE USER (GỬI NÚT NGAY - UPSELL) ---
     if not is_pro:
+        # Logic Free User (Gửi nút xem demo hoặc chặn) - Giữ nguyên code cũ của bạn
         try: await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol} (Free)", ADMIN_ID)
         except: pass
         kb = [[InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
@@ -5687,79 +2506,83 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # --- NHÁNH 2: PRO USER (PROGRESS BAR) ---
-    await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
-    cache_key = make_profile_cache_key(symbol)
+    # 3. Pro User: Check Cache Redis (Gateway tự check được vì Redis chung)
+    try: await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
+    except: pass
     
-    # A. Check Cache
-    cached = get_profile_from_redis(cache_key)
+    cache_key = make_profile_cache_key(symbol)
+    cached = await asyncio.to_thread(get_profile_from_redis, cache_key) # Import hàm này từ profile_cache.py
+
+    # CASE A: Có Cache -> Trả về ngay lập tức
     if cached:
         text, _, is_error, _ = cached
         if not is_error:
-            kb = [[InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
-                  [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            kb = [
+                [InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
+                [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+            ]
             await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=InlineKeyboardMarkup(kb))
             return
 
     # B. Cache Miss -> CHẠY TIẾN TRÌNH
-    # B1. Khởi tạo (10%)
+    
+    # B1. Gửi tin nhắn khởi tạo (0%)
     progress_msg = await reply_md(
         update, 
-        f"⏳ **Đang truy xuất dữ liệu {symbol}...**\n"
+        f"⏳ **Đang truy xuất dữ liệu {symbol}...**\nBot đang đọc BCTC và tổng hợp tin tức.\n"
         f"`[{make_progress_bar(10)}] 10%`"
     )
-
+    
     try:
-        # B2. Giả lập bước thu thập dữ liệu (40%)
-        await asyncio.sleep(0.5)
+        # Giả lập loading steps (Để tạo cảm giác mượt mà)
+        # Bước 1: Thu thập dữ liệu (30%)
+        await asyncio.sleep(0.5) 
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=progress_msg.message_id,
-            text=f"📥 **Đang tổng hợp dữ liệu BCTC & Vĩ mô...**\n`[{make_progress_bar(40)}] 40%`",
+            text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
             parse_mode="Markdown"
         )
 
-        # B3. Gọi AI (75%)
-        await asyncio.sleep(0.3)
+        # Bước 2: Gọi AI (Thật)
+        await asyncio.sleep(0.5) 
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=progress_msg.message_id,
-            text=f"🧠 **Gemini AI đang phân tích hồ sơ...**\n`[{make_progress_bar(75)}] 75%`",
+            text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
             parse_mode="Markdown"
         )
 
-        # --- GỌI HÀM NẶNG ---
-        json_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
-        save_profile_to_redis(cache_key, json_text, source="on_demand")
-        # --------------------
-
-        # B4. Hoàn tất (100%)
-        await context.bot.edit_message_text(
+        # Bước 3: Hoàn tất (100%)
+        await asyncio.sleep(0.5) 
+        sent_msg = await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=progress_msg.message_id,
-            text=f"✅ **Hoàn tất! Đang tạo giao diện...**\n`[{make_progress_bar(100)}] 100%`",
+            text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
             parse_mode="Markdown"
         )
-        await asyncio.sleep(0.5)
 
-        # Xóa tin nhắn loading & Gửi kết quả
-        await context.bot.delete_message(chat_id, progress_msg.message_id)
-        
-        kb = [[InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        
-        await reply_md(update, f"🚀 Đã tạo xong hồ sơ *{symbol}*.", reply_markup=InlineKeyboardMarkup(kb))
+        # Bắn lệnh sang Worker
+        payload = {
+            "cmd": "GEN_INFO",
+            "chat_id": chat_id,
+            "symbol": symbol,
+            "loading_msg_id": sent_msg.message_id # <--- Gửi ID đi để sửa
+        }
+        await asyncio.to_thread(push_to_worker, payload)
 
     except Exception as e:
-        log.error(f"Lỗi /info: {e}")
+        log.error(f"Lỗi /report: {e}")
+        # Nếu lỗi, sửa tin nhắn loading thành báo lỗi
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"⚠️ **Lỗi:** Không thể tạo hồ sơ lúc này.\nVui lòng thử lại sau.",
+                text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
                 parse_mode="Markdown"
             )
-        except: pass
+        except:
+            pass
 
 async def cmd_info_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -5933,167 +2756,26 @@ async def cmd_admin_remove_user(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (Admin) Chạy tác vụ gửi weekly report ngay lập tức.
+    (Admin) Ra lệnh cho Worker chạy Weekly Report ngay lập tức.
     """
     if update.effective_user.id != ADMIN_ID:
         await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
         return
 
     # Log command
-    await asyncio.to_thread(log_command_usage, update.effective_chat.id, "/cmd_run_weekly_report_now", ADMIN_ID)
+    try: await asyncio.to_thread(log_command_usage, update.effective_chat.id, "/cmd_run_weekly_report_now", ADMIN_ID)
+    except: pass
     
-    await reply_md(update, "🏃 Bắt đầu chạy tác vụ `execute_weekly_report` trong nền. Tác vụ này rất lâu, bot sẽ thông báo khi hoàn tất...")
+    await reply_md(update, "📡 Đã gửi lệnh tới Worker. Vui lòng đợi phản hồi...")
 
-    # Gọi hàm lõi (truyền update vào để nhận phản hồi)
-    asyncio.create_task(execute_weekly_report(admin_update=update))
-
-@task_locked
-async def cmd_admin_test_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (Admin) Test trọn vẹn quy trình Daily Digest.
-    CÓ CƠ CHẾ MOCK DATA: Nếu không có dữ liệu thật, tự động tạo dữ liệu giả để test UI.
-    """
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    chat_id = update.effective_chat.id
-    vn_tz = pytz.timezone(TIMEZONE)
+    # Đóng gói lệnh
+    payload = {
+        "cmd": "RUN_WEEKLY_NOW",
+        "admin_id": ADMIN_ID
+    }
     
-    # 1. Thông báo bắt đầu
-    status_msg = await reply_md(update, "🧪 **Bắt đầu Test Full Digest...**\nWait: Đang lấy dữ liệu thật (hoặc tạo Mock data)...")
-
-    try:
-        # 2. Khung thời gian 24h
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        since_utc = now_utc - datetime.timedelta(hours=24)
-
-        # 3. Thu thập dữ liệu THẬT
-        (
-            bctc_rows,
-            report_rows,
-            macro_rows,
-            spec_rows,
-            top_value_stocks,
-        ) = await asyncio.gather(
-            asyncio.to_thread(get_recent_bctc_notified, since_utc),
-            asyncio.to_thread(get_recent_analysis_reports, since_utc),
-            asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
-            asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
-            get_top_mean_reversion_stocks(limit=5),
-        )
-
-        # --- 4. XỬ LÝ TIN TỨC & AI (MOCK NẾU THIẾU) ---
-        all_news_items = []
-        # Gom tin thật
-        for row in macro_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Vĩ mô"})
-        for row in spec_rows: all_news_items.append({"title": row[0], "link": row[1], "source": "Doanh nghiệp"})
-        
-        # Nếu không có tin thật, tạo tin giả để test AI (hoặc bỏ qua AI)
-        using_mock_news = False
-        if not all_news_items:
-            using_mock_news = True
-            all_news_items = [
-                {"title": "FED giữ nguyên lãi suất, chứng khoán Mỹ lập đỉnh mới (Mock)", "link": "https://google.com", "source": "Vĩ mô"},
-                {"title": "HPG công bố sản lượng thép tháng 10 tăng trưởng 20% (Mock)", "link": "https://google.com", "source": "Doanh nghiệp"},
-                {"title": "VHM khởi công dự án 5 tỷ USD tại Long An (Mock)", "link": "https://google.com", "source": "Doanh nghiệp"}
-            ]
-
-        ai_news_data = None
-        ai_telegram_text = "_Chưa có dữ liệu AI_"
-
-        # Gọi AI (Dù tin thật hay giả)
-        if all_news_items:
-            try:
-                ai_news_data = await summarize_daily_news_with_ai(all_news_items)
-                if ai_news_data:
-                    lines = []
-                    if ai_news_data.get('headline'):
-                        lines.append("⚡ *TIÊU ĐIỂM*")
-                        for i in ai_news_data['headline']: lines.append(f"• {i['text']}")
-                    if ai_news_data.get('comment'):
-                        lines.append(f"\n🧠 *AI:* {ai_news_data['comment']}")
-                    ai_telegram_text = "\n".join(lines)
-                    if using_mock_news: ai_telegram_text += "\n_(Dữ liệu tin tức giả lập để test)_"
-            except Exception as e:
-                log.error(f"Lỗi AI Test: {e}")
-
-        # --- 5. BUILD PAYLOAD WEB APP (MOCK DỮ LIỆU THIẾU) ---
-        payload = {
-            "is_pro": True,
-            "ai_news": ai_news_data,
-            "value_stocks": top_value_stocks,
-            "bctc": [],
-            "reports": [],
-            "specialized": [],
-            "macro": []
-        }
-
-        # A. Xử lý BCTC (Real + Mock)
-        if bctc_rows:
-            for (sym, y, q, t) in bctc_rows:
-                payload["bctc"].append({"symbol": sym, "year": y, "quarter": q, "time": t.astimezone(vn_tz).strftime("%H:%M"), "is_locked": False})
-        else:
-            # Mock BCTC
-            payload["bctc"].append({"symbol": "HPG (Test)", "year": 2024, "quarter": 3, "time": "08:30", "is_locked": False})
-            payload["bctc"].append({"symbol": "VNM (Test)", "year": 2024, "quarter": 3, "time": "09:15", "is_locked": False})
-
-        # B. Xử lý Reports (Real + Mock)
-        if report_rows:
-            for (sym, title, link, pub, created) in report_rows:
-                payload["reports"].append({"symbol": sym, "title": title, "link": link, "time": pub.astimezone(vn_tz).strftime("%d/%m"), "is_locked": False})
-        else:
-            # Mock Report
-            payload["reports"].append({"symbol": "FPT", "title": "Khuyến nghị MUA: Tăng trưởng bền vững (Test)", "link": "#", "time": "Hôm nay", "is_locked": False})
-            payload["reports"].append({"symbol": "MWG", "title": "Báo cáo cập nhật: Phục hồi mạnh mẽ (Test)", "link": "#", "time": "Hôm qua", "is_locked": False})
-
-        # C. Xử lý News List (Real + Mock)
-        # Tin Vĩ mô
-        if macro_rows:
-            payload["macro"] = [{"title": r[0], "link": r[1]} for r in macro_rows[:5]]
-        else:
-            payload["macro"] = [
-                {"title": "GDP Việt Nam dự báo tăng trưởng 6.5% năm 2025 (Test)", "link": "#"},
-                {"title": "Ngân hàng Nhà nước tiếp tục hút ròng qua tín phiếu (Test)", "link": "#"}
-            ]
-        
-        # Tin Doanh nghiệp
-        if spec_rows:
-            payload["specialized"] = [{"title": r[0], "link": r[1]} for r in spec_rows[:5]]
-        else:
-            payload["specialized"] = [
-                {"title": "VHM: Doanh số bán hàng tháng 10 đạt kỷ lục (Test)", "link": "#"},
-                {"title": "GAS: Chốt quyền chia cổ tức bằng tiền mặt 20% (Test)", "link": "#"}
-            ]
-
-        # 6. Lưu Redis & Tạo Link
-        digest_id = uuid.uuid4().hex
-        await asyncio.to_thread(save_digest_to_redis, digest_id, payload)
-        
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        web_url = f"{base_url}/digest/{digest_id}"
-        
-        # 7. Gửi kết quả
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📰 Xem Bản Tin (Web App)", web_app=WebAppInfo(url=web_url))]])
-        
-        final_msg = (
-            f"🌅 *BẢN TIN SÁNG (TEST MODE)*\n\n"
-            f"{ai_telegram_text}\n\n"
-            f"👉 Nhấn nút dưới để xem chi tiết Top Cổ Phiếu & Tin tức.\n"
-            f"_(Lưu ý: Các mục có chữ 'Test' là dữ liệu giả lập do DB đang rỗng)_"
-        )
-
-        await context.bot.delete_message(chat_id=chat_id, message_id=status_msg.message_id)
-        sent_msg = await send_md(context.bot, chat_id, final_msg, reply_markup=kb)
-        
-        # Ghim thử để check
-        if sent_msg:
-            try: await context.bot.pin_chat_message(chat_id=chat_id, message_id=sent_msg.message_id)
-            except: pass
-
-    except Exception as e:
-        log.error(f"Lỗi Test Digest: {e}")
-        await reply_md(update, f"❌ Lỗi: {e}")
-
+    # Bắn sang Worker
+    await asyncio.to_thread(push_to_worker, payload)
 
 async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -6187,25 +2869,7 @@ def _send_telegram_message_safe(chat_id_to_send, text):
         future.result(timeout=5) # Chờ 5s
     except Exception as e:
         log.error(f"[SEPAPAY] Lỗi khi gửi tin nhắn cho {chat_id_to_send}: {e}")
-#------------------------------------------------------
-# --- HELPER REDIS CHO DIGEST ---
-def save_digest_to_redis(digest_id: str, data: dict):
-    """Lưu digest data vào Redis với TTL 24h (86400s)"""
-    try:
-        r = get_redis()
-        r.set(f"digest_web:{digest_id}", json.dumps(data, ensure_ascii=False), ex=86400)
-    except Exception as e:
-        log.error(f"[DIGEST] Lỗi lưu Redis: {e}")
 
-def get_digest_from_redis(digest_id: str):
-    """Đọc digest data từ Redis"""
-    try:
-        r = get_redis()
-        raw = r.get(f"digest_web:{digest_id}")
-        return json.loads(raw) if raw else None
-    except Exception as e:
-        log.error(f"[DIGEST] Lỗi đọc Redis: {e}")
-        return None
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
@@ -7160,16 +3824,6 @@ async def asgi_wrapper_app(scope, receive, send):
                 
                 BACKGROUND_TASKS = [
                     MAIN_LOOP.create_task(redis_gateway_loop()),
-                    MAIN_LOOP.create_task(news_specialized_loop()),
-                    MAIN_LOOP.create_task(news_macro_loop()),
-                    MAIN_LOOP.create_task(news_cleanup_loop()),
-                    MAIN_LOOP.create_task(session_notice_loop()),
-                    MAIN_LOOP.create_task(weekly_report_loop()),
-                    MAIN_LOOP.create_task(analysis_report_loop()),
-                    MAIN_LOOP.create_task(financial_Statements_notice_loop()),
-                    MAIN_LOOP.create_task(nightly_valuation_loop()),
-                    MAIN_LOOP.create_task(daily_user_digest_loop()),
-                    MAIN_LOOP.create_task(restore_reminder_loop()),
                     MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                 ]
@@ -7202,13 +3856,11 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
             ("announce", "(admin) Gửi thông báo đến tất cả người dùng"),
             ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
-            ("screener_value_clear", "(admin) Xóa dữ liệu screener cache"),
+            ("screener_clear", "(admin) Xóa dữ liệu screener cache"),
             ("report_clear", "(admin) Xóa dữ liệu AI report trên redis"),
             ("info_clear", "(admin) Xóa dữ liệu AI hồ sơ (/info)"),
             ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
-            ("news_test_macro", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
-            ("news_test_specialized", "(admin) Gửi thử tin tức vĩ mô mới nhất"),
-            ("cmd_run_weekly_report_now", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
+            ("force_weekly", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
             ("backup_core", "(admin) Backup dữ liệu core (watchlist, news_pref, BCTC)"),
             ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
             ("admin_add_user", "(admin) (admin) Thêm/gia hạn Gói Pro cho user"),
@@ -7314,10 +3966,6 @@ async def main():
     # 🗄️ Khởi tạo DB
     init_db()
 
-    # 🏢 Load danh sách tên doanh nghiệp
-    global COMPANY_KEYWORDS
-    COMPANY_KEYWORDS = load_company_keywords_from_csv("ssi_master_list.csv")
-
     # 🔄 Load trạng thái bảo trì từ DB
     global BOT_ACTIVE, MAIN_LOOP, tg_app
 
@@ -7345,41 +3993,48 @@ async def main():
         .build()
     )
 
-    # User commands
+# --- USER COMMANDS (Giao diện chính) ---
+    tg_app.add_handler(CommandHandler("start", cmd_start))
     tg_app.add_handler(CommandHandler("help", cmd_help))
-    tg_app.add_handler(CommandHandler("setting", cmd_setting))
-    tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
+    
+    # Quản lý danh mục
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
     tg_app.add_handler(CommandHandler("list", cmd_list))
+    
+    # Tính năng AI & Dữ liệu (Gateway gọi Worker)
     tg_app.add_handler(CommandHandler("report", cmd_report))
-    tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear))
     tg_app.add_handler(CommandHandler("info", cmd_info))
-    tg_app.add_handler(CommandHandler("info_clear", cmd_info_clear))
     tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
-    tg_app.add_handler(CommandHandler("vn30f1m_status", cmd_vn30f1m_status))
-    tg_app.add_handler(CommandHandler("vn30f1m_on", cmd_vn30f1m_on))
-    tg_app.add_handler(CommandHandler("vn30f1m_off", cmd_vn30f1m_off))
-    tg_app.add_handler(CommandHandler("start", cmd_start))
+    
+    # Tài khoản & Cài đặt
+    tg_app.add_handler(CommandHandler("setting", cmd_setting))
+    tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
     tg_app.add_handler(CommandHandler("trial", cmd_trial))
 
-    # Admin commands
-    tg_app.add_handler(CommandHandler("news_test_macro", cmd_news_test_macro))
-    tg_app.add_handler(CommandHandler("news_test_specialized", cmd_news_test_specialized))
+    # --- ADMIN COMMANDS (Quản trị viên) ---
+    # 1. Hệ thống
+    tg_app.add_handler(CommandHandler("admin", cmd_admin)) # Web Dashboard
     tg_app.add_handler(CommandHandler("on", cmd_on))
     tg_app.add_handler(CommandHandler("off", cmd_off))
     tg_app.add_handler(CommandHandler("status", cmd_status))
-    tg_app.add_handler(CommandHandler("announce", cmd_announce))
-    tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
-    tg_app.add_handler(CommandHandler("screener_value_clear", cmd_screener_value_clear))
     tg_app.add_handler(CommandHandler("backup_core", cmd_backup_core))
     tg_app.add_handler(CommandHandler("restore_core", cmd_restore_core))
+    
+    # 2. Quản lý User & Broadcast
+    tg_app.add_handler(CommandHandler("announce", cmd_announce))
+    tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
     tg_app.add_handler(CommandHandler("admin_add_user", cmd_admin_add_user))
     tg_app.add_handler(CommandHandler("admin_deactivate", cmd_admin_deactivate))
     tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
-    tg_app.add_handler(CommandHandler("cmd_run_weekly_report_now", cmd_run_weekly_report_now))
-    tg_app.add_handler(CommandHandler("test_digest", cmd_admin_test_digest))
-    tg_app.add_handler(CommandHandler("admin", cmd_admin))
+    
+    # 3. Điều khiển Worker & Cache (Maintenance)
+    tg_app.add_handler(CommandHandler("force_weekly", cmd_run_weekly_report_now)) # Đổi tên cho gọn
+    tg_app.add_handler(CommandHandler("screener_clear", cmd_screener_value_clear)) # Đổi tên cho gọn
+    tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear)) # Đã chuyển xuống Admin
+    tg_app.add_handler(CommandHandler("info_clear", cmd_info_clear))     # Đã chuyển xuống Admin
+
+    # Handlers khác
     tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
     tg_app.add_handler(CallbackQueryHandler(handle_quick_button))
 

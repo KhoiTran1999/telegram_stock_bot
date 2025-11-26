@@ -9,7 +9,6 @@ from psycopg import rows
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 load_dotenv()
-
 from news_seen_cache import (
     has_news_seen_redis,
     mark_news_seen_redis,
@@ -2064,5 +2063,23 @@ def activate_trial_package(chat_id: int, days: int = 3):
             
         conn.commit()
 
+# --- HELPER REDIS CHO DIGEST ---
+def save_digest_to_redis(digest_id: str, data: dict):
+    """Lưu digest data vào Redis với TTL 24h (86400s)"""
+    try:
+        r = get_redis()
+        r.set(f"digest_web:{digest_id}", json.dumps(data, ensure_ascii=False), ex=86400)
+    except Exception as e:
+        redis_debug_log(f"[DIGEST] Lỗi lưu Redis: {e}")
+
+def get_digest_from_redis(digest_id: str):
+    """Đọc digest data từ Redis"""
+    try:
+        r = get_redis()
+        raw = r.get(f"digest_web:{digest_id}")
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        redis_debug_log(f"[DIGEST] Lỗi đọc Redis: {e}")
+        return None
 
 

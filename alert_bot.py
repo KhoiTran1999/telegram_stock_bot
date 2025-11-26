@@ -110,6 +110,8 @@ from db_utils import (
     set_user_ban_status,
     check_trial_eligibility,
     activate_trial_package,
+    save_digest_to_redis,
+    get_digest_from_redis
 )
 import psutil
 import time
@@ -6768,25 +6770,7 @@ def _send_telegram_message_safe(chat_id_to_send, text):
         future.result(timeout=5) # Chờ 5s
     except Exception as e:
         log.error(f"[SEPAPAY] Lỗi khi gửi tin nhắn cho {chat_id_to_send}: {e}")
-#------------------------------------------------------
-# --- HELPER REDIS CHO DIGEST ---
-def save_digest_to_redis(digest_id: str, data: dict):
-    """Lưu digest data vào Redis với TTL 24h (86400s)"""
-    try:
-        r = get_redis()
-        r.set(f"digest_web:{digest_id}", json.dumps(data, ensure_ascii=False), ex=86400)
-    except Exception as e:
-        log.error(f"[DIGEST] Lỗi lưu Redis: {e}")
 
-def get_digest_from_redis(digest_id: str):
-    """Đọc digest data từ Redis"""
-    try:
-        r = get_redis()
-        raw = r.get(f"digest_web:{digest_id}")
-        return json.loads(raw) if raw else None
-    except Exception as e:
-        log.error(f"[DIGEST] Lỗi đọc Redis: {e}")
-        return None
 # ==============================================
 # FLASK KEEPALIVE
 # ==============================================
