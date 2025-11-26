@@ -125,3 +125,4 @@ beautifulsoup4
 plotly
 pandas
 wraps
+apscheduler

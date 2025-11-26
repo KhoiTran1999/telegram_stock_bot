@@ -48,6 +48,12 @@ from report_cache import (
     get_report_from_redis,
     delete_report_from_redis,
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.jobstores.redis import RedisJobStore
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+from urllib.parse import urlparse # Để parse REDIS_URL
 
 # --- CẤU HÌNH CƠ BẢN ---
 load_dotenv()
@@ -888,37 +894,6 @@ def _clean_vnstock_columns(df):
     df.columns = new_columns
     return df
 
-def get_next_7am(now: datetime.datetime, vn_tz) -> datetime.datetime:
-    """
-    Tính mốc 07:00 sáng tiếp theo (cho vòng lặp quét báo cáo).
-    - Nếu hôm nay < 07:00 -> 07:00 hôm nay.
-    - Nếu hôm nay >= 07:00 -> 07:00 ngày mai.
-    """
-    # 1. Xác định 07:00 hôm nay
-    target_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
-    
-    # 2. Nếu đã qua 07:00 hôm nay, mục tiêu là 07:00 ngày mai
-    if now >= target_today:
-        target_tomorrow = target_today + datetime.timedelta(days=1)
-        return target_tomorrow
-    
-    # 3. Nếu chưa tới 07:00 hôm nay, mục tiêu là hôm nay
-    else:
-        return target_today
-    
-async def sleep_until(dt_target: datetime.datetime, vn_tz):
-    """
-    Ngủ đến thời điểm dt_target (local VN).
-    Cắt nhỏ nếu khoảng cách quá dài để tránh sleep quá lâu 1 lần.
-    """
-    while True:
-        now = datetime.datetime.now(vn_tz)
-        seconds = (dt_target - now).total_seconds()
-        if seconds <= 0:
-            break
-        # ngủ tối đa 1 giờ mỗi lần cho an toàn
-        await asyncio.sleep(min(seconds, 3600))
-
 async def summarize_daily_news_with_ai(news_items: list) -> dict | None:
     """
     Phiên bản ULTIMATE: Tối ưu hóa tư duy nhà đầu tư, dynamic tags và chống trùng lặp.
@@ -1182,155 +1157,168 @@ async def get_top_mean_reversion_stocks(limit=5):
         log.error(f"[{INSTANCE_ID}] Lỗi get_top_mean_reversion_stocks: {e}")
         return []
     
-async def nightly_valuation_loop():
+async def job_daily_digest():
     """
-    Chạy tính toán định giá Mean Reversion vào 02:00 sáng mỗi ngày.
-    Lưu kết quả vào Redis để 07:00 sáng Digest chỉ việc lấy ra dùng.
+    [JOB APSCHEDULER] Gửi bản tin sáng (Digest) lúc 07:00.
+    Không còn while True, không còn sleep.
     """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
+    # 1. Kiểm tra trạng thái Bot
+    if not get_bot_active():
+        log.info("[DIGEST] Bot đang TẮT (Maintenance). Bỏ qua Job sáng nay.")
+        return
 
-    log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Khởi động loop tính toán đêm (02:00).")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. Tính thời gian ngủ tới 02:00 sáng hôm sau (hoặc hôm nay nếu chưa tới)
-        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target += datetime.timedelta(days=1)
-        
-        wait_sec = (target - now).total_seconds()
-        log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL {loop_id}] Ngủ {wait_sec/3600:.1f}h tới {target.strftime('%Y-%m-%d %H:%M')} để tính định giá.")
-        
-        await asyncio.sleep(wait_sec)
-
-        # 2. Thức dậy & Kiểm tra
-        if not get_bot_active():
-            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Bot đang TẮT, bỏ qua lần chạy này.")
-            await asyncio.sleep(60)
-            continue
-
-        # 3. Chạy tính toán (Task nặng)
-        try:
-            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] 🌙 02:00! Bắt đầu tính toán Historical Valuation...")
-            # Gọi trực tiếp và chờ cho xong (vì lúc này đêm khuya, không sợ block ai)
-            await calculate_historical_valuation_task()
-            
-        except Exception as e:
-            log.error(f"[{INSTANCE_ID}][NIGHTLY_VAL] ❌ Lỗi: {e}")
-            await asyncio.sleep(300) # Ngủ 5p tránh lỗi lặp
+    log.info("[DIGEST] 🌅 07:00! Bắt đầu Job tạo bản tin...")
     
-async def daily_user_digest_loop():
-    """
-    [WORKER] Tính toán Digest sáng (AI + Data) và đẩy sang Gateway.
-    """
     vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Digest Loop (07:00)...")
+    now_local = datetime.datetime.now(vn_tz)
 
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
+    try:
+        # 2. Thu thập dữ liệu (Song song)
+        # Lưu ý: Nightly Loop (02:00) đã tính toán Screener và lưu Redis rồi.
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        since_utc = now_utc - datetime.timedelta(hours=24)
 
-        if not get_bot_active():
-            log.info(f"[{INSTANCE_ID}] Bot đang OFF (DB). Alert Loop ngủ 60s.")
-            await asyncio.sleep(60) # Ngủ lâu hơn để đỡ spam DB
-            continue
+        (
+            bctc_rows, 
+            report_rows, 
+            macro_rows, 
+            spec_rows,
+            all_watch, 
+            pro_chat_ids, 
+            top_value_stocks
+        ) = await asyncio.gather(
+            asyncio.to_thread(get_recent_bctc_notified, since_utc),
+            asyncio.to_thread(get_recent_analysis_reports, since_utc),
+            asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
+            asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
+            asyncio.to_thread(get_all_watch),
+            asyncio.to_thread(get_all_pro_chat_ids),
+            get_top_mean_reversion_stocks(limit=5)
+        )
 
-        # 1. Ngủ tới 07:00 sáng
-        target = get_next_7am(now, vn_tz)
-        wait_sec = (target - now).total_seconds()
+        # 3. Xử lý AI Tin tức
+        all_news = []
+        for r in macro_rows: all_news.append({"title": r[0], "link": r[1], "source": "Vĩ mô"})
+        for r in spec_rows: all_news.append({"title": r[0], "link": r[1], "source": "DN"})
         
-        # Log nhẹ để biết bao lâu nữa chạy
-        if wait_sec > 60:
-            log.info(f"[DIGEST] Ngủ {wait_sec/3600:.1f}h tới {target.strftime('%H:%M %d/%m')}")
+        ai_text = "_Không có tin nổi bật._"
+        ai_data = None
         
-        await sleep_until(target, vn_tz)
+        if all_news:
+            # Giới hạn tin đưa vào AI để tránh quá tải token (nếu cần)
+            ai_data = await summarize_daily_news_with_ai(all_news[:90]) 
+            if ai_data:
+                lines = []
+                if ai_data.get('headline'):
+                    lines.append("⚡ *TIÊU ĐIỂM*")
+                    for i in ai_data['headline']: lines.append(f"• {i['text']}")
+                if ai_data.get('comment'):
+                    lines.append(f"\n🧠 *AI:* {ai_data['comment']}")
+                ai_text = "\n".join(lines)
 
-        if not get_bot_active():
-            await asyncio.sleep(60); continue
+        # 4. Chuẩn bị dữ liệu Mapping
+        bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
+        
+        # Group Reports theo mã
+        reports_by_sym = {}
+        for (s, title, link, pub, created) in report_rows: # Lưu ý unpack đúng số lượng cột từ DB trả về
+            reports_by_sym.setdefault(str(s).upper(), []).append((title, link, pub))
+        
+        # Map User -> Watchlist
+        watch_to_chats = {}
+        for chat_key, user_block in all_watch.items():
+            try: 
+                chat_id = int(chat_key)
+            except: 
+                continue
+            for sym in user_block.get("list", []) or []:
+                watch_to_chats.setdefault(str(sym).upper().strip(), []).append(chat_id)
 
-        log.info("[DIGEST] 🌅 07:00! Bắt đầu tạo bản tin...")
+        # 5. Khởi tạo Payload cho từng User
+        digest_payloads = {}
+        
+        def _get_payload(cid):
+            if cid not in digest_payloads:
+                digest_payloads[cid] = {
+                    "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
+                    "ai_news": ai_data, 
+                    "value_stocks": [], 
+                    "bctc": [], 
+                    "reports": []
+                }
+            return digest_payloads[cid]
 
-        try:
-            # 2. Thu thập dữ liệu (Song song)
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
-            since_utc = now_utc - datetime.timedelta(hours=24)
-
-            (
-                bctc_rows, report_rows, macro_rows, spec_rows,
-                all_watch, pro_chat_ids, top_value_stocks
-            ) = await asyncio.gather(
-                asyncio.to_thread(get_recent_bctc_notified, since_utc),
-                asyncio.to_thread(get_recent_analysis_reports, since_utc),
-                asyncio.to_thread(get_recent_news_seen, "MACRO", since_utc),
-                asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
-                asyncio.to_thread(get_all_watch),
-                asyncio.to_thread(get_all_pro_chat_ids),
-                get_top_mean_reversion_stocks(limit=5)
-            )
-
-            # 3. Xử lý AI Tin tức
-            all_news = []
-            for r in macro_rows: all_news.append({"title": r[0], "link": r[1], "source": "Vĩ mô"})
-            for r in spec_rows: all_news.append({"title": r[0], "link": r[1], "source": "DN"})
-            
-            ai_text = "_Không có tin nổi bật._"
-            ai_data = None
-            
-            if all_news:
-                ai_data = await summarize_daily_news_with_ai(all_news) # Hàm này bạn đã copy sang
-                if ai_data:
-                    lines = []
-                    if ai_data.get('headline'):
-                        lines.append("⚡ *TIÊU ĐIỂM*")
-                        for i in ai_data['headline']: lines.append(f"• {i['text']}")
-                    if ai_data.get('comment'):
-                        lines.append(f"\n🧠 *AI:* {ai_data['comment']}")
-                    ai_text = "\n".join(lines)
-
-            # 4. Tạo Payload cho từng User
-            # (Logic mapping dữ liệu vào payload giữ nguyên như cũ)
-            # ... [Đoạn code map dữ liệu bctc, reports vào digest_payloads] ...
-            # Để ngắn gọn, mình giả định bạn copy logic map từ file cũ vào đây.
-            # Nếu cần mình sẽ viết chi tiết phần map này.
-            
-            # Giả sử đã có digest_payloads = {chat_id: {...data...}}
-            
-            # --- ĐOẠN LOGIC MAP DỮ LIỆU (Rút gọn để bạn copy vào) ---
-            digest_payloads = {}
-            watch_to_chats = {}
-            for ck, blk in all_watch.items():
-                try: cid = int(ck); digest_payloads[cid] = {"is_pro": (cid in pro_chat_ids or cid == ADMIN_ID), "ai_news": ai_data, "value_stocks": [], "bctc": [], "reports": []}
+        # Đảm bảo mọi user có watchlist đều nhận được tin (dù chỉ là tin AI)
+        if all_watch:
+            for chat_key in all_watch.keys():
+                try:
+                    _get_payload(int(chat_key))
                 except: continue
-                for s in blk.get("list", []): watch_to_chats.setdefault(str(s).upper(), []).append(cid)
 
-            if top_value_stocks:
-                for cid, pl in digest_payloads.items():
-                    if pl["is_pro"]: pl["value_stocks"] = top_value_stocks
+        # 6. Fill dữ liệu chi tiết vào Payload
+        
+        # A. Value Stocks (Chỉ cho Pro)
+        if top_value_stocks:
+            for cid in digest_payloads.keys():
+                pl = digest_payloads[cid]
+                if pl["is_pro"]: 
+                    pl["value_stocks"] = top_value_stocks
 
-            for sym, (y, q, t) in {str(s).upper(): (y,q,t) for s,y,q,t in bctc_rows}.items():
+        # B. BCTC
+        if bctc_rows:
+            for sym, (y, q, t) in bctc_by_sym.items():
                 t_str = t.astimezone(vn_tz).strftime("%H:%M %d/%m")
                 for cid in watch_to_chats.get(sym, []):
-                    pl = digest_payloads[cid]
-                    if pl["is_pro"] or not any(x['symbol']==sym for x in pl['bctc']):
-                        pl["bctc"].append({"symbol": sym, "year": y, "quarter": q, "time": t_str, "is_locked": not pl["is_pro"]})
-            
-            # (Tương tự cho Reports - Copy từ file cũ)
-            # --------------------------------------------------------
+                    pl = _get_payload(cid)
+                    is_locked = not pl["is_pro"]
+                    # Tránh add trùng
+                    if not any(x['symbol'] == sym for x in pl["bctc"]):
+                        pl["bctc"].append({
+                            "symbol": sym, "year": y, "quarter": q, 
+                            "time": t_str, "is_locked": is_locked
+                        })
 
-            # 5. BẮN SANG REDIS
-            count = 0
-            for chat_id, data in digest_payloads.items():
-                # Lưu Web App Data vào Redis (chung Redis connection)
+        # C. Analysis Reports (ĐÃ BỔ SUNG PHẦN THIẾU)
+        if report_rows:
+            for sym, r_list in reports_by_sym.items():
+                for cid in watch_to_chats.get(sym, []):
+                    pl = _get_payload(cid)
+                    
+                    # Lấy tin mới nhất để hiển thị thời gian nếu bị lock
+                    last_pub = r_list[0][2]
+                    t_str = last_pub.astimezone(vn_tz).strftime("%H:%M %d/%m") if last_pub else ""
+                    
+                    if pl["is_pro"]:
+                        # Pro: Xem hết các báo cáo
+                        for (title, link, pub) in r_list:
+                            ts = pub.astimezone(vn_tz).strftime("%H:%M %d/%m") if pub else ""
+                            # Tránh trùng link
+                            if not any(x['link'] == link for x in pl["reports"]):
+                                pl["reports"].append({
+                                    "symbol": sym, "title": title, "link": link, 
+                                    "time": ts, "is_locked": False
+                                })
+                    else:
+                        # Free: Chỉ hiện 1 dòng bị lock
+                        if not any(x['symbol'] == sym for x in pl["reports"]):
+                            pl["reports"].append({
+                                "symbol": sym, "title": "Báo cáo phân tích (Pro)", 
+                                "link": "#", "time": t_str, "is_locked": True
+                            })
+
+        # 7. Gửi tin nhắn (Push Redis)
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        count = 0
+        
+        for chat_id, data in digest_payloads.items():
+            try:
                 digest_id = uuid.uuid4().hex
+                
+                # Lưu Web App Data vào Redis (TTL 24h)
                 r_client.set(f"digest_web:{digest_id}", json.dumps(data), ex=86400)
                 
                 web_url = f"{BASE_URL}/digest/{digest_id}"
                 
-                # Tạo nút bấm
                 kb = {
                     "inline_keyboard": [[
                         {"text": "📰 Xem Chi Tiết (Web App) 🚀", "web_app": {"url": web_url}}
@@ -1338,39 +1326,36 @@ async def daily_user_digest_loop():
                 }
                 
                 msg_text = (
-                    f"🌅 *BẢN TIN SÁNG {now.strftime('%d/%m')}* 🤖\n\n"
+                    f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
                     f"{ai_text}\n\n"
-                    f"👉 *Nhấn nút dưới để xem chi tiết danh mục!*"
+                    f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
                 )
 
-                # GỬI VỚI CỜ HIỆU "DIGEST"
                 push_telegram_msg(
                     chat_id=chat_id,
                     text=msg_text,
                     reply_markup=kb,
-                    msg_type="DIGEST" # <--- Cờ hiệu quan trọng
+                    msg_type="DIGEST" 
                 )
                 count += 1
-            
-            log.info(f"[DIGEST] Đã đẩy {count} bản tin sang Gateway.")
+                
+                # Rate limit nhẹ khi push redis (để Gateway không bị ngộp)
+                if count % 20 == 0:
+                    await asyncio.sleep(0.5)
 
-        except Exception as e:
-            log.error(f"[DIGEST] Lỗi: {e}")
-            await asyncio.sleep(60)
+            except Exception as e:
+                log.warning(f"[DIGEST] Lỗi tạo msg cho {chat_id}: {e}")
+        
+        log.info(f"[DIGEST] ✅ Đã đẩy {count} bản tin sang Gateway.")
+
+    except Exception as e:
+        log.error(f"[DIGEST] ❌ Lỗi Job: {e}")
 
 # ==============================
 # BÁO CÁO TÀI CHÍNH (BCTC) LOOP
 # ==============================
 
 BCTC_MONTHS = [1, 4, 5, 10] # Tháng có thể ra BCTC
-
-# Ngày bắt đầu check trong từng tháng (có thể chỉnh)
-BCTC_START_DAY_BY_MONTH = {
-    1: 1,   # Tháng 1 -> BCTC Quý 4 năm trước
-    4: 1,   # Tháng 4 -> BCTC Quý 1
-    5: 1,   # Tháng 5 -> BCTC Quý 2
-    10: 1,  # Tháng 10 -> BCTC Quý 3
-}
 
 
 def get_bctc_period_for_date(dt: datetime.datetime) -> tuple[int, int] | None:
@@ -1393,445 +1378,212 @@ def get_bctc_period_for_date(dt: datetime.datetime) -> tuple[int, int] | None:
         return y, 3
     return None
 
-
-def get_next_bctc_period_2am(now: datetime.datetime, vn_tz) -> datetime.datetime:
+async def job_scan_bctc():
     """
-    Tính mốc 02:00 sáng đầu kỳ quý sau (tháng BCTC kế tiếp).
-    Dùng BCTC_START_DAY_BY_MONTH làm ngày bắt đầu.
+    [JOB APSCHEDULER] Quét BCTC mới từ Vnstock và đánh dấu vào DB.
+    Chạy định kỳ vào các tháng cao điểm (1, 4, 5, 10).
     """
-    months = BCTC_MONTHS
-    year = now.year
+    log.info("[BCTC] 🔍 Bắt đầu Job quét Báo cáo tài chính...")
+    
+    if not get_bot_active():
+        return
 
-    # Tìm tháng BCTC tiếp theo
-    for _ in range(3):  # tối đa nhảy 2 năm là dư
-        for m in months:
-            start_day = BCTC_START_DAY_BY_MONTH.get(m, 1)
-            target_naive = datetime.datetime(year, m, start_day, 2, 0, 0)
-            target = vn_tz.localize(target_naive)
-            if target > now:
-                return target
-        year += 1  # nếu chưa tìm thấy trong năm hiện tại thì sang năm sau
-
-    # fallback: nếu có gì sai sai thì cho ngủ 1 ngày
-    return now + datetime.timedelta(days=1)
-
-
-async def sleep_until(dt_target: datetime.datetime, vn_tz):
-    """
-    Ngủ đến thời điểm dt_target (local VN).
-    Cắt nhỏ nếu khoảng cách quá dài để tránh sleep quá lâu 1 lần.
-    """
-    while True:
+    try:
+        vn_tz = pytz.timezone(TIMEZONE)
         now = datetime.datetime.now(vn_tz)
-        seconds = (dt_target - now).total_seconds()
-        if seconds <= 0:
-            break
-        # ngủ tối đa 1 giờ mỗi lần cho an toàn
-        await asyncio.sleep(min(seconds, 3600))
-
-async def financial_Statements_notice_loop():
-    """
-    (ĐÃ SỬA) Quét BCTC và chỉ thông báo cho user Pro + Admin.
-    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN 8:00)
-    """
-
-    vn_tz = pytz.timezone(TIMEZONE)
-
-    while True:
-
-        # ... (Toàn bộ logic kiểm tra BOT_ACTIVE, tính toán kỳ BCTC,
-        #      ngủ đến 02:00 sáng giữ nguyên) ...
         
-        now = datetime.datetime.now(pytz.timezone(TIMEZONE))
-        period = get_bctc_period_for_date(now)
-        period_label = f"Quý {period[1]}/{period[0]}" if period else "N/A"
-        log.info(
-            f"[{INSTANCE_ID}][BCTC] Loop BCTC đang chạy – now = {now.strftime('%Y-%m-%d %H:%M:%S')}, "
-            f"period = {period_label}"
-        )
-
-        if not get_bot_active():
-            await asyncio.sleep(60)
-            continue
-
-        now = datetime.datetime.now(vn_tz)
-
-        if now.month not in BCTC_MONTHS:
-            target = get_next_bctc_period_2am(now, vn_tz)
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Không phải tháng BCTC (tháng {now.month}), "
-                f"ngủ tới {target}."
-            )
-            await sleep_until(target, vn_tz)
-            continue
-
+        # 1. Xác định Kỳ Báo Cáo (Quý/Năm) dựa trên ngày hiện tại
         period = get_bctc_period_for_date(now)
         if not period:
-            log.warning(f"[{INSTANCE_ID}][BCTC] Không map được kỳ BCTC, sleep 1 ngày.")
-            await asyncio.sleep(24 * 3600)
-            continue
-
+            log.warning(f"[BCTC] Không xác định được kỳ BCTC cho ngày {now.date()}. Bỏ qua.")
+            return
+            
         year, quarter = period
         period_label = f"Quý {quarter}/{year}"
-        month = now.month
-        start_day = BCTC_START_DAY_BY_MONTH.get(month, 1)
+        log.info(f"[BCTC] Đang quét dữ liệu cho: {period_label}")
 
-        first_2am_this_month = vn_tz.localize(
-            datetime.datetime(now.year, month, start_day, 2, 0, 0)
-        )
-        if now < first_2am_this_month:
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Tháng {month} nhưng mới ngày {now.day}, "
-                f"ngủ tới {first_2am_this_month} để bắt đầu crawl BCTC {period_label}."
-            )
-            await sleep_until(first_2am_this_month, vn_tz)
-            continue
-
-        today = now.date()
-        two_am_today = vn_tz.localize(
-            datetime.datetime(today.year, today.month, today.day, 2, 0, 0)
-        )
-
-        # ❗️ SỬA: XÓA BIẾN eight_am_today VÌ KHÔNG CẦN NỮA
-        # eight_am_today = vn_tz.localize(
-        #     datetime.datetime(today.year, today.month, today.day, 8, 0, 0)
-        # )
-
-        now = datetime.datetime.now(vn_tz)
-        if now < two_am_today:
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Hôm nay {today} chưa tới 02:00, ngủ tới {two_am_today}."
-            )
-            await sleep_until(two_am_today, vn_tz)
-
-        # 1.1️⃣ 02:00 -> CRAWL BCTC (Giữ nguyên logic crawl)
-        log.info(f"[{INSTANCE_ID}][BCTC] 02:00 – bắt đầu crawl BCTC {period_label} cho hôm nay.")
-
-        try:
-            all_watch = await asyncio.to_thread(get_all_watch)
-            pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][BCTC] Lỗi get_all_watch: {e}")
-            tomorrow = today + datetime.timedelta(days=1)
-            target = vn_tz.localize(
-                datetime.datetime(tomorrow.year, tomorrow.month, tomorrow.day, 2, 0, 0)
-            )
-            await sleep_until(target, vn_tz)
-            continue
-
-        symbol_set: set[str] = set()
+        # 2. Lấy danh sách mã cần quét (Chỉ quét cho Pro User & Admin để tiết kiệm resource)
+        all_watch = await asyncio.to_thread(get_all_watch)
+        pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
+        
+        symbol_set = set()
         for chat_key, info in all_watch.items():
             try:
                 chat_id = int(chat_key)
-                if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
-                    continue
-            except Exception:
-                continue
+                # Chỉ lấy watchlist của Pro hoặc Admin
+                if chat_id in pro_chat_ids or chat_id == ADMIN_ID:
+                    syms = info.get("list", [])
+                    for s in syms:
+                        if s: symbol_set.add(str(s).upper().strip())
+            except: continue
 
-            syms = info.get("list") if isinstance(info, dict) else info
-            if not syms:
-                continue
-            for sym in syms:
-                s = str(sym).upper().strip()
-                if s:
-                    symbol_set.add(s)
+        if not symbol_set:
+            log.info("[BCTC] Không có mã nào trong watchlist của Pro User.")
+            return
 
-        pending_after = 0
+        # 3. Duyệt từng mã
+        count_new = 0
         for sym in sorted(symbol_set):
-            try:
-                already = await asyncio.to_thread(
-                    has_bctc_notified, sym, year, quarter
-                )
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi has_bctc_notified({sym}): {e}"
-                )
-                continue
-            if already:
-                continue
+            # Check Active giữa chừng
+            if not get_bot_active(): break
 
             try:
-                available = await asyncio.to_thread(
-                    check_bctc_available, sym, year, quarter
-                )
-            except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi check_bctc_available({sym}): {e}"
-                )
-                pending_after += 1
-                continue
-            if not available:
-                pending_after += 1
-                continue
+                # Check DB: Đã thông báo chưa?
+                already = await asyncio.to_thread(has_bctc_notified, sym, year, quarter)
+                if already:
+                    continue # Đã có rồi thì bỏ qua nhanh
 
-            try:
-                # Chỉ đánh dấu, KHÔNG add vào queue gửi 8:00 nữa
-                await asyncio.to_thread(mark_bctc_notified, sym, year, quarter)
+                # Check API: Có BCTC trên mạng chưa?
+                # (Hàm check_bctc_available đã có sẵn trong worker.py, chạy trong thread)
+                available = await asyncio.to_thread(check_bctc_available, sym, year, quarter)
                 
-                # ❗️ SỬA: XÓA DÒNG NÀY
-                # await asyncio.to_thread(add_bctc_queue, sym, year, quarter, today)
+                if available:
+                    # Đánh dấu vào DB (để Digest sáng mai sẽ lấy ra gửi)
+                    await asyncio.to_thread(mark_bctc_notified, sym, year, quarter)
+                    count_new += 1
+                    log.info(f"[BCTC] 🆕 Phát hiện BCTC mới: {sym} ({period_label})")
                 
+                # Rate Limit nhẹ
+                await asyncio.sleep(0.5)
+
             except Exception as e:
-                log.warning(
-                    f"[{INSTANCE_ID}][BCTC] Lỗi mark_bctc_notified({sym}, Q{quarter}/{year}): {e}"
-                )
+                log.warning(f"[BCTC] Lỗi check {sym}: {e}")
 
-            await asyncio.sleep(0.2)
+        log.info(f"[BCTC] ✅ Hoàn tất quét. Phát hiện {count_new} báo cáo mới.")
 
-        still_pending = pending_after > 0
-        log.info(
-            f"[{INSTANCE_ID}][BCTC] Crawl xong BCTC (chỉ cho Pro user) {period_label} hôm nay. "
-            f"still_pending = {still_pending}."
+    except Exception as e:
+        log.error(f"[BCTC] ❌ Lỗi Job: {e}")
+
+#-------------------------------------------
+
+async def job_scan_analysis_reports():
+    """
+    [JOB APSCHEDULER] Quét báo cáo phân tích (Chạy lúc 07:00).
+    """
+    log.info("[REPORT_SCAN] 📑 Bắt đầu job quét báo cáo phân tích...")
+    
+    if not get_bot_active():
+        return
+
+    try:
+        # 1. Lấy danh sách mã quan tâm (Của TẤT CẢ User - Đã gỡ Paywall theo logic cũ)
+        all_watch = await asyncio.to_thread(get_all_watch)
+        
+        all_symbol_set = set()
+        for user_block in all_watch.values():
+            watch_list = user_block.get("list", []) or []
+            for sym in watch_list:
+                s = str(sym).upper().strip()
+                if s and len(s) == 3:
+                    all_symbol_set.add(s)
+
+        if not all_symbol_set:
+            log.info("[REPORT_SCAN] Không có mã nào trong watchlist. Kết thúc.")
+            return
+
+        log.info(f"[REPORT_SCAN] Đang quét báo cáo cho {len(all_symbol_set)} mã...")
+        
+        count_new = 0
+        
+        # 2. Duyệt từng mã
+        for symbol in sorted(all_symbol_set):
+            # Kiểm tra Bot Active giữa chừng (vì loop này chạy lâu)
+            if not get_bot_active():
+                log.warning("[REPORT_SCAN] Bot TẮT giữa chừng. Dừng job.")
+                break
+
+            try:
+                # Fetch dữ liệu từ Vnstock (chạy trong thread)
+                company = Company(symbol=symbol)
+                df = await asyncio.to_thread(company.reports)
+                
+                if df is None or df.empty:
+                    await asyncio.sleep(2) # Rate limit nhẹ
+                    continue
+
+                # 3. Kiểm tra và Lưu
+                for row in df.itertuples():
+                    link = getattr(row, "link", "")
+                    date_str = getattr(row, "date", "")
+                    title = getattr(row, "name", "")
+                    
+                    if not link or not date_str: continue
+
+                    # Check Redis xem đã lưu chưa
+                    is_seen = await asyncio.to_thread(has_report_seen, link, date_str)
+                    
+                    if not is_seen:
+                        await asyncio.to_thread(
+                            mark_report_seen, symbol, link, title, date_str
+                        )
+                        count_new += 1
+                        # log.info(f"[REPORT_SCAN] 🆕 Tìm thấy: {symbol} - {title}")
+
+            except Exception as e:
+                log.warning(f"[REPORT_SCAN] Lỗi mã {symbol}: {e}")
+
+            # Rate Limit quan trọng: Nghỉ 3s giữa các mã để tránh bị chặn IP
+            await asyncio.sleep(3)
+
+        log.info(f"[REPORT_SCAN] ✅ Hoàn tất. Đã lưu {count_new} báo cáo mới.")
+
+    except Exception as e:
+        log.error(f"[REPORT_SCAN] ❌ Lỗi Job: {e}")
+
+#-------------------------------------------
+
+async def job_nightly_valuation():
+    """
+    [JOB APSCHEDULER] Tính toán định giá Mean Reversion (Chạy lúc 02:00).
+    """
+    log.info("[NIGHTLY] 🌙 Job tính toán định giá lịch sử bắt đầu...")
+
+    if not get_bot_active():
+        log.info("[NIGHTLY] Bot đang TẮT. Bỏ qua job.")
+        return
+
+    try:
+        # Gọi task tính toán nặng (đã có sẵn trong worker.py)
+        # Task này đã bao gồm logic try/except và rate limit bên trong
+        await calculate_historical_valuation_task()
+        
+        log.info("[NIGHTLY] ✅ Job tính toán hoàn tất.")
+        
+    except Exception as e:
+        log.error(f"[NIGHTLY] ❌ Lỗi Job: {e}")
+
+#-------------------------------------------
+async def job_restore_reminder():
+    """
+    [JOB APSCHEDULER] Nhắc Admin backup dữ liệu core vào 08:00 sáng ngày 7 hàng tháng.
+    """
+    log.info("[REMINDER] ⏰ Bắt đầu job nhắc nhở backup...")
+
+    if not get_bot_active():
+        return
+
+    if not ADMIN_ID:
+        log.warning("[REMINDER] Chưa cấu hình ADMIN_ID, không thể gửi nhắc nhở.")
+        return
+
+    try:
+        vn_tz = pytz.timezone(TIMEZONE)
+        now = datetime.datetime.now(vn_tz)
+
+        msg = (
+            f"⏰ **NHẮC NHỞ BẢO TRÌ ĐỊNH KỲ (Tháng {now.month})**\n\n"
+            f"Hôm nay là ngày 7. Đã đến lúc sao lưu dữ liệu Core.\n"
+            f"👉 Vui lòng gõ lệnh `/backup_core` để tải bản backup về.\n"
+            f"👉 Sau đó kiểm tra và chạy `/restore_core` nếu cần chuyển Database."
         )
 
-        # ❗️ SỬA: XÓA TOÀN BỘ KHỐI LOGIC GỬI TIN LÚC 8:00
-        # (Xóa từ "Đợi tới 08:00" đến hết "clear_bctc_queue_entry")
+        # Bắn tin nhắc nhở qua Redis Gateway
+        push_telegram_msg(ADMIN_ID, msg, msg_type="SYSTEM_MSG")
         
-        # 3️⃣ Quyết định ngủ tới khi nào (Giữ nguyên)
-        now = datetime.datetime.now(vn_tz)
-        if still_pending:
-            tomorrow = today + datetime.timedelta(days=1)
-            target = vn_tz.localize(
-                datetime.datetime(
-                    tomorrow.year, tomorrow.month, tomorrow.day, 2, 0, 0
-                )
-            )
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Vẫn còn mã (của Pro) chưa có BCTC {period_label}, "
-                f"ngủ tới {target}."
-            )
-            await sleep_until(target, vn_tz)
-        else:
-            target = get_next_bctc_period_2am(now, vn_tz)
-            log.info(
-                f"[{INSTANCE_ID}][BCTC] Đã hoàn thành BCTC {period_label} cho tất cả mã (của Pro), "
-                f"ngủ tới {target} (kỳ quý sau)."
-            )
-            await sleep_until(target, vn_tz)
+        log.info(f"[REMINDER] ✅ Đã gửi nhắc nhở bảo trì tháng {now.month} cho Admin.")
 
-#-------------------------------------------
-def get_next_7am(now: datetime.datetime, vn_tz) -> datetime.datetime:
-    """
-    Tính mốc 07:00 sáng tiếp theo (cho vòng lặp quét báo cáo).
-    - Nếu hôm nay < 07:00 -> 07:00 hôm nay.
-    - Nếu hôm nay >= 07:00 -> 07:00 ngày mai.
-    """
-    # 1. Xác định 07:00 hôm nay
-    target_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
-    
-    # 2. Nếu đã qua 07:00 hôm nay, mục tiêu là 07:00 ngày mai
-    if now >= target_today:
-        target_tomorrow = target_today + datetime.timedelta(days=1)
-        return target_tomorrow
-    
-    # 3. Nếu chưa tới 07:00 hôm nay, mục tiêu là hôm nay
-    else:
-        return target_today
-
-async def analysis_report_loop():
-    """
-    (TÍNH NĂNG MỚI - ĐÃ SỬA)
-    Quét báo cáo phân tích 1 LẦN/NGÀY lúc 07:00 SÁNG.
-    (SỬA LẦN 2: CHỈ THU THẬP, KHÔNG GỬI TIN)
-    (SỬA LẦN 3: GỠ PAYWALL - THU THẬP CHO TẤT CẢ USER)
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    warmed_up = False 
-
-    while True:
-        loop_id += 1
-        loop_label = f"[{INSTANCE_ID}][REPORT_SCAN {loop_id}]"
-        now = datetime.datetime.now(vn_tz)
-
-        if not get_bot_active():
-            log.info(f"{loop_label} Bot đang TẮT, sleep 60s.")
-            await asyncio.sleep(60)
-            continue
-            
-        try:
-            # ... (Logic chờ 7:00 sáng giữ nguyên) ...
-            target_7am = get_next_7am(now, vn_tz)
-            log.info(f"{loop_label} Đang chờ cho đến {target_7am.strftime('%Y-%m-%d %H:%M')}.")
-            await sleep_until(target_7am, vn_tz)
-            
-            if not get_bot_active():
-                log.info(f"{loop_label} Thức dậy lúc 07:00 nhưng bot TẮT, bỏ qua.")
-                continue
-            
-            log.info(f"{loop_label} 07:00! Bắt đầu quét báo cáo...")
-
-            # 1. GATHER
-            # ❗️ SỬA: GỠ BỎ PAYWALL (1)
-            # pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
-            all_watch = await asyncio.to_thread(get_all_watch)
-
-            # 2. MAP
-            # ❗️ SỬA: Đổi tên biến (không còn là "pro" nữa)
-            all_symbol_set: set[str] = set()
-
-            for chat_key, user_block in all_watch.items():
-                try:
-                    chat_id = int(chat_key)
-                except Exception:
-                    continue
-                
-                # ❗️ SỬA: GỠ BỎ PAYWALL (2)
-                # (Không cần check if chat_id == ADMIN_ID or chat_id in pro_chat_ids)
-                watch_list = user_block.get("list", []) or []
-                for sym in watch_list:
-                    s = str(sym).upper().strip()
-                    if s and len(s) == 3:
-                        all_symbol_set.add(s)
-
-            # ❗️ SỬA: Cập nhật log
-            if not all_symbol_set:
-                log.info(f"{loop_label} Không có mã nào trong watchlist, bỏ qua lần quét này.")
-                continue 
-
-            log.info(f"{loop_label} Bắt đầu quét báo cáo cho {len(all_symbol_set)} mã (tất cả user).")
-            
-            # 3. FETCH & PROCESS
-            # ❗️ SỬA: Lặp qua all_symbol_set
-            for symbol in sorted(all_symbol_set):
-                if not get_bot_active(): 
-                    log.info(f"{loop_label} Bot TẮT giữa chừng, dừng quét.")
-                    break
-                
-                # ... (Logic bên trong (company.reports, mark_report_seen) giữ nguyên) ...
-                try:
-                    company = Company(symbol=symbol)
-                    df = await asyncio.to_thread(company.reports)
-                    
-                    if df is None or df.empty:
-                        log.info(f"{loop_label} Không có báo cáo cho {symbol}.")
-                        await asyncio.sleep(3) 
-                        continue
-                    
-                    log.info(f"{loop_label} Tìm thấy {len(df)} báo cáo cho {symbol}. Đang lọc...")
-
-                    # 4. CHECK & MARK
-                    for row in df.itertuples():
-                        title = getattr(row, "name", "")
-                        link = getattr(row, "link", "")
-                        date_str = getattr(row, "date", "")
-                        
-                        if not link or not date_str:
-                            continue 
-
-                        is_seen = await asyncio.to_thread(has_report_seen, link, date_str)
-                        
-                        if not is_seen:
-                            await asyncio.to_thread(
-                                mark_report_seen, symbol, link, title, date_str
-                            )
-                            
-                            if not warmed_up:
-                                log.info(f"{loop_label} (Warm-up) Đã đánh dấu: {symbol} - {title}")
-                            else:
-                                log.info(f"{loop_label} (MỚI) Phát hiện: {symbol} - {title}")
-                            
-                            await asyncio.sleep(0.2) 
-
-                except Exception as e:
-                    log.warning(f"{loop_label} Lỗi khi xử lý mã {symbol}: {e}")
-
-                await asyncio.sleep(3) 
-            
-            warmed_up = True
-            
-            log.info(f"{loop_label} Đã quét xong báo cáo phân tích (chỉ thu thập).")
-
-        except Exception as e:
-            log.error(f"{loop_label} Lỗi nghiêm trọng: {e}")
-            await asyncio.sleep(600)
-        
-        log.info(f"{loop_label} Hoàn tất lần quét 07:00 (chỉ thu thập).")
-
-#-------------------------------------------
-
-async def nightly_valuation_loop():
-    """
-    Chạy tính toán định giá Mean Reversion vào 02:00 sáng mỗi ngày.
-    Lưu kết quả vào Redis để 07:00 sáng Digest chỉ việc lấy ra dùng.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-
-    log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Khởi động loop tính toán đêm (02:00).")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. Tính thời gian ngủ tới 02:00 sáng hôm sau (hoặc hôm nay nếu chưa tới)
-        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target += datetime.timedelta(days=1)
-        
-        wait_sec = (target - now).total_seconds()
-        log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL {loop_id}] Ngủ {wait_sec/3600:.1f}h tới {target.strftime('%Y-%m-%d %H:%M')} để tính định giá.")
-        
-        await asyncio.sleep(wait_sec)
-
-        # 2. Thức dậy & Kiểm tra
-        if not get_bot_active():
-            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] Bot đang TẮT, bỏ qua lần chạy này.")
-            await asyncio.sleep(60)
-            continue
-
-        # 3. Chạy tính toán (Task nặng)
-        try:
-            log.info(f"[{INSTANCE_ID}][NIGHTLY_VAL] 🌙 02:00! Bắt đầu tính toán Historical Valuation...")
-            # Gọi trực tiếp và chờ cho xong (vì lúc này đêm khuya, không sợ block ai)
-            await calculate_historical_valuation_task()
-            
-        except Exception as e:
-            log.error(f"[{INSTANCE_ID}][NIGHTLY_VAL] ❌ Lỗi: {e}")
-            await asyncio.sleep(300) # Ngủ 5p tránh lỗi lặp
-
-#-------------------------------------------
-async def restore_reminder_loop():
-    """
-    [WORKER] Chỉ nhắc nhở Admin bằng Text.
-    Việc tạo file và gửi file sẽ do Admin chủ động làm bằng lệnh /backup_core.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    last_reminder_month = None
-
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Restore Reminder Loop...")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-        
-        # 1. Ngủ 1 tiếng (Check mỗi giờ)
-        await asyncio.sleep(3600)
-
-        if not get_bot_active():
-            continue
-
-        # 2. Logic kiểm tra ngày 7
-        # Nếu hôm nay là ngày 7 VÀ chưa nhắc trong tháng này
-        current_month = now.strftime("%Y-%m")
-        
-        if now.day == 7 and last_reminder_month != current_month:
-            # Kiểm tra giờ cho lịch sự (ví dụ chỉ nhắc sau 8h sáng)
-            if now.hour >= 8:
-                if ADMIN_ID:
-                    msg = (
-                        f"⏰ **NHẮC NHỞ BẢO TRÌ ĐỊNH KỲ (Tháng {now.month})**\n\n"
-                        f"Hôm nay là ngày 7. Đã đến lúc sao lưu dữ liệu Core.\n"
-                        f"👉 Vui lòng gõ lệnh `/backup_core` để tải bản backup về.\n"
-                        f"👉 Sau đó kiểm tra và chạy `/restore_core` nếu cần chuyển Database."
-                    )
-                    
-                    # Bắn tin nhắc nhở
-                    push_telegram_msg(ADMIN_ID, msg, msg_type="SYSTEM_MSG")
-                    
-                    log.info(f"[REMINDER] Đã nhắc Admin bảo trì tháng {current_month}")
-                    last_reminder_month = current_month
+    except Exception as e:
+        log.error(f"[REMINDER] ❌ Lỗi Job: {e}")
 
 # ==============================
 # BÁO CÁO TÀI CHÍNH (BCTC) Function
@@ -1942,301 +1694,101 @@ def check_bctc_available(symbol: str, target_year: int, target_quarter: int) -> 
 
 
 # ===============================================================
-# HÀM HELPER TÍNH GIỜ QUÉT (Dùng chung cho cả 2 loop tin tức)
+# LOOP TIN CHUYÊN NGÀNH và VĨ MÔ (Sửa đổi: Quét 06:00 & 18:00)
 # ===============================================================
-def get_seconds_until_next_scan(now: datetime.datetime, target_hours: list[int]) -> float:
+
+async def job_scan_news(feed_type: str):
     """
-    Tính số giây từ 'now' đến mốc giờ cố định tiếp theo trong danh sách target_hours.
-    Ví dụ: target_hours=[6, 18] -> Sẽ trả về giây tới 06:00 hoặc 18:00 gần nhất.
+    [JOB APSCHEDULER] Quét tin tức RSS (Chạy lúc 06:00 và 18:00).
+    feed_type: "MACRO" hoặc "SPECIALIZED"
     """
-    candidates = []
-    for h in target_hours:
-        # Tạo mốc giờ h:00:00 hôm nay
-        t = now.replace(hour=h, minute=0, second=0, microsecond=0)
-        # Nếu giờ này đã qua, dời sang ngày mai
-        if t <= now:
-            t += datetime.timedelta(days=1)
-        candidates.append(t)
+    log.info(f"[NEWS] 📰 Bắt đầu job quét tin {feed_type}...")
     
-    # Lấy mốc thời gian gần nhất trong tương lai
-    next_run = min(candidates)
-    return (next_run - now).total_seconds()
+    if not get_bot_active():
+        return
 
-
-# ===============================================================
-# LOOP TIN CHUYÊN NGÀNH (Sửa đổi: Quét 06:00 & 18:00)
-# ===============================================================
-async def news_specialized_loop():
-    """
-    Quét RSS chuyên ngành 2 LẦN/NGÀY (06:00 và 18:00).
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    
-    # 🕒 CẤU HÌNH GIỜ QUÉT (Sáng & Chiều)
-    SCAN_HOURS = [6, 18] 
-
-    all_specialized_urls: list[str] = []
-    for urls in RSS_FEEDS_SPECIALIZED.values():
-        all_specialized_urls.extend(urls)
-
-    log.info(f"[{INSTANCE_ID}][NEWS_SPEC] Đã chuyển sang chế độ quét theo lịch: {SCAN_HOURS}h hàng ngày.")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. TÍNH TOÁN THỜI GIAN NGỦ TỚI PHIÊN TIẾP THEO
-        # Nếu bot vừa khởi động (loop_id=1), ta có thể cho chạy ngay hoặc chờ. 
-        # Ở đây mình chọn logic: Chờ đúng giờ mới chạy để tiết kiệm resource.
-        wait_seconds = get_seconds_until_next_scan(now, SCAN_HOURS)
-        next_run_str = (now + datetime.timedelta(seconds=wait_seconds)).strftime("%H:%M %d/%m")
+    try:
+        # 1. Xác định danh sách URL dựa trên loại tin
+        urls = []
+        if feed_type == "MACRO":
+            urls = RSS_FEEDS_MACRO
+        elif feed_type == "SPECIALIZED":
+            # Gom tất cả URL từ các nhóm ngành vào 1 list duy nhất
+            for group_urls in RSS_FEEDS_SPECIALIZED.values():
+                urls.extend(group_urls)
         
-        log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Ngủ {wait_seconds/3600:.1f}h. Quét tiếp theo lúc: {next_run_str}")
+        if not urls:
+            log.warning(f"[NEWS] Không tìm thấy URL nào cho loại {feed_type}")
+            return
+
+        # 2. Gọi hàm Fetch (Chạy trong thread vì feedparser là sync)
+        # Lưu ý: Fetcher cũ của bạn đã trả về list dict chuẩn rồi
+        entries = await asyncio.to_thread(fetch_rss_entries_for_urls, urls)
         
-        await asyncio.sleep(wait_seconds)
+        # Giới hạn số lượng xử lý để tránh quá tải DB
+        if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
+            entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
 
-        # 2. THỨC DẬY & KIỂM TRA ACTIVE
-        if not get_bot_active():
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Đến giờ quét nhưng Bot đang TẮT.")
-            await asyncio.sleep(60) # Chờ 1 phút rồi check lại schedule
-            continue
+        vn_tz = pytz.timezone(TIMEZONE)
+        scan_now = datetime.datetime.now(vn_tz)
+        new_count = 0
 
-        # 3. THỰC HIỆN QUÉT (Logic cũ giữ nguyên)
-        try:
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] 🟢 Bắt đầu quét tin chuyên ngành...")
+        # 3. Lọc và Lưu
+        for it in entries:
+            link = (it.get("link") or "").strip()
+            if not link: continue
             
-            entries = await asyncio.to_thread(
-                fetch_rss_entries_for_urls, all_specialized_urls
-            )
-            
-            # Giới hạn số lượng để xử lý nhanh
-            if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
-                entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
-
-            new_entries = []
-            scan_now = datetime.datetime.now(vn_tz) # Lấy giờ thực tế lúc quét
-            
-            for it in entries:
-                link = (it.get("link") or "").strip()
-                if not link: continue
-                
-                # Check tươi mới & Check đã xem
-                pub_dt = it.get("published")
-                if not is_fresh_news(pub_dt, scan_now): continue
-                
-                is_seen = await asyncio.to_thread(
-                    has_news_seen,
-                    NEWS_FEED_TYPE_SPECIALIZED,
-                    link,
-                )
-                if not is_seen:
-                    new_entries.append(it)
-            
-            if not new_entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Không có bài mới.")
+            # Check 1: Bài viết có quá cũ không?
+            if not is_fresh_news(it.get("published"), scan_now): 
                 continue
-
-            # Lưu vào DB (Chỉ thu thập)
-            unique_count = 0
-            for it in new_entries:
+            
+            # Check 2: Đã từng lưu vào DB chưa?
+            is_seen = await asyncio.to_thread(has_news_seen, feed_type, link)
+            
+            if not is_seen:
+                # Lưu vào DB (Mark seen)
                 await asyncio.to_thread(
-                    mark_news_seen,
-                    NEWS_FEED_TYPE_SPECIALIZED,
-                    link=it["link"],
-                    guid=None,
-                    title=it["title"],
-                    published=it["published"],
+                    mark_news_seen, 
+                    feed_type, 
+                    link=it["link"], 
+                    guid=None, # RSS thường ít dùng guid chuẩn, dùng link làm key là ổn
+                    title=it["title"], 
+                    published=it["published"]
                 )
-                unique_count += 1
-
-            log.info(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] ✅ Đã lưu {unique_count} tin mới (chờ Digest sáng).")
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NEWS_SPEC {loop_id}] Lỗi tổng quát: {e}")
+                new_count += 1
         
-        # (Sau khi quét xong, vòng lặp quay lại đầu -> tính giờ ngủ tiếp theo)
+        if new_count > 0:
+            log.info(f"[NEWS] ✅ {feed_type}: Đã lưu {new_count} tin mới.")
+        else:
+            log.info(f"[NEWS] {feed_type}: Không có tin mới.")
 
+    except Exception as e:
+        log.error(f"[NEWS] ❌ Lỗi quét {feed_type}: {e}")
 
-# ===============================================================
-# 2. LOOP TIN VĨ MÔ (Sửa đổi: Quét 06:00 & 18:00)
-# ===============================================================
-async def news_macro_loop():
+async def job_maintenance():
     """
-    Quét RSS vĩ mô 2 LẦN/NGÀY (06:00 và 18:00).
+    [JOB APSCHEDULER] Dọn dẹp DB định kỳ (Chạy 1 lần/ngày).
     """
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
+    log.info("[MAINTENANCE] 🧹 Bắt đầu dọn dẹp dữ liệu cũ...")
     
-    # 🕒 CẤU HÌNH GIỜ QUÉT
-    SCAN_HOURS = [6, 18]
-
-    log.info(f"[{INSTANCE_ID}][NEWS_MACRO] Đã chuyển sang chế độ quét theo lịch: {SCAN_HOURS}h hàng ngày.")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # 1. TÍNH TOÁN THỜI GIAN NGỦ
-        wait_seconds = get_seconds_until_next_scan(now, SCAN_HOURS)
-        next_run_str = (now + datetime.timedelta(seconds=wait_seconds)).strftime("%H:%M %d/%m")
-
-        log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Ngủ {wait_seconds/3600:.1f}h. Quét tiếp theo lúc: {next_run_str}")
+    try:
+        # 1. Xóa tin tức đã seen quá cũ (> 180 ngày)
+        deleted_news = await asyncio.to_thread(cleanup_old_news_seen, 180)
         
-        await asyncio.sleep(wait_seconds)
-
-        # 2. THỨC DẬY & KIỂM TRA ACTIVE
-        if not get_bot_active():
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Đến giờ quét nhưng Bot đang TẮT.")
-            await asyncio.sleep(60)
-            continue
-
-        # 3. THỰC HIỆN QUÉT (Logic cũ giữ nguyên)
-        try:
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] 🟢 Bắt đầu quét tin vĩ mô...")
-
-            entries = await asyncio.to_thread(
-                fetch_rss_entries_for_urls, RSS_FEEDS_MACRO
-            )
+        # 2. Xóa đơn hàng treo quá lâu (> 3 ngày)
+        deleted_orders = await asyncio.to_thread(cleanup_old_pending_orders, 3)
+        
+        if deleted_news > 0 or deleted_orders > 0:
+            log.info(f"[MAINTENANCE] ✅ Đã xóa: {deleted_news} news cũ, {deleted_orders} đơn hàng treo.")
+        else:
+            log.info("[MAINTENANCE] Hệ thống sạch sẽ, không có gì để xóa.")
             
-            if len(entries) > NEWS_MAX_RSS_ENTRIES_PER_RUN:
-                entries = entries[:NEWS_MAX_RSS_ENTRIES_PER_RUN]
-
-            new_entries = []
-            scan_now = datetime.datetime.now(vn_tz)
-            
-            for it in entries:
-                link = (it.get("link") or "").strip()
-                if not link: continue
-                
-                pub_dt = it.get("published")
-                if not is_fresh_news(pub_dt, scan_now): continue
-                
-                is_seen = await asyncio.to_thread(
-                    has_news_seen,
-                    NEWS_FEED_TYPE_MACRO,
-                    link,
-                )
-                if not is_seen:
-                    new_entries.append(it)
-            
-            if not new_entries:
-                log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Không có bài mới.")
-                continue
-
-            # Lưu vào DB
-            unique_count = 0
-            for it in new_entries:
-                await asyncio.to_thread(
-                    mark_news_seen,
-                    NEWS_FEED_TYPE_MACRO,
-                    link=it["link"],
-                    guid=None,
-                    title=it["title"],
-                    published=it["published"],
-                )
-                unique_count += 1
-            
-            log.info(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] ✅ Đã lưu {unique_count} tin vĩ mô mới.")
-
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}][NEWS_MACRO {loop_id}] Lỗi tổng quát: {e}")
-
-async def news_cleanup_loop():
-    """
-    Loop dọn dẹp định kỳ mỗi 24h:
-    1. Xoá news_seen cũ (> 180 ngày).
-    2. Xoá đơn hàng PENDING treo (> 3 ngày).
-    """
-    RETENTION_DAYS_NEWS = 180
-    RETENTION_DAYS_ORDERS = 3  # Xóa đơn treo sau 3 ngày
-    INTERVAL_SECONDS = 24 * 60 * 60  # 24 giờ
-
-    while True:
-        try:
-            # 1. Dọn News (Code cũ)
-            deleted_news = await asyncio.to_thread(
-                cleanup_old_news_seen,
-                RETENTION_DAYS_NEWS,
-            )
-            if deleted_news > 0:
-                log.info(f"[MAINTENANCE] Đã xoá {deleted_news} bản ghi news_seen cũ.")
-
-            # 2. 🔥 [MỚI] Dọn đơn hàng PENDING quá hạn
-            deleted_orders = await asyncio.to_thread(
-                cleanup_old_pending_orders,
-                RETENTION_DAYS_ORDERS
-            )
-            if deleted_orders > 0:
-                log.info(f"[MAINTENANCE] 🧹 Đã xóa {deleted_orders} đơn hàng PENDING quá hạn (> {RETENTION_DAYS_ORDERS} ngày).")
-
-        except Exception as e:
-            log.warning(f"[MAINTENANCE] Lỗi khi dọn dẹp DB: {e}")
-
-        await asyncio.sleep(INTERVAL_SECONDS)
+    except Exception as e:
+        log.error(f"[MAINTENANCE] ❌ Lỗi dọn dẹp: {e}")
 
 # ===============================================================
 # SESSION NOTICE LOOP
 # ===============================================================
-# Thời điểm gửi thông báo trước giờ mở/đóng phiên (giờ VN)
-NOTICE_SPECS = [
-    {
-        "label": "MORNING_OPEN",
-        "hour": 9,
-        "minute": 10,  # trước mở phiên sáng 5 phút (09:10)
-        "text": "⏰ Phiên sáng sắp mở lúc 09:15. Bạn tranh thủ xem lại danh mục và các mức giá mục tiêu nhé.",
-    },
-    {
-        "label": "MORNING_CLOSE",
-        "hour": 11,
-        "minute": 25,  # trước đóng phiên sáng 5 phút (11:25)
-        "text": "🔔 Phiên sáng sắp kết thúc lúc 11:30. Bạn cân nhắc các lệnh còn treo nhé.",
-    },
-    {
-        "label": "AFTERNOON_OPEN",
-        "hour": 12,
-        "minute": 55,  # trước mở phiên chiều 5 phút (12:55)
-        "text": "⏰ Phiên chiều sắp mở lúc 13:00. Nhớ kiểm tra lại danh mục và chiến lược giao dịch.",
-    },
-    {
-        "label": "AFTERNOON_CLOSE",
-        "hour": 14,
-        "minute": 40,  # trước đóng phiên chiều 5 phút (14:40)
-        "text": "🔔 Phiên giao dịch chiều sắp kết thúc lúc 14:45... Hứa hẹn mang đến những thông tin hữu ích cho danh mục của bạn 📊",
-    },
-    {
-        "label": "EOD_SUMMARY",
-        "hour": 15,
-        "minute": 00,  # Tổng kết cuối phiên
-        "text": "📊 Tổng kết cuối phiên: StockBot đang gửi báo cáo danh mục của bạn...",
-    },
-]
-
-def get_next_notice_after(now: datetime.datetime):
-    """
-    Tìm mốc thông báo tiếp theo (mở/đóng phiên) sau thời điểm 'now'
-    ở các ngày làm việc kế tiếp (bỏ qua T7, CN).
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    candidates = []
-
-    for offset in range(0, 7):  # tối đa nhìn trước 1 tuần là đủ
-        day = now.date() + datetime.timedelta(days=offset)
-        if day.weekday() > 4:  # 5 = T7, 6 = CN
-            continue
-        for spec in NOTICE_SPECS:
-            dt = vn_tz.localize(
-                datetime.datetime(day.year, day.month, day.day, spec["hour"], spec["minute"])
-            )
-            if dt > now:
-                candidates.append((dt, spec))
-
-    if not candidates:
-        return None, None
-
-    # lấy mốc gần nhất
-    dt, spec = min(candidates, key=lambda x: x[0])
-    return dt, spec
 
 # --- HELPER FORMAT EOD ---
 def fmt_price(p):
@@ -2257,6 +1809,49 @@ def fmt_value(v):
     if v >= 1_000_000_000: return f"{v/1_000_000_000:.0f} Tỷ"
     if v >= 1_000_000: return f"{v/1_000_000:.0f} Tr"
     return "--"
+
+async def job_session_notice(text_msg: str):
+    """
+    [JOB APSCHEDULER] Gửi thông báo phiên (Sáng/Chiều) cho user.
+    """
+    log.info(f"[SESSION] 🔔 Job thông báo phiên: '{text_msg[:15]}...'")
+    
+    if not get_bot_active():
+        return
+
+    try:
+        # Lấy tất cả user (không phân biệt Pro/Free)
+        all_watch = await asyncio.to_thread(get_all_watch)
+        count = 0
+        
+        for chat_key in all_watch.keys():
+            try:
+                chat_id = int(chat_key)
+                # Gửi qua Redis Gateway với loại tin SESSION_NOTICE
+                push_telegram_msg(chat_id, text_msg, msg_type="SESSION_NOTICE")
+                count += 1
+            except: pass
+            
+        log.info(f"[SESSION] Đã đẩy thông báo tới {count} user.")
+
+    except Exception as e:
+        log.error(f"[SESSION] ❌ Lỗi Job: {e}")
+
+async def job_eod_summary():
+    """
+    [JOB APSCHEDULER] Tổng kết cuối phiên (EOD) lúc 15:00.
+    """
+    log.info("[EOD] 📊 Bắt đầu Job EOD Summary...")
+    
+    if not get_bot_active():
+        return
+
+    try:
+        # Gọi hàm worker cũ đã có sẵn logic lấy giá, vẽ chart và gửi tin
+        await send_eod_summary_worker()
+        
+    except Exception as e:
+        log.error(f"[EOD] ❌ Lỗi Job: {e}")
 
 # --- FETCHER RIÊNG CHO EOD (Dùng Quote History 1D) ---
 async def fetch_full_eod_data(symbols):
@@ -2462,57 +2057,6 @@ async def send_eod_summary_worker():
     )
     log.info(f"[{INSTANCE_ID}][EOD] 🧹 Đã gửi lệnh TRIGGER_CLEANUP sang Gateway.")
 
-
-async def session_notice_loop():
-    vn_tz = pytz.timezone(TIMEZONE)
-    loop_id = 0
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Session Notice Loop...")
-
-    while True:
-        loop_id += 1
-        now = datetime.datetime.now(vn_tz)
-
-        # Check Bot Active
-        if not get_bot_active():
-            await asyncio.sleep(60); continue
-
-        next_dt, spec = get_next_notice_after(now) # Hàm helper đã copy sang
-        if not next_dt:
-            await asyncio.sleep(3600); continue
-
-        # Ngủ tới giờ G
-        delay = max((next_dt - now).total_seconds(), 1)
-        log.info(f"[SESSION] Ngủ {delay:.0f}s tới {spec['label']} ({next_dt.strftime('%H:%M')})")
-        await asyncio.sleep(delay)
-
-        if not get_bot_active(): continue
-
-        # XỬ LÝ GỬI TIN
-        try:
-            label = spec.get("label")
-            
-            # Case 1: EOD (Nặng đô)
-            if label == "EOD_SUMMARY":
-                await send_eod_summary_worker()
-            
-            # Case 2: Thông báo thường (Nhẹ nhàng)
-            else:
-                text = spec["text"]
-                all_watch = await asyncio.to_thread(get_all_watch)
-                count = 0
-                for chat_key in all_watch.keys():
-                    try:
-                        chat_id = int(chat_key)
-                        # Bắn tin thường
-                        push_telegram_msg(chat_id, text, msg_type="SESSION_NOTICE")
-                        count += 1
-                    except: pass
-                log.info(f"[SESSION] Đã bắn thông báo '{label}' cho {count} user.")
-
-        except Exception as e:
-            log.error(f"Session Loop Error: {e}")
-            await asyncio.sleep(60)
-
 # =====================================================
 # WEEKLY_REPORT_LOOP
 # =====================================================
@@ -2716,31 +2260,6 @@ async def process_report_for_user(chat_id, symbols, source="on_demand", loading_
         # Bắn tin lỗi về
         push_telegram_msg(chat_id, "⚠️ Lỗi khi tạo báo cáo. Vui lòng thử lại.", msg_type="GENERAL")
 
-def seconds_until_next_weekly_report():
-    """
-    Tính số giây tới 09:00 sáng Chủ Nhật gần nhất (report tuần).
-    - Nếu hôm nay là Chủ Nhật và giờ < 09:00 -> lấy 09:00 hôm nay.
-    - Ngược lại -> 09:00 Chủ Nhật tuần kế tiếp.
-    """
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-
-    # Chủ Nhật = 6 trong weekday()
-    SUNDAY = 6
-    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
-
-    if now.weekday() != SUNDAY or now >= target:
-        # Tìm Chủ Nhật kế tiếp
-        days_ahead = (SUNDAY - now.weekday()) % 7
-        if days_ahead == 0:
-            days_ahead = 7
-        next_date = now.date() + datetime.timedelta(days=days_ahead)
-        target = datetime.datetime(
-            next_date.year, next_date.month, next_date.day, 9, 0, 0, tzinfo=vn_tz
-        )
-
-    return max((target - now).total_seconds(), 0)
-
 async def execute_weekly_batch(requester_id=None):
     """
     [WORKER] Hàm thực thi logic gửi báo cáo tuần cho toàn bộ Pro User.
@@ -2794,42 +2313,40 @@ async def execute_weekly_batch(requester_id=None):
         if requester_id:
             push_telegram_msg(requester_id, f"❌ Lỗi Batch: {e}", msg_type="SYSTEM_MSG")
 
-async def weekly_report_loop():
+async def job_weekly_report():
     """
-    [WORKER] Loop canh giờ Chủ Nhật.
+    [JOB APSCHEDULER] Gửi báo cáo tuần (Weekly Report) vào 09:00 Chủ Nhật.
     """
-    vn_tz = pytz.timezone(TIMEZONE)
-    REDIS_KEY_LAST_RUN = "worker_state:weekly_report_last_run"
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Weekly Scheduler...")
+    log.info("[WEEKLY] 📅 Job Weekly Report được kích hoạt...")
 
-    while True:
-        # 1. Tính thời gian ngủ tới 09:00 CN tiếp theo
-        # (Giả sử bạn đã copy hàm seconds_until_next_weekly_report sang worker)
-        wait_sec = seconds_until_next_weekly_report()
-        
-        # Log nếu thời gian chờ > 5 phút
-        if wait_sec > 300:
-            next_run_dt = datetime.datetime.now(vn_tz) + datetime.timedelta(seconds=wait_sec)
-            log.info(f"[WEEKLY] Ngủ {wait_sec/3600:.1f}h tới {next_run_dt.strftime('%H:%M %d/%m')}")
-        
-        await asyncio.sleep(wait_sec)
+    # 1. Kiểm tra Maintenance Mode
+    if not get_bot_active():
+        log.info("[WEEKLY] Bot đang TẮT. Bỏ qua báo cáo tuần.")
+        return
 
-        # 2. Thức dậy! Kiểm tra điều kiện
-        if not get_bot_active():
-            log.info("[WEEKLY] Thức dậy nhưng Bot TẮT. Ngủ tiếp 60s.")
-            await asyncio.sleep(60)
-            continue
-        
+    # 2. Kiểm tra Idempotency (Chống gửi lặp)
+    # Dù Scheduler rất chuẩn, nhưng thêm Redis check là lớp bảo vệ thứ 2 
+    # (phòng trường hợp server restart liên tục trong phút thứ 09:00)
+    try:
+        vn_tz = pytz.timezone(TIMEZONE)
         today_str = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
+        REDIS_KEY_LAST_RUN = "worker_state:weekly_report_last_run"
+        
         last_run = r_client.get(REDIS_KEY_LAST_RUN)
         if last_run == today_str:
-             await asyncio.sleep(3600); continue
+            log.warning("[WEEKLY] ⚠️ Job đã chạy hôm nay rồi (Check Redis). Bỏ qua.")
+            return
 
-        # 🔥 GỌI HÀM BATCH MỚI
-        await execute_weekly_batch(requester_id=None) # None vì là tự động
+        # 3. Thực thi Batch (Logic chính)
+        # Hàm execute_weekly_batch đã có sẵn ở code cũ, chỉ việc gọi lại
+        await execute_weekly_batch(requester_id=None)
 
-        # Lưu trạng thái
-        r_client.set(REDIS_KEY_LAST_RUN, today_str, ex=86400 * 6)
+        # 4. Đánh dấu đã chạy xong
+        r_client.set(REDIS_KEY_LAST_RUN, today_str, ex=86400 * 6) # Expire sau 6 ngày
+        log.info("[WEEKLY] ✅ Job hoàn tất và đã lưu trạng thái vào Redis.")
+
+    except Exception as e:
+        log.error(f"[WEEKLY] ❌ Lỗi Job: {e}")
 
 # =====================================================
 # INFO
@@ -3061,9 +2578,106 @@ async def process_force_update_screener(admin_id):
         log.error(f"Force Update Error: {e}")
         push_telegram_msg(admin_id, f"❌ Lỗi cập nhật: {e}", msg_type="ERROR")
 
+def job_listener(event):
+    """
+    Hàm listener: Tự động báo cáo lỗi Scheduler về cho Admin.
+    """
+    if not ADMIN_ID: return
+
+    try:
+        if event.exception:
+            # Trường hợp Job bị Crash (Lỗi code, lỗi mạng...)
+            error_msg = f"🚨 **WORKER CRITICAL ERROR**\nJob ID: `{event.job_id}`\nLỗi: `{event.exception}`"
+            log.error(error_msg)
+            # Bắn tin báo Admin qua Redis Gateway
+            push_telegram_msg(ADMIN_ID, error_msg, msg_type="SYSTEM_MSG")
+            
+        elif event.code == EVENT_JOB_MISSED:
+            # Trường hợp Job bị lỡ giờ (do server sập quá lâu)
+            warning_msg = f"⚠️ **MISSED JOB**: Job `{event.job_id}` đã bị bỏ qua do quá hạn."
+            log.warning(warning_msg)
+            push_telegram_msg(ADMIN_ID, warning_msg, msg_type="SYSTEM_MSG")
+            
+    except Exception as e:
+        log.error(f"Lỗi trong job_listener: {e}")
+
 # =========== MAIN ENTRY POINT ============
 async def main():
-    log.info(f"[{INSTANCE_ID}] Worker starting...")
+    log.info(f"[{INSTANCE_ID}] Worker starting (Advanced APScheduler Mode)...")
+
+    # --- 1. CẤU HÌNH REDIS JOB STORE ---
+    # Parse URL Redis từ biến môi trường để lấy host, port, password
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    r_parse = urlparse(redis_url)
+    
+    # Cấu hình lưu trữ Job vào Redis (Persistence)
+    jobstores = {
+        'default': RedisJobStore(
+            jobs_key='stockbot_jobs', 
+            run_times_key='stockbot_running', 
+            host=r_parse.hostname, 
+            port=r_parse.port, 
+            password=r_parse.password,
+            db=0 # Hoặc lấy từ r_parse.path nếu cần
+        )
+    }
+
+    # --- 2. CẤU HÌNH MẶC ĐỊNH (DEFAULTS) ---
+    job_defaults = {
+        'coalesce': True,             # Nếu lỡ nhiều lần, chỉ chạy bù 1 lần cuối
+        'max_instances': 1,           # Không bao giờ chạy chồng chéo (chờ job cũ xong mới chạy job mới)
+        'misfire_grace_time': 600     # Ân hạn 5 phút (nếu trễ quá 10p thì bỏ qua luôn)
+    }
+
+    # Khởi tạo Scheduler với cấu hình nâng cao
+    scheduler = AsyncIOScheduler(
+        jobstores=jobstores, 
+        job_defaults=job_defaults, 
+        timezone=TIMEZONE
+    )
+
+    # --- 3. GẮN LISTENER BẮT LỖI ---
+    scheduler.add_listener(job_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
+
+    # --- 4. ĐĂNG KÝ JOB (Sử dụng replace_existing=True để update code mới nếu job đã lưu trong Redis) ---
+
+    # A. Digest Sáng (07:00)
+    scheduler.add_job(job_daily_digest, 'cron', hour=7, minute=0, id='digest_daily', replace_existing=True)
+
+    # B. Báo cáo Tuần (09:00 CN)
+    scheduler.add_job(job_weekly_report, 'cron', day_of_week='sun', hour=9, minute=0, id='report_weekly', replace_existing=True)
+
+    # C. Định giá Đêm (02:00)
+    scheduler.add_job(job_nightly_valuation, 'cron', hour=2, minute=0, id='valuation_nightly', replace_existing=True)
+
+    # D. Quét Tin tức (06:00, 18:00)
+    scheduler.add_job(job_scan_news, 'cron', hour='6,18', args=["MACRO"], id='news_macro', replace_existing=True)
+    scheduler.add_job(job_scan_news, 'cron', hour='6,18', args=["SPECIALIZED"], id='news_spec', replace_existing=True)
+
+    # E. Dọn dẹp (03:30)
+    scheduler.add_job(job_maintenance, 'cron', hour=3, minute=30, id='maintenance_daily', replace_existing=True)
+
+    # F. Nhắc Backup (Ngày 7, 08:00)
+    scheduler.add_job(job_restore_reminder, 'cron', day=7, hour=8, minute=0, id='backup_reminder', replace_existing=True)
+    
+    # G. Quét BCTC (Tháng 1,4,5,10 - 4 lần/ngày)
+    scheduler.add_job(job_scan_bctc, 'cron', month='1,4,5,10', hour='2,8,14,20', minute=0, id='bctc_scan', replace_existing=True)
+    
+    # H. Quét Báo cáo Phân tích (07:00)
+    scheduler.add_job(job_scan_analysis_reports, 'cron', hour=7, minute=0, id='analysis_scan', replace_existing=True)
+
+    # I. Thông báo Phiên (Session Notices)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=9, minute=10, args=["⏰ Phiên sáng sắp mở lúc 09:15. Bạn tranh thủ xem lại danh mục nhé."], id='notice_open_am', replace_existing=True)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=11, minute=25, args=["🔔 Phiên sáng sắp kết thúc lúc 11:30."], id='notice_close_am', replace_existing=True)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=12, minute=55, args=["⏰ Phiên chiều sắp mở lúc 13:00. Chuẩn bị chiến đấu tiếp nhé!"], id='notice_open_pm', replace_existing=True)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=14, minute=40, args=["🔔 Phiên chiều sắp kết thúc (14:45). Kiểm tra lại các lệnh ATC nhé."], id='notice_close_pm', replace_existing=True)
+
+    # K. EOD Summary (15:00)
+    scheduler.add_job(job_eod_summary, 'cron', day_of_week='mon-fri', hour=15, minute=0, id='eod_summary', replace_existing=True)
+
+    # Bắt đầu Scheduler
+    scheduler.start()
+    log.info("✅ APScheduler đã kích hoạt các tác vụ định kỳ.")
     
     # Chạy song song 2 loop
     await asyncio.gather(
@@ -3073,20 +2687,7 @@ async def main():
         vn30f1m_price_fetcher_loop(),
         vn30f1m_alert_loop(),
         #-------------------------
-        daily_user_digest_loop(),
-        nightly_valuation_loop(),
-        news_specialized_loop(),
-        news_macro_loop(),
-        analysis_report_loop(),
-        financial_Statements_notice_loop(),
-        news_cleanup_loop(),
-        #-------------------------
-        session_notice_loop(),
-        #-------------------------
-        restore_reminder_loop(),
-        #-------------------------
         worker_inbound_loop(),
-        weekly_report_loop(),
     )
 
 if __name__ == "__main__":
