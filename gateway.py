@@ -132,7 +132,6 @@ from profile_cache import (
     save_profile_to_redis,
 )
 from pathlib import Path
-from google import genai
 import uuid
 import hmac
 from chart_utils import (

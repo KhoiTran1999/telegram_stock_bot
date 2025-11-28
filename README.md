@@ -127,6 +127,7 @@ REDIS_URL=redis://host:port/0
 # AI (Google Gemini)
 GEMINI_API_KEY=<your-api-key>
 GEMINI_API_KEY_2=<backup-key>
+GEMINI_API_KEY_3=<backup-key-2>
 
 # Server
 PASSENGER_PORT=10000

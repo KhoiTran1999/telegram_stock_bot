@@ -135,13 +135,43 @@ except:
     stock_trading = None
 
 # --- CẤU HÌNH GEMINI (Worker) ---
-GEMINI_KEYS = [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2")]
+GEMINI_KEYS = []
+_gemini_keys_map = {}
+
+# 1. Lấy key chính (GEMINI_API_KEY)
+if os.getenv("GEMINI_API_KEY"):
+    _gemini_keys_map[1] = os.getenv("GEMINI_API_KEY")
+
+# 2. Quét toàn bộ biến môi trường để tìm GEMINI_API_KEY_n
+for key, value in os.environ.items():
+    if key.startswith("GEMINI_API_KEY_") and value:
+        try:
+            # Lấy số thứ tự từ tên biến (ví dụ: GEMINI_API_KEY_2 -> 2)
+            suffix = key.replace("GEMINI_API_KEY_", "")
+            if suffix.isdigit():
+                _gemini_keys_map[int(suffix)] = value
+        except ValueError:
+            continue
+
+# 3. Sắp xếp theo thứ tự index và đưa vào danh sách
+for idx in sorted(_gemini_keys_map.keys()):
+    GEMINI_KEYS.append(_gemini_keys_map[idx])
+
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k] # Lọc key rỗng
 
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
-    """Hàm gọi Gemini an toàn (Failover)"""
+    """Hàm gọi Gemini an toàn (Failover) với cơ chế xoay vòng Key mỗi giờ"""
     last_error = None
-    for api_key in GEMINI_KEYS:
+    
+    # Xoay vòng key dựa trên giờ hiện tại để phân tải và tránh bị tắt key do không dùng
+    if GEMINI_KEYS:
+        current_hour = datetime.datetime.now().hour
+        start_index = current_hour % len(GEMINI_KEYS)
+        rotated_keys = GEMINI_KEYS[start_index:] + GEMINI_KEYS[:start_index]
+    else:
+        rotated_keys = []
+
+    for api_key in rotated_keys:
         try:
             client = genai.Client(api_key=api_key)
             resp = client.models.generate_content(
