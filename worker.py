@@ -268,9 +268,6 @@ Bot:"""
             contents=full_prompt,
             return_usage=True
         )
-
-        # [DEBUG LOG] Xem raw markdown từ AI
-        log.info(f"[{INSTANCE_ID}] 🤖 AI Raw Response for {chat_id}:\n{answer}")
         
         if not answer:
             answer = "😅 Xin lỗi, hiện tại mình đang bị quá tải. Bạn vui lòng thử lại sau nhé."
