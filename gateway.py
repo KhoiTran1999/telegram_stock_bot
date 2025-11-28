@@ -38,7 +38,9 @@ from telegram import (
     BotCommandScopeChat,
     Update, WebAppInfo, 
     InlineKeyboardButton, 
-    InlineKeyboardMarkup
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton
 )
 from telegram.constants import ChatAction
 import telegram
@@ -607,6 +609,11 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text.strip().upper()
 
+    # [MỚI] Xử lý nút Dashboard từ Reply Keyboard
+    if "DASHBOARD" in user_text:
+        await cmd_start(update, context)
+        return
+
     # --- LOGIC MỚI: SMART INPUT HANDLING ---
     # Kiểm tra: Đúng 3 ký tự VÀ là chữ cái (A-Z)
     if len(user_text) == 3 and user_text.isalpha():
@@ -732,8 +739,54 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         await cmd_help(update, context)
 
     elif data == "back_to_start":
-        await cmd_start(update, context) # Gọi lại hàm start để vẽ lại menu
-        await query.delete_message()
+        # --- LOGIC VẼ LẠI DASHBOARD (EDIT MODE) ---
+        # 1. Check Trial/Admin status
+        trial_status = await asyncio.to_thread(check_trial_eligibility, chat_id)
+        is_admin = (chat_id == ADMIN_ID)
+        show_trial = (trial_status == 'OK') and not is_admin
+
+        # 2. Build Menu
+        kb = [
+            [
+                InlineKeyboardButton("📋 Danh mục", callback_data="menu_list"),
+                InlineKeyboardButton("➕ Thêm mã", callback_data="menu_add")
+            ],
+            [
+                InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
+                InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")
+            ],
+            [
+                InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
+                InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
+            ]
+        ]
+
+        if show_trial:
+            kb.append([InlineKeyboardButton("🎁 Kích hoạt Dùng thử (Free)", callback_data="btn_trial_click")])
+        
+        if is_admin:
+            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+            admin_url = f"{base_url}/admin/dashboard?admin_id={ADMIN_ID}"
+            kb.append([InlineKeyboardButton("👑 Admin Dashboard", web_app=WebAppInfo(url=admin_url))])
+
+        kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
+
+        # 3. Build Text (Chỉ lấy phần Body)
+        if show_trial:
+             msg_text = (
+                "🚀 **Tôi giúp gì cho bạn?**\n"
+                "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
+                "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
+                "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n"
+                "• **Báo cáo Tự động:** Gửi bản tin Sáng (7h), Chiều (15h) & Tuần (CN).\n\n"
+                "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
+                "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
+            )
+        else:
+            msg_text = "👇 *Chọn nhanh tính năng bên dưới:*"
+
+        # 4. Edit Message (Thay vì gửi mới)
+        await safe_edit_message(query, msg_text, InlineKeyboardMarkup(kb))
 
     elif data == "menu_setting":
         await cmd_setting(update, context) # Gọi hàm setting mới cập nhật ở trên
@@ -1396,12 +1449,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Thêm nút Hướng dẫn cuối cùng
     kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
 
-    # --- NỘI DUNG TIN NHẮN ---
+    # [MỚI] Define Reply Keyboard (Nút Dashboard cố định)
+    reply_kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("🏠 Dashboard")]], 
+        resize_keyboard=True, 
+        is_persistent=True
+    )
+
+    # --- NỘI DUNG TIN NHẮN (Tách làm 2 phần để gửi kèm Reply Keyboard) ---
     if show_trial:
         # Dành cho User Mới (Chưa dùng thử) -> Có chào mời
-        welcome_msg = (
+        header_msg = (
             "👋 *Chào bạn! Mình là Người Canh Bảng 🧑‍💻*\n"
-            "Trợ lý đầu tư chứng khoán thông minh 24/7.\n\n"
+            "Trợ lý đầu tư chứng khoán thông minh 24/7."
+        )
+        body_msg = (
             "🚀 **Tôi giúp gì cho bạn?**\n"
             "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
             "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
@@ -1414,12 +1476,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         # Dành cho User Cũ / Pro / Admin -> Gọn gàng, đi thẳng vào vấn đề
-        welcome_msg = (
-        "⚖️ *Người Canh Bảng* 🧑‍💻 _là công cụ hỗ trợ dữ liệu. Mọi thông tin chỉ mang tính tham khảo, nhà đầu tư tự chịu trách nhiệm với quyết định của mình._\n\n"
-        "👇 *Chọn nhanh tính năng bên dưới:*"
-    )
+        header_msg = (
+            "⚖️ *Người Canh Bảng* 🧑‍💻 _là công cụ hỗ trợ dữ liệu. Mọi thông tin chỉ mang tính tham khảo, nhà đầu tư tự chịu trách nhiệm với quyết định của mình._"
+        )
+        body_msg = "👇 *Chọn nhanh tính năng bên dưới:*"
 
-    await reply_md(update, welcome_msg, reply_markup=InlineKeyboardMarkup(kb))
+    # 1. Gửi Header kèm Reply Keyboard (Nút Dashboard dưới cùng)
+    await reply_md(update, header_msg, reply_markup=reply_kb)
+
+    # 2. Gửi Body kèm Inline Keyboard (Menu chính)
+    await reply_md(update, body_msg, reply_markup=InlineKeyboardMarkup(kb))
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ (ĐÃ NÂNG CẤP UX) Hướng dẫn sử dụng gọn gàng & Nút điều hướng """
