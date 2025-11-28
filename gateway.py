@@ -1387,6 +1387,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if show_trial:
         kb.append([InlineKeyboardButton("🎁 Kích hoạt Dùng thử (Free)", callback_data="btn_trial_click")])
     
+    # Nếu là Admin -> Thêm nút Admin Dashboard
+    if is_admin:
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        admin_url = f"{base_url}/admin/dashboard?admin_id={ADMIN_ID}"
+        kb.append([InlineKeyboardButton("👑 Admin Dashboard", web_app=WebAppInfo(url=admin_url))])
+
     # Thêm nút Hướng dẫn cuối cùng
     kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
 
@@ -1467,70 +1473,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await reply_md(update, help_text, reply_markup=InlineKeyboardMarkup(kb))
 
-async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bật bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
-    global BOT_ACTIVE
 
-    if ADMIN_ID is None:
-        await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update,"⛔ Không có quyền.")
-        return
-
-    BOT_ACTIVE = True
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(set_bot_active, True)
-
-    msg = (
-    "✅ *Hệ thống đã được kích hoạt trở lại.*\n\n"
-    "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
-    )
-
-
-    log.info("[ADMIN] Bot đã bật (BOT_ACTIVE=True, lưu vào DB).")
-    await reply_md(update, msg)
-
-async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Tắt bot (chỉ admin). (ĐÃ SỬA LỖI BLOCKING I/O)"""
-    global BOT_ACTIVE
-
-    if ADMIN_ID is None:
-        await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update,"⛔ Không có quyền.")
-        return
-
-    BOT_ACTIVE = False
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(set_bot_active, False)
-
-    msg = (
-        "🛠️ *Hệ thống đã chuyển sang chế độ bảo trì.*\n\n"
-        "Tất cả lệnh người dùng sẽ bị tạm ngưng. "
-        "Trạng thái này đã được lưu trong cơ sở dữ liệu và sẽ giữ nguyên sau khi deploy. 🔒"
-    )
-
-    log.info("[ADMIN] Bot đã tắt (BOT_ACTIVE=False, lưu vào DB).")
-    await reply_md(update, msg)
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hiển thị trạng thái bot hiện tại (admin only). (ĐÃ SỬA LỖI BLOCKING I/O)"""
-    if ADMIN_ID is None:
-        await reply_md(update,"⚠️ Bot chưa cấu hình ADMIN_ID.")
-        return
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update,"⛔ Không có quyền.")
-        return
-
-    # ⭐️ SỬA: Chạy CSDL trong thread
-    current_state = await asyncio.to_thread(get_bot_active)
-    
-    status = "🟢 Đang *hoạt động bình thường*" if current_state else "🔴 Đang *bảo trì*"
-    await reply_md(update,
-        f"{status}\n(Dữ liệu lấy trực tiếp từ cơ sở dữ liệu.)"
-    )
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ 
@@ -1920,35 +1863,7 @@ async def cmd_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
 
-async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA) Gửi thông báo tới TẤT CẢ user (Pro + Free). """
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await reply_md(update,"⛔ Chỉ admin mới có quyền dùng lệnh này.")
-        return
 
-    if not context.args:
-        await reply_md(update,"❗ Vui lòng nhập nội dung thông báo sau lệnh /announce.")
-        return
-
-    text = " ".join(context.args)
-    text = text.replace("\\n", "\n") # Cho phép admin dùng \n để xuống dòng
-
-    await reply_md(update, f"🔎 Đang chuẩn bị gửi thông báo tới TẤT CẢ user...")
-
-    try:
-        # ⭐️ Đơn giản hoá: Chỉ cần gọi hàm broadcast với target='all'
-        await broadcast_to_all_watchers(text, target_audience='all')
-        
-        # Đếm số lượng user (gọi lại DB, nhưng không sao, lệnh admin không thường xuyên)
-        all_watch = await asyncio.to_thread(get_all_watch)
-        sent_count = len(all_watch) 
-        
-        await reply_md(update, f"✅ Đã gửi thông báo tới TẤT CẢ *{sent_count}* người dùng.")
-
-    except Exception as e:
-        log.warning(f"Lỗi khi gửi /announce: {e}")
-        await reply_md(update, f"⚠️ Lỗi khi gửi broadcast: {e}")
 
 @task_locked
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1991,115 +1906,9 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=reply_markup
     )
 
-async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (Admin) Ra lệnh Worker tính lại dữ liệu lịch sử.
-    """
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
 
-    await reply_md(update, "📡 Đã gửi lệnh Force Update tới Worker.")
 
-    payload = {
-        "cmd": "FORCE_SCREENER",
-        "admin_id": ADMIN_ID
-    }
-    await asyncio.to_thread(push_to_worker, payload)
 
-# COMMAND: /delete_range YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM
-async def cmd_delete_range(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ (ĐÃ SỬA LỖI BLOCKING I/O) """
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await reply_md(update, "⛔ Chỉ admin mới có quyền xoá tin nhắn.")
-        return
-
-    args = context.args
-    vn_tz = pytz.timezone(TIMEZONE) # ✅ Đảm bảo vn_tz luôn được định nghĩa
-
-    # ❗️Trường hợp không (hoặc thiếu) tham số:
-    if len(args) < 4:
-        now = datetime.datetime.now(vn_tz) # 'now' cần ở đây cho lệnh mẫu
-
-        start_time = now - datetime.timedelta(minutes=1)
-        end_time   = now + datetime.timedelta(minutes=1)
-
-        start_str = start_time.strftime("%Y-%m-%d %H:%M")
-        end_str   = end_time.strftime("%Y-%m-%d %H:%M")
-
-        # Tin nhắn 1: cú pháp
-        await reply_md(
-            update,
-            "❗️ Cú pháp: `/delete_range <từ ngày> <giờ> <đến ngày> <giờ>`"
-        )
-
-        # Tin nhắn 2: lệnh mẫu
-        await reply_md(
-            update,
-            f"`/delete_range {start_str} {end_str}`"
-        )
-        return
-
-    # ✅ Trường hợp có đủ 4 tham số:
-    await reply_md(update, "🔎 vui lòng đợi...")
-
-    try:
-        # ✅✅✅ [SỬA LỖI] Khởi tạo 'now' và 'skipped_old'
-        now = datetime.datetime.now(vn_tz)
-        skipped_old = 0
-        deleted = 0
-        
-        start_str = f"{args[0]} {args[1]}"
-        end_str   = f"{args[2]} {args[3]}"
-        start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
-        end_time   = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
-
-        # ⭐️ Chạy truy vấn CSDL trong thread
-        records = await asyncio.to_thread(get_bot_messages_in_range, start_time, end_time)
-        if not records:
-            await reply_md(update, "📭 Không có tin nhắn nào trong khoảng thời gian này.")
-            return
-
-        # ⭐️ Hàm sync để dùng với to_thread
-        def _delete_message(chat_id, msg_id):
-            url = f"https://api.telegram.org/bot{TOKEN}/deleteMessage"
-            params = {"chat_id": chat_id, "message_id": msg_id}
-            try:
-                # Sửa: Dùng POST thay vì GET cho deleteMessage để an toàn hơn
-                requests.post(url, params=params, timeout=10)
-            except Exception as e:
-                log.warning(f"Lỗi gọi deleteMessage cho {msg_id} trong chat {chat_id}: {e}")
-
-        # ✅ get_bot_messages_in_range trả về (chat_id, message_id, sent_at)
-        for chat_id, msg_id, _sent_at in records:
-            try:
-                # Logic xử lý timezone của bạn (đã đúng)
-                sent_at_vn = _sent_at.astimezone(vn_tz) if _sent_at.tzinfo else _sent_at.replace(tzinfo=pytz.UTC).astimezone(vn_tz)
-                
-                # Giờ 'now' đã được định nghĩa và có thể so sánh
-                if (now - sent_at_vn).total_seconds() > 48*3600:
-                    skipped_old += 1
-                    continue
-
-                await asyncio.to_thread(_delete_message, chat_id, msg_id)
-                deleted += 1
-                await asyncio.sleep(0.1) # Tránh rate limit của Telegram
-            except Exception as e:
-                log.warning(f"Lỗi xoá message {msg_id} trong chat {chat_id}: {e}")
-
-        # Xoá log trong DB
-        await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
-        
-        # Tạo thông báo kết quả
-        summary = f"✅ Đã xoá {deleted} tin nhắn trong khoảng {start_str} → {end_str}."
-        if skipped_old > 0:
-            summary += f"\n(Đã bỏ qua {skipped_old} tin nhắn cũ hơn 48 giờ, không thể xoá)."
-        
-        await reply_md(update, summary)
-
-    except Exception as e:
-        await reply_md(update, f"⚠️ Lỗi xử lý: {e}")
 
 # ============================================================
 # ♻️ /restore_core – Khôi phục dữ liệu core + Clear Redis + Sync Redis từ DB
@@ -2251,86 +2060,7 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(tmp_path): os.remove(tmp_path)
     except: pass
 
-@task_locked
-async def cmd_backup_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin: backup dữ liệu core thành file JSON.
-    (ĐÃ SỬA LỖI JSON SERIALIZABLE CHO DATETIME)
-    """
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
 
-    if ADMIN_ID is None or user_id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-    
-    try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING
-        )
-    except Exception:
-        pass
-
-    # Log command
-    try: await asyncio.to_thread(log_command_usage, chat_id, "/backup_core", ADMIN_ID)
-    except: pass
-
-    await reply_md(update, "⏳ Đang backup dữ liệu core, vui lòng đợi...")
-
-    # Export dữ liệu core (DB I/O chạy trong thread)
-    try:
-        payload = await asyncio.to_thread(export_core_data)
-    except Exception as e:
-        log.error(f"Lỗi export data: {e}")
-        await reply_md(update, f"⚠️ Lỗi khi lấy dữ liệu từ DB: {e}")
-        return
-
-    # Tạo file tạm trong container
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    ts = now.strftime("%Y%m%d_%H%M%S")
-    month_key = now.strftime("%Y-%m")
-    filename = f"stockbot_core_backup_{month_key}_{ts}.json"
-    tmp_path = os.path.join(TMP_DIR, filename)
-
-    # --- HÀM CONVERTER ĐỂ XỬ LÝ DATETIME ---
-    def json_datetime_converter(o):
-        if isinstance(o, (datetime.date, datetime.datetime)):
-            return o.isoformat()
-        raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
-    # ---------------------------------------
-
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            # Thêm tham số default=json_datetime_converter
-            json.dump(
-                payload, 
-                f, 
-                ensure_ascii=False, 
-                indent=2, 
-                default=json_datetime_converter # <--- SỬA LỖI TẠI ĐÂY
-            )
-
-        # Gửi file cho admin
-        await context.bot.send_document(
-            chat_id=chat_id,
-            document=open(tmp_path, "rb"),
-            filename=filename,
-            caption=(
-                f"📦 Backup dữ liệu core lúc {ts} (tháng {month_key}).\n"
-                "- Dữ liệu bao gồm: Watchlist, User Pro, Orders, Settings...\n"
-                "- Dùng file này cho lệnh /restore_core sau khi tạo DB mới."
-            ),
-        )
-        await reply_md(update, "✅ Đã backup xong và gửi file cho bạn.")
-
-    except Exception as e:
-        log.error(f"Lỗi backup core: {e}")
-        await reply_md(update, f"⚠️ Lỗi khi tạo file backup: {e}")
-    
-    # Dọn dẹp file tạm (nếu cần thiết, nhưng để lại debug cũng được)
-    # try: os.remove(tmp_path)
-    # except: pass
 
 # ==============================================
 # COMMAND: /report (CÓ CACHE REDIS + RETRY, KHÔNG COOLDOWN)
@@ -2449,75 +2179,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-async def cmd_report_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (Admin) Xoá TOÀN BỘ cache báo cáo AI trong Redis cho tất cả danh mục.
 
-    - Quét toàn bộ key `report_cache:*` trong Redis.
-    - Xoá cả cache báo cáo OK lẫn cache lỗi.
-    - Chỉ dùng khi muốn force tạo lại toàn bộ báo cáo (/report + Weekly Report).
-    """
-    if not update or not update.effective_chat:
-        return
-
-    chat_id = update.effective_chat.id
-
-    # 1. Chỉ Admin mới được dùng
-    if chat_id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-
-    # 2. Ghi log usage
-    await asyncio.to_thread(log_command_usage, chat_id, "/report_clear", ADMIN_ID)
-
-    await reply_md(
-        update,
-        "🔎 Đang quét và xoá *toàn bộ cache báo cáo AI* trong Redis...\n"
-        "_(Lệnh này ảnh hưởng tới mọi danh mục /report & Weekly Report.)_",
-    )
-
-    # 3. Hàm sync: clear tất cả key report_cache:*
-    def _clear_all_report_cache() -> int:
-        r = get_redis()  # dùng chung Redis (đã import từ news_seen_cache)
-        deleted = 0
-        # SCAN để tránh block Redis nếu số key lớn
-        for key in r.scan_iter(match="report_cache:*"):
-            try:
-                r.delete(key)
-                deleted += 1
-            except Exception:
-                # best-effort, lỗi 1 key thì bỏ qua, tiếp tục
-                continue
-        return deleted
-
-    try:
-        deleted_count = await asyncio.to_thread(_clear_all_report_cache)
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][REPORT_CLEAR] Lỗi khi xoá report_cache:*: {e}")
-        await reply_md(
-            update,
-            f"⚠️ Lỗi khi xoá cache báo cáo AI trong Redis: `{e}`",
-        )
-        return
-
-    # 4. Phản hồi kết quả
-    if deleted_count > 0:
-        await reply_md(
-            update,
-            (
-                f"✅ Đã xoá *{deleted_count}* key cache báo cáo AI trong Redis.\n"
-                "Lần tiếp theo bạn dùng `/report` hoặc khi Weekly Report chạy, "
-                "bot sẽ gọi AI để tạo báo cáo *mới hoàn toàn*."
-            ),
-        )
-    else:
-        await reply_md(
-            update,
-            (
-                "ℹ️ Không tìm thấy key nào dạng `report_cache:*` trong Redis.\n"
-                "Có thể cache đã hết hạn / chưa được tạo."
-            ),
-        )
 
 # ==============================================
 # COMMAND: /info <MÃ> (HỒ SƠ DOANH NGHIỆP)
@@ -2637,69 +2299,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-async def cmd_info_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (Admin) Xoá TOÀN BỘ cache hồ sơ doanh nghiệp (/info) trong Redis.
-    Quét pattern: profile_cache:*
-    """
-    if not update or not update.effective_chat:
-        return
 
-    chat_id = update.effective_chat.id
-
-    # 1. Chỉ Admin mới được dùng
-    if chat_id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-
-    # 2. Ghi log usage
-    await asyncio.to_thread(log_command_usage, chat_id, "/info_clear", ADMIN_ID)
-
-    await reply_md(
-        update,
-        "🔎 Đang quét và xoá *toàn bộ cache hồ sơ doanh nghiệp (/info)* trong Redis...",
-    )
-
-    # 3. Hàm sync: clear tất cả key profile_cache:*
-    def _clear_all_profile_cache() -> int:
-        r = get_redis()
-        deleted = 0
-        # SCAN pattern profile_cache:*
-        for key in r.scan_iter(match="profile_cache:*"):
-            try:
-                r.delete(key)
-                deleted += 1
-            except Exception:
-                continue
-        return deleted
-
-    try:
-        deleted_count = await asyncio.to_thread(_clear_all_profile_cache)
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][INFO_CLEAR] Lỗi khi xoá profile_cache:*: {e}")
-        await reply_md(
-            update,
-            f"⚠️ Lỗi khi xoá cache hồ sơ trong Redis: `{e}`",
-        )
-        return
-
-    # 4. Phản hồi kết quả
-    if deleted_count > 0:
-        await reply_md(
-            update,
-            (
-                f"✅ Đã xoá *{deleted_count}* hồ sơ doanh nghiệp trong cache.\n"
-                "Lần tới gọi `/info`, bot sẽ gọi AI để tạo mới."
-            ),
-        )
-    else:
-        await reply_md(
-            update,
-            (
-                "ℹ️ Không tìm thấy cache hồ sơ nào (`profile_cache:*`).\n"
-                "Cache có thể đã hết hạn hoặc chưa được tạo."
-            ),
-        )
 #==========================================
 
 async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -2729,106 +2329,7 @@ async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # 3. Nếu is_pro = True, HOẶC chat_id == ADMIN_ID -> Cho phép
     return True
 
-# PAID USERS
-async def cmd_admin_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return # Chỉ admin được dùng
 
-    try:
-        chat_id_to_add = int(context.args[0])
-        days_to_add = int(context.args[1])
-        
-        # Gọi hàm db_utils.add_paid_user(chat_id_to_add, days_to_add)
-        await asyncio.to_thread(add_paid_user, chat_id_to_add, days_to_add)
-        
-        await reply_md(update, f"✅ Đã gia hạn {days_to_add} ngày cho user {chat_id_to_add}.")
-        
-        # Tự động gửi tin nhắn cho user kia báo là họ đã được nâng cấp
-        await send_md(
-            context.bot, 
-            chat_id_to_add, 
-            f"🚀 Chúc mừng! Tài khoản của bạn đã được nâng cấp lên Gói Pro, có hiệu lực trong {days_to_add} ngày."
-        )
-    except Exception as e:
-        await reply_md(update, f"Lỗi: {e}. Cú pháp: `/admin_add_user <chat_id> <số_ngày>`")
-
-async def cmd_admin_deactivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Admin) Ngưng hoạt động Gói Pro của user ngay lập tức."""
-    if update.effective_user.id != ADMIN_ID:
-        return # Chỉ admin
-
-    try:
-        chat_id_to_deactivate = int(context.args[0])
-        
-        # Gọi hàm db_utils
-        updated_rows = await asyncio.to_thread(deactivate_paid_user, chat_id_to_deactivate)
-        
-        if updated_rows > 0:
-            await reply_md(update, f"✅ Đã ngưng hoạt động Gói Pro của user {chat_id_to_deactivate}.")
-            # Gửi thông báo cho user kia
-            await send_md(
-                context.bot, 
-                chat_id_to_deactivate, 
-                "⚠️ Gói Pro của bạn đã bị ngưng hoạt động. Vui lòng liên hệ Admin để biết thêm chi tiết."
-            )
-        else:
-            await reply_md(update, f"ℹ️ Không tìm thấy user {chat_id_to_deactivate} trong danh sách Gói Pro.")
-            
-    except Exception as e:
-        await reply_md(update, f"Lỗi: {e}. Cú pháp: /admin_deactivate <chat_id>")
-
-async def cmd_admin_remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Admin) Xoá vĩnh viễn Gói Pro của user."""
-    if update.effective_user.id != ADMIN_ID:
-        return # Chỉ admin
-
-    try:
-        chat_id_to_remove = int(context.args[0])
-        
-        # (Thêm 1 bước xác nhận nhỏ cho an toàn)
-        if len(context.args) < 2 or context.args[1] != 'confirm':
-             await reply_md(update, f"⚠️ Đây là hành động xoá vĩnh viễn. Để xác nhận, gõ:\n`/admin_remove_user {chat_id_to_remove} confirm`")
-             return
-
-        # Gọi hàm db_utils
-        deleted_rows = await asyncio.to_thread(remove_paid_user, chat_id_to_remove)
-        
-        if deleted_rows > 0:
-            await reply_md(update, f"✅ Đã XOÁ VĨNH VIỄN Gói Pro của user {chat_id_to_remove} khỏi DB.")
-            # Gửi thông báo cho user kia
-            await send_md(
-                context.bot, 
-                chat_id_to_remove, 
-                "ℹ️ Tài khoản Pro của bạn đã bị xoá khỏi hệ thống. Vui lòng liên hệ Admin."
-            )
-        else:
-            await reply_md(update, f"ℹ️ Không tìm thấy user {chat_id_to_remove} trong danh sách Gói Pro.")
-            
-    except Exception as e:
-        await reply_md(update, f"Lỗi: {e}. Cú pháp: /admin_remove_user <chat_id> confirm")
-
-async def cmd_run_weekly_report_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    (Admin) Ra lệnh cho Worker chạy Weekly Report ngay lập tức.
-    """
-    if update.effective_user.id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-
-    # Log command
-    try: await asyncio.to_thread(log_command_usage, update.effective_chat.id, "/cmd_run_weekly_report_now", ADMIN_ID)
-    except: pass
-    
-    await reply_md(update, "📡 Đã gửi lệnh tới Worker. Vui lòng đợi phản hồi...")
-
-    # Đóng gói lệnh
-    payload = {
-        "cmd": "RUN_WEEKLY_NOW",
-        "admin_id": ADMIN_ID
-    }
-    
-    # Bắn sang Worker
-    await asyncio.to_thread(push_to_worker, payload)
 
 async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -3870,6 +3371,259 @@ async def api_admin_ban_user():
         log.error(f"[ADMIN_API] Ban Error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
+# ==============================================
+# 🛠️ NEW ADMIN API ENDPOINTS (SYSTEM CONTROL)
+# ==============================================
+
+@flask_app.route("/api/admin/system/status", methods=["GET", "POST"])
+async def api_admin_system_status():
+    """Lấy hoặc Cập nhật trạng thái Bot (ON/OFF)"""
+    global BOT_ACTIVE
+    
+    # GET: Lấy trạng thái hiện tại
+    if request.method == "GET":
+        req_admin_id = request.args.get("admin_id")
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"error": "Unauthorized"}), 403
+            
+        # Lấy thêm thông tin Redis Keys
+        redis_keys = 0
+        try:
+            r = get_redis()
+            redis_keys = await asyncio.to_thread(r.dbsize)
+        except: pass
+
+        # Lấy thông tin CPU & RAM
+        cpu_usage = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory()
+        ram_usage = ram.percent
+            
+        return jsonify({
+            "active": BOT_ACTIVE,
+            "redis_keys": redis_keys,
+            "cpu": cpu_usage,
+            "ram": ram_usage
+        })
+
+    # POST: Cập nhật trạng thái
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        want_active = data.get("active") # True/False
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        BOT_ACTIVE = want_active
+        await asyncio.to_thread(set_bot_active, want_active)
+        
+        log.info(f"[ADMIN_API] System Status changed to: {BOT_ACTIVE}")
+        return jsonify({"ok": True, "active": BOT_ACTIVE})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/system/broadcast", methods=["POST"])
+async def api_admin_broadcast():
+    """Gửi thông báo tới toàn bộ user"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        text = data.get("text")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+        
+        if not text:
+            return jsonify({"ok": False, "message": "Nội dung trống"}), 400
+
+        # Gọi hàm broadcast (chạy background task để không block request)
+        # Lưu ý: broadcast_to_all_watchers là async, cần wrap vào task
+        if tg_app and MAIN_LOOP:
+            asyncio.run_coroutine_threadsafe(
+                broadcast_to_all_watchers(text, target_audience='all'),
+                MAIN_LOOP
+            )
+            return jsonify({"ok": True, "message": "Đang gửi broadcast..."})
+        
+        return jsonify({"ok": False, "message": "Bot not ready"}), 500
+
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/cache/clear", methods=["POST"])
+async def api_admin_clear_cache():
+    """Xóa Cache (Screener, Report, Info)"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        cache_type = data.get("type") # 'screener', 'report', 'info'
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        r = get_redis()
+        deleted = 0
+        
+        if cache_type == 'screener':
+            # Logic cũ: push lệnh sang worker để tính lại, hoặc xóa key
+            # Ở đây ta xóa key snapshot để lần tới nó tự tính lại
+            r.delete("global_screener_snapshot")
+            # Gửi lệnh force update sang worker
+            payload = {"cmd": "FORCE_SCREENER", "admin_id": ADMIN_ID}
+            await asyncio.to_thread(push_to_worker, payload)
+            msg = "Đã xóa cache Screener & Trigger Worker update."
+
+        elif cache_type == 'report':
+            # Quét xóa report_cache:*
+            for key in r.scan_iter(match="report_cache:*"):
+                r.delete(key)
+                deleted += 1
+            msg = f"Đã xóa {deleted} key Report Cache."
+
+        elif cache_type == 'info':
+            # Quét xóa profile_cache:*
+            for key in r.scan_iter(match="profile_cache:*"):
+                r.delete(key)
+                deleted += 1
+            msg = f"Đã xóa {deleted} key Profile Cache."
+        
+        else:
+            return jsonify({"ok": False, "message": "Unknown type"}), 400
+
+        return jsonify({"ok": True, "message": msg})
+
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/worker/force", methods=["POST"])
+async def api_admin_force_worker():
+    """Force chạy tác vụ Worker (Weekly Report, etc.)"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        task_type = data.get("type") # 'weekly'
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        if task_type == 'weekly':
+            payload = {"cmd": "RUN_WEEKLY_NOW", "admin_id": ADMIN_ID}
+            await asyncio.to_thread(push_to_worker, payload)
+            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Weekly Report."})
+        
+        return jsonify({"ok": False, "message": "Unknown task"}), 400
+
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/system/backup", methods=["POST"])
+async def api_admin_backup():
+    """Trigger Backup Core và gửi file về Telegram Admin"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        # Tái sử dụng logic của cmd_backup_core nhưng chạy background
+        async def _do_backup():
+            try:
+                payload = await asyncio.to_thread(export_core_data)
+                vn_tz = pytz.timezone(TIMEZONE)
+                now = datetime.datetime.now(vn_tz)
+                ts = now.strftime("%Y%m%d_%H%M%S")
+                filename = f"stockbot_core_backup_{ts}.json"
+                tmp_path = os.path.join(TMP_DIR, filename)
+
+                def json_datetime_converter(o):
+                    if isinstance(o, (datetime.date, datetime.datetime)):
+                        return o.isoformat()
+                    raise TypeError(f"Type {o} not serializable")
+
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2, default=json_datetime_converter)
+
+                await tg_app.bot.send_document(
+                    chat_id=ADMIN_ID,
+                    document=open(tmp_path, "rb"),
+                    filename=filename,
+                    caption=f"📦 Backup System Triggered from Dashboard."
+                )
+                os.remove(tmp_path)
+            except Exception as e:
+                log.error(f"Backup Error: {e}")
+                await send_md(tg_app.bot, ADMIN_ID, f"⚠️ Backup thất bại: {e}")
+
+        if tg_app and MAIN_LOOP:
+            asyncio.run_coroutine_threadsafe(_do_backup(), MAIN_LOOP)
+            return jsonify({"ok": True, "message": "Đang tạo backup và gửi về Telegram..."})
+        
+        return jsonify({"ok": False, "message": "Bot not ready"}), 500
+
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/system/delete_range", methods=["POST"])
+async def api_admin_delete_range():
+    """Xóa tin nhắn theo khoảng thời gian"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        start_str = data.get("start") # "YYYY-MM-DD HH:MM"
+        end_str = data.get("end")     # "YYYY-MM-DD HH:MM"
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        vn_tz = pytz.timezone(TIMEZONE)
+        start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
+        end_time = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
+
+        # Chạy background task để xóa
+        async def _do_delete():
+            try:
+                records = await asyncio.to_thread(get_bot_messages_in_range, start_time, end_time)
+                if not records:
+                    await send_md(tg_app.bot, ADMIN_ID, "📭 Không có tin nhắn nào để xóa trong khoảng đã chọn.")
+                    return
+
+                deleted = 0
+                skipped = 0
+                now = datetime.datetime.now(vn_tz)
+
+                for chat_id, msg_id, _sent_at in records:
+                    try:
+                        sent_at_vn = _sent_at.astimezone(vn_tz) if _sent_at.tzinfo else _sent_at.replace(tzinfo=pytz.UTC).astimezone(vn_tz)
+                        if (now - sent_at_vn).total_seconds() > 48*3600:
+                            skipped += 1
+                            continue
+                        
+                        # Gọi API xóa
+                        try:
+                            await tg_app.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                            deleted += 1
+                        except: pass
+                        
+                        await asyncio.sleep(0.05) # Rate limit nhẹ
+                    except: pass
+                
+                # Xóa DB
+                await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
+                
+                await send_md(tg_app.bot, ADMIN_ID, f"✅ Đã xóa {deleted} tin nhắn.\n(Bỏ qua {skipped} tin cũ > 48h).")
+
+            except Exception as e:
+                log.error(f"Delete Range Error: {e}")
+
+        if tg_app and MAIN_LOOP:
+            asyncio.run_coroutine_threadsafe(_do_delete(), MAIN_LOOP)
+            return jsonify({"ok": True, "message": "Tiến trình xóa đang chạy ngầm..."})
+
+        return jsonify({"ok": False, "message": "Bot not ready"}), 500
+
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
 
 # ==============================================
 # 🚀 CẤU TRÚC KHỞI ĐỘNG (Phần code mới)
@@ -4013,23 +3767,8 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
         commands = [
             # --- CÁC LỆNH CỐT LÕI ---
             ("start", "🏠 Mở Dashboard chính"),
-            ("admin", "(admin) Mở Dashboard Admin"),
-            ("on", "(admin) Bật bot (thoát chế độ bảo trì)"),
-            ("off", "(admin) Tắt bot (bảo trì tạm thời)"),
-            ("status", "(admin) Kiểm tra trạng thái hoạt động của bot"),
-            ("announce", "(admin) Gửi thông báo đến tất cả người dùng"),
-            ("allwatch", "(admin) Thống kê toàn bộ danh sách theo dõi của user"),
-            ("screener_clear", "(admin) Xóa dữ liệu screener cache"),
-            ("report_clear", "(admin) Xóa dữ liệu AI report trên redis"),
-            ("info_clear", "(admin) Xóa dữ liệu AI hồ sơ (/info)"),
-            ("delete_range", "(admin) Xóa tin nhắn bot gửi trong khoảng thời gian"),
-            ("force_weekly", "(admin) Chạy và gửi Weekly Report ngay lập tức"),
-            ("backup_core", "(admin) Backup dữ liệu core (watchlist, news_pref, BCTC)"),
-            ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
-            ("admin_add_user", "(admin) (admin) Thêm/gia hạn Gói Pro cho user"),
-            ("admin_deactivate", "(admin) Ngưng hoạt động Gói Pro của user"),
-            ("admin_remove_user", "(admin) Xoá vĩnh viễn Gói Pro của user"),
-            ("test_digest", "(admin) Gửi bản tin test Web App ngay lập tức"),
+            # ("admin", "(admin) Mở Dashboard Admin"),
+            # ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
         ]
         
 
@@ -4178,24 +3917,7 @@ async def main():
     # --- ADMIN COMMANDS (Quản trị viên) ---
     # 1. Hệ thống
     tg_app.add_handler(CommandHandler("admin", cmd_admin)) # Web Dashboard
-    tg_app.add_handler(CommandHandler("on", cmd_on))
-    tg_app.add_handler(CommandHandler("off", cmd_off))
-    tg_app.add_handler(CommandHandler("status", cmd_status))
-    tg_app.add_handler(CommandHandler("backup_core", cmd_backup_core))
     tg_app.add_handler(CommandHandler("restore_core", cmd_restore_core))
-    
-    # 2. Quản lý User & Broadcast
-    tg_app.add_handler(CommandHandler("announce", cmd_announce))
-    tg_app.add_handler(CommandHandler("delete_range", cmd_delete_range))
-    tg_app.add_handler(CommandHandler("admin_add_user", cmd_admin_add_user))
-    tg_app.add_handler(CommandHandler("admin_deactivate", cmd_admin_deactivate))
-    tg_app.add_handler(CommandHandler("admin_remove_user", cmd_admin_remove_user))
-    
-    # 3. Điều khiển Worker & Cache (Maintenance)
-    tg_app.add_handler(CommandHandler("force_weekly", cmd_run_weekly_report_now)) # Đổi tên cho gọn
-    tg_app.add_handler(CommandHandler("screener_clear", cmd_screener_value_clear)) # Đổi tên cho gọn
-    tg_app.add_handler(CommandHandler("report_clear", cmd_report_clear)) # Đã chuyển xuống Admin
-    tg_app.add_handler(CommandHandler("info_clear", cmd_info_clear))     # Đã chuyển xuống Admin
 
     # Handlers khác
     tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))

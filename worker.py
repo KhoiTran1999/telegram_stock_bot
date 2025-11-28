@@ -1775,8 +1775,8 @@ async def job_restore_reminder():
         msg = (
             f"⏰ **NHẮC NHỞ BẢO TRÌ ĐỊNH KỲ (Tháng {now.month})**\n\n"
             f"Hôm nay là ngày 7. Đã đến lúc sao lưu dữ liệu Core.\n"
-            f"👉 Vui lòng gõ lệnh `/backup_core` để tải bản backup về.\n"
-            f"👉 Sau đó kiểm tra và chạy `/restore_core` nếu cần chuyển Database."
+            f"👉 Vui lòng vào trang admin để tải bản backup về.\n"
+            f"👉 Sau đó kiểm tra đính kèm file restore và chạy `/restore_core` nếu cần chuyển Database."
         )
 
         # Bắn tin nhắc nhở qua Redis Gateway

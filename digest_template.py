@@ -1907,6 +1907,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
         [x-cloak] { display: none !important; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
     </style>
 </head>
 <body class="text-slate-800" x-data="mobileApp()">
@@ -1915,105 +1916,244 @@ ADMIN_MOBILE_TEMPLATE = r"""
         <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
     </div>
 
-    <div class="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 pb-2">
-        <div class="px-4 pt-4 pb-2 flex justify-between items-center">
-            <h1 class="text-xl font-extrabold text-slate-800">StockBot<span class="text-blue-600">.Admin</span></h1>
-            <div class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-mono" x-text="'Admin: ' + adminId"></div>
-        </div>
+    <!-- MAIN CONTENT WRAPPER -->
+    <div class="pb-24 min-h-screen">
         
-        <div class="px-4 mt-1">
-            <div class="relative">
-                <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
-                <input type="text" x-model="searchQuery" placeholder="Tìm tên, ID, SĐT..." 
-                       class="w-full pl-10 pr-4 py-2.5 bg-slate-100 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm">
-            </div>
-        </div>
-
-        <div class="mt-3 pl-4 flex gap-2 overflow-x-auto no-scrollbar pb-1">
-            <template x-for="tab in tabs">
-                <button @click="filterStatus = tab.id"
-                        class="whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-bold transition-all border flex items-center gap-1"
-                        :class="filterStatus === tab.id ? 'bg-slate-800 text-white scale-105 shadow-md' : 'bg-white text-slate-500 border-slate-200'">
-                    <span x-text="tab.label"></span>
-                    <span class="text-[10px] opacity-80" x-text="'(' + getCount(tab.id) + ')'"></span>
-                </button>
-            </template>
-        </div>
-    </div>
-
-    <div class="p-4 pb-24 space-y-3 min-h-screen">
-        
-        <div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 snap-x">
-            <div class="snap-center shrink-0 w-36 p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl text-white shadow-lg shadow-blue-200">
-                <div class="text-xs opacity-80 mb-1 font-medium">Tổng User</div>
-                <div class="text-2xl font-bold" x-text="users.length"></div>
-                <div class="text-[10px] bg-white/20 inline-block px-1.5 rounded mt-1">+ Active</div>
-            </div>
-            <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
-                <div class="text-xs text-slate-400 mb-1 font-bold">Doanh thu</div>
-                <div class="text-lg font-extrabold text-slate-800">{{ total_revenue }}</div>
-                <div class="text-[10px] text-green-500 mt-1 font-bold">↑ từ bảng bot_orders</div>
-            </div>
-            <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
-                <div class="text-xs text-slate-400 mb-1 font-bold">Sắp hết hạn</div>
-                <div class="text-xl font-bold text-red-500" x-text="getCount('expiring')"></div>
-            </div>
-        </div>
-
-        <template x-for="user in filteredUsers" :key="user.id">
-            <div @click="openSheet(user)" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-transform cursor-pointer relative overflow-hidden group">
-                <div x-show="user.is_pro && !user.is_expired" class="absolute left-0 top-0 bottom-0 w-1 bg-yellow-400"></div>
-                <div class="flex justify-between items-start">
-                    <div class="flex gap-3 w-full">
-                        <div class="relative shrink-0">
-                            <img :src="`https://ui-avatars.com/api/?name=${user.name}&background=random&size=64`" class="w-11 h-11 rounded-full object-cover border border-slate-100">
-                            <div x-show="user.is_pro && !user.is_expired" class="absolute -bottom-1 -right-1 bg-yellow-400 text-white text-[8px] p-0.5 rounded-full border-2 border-white">
-                                <i class="fa-solid fa-crown"></i>
-                            </div>
-                        </div>
-                        <div class="flex-1 min-w-0">
-                            <h3 class="font-bold text-sm truncate flex items-center gap-2">
-                                <span x-text="user.name" :class="user.is_banned ? 'line-through text-red-500' : 'text-slate-800'"></span>
-                                <span x-show="user.is_banned" class="text-[10px] bg-red-100 text-red-600 px-1.5 rounded">BANNED</span>
-                            </h3>
-                            <div class="flex items-center gap-2 mt-0.5">
-                                <div class="text-xs text-slate-400 font-mono" x-text="user.id"></div>
-                                <button @click.stop="copyId(user.id)" class="text-slate-300 hover:text-blue-500 transition active:scale-90 p-1">
-                                    <i class="fa-regular fa-copy text-xs"></i>
-                                </button>
-                            </div>
-                            <div class="flex gap-1.5 mt-2 flex-wrap">
-                                <span class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wide"
-                                      :class="getStatusClass(user)" x-text="getStatusLabel(user)"></span>
-                                <span x-show="user.days_left > 0 && user.days_left <= 3" 
-                                      class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-500 border border-red-100 flex items-center animate-pulse">
-                                    <i class="fa-regular fa-clock mr-1"></i>Còn <span x-text="user.days_left"></span> ngày
-                                </span>
-                                <span x-show="user.has_used_trial && (!user.is_pro || user.is_expired) && (user.plan_name === 'trial' || !user.plan_name)" 
-                                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-100">
-                                    <i class="fa-solid fa-flask mr-1"></i>Hết Trial
-                                </span>
-
-                                <span x-show="(!user.is_pro || user.is_expired) && user.plan_name === 'pro'" 
-                                    class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-50 text-orange-600 border border-orange-100">
-                                    <i class="fa-solid fa-gem mr-1"></i>Hết hạn Pro
-                                </span>
-                            </div>
-                        </div>
+        <!-- TAB: USERS -->
+        <div x-show="activeTab === 'users'">
+            <div class="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 pb-2">
+                <div class="px-4 pt-4 pb-2 flex justify-between items-center">
+                    <h1 class="text-xl font-extrabold text-slate-800">StockBot<span class="text-blue-600">.Admin</span></h1>
+                    <div class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-mono" x-text="'Admin: ' + adminId"></div>
+                </div>
+                
+                <div class="px-4 mt-1">
+                    <div class="relative">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <input type="text" x-model="searchQuery" placeholder="Tìm tên, ID, SĐT..." 
+                               class="w-full pl-10 pr-4 py-2.5 bg-slate-100 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm">
                     </div>
-                    <div class="flex items-center h-full"><i class="fa-solid fa-chevron-right text-xs text-slate-300"></i></div>
+                </div>
+
+                <div class="mt-3 pl-4 flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                    <template x-for="tab in userTabs">
+                        <button @click="filterStatus = tab.id"
+                                class="whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-bold transition-all border flex items-center gap-1"
+                                :class="filterStatus === tab.id ? 'bg-slate-800 text-white scale-105 shadow-md' : 'bg-white text-slate-500 border-slate-200'">
+                            <span x-text="tab.label"></span>
+                            <span class="text-[10px] opacity-80" x-text="'(' + getCount(tab.id) + ')'"></span>
+                        </button>
+                    </template>
                 </div>
             </div>
-        </template>
-        
-        <div x-show="filteredUsers.length === 0" class="py-10 text-center" x-cloak>
-            <div class="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
-                <i class="fa-solid fa-filter text-slate-300 text-xl"></i>
+
+            <div class="p-4 space-y-3">
+                <!-- Stats Cards -->
+                <div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 snap-x">
+                    <div class="snap-center shrink-0 w-36 p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl text-white shadow-lg shadow-blue-200">
+                        <div class="text-xs opacity-80 mb-1 font-medium">Tổng User</div>
+                        <div class="text-2xl font-bold" x-text="users.length"></div>
+                        <div class="text-[10px] bg-white/20 inline-block px-1.5 rounded mt-1">+ Active</div>
+                    </div>
+                    <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
+                        <div class="text-xs text-slate-400 mb-1 font-bold">Doanh thu</div>
+                        <div class="text-lg font-extrabold text-slate-800">{{ total_revenue }}</div>
+                        <div class="text-[10px] text-green-500 mt-1 font-bold">↑ từ bảng bot_orders</div>
+                    </div>
+                    <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
+                        <div class="text-xs text-slate-400 mb-1 font-bold">Sắp hết hạn</div>
+                        <div class="text-xl font-bold text-red-500" x-text="getCount('expiring')"></div>
+                    </div>
+                </div>
+
+                <!-- User List -->
+                <template x-for="user in filteredUsers" :key="user.id">
+                    <div @click="openSheet(user)" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-transform cursor-pointer relative overflow-hidden group">
+                        <div x-show="user.is_pro && !user.is_expired" class="absolute left-0 top-0 bottom-0 w-1 bg-yellow-400"></div>
+                        <div class="flex justify-between items-start">
+                            <div class="flex gap-3 w-full">
+                                <div class="relative shrink-0">
+                                    <img :src="`https://ui-avatars.com/api/?name=${user.name}&background=random&size=64`" class="w-11 h-11 rounded-full object-cover border border-slate-100">
+                                    <div x-show="user.is_pro && !user.is_expired" class="absolute -bottom-1 -right-1 bg-yellow-400 text-white text-[8px] p-0.5 rounded-full border-2 border-white">
+                                        <i class="fa-solid fa-crown"></i>
+                                    </div>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <h3 class="font-bold text-sm truncate flex items-center gap-2">
+                                        <span x-text="user.name" :class="user.is_banned ? 'line-through text-red-500' : 'text-slate-800'"></span>
+                                        <span x-show="user.is_banned" class="text-[10px] bg-red-100 text-red-600 px-1.5 rounded">BANNED</span>
+                                    </h3>
+                                    <div class="flex items-center gap-2 mt-0.5">
+                                        <div class="text-xs text-slate-400 font-mono" x-text="user.id"></div>
+                                        <button @click.stop="copyId(user.id)" class="text-slate-300 hover:text-blue-500 transition active:scale-90 p-1">
+                                            <i class="fa-regular fa-copy text-xs"></i>
+                                        </button>
+                                    </div>
+                                    <div class="flex gap-1.5 mt-2 flex-wrap">
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wide"
+                                              :class="getStatusClass(user)" x-text="getStatusLabel(user)"></span>
+                                        <span x-show="user.days_left > 0 && user.days_left <= 3" 
+                                              class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-500 border border-red-100 flex items-center animate-pulse">
+                                            <i class="fa-regular fa-clock mr-1"></i>Còn <span x-text="user.days_left"></span> ngày
+                                        </span>
+                                        <span x-show="user.has_used_trial && (!user.is_pro || user.is_expired) && (user.plan_name === 'trial' || !user.plan_name)" 
+                                            class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-100">
+                                            <i class="fa-solid fa-flask mr-1"></i>Hết Trial
+                                        </span>
+                                        <span x-show="(!user.is_pro || user.is_expired) && user.plan_name === 'pro'" 
+                                            class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-50 text-orange-600 border border-orange-100">
+                                            <i class="fa-solid fa-gem mr-1"></i>Hết hạn Pro
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex items-center h-full"><i class="fa-solid fa-chevron-right text-xs text-slate-300"></i></div>
+                        </div>
+                    </div>
+                </template>
+                
+                <div x-show="filteredUsers.length === 0" class="py-10 text-center" x-cloak>
+                    <div class="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <i class="fa-solid fa-filter text-slate-300 text-xl"></i>
+                    </div>
+                    <p class="text-slate-400 text-sm">Không tìm thấy user nào.</p>
+                </div>
             </div>
-            <p class="text-slate-400 text-sm">Không tìm thấy user nào.</p>
         </div>
+
+        <!-- TAB: SYSTEM -->
+        <div x-show="activeTab === 'system'" x-cloak class="p-4 space-y-4">
+            <h2 class="text-xl font-extrabold text-slate-800 mb-4">Hệ Thống</h2>
+            
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Trạng thái Server</h3>
+                
+                <div x-show="systemStats" class="grid grid-cols-2 gap-3 mb-4">
+                    <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center">
+                        <div class="text-xs font-bold text-slate-400 uppercase">CPU</div>
+                        <div class="text-lg font-extrabold text-slate-700" x-text="systemStats.cpu + '%'"></div>
+                        <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+                            <div class="bg-blue-500 h-1.5 rounded-full" :style="'width: ' + systemStats.cpu + '%'"></div>
+                        </div>
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center">
+                        <div class="text-xs font-bold text-slate-400 uppercase">RAM</div>
+                        <div class="text-lg font-extrabold text-slate-700" x-text="systemStats.ram + '%'"></div>
+                        <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+                            <div class="bg-purple-500 h-1.5 rounded-full" :style="'width: ' + systemStats.ram + '%'"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="systemStats" class="flex items-center justify-between bg-slate-50 p-4 rounded-xl mb-4 border border-slate-200">
+                    <div>
+                        <div class="text-sm font-bold text-slate-700">Bot Status</div>
+                        <div class="text-xs font-bold mt-1" :class="(systemStats && systemStats.active) ? 'text-green-600' : 'text-red-500'" x-text="(systemStats && systemStats.active) ? '🟢 ĐANG HOẠT ĐỘNG' : '🔴 ĐANG BẢO TRÌ'"></div>
+                    </div>
+                    <button @click="toggleBotStatus()" 
+                            class="relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none shadow-inner"
+                            :class="(systemStats && systemStats.active) ? 'bg-green-500' : 'bg-slate-300'">
+                        <span class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200 ease-in-out"
+                              :class="(systemStats && systemStats.active) ? 'translate-x-6' : 'translate-x-1'"></span>
+                    </button>
+                </div>
+                <div x-show="!systemStats && !systemError" class="text-center py-4 text-slate-400 text-sm italic">Đang tải...</div>
+                <div x-show="systemError" class="text-center py-4 text-red-500 text-sm font-bold break-words px-4" x-text="'⚠️ ' + systemError"></div>
+                
+                <div class="mt-4 pt-4 border-t border-slate-100">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-bold text-slate-700">Cache Redis</span>
+                        <span class="text-xs font-mono bg-slate-100 px-2 py-1 rounded" x-text="(systemStats && systemStats.redis_keys !== undefined) ? systemStats.redis_keys + ' keys' : '...'"></span>
+                    </div>
+                    <button @click="clearCache()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100">
+                        <i class="fa-solid fa-broom mr-1.5"></i> Xóa Cache
+                    </button>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Worker Control</h3>
+                <div class="text-xs text-slate-500 mb-3 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                    <i class="fa-solid fa-circle-info text-blue-500 mr-1"></i>
+                    Hành động này sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code> tới Worker để ép buộc chạy lại quy trình tạo báo cáo tuần và cập nhật dữ liệu thị trường ngay lập tức.
+                </div>
+                <button @click="forceWorker()" class="w-full py-2.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-blue-100">
+                    <i class="fa-solid fa-robot mr-1.5"></i> Chạy Worker Ngay
+                </button>
+            </div>
+        </div>
+
+        <!-- TAB: BROADCAST -->
+        <div x-show="activeTab === 'broadcast'" x-cloak class="p-4 space-y-4">
+            <h2 class="text-xl font-extrabold text-slate-800 mb-4">Gửi Thông Báo</h2>
+            
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <div class="mb-3">
+                    <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Nội dung tin nhắn</label>
+                    <textarea x-model="broadcastMsg" rows="5" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none" placeholder="Nhập nội dung thông báo gửi tới tất cả user..."></textarea>
+                </div>
+                <div class="flex gap-2">
+                    <button @click="broadcastMsg = ''" class="flex-1 py-2.5 bg-slate-100 text-slate-600 rounded-xl text-sm font-bold active:scale-95 transition">Xóa</button>
+                    <button @click="sendBroadcast()" class="flex-[2] py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-200 active:scale-95 transition">
+                        <i class="fa-paper-plane mr-1"></i> Gửi Ngay
+                    </button>
+                </div>
+                <p class="text-[10px] text-slate-400 mt-3 text-center italic">Tin nhắn sẽ được gửi tới tất cả user trong hệ thống.</p>
+            </div>
+        </div>
+
+        <!-- TAB: DATA -->
+        <div x-show="activeTab === 'data'" x-cloak class="p-4 space-y-4">
+            <h2 class="text-xl font-extrabold text-slate-800 mb-4">Dữ Liệu</h2>
+            
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Sao lưu Database</h3>
+                <button @click="backupDb()" class="w-full py-2.5 bg-green-50 text-green-600 border border-green-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-green-100">
+                    <i class="fa-solid fa-download mr-1.5"></i> Tải Backup (.db)
+                </button>
+            </div>
+
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Xóa Dữ Liệu Cũ</h3>
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Từ thời điểm</label>
+                        <input type="datetime-local" x-model="deleteFromDate" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Đến thời điểm</label>
+                        <input type="datetime-local" x-model="deleteToDate" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-sm">
+                    </div>
+                    <button @click="deleteRange()" class="w-full py-2.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-red-100">
+                        <i class="fa-solid fa-trash mr-1.5"></i> Xóa Dữ Liệu
+                    </button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
+    <!-- BOTTOM NAVIGATION -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-2 flex justify-between items-center z-40 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
+        <button @click="activeTab = 'users'" :class="activeTab === 'users' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-users text-xl"></i>
+            <span class="text-[10px] font-bold">Users</span>
+        </button>
+        <button @click="activeTab = 'system'; fetchSystemStatus()" :class="activeTab === 'system' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-server text-xl"></i>
+            <span class="text-[10px] font-bold">System</span>
+        </button>
+        <button @click="activeTab = 'broadcast'" :class="activeTab === 'broadcast' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-bullhorn text-xl"></i>
+            <span class="text-[10px] font-bold">Tin</span>
+        </button>
+        <button @click="activeTab = 'data'" :class="activeTab === 'data' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-database text-xl"></i>
+            <span class="text-[10px] font-bold">Data</span>
+        </button>
+    </div>
+
+    <!-- USER DETAIL SHEET (Existing) -->
     <div x-show="sheetOpen" class="relative z-50" x-cloak>
         <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300"
              x-show="sheetOpen" x-transition.opacity @click="sheetOpen = false"></div>
@@ -2200,6 +2340,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
     <script>
         function mobileApp() {
             return {
+                activeTab: 'users',
                 isLoading: false,
                 searchQuery: '',
                 filterStatus: 'all',
@@ -2210,8 +2351,15 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 toast: { visible: false, message: '' },
                 users: {{ initial_data | safe }},
                 adminId: '{{ admin_id }}',
+                
+                // New State
+                systemStats: null,
+                systemError: null,
+                broadcastMsg: '',
+                deleteFromDate: '',
+                deleteToDate: '',
 
-                tabs: [
+                userTabs: [
                     { id: 'all', label: 'Tất cả' },
                     { id: 'pro', label: 'Pro' },
                     { id: 'churned', label: 'Tiềm năng' },
@@ -2222,10 +2370,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 getCount(tabId) {
                     if (tabId === 'all') return this.users.length;
                     if (tabId === 'pro') return this.users.filter(u => u.is_pro && !u.is_expired).length;
-                    
-                    // [MỚI] Đếm số user đã dùng Trial nhưng giờ không phải Pro
                     if (tabId === 'churned') return this.users.filter(u => u.has_used_trial && (!u.is_pro || u.is_expired)).length;
-                    
                     if (tabId === 'expiring') return this.users.filter(u => u.is_pro && !u.is_expired && u.days_left <= 3).length;
                     if (tabId === 'free') return this.users.filter(u => !u.is_pro).length;
                     return 0;
@@ -2236,16 +2381,11 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         const uName = user.name ? user.name.toLowerCase() : '';
                         const uId = String(user.id);
                         
-                        // Search logic
                         if (!(!s || uId.includes(s) || uName.includes(s))) return false;
                         
-                        // Tab logic
                         if (this.filterStatus === 'pro') return user.is_pro && !user.is_expired;
-                        
-                        // [MỚI] Logic lọc Tiềm năng
                         if (this.filterStatus === 'churned') {
                             const isExpired = !user.is_pro || user.is_expired;
-                            // Lấy: (Đã dùng trial và hết hạn) HOẶC (Là gói Pro và hết hạn)
                             return isExpired && (user.has_used_trial || user.plan_name === 'pro');
                         }                        
                         if (this.filterStatus === 'expiring') return user.is_pro && !user.is_expired && user.days_left <= 3;
@@ -2255,84 +2395,216 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     });
                 },
 
-                async sendMessage() {
-                    const msg = prompt(`Gửi tin nhắn cho ${this.selectedUser.name}:`);
-                    if (!msg) return;
+                init() {
+                    // Fallback: Get Admin ID from URL if template injection failed
+                    // Handle 'None' string from Python or empty
+                    if (!this.adminId || this.adminId === 'None') {
+                        try {
+                            const params = new URLSearchParams(window.location.search);
+                            this.adminId = params.get('admin_id') || '';
+                        } catch (e) {
+                            console.error("URL param error", e);
+                        }
+                    }
+
+                    // Set default datetime for delete range (Current time)
+                    try {
+                        const now = new Date();
+                        now.setMinutes(now.getMinutes() - now.getTimezoneOffset()); // Adjust to local
+                        this.deleteToDate = now.toISOString().slice(0, 16);
+                        
+                        const yesterday = new Date(now);
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        this.deleteFromDate = yesterday.toISOString().slice(0, 16);
+                    } catch (e) { console.error("Date init error", e); }
+                },
+
+                // --- SYSTEM ACTIONS ---
+                async fetchSystemStatus() {
+                    this.systemStats = null;
+                    this.systemError = null;
+                    const aid = String(this.adminId || '').trim();
+                    if (!aid) { this.systemError = "Thiếu Admin ID"; return; }
+
+                    // Construct absolute URL manually
+                    let baseUrl = window.location.origin;
+                    if (!baseUrl || baseUrl === 'null') baseUrl = '';
+                    
+                    const url = baseUrl + '/api/admin/system/status?admin_id=' + encodeURIComponent(aid) + '&_t=' + Date.now();
+
+                    // Headers to bypass ngrok warning
+                    const headers = {
+                        'ngrok-skip-browser-warning': 'true',
+                        'Content-Type': 'application/json'
+                    };
+
+                    try {
+                        const res = await fetch(url, { 
+                            method: 'GET',
+                            headers: headers 
+                        });
+                        
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        
+                        // Check content type to ensure it is JSON
+                        const contentType = res.headers.get("content-type");
+                        if (!contentType || !contentType.includes("application/json")) {
+                            const text = await res.text();
+                            throw new Error("Not JSON: " + text.substring(0, 30).replace(/</g, '&lt;'));
+                        }
+
+                        const data = await res.json();
+                        if (data && data.active !== undefined) {
+                             this.systemStats = { 
+                                active: data.active, 
+                                redis_keys: data.redis_keys,
+                                cpu: data.cpu,
+                                ram: data.ram
+                             };
+                        } else {
+                             throw new Error("Invalid Data");
+                        }
+                    } catch (e) { 
+                        // Fallback to XHR
+                        try {
+                            const data = await new Promise((resolve, reject) => {
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('GET', url, true);
+                                // Add header to XHR as well
+                                xhr.setRequestHeader('ngrok-skip-browser-warning', 'true');
+                                
+                                xhr.onreadystatechange = function() {
+                                    if (xhr.readyState === 4) {
+                                        if (xhr.status === 200) {
+                                            try { 
+                                                resolve(JSON.parse(xhr.responseText)); 
+                                            } catch (err) { 
+                                                reject(new Error("JSON Error: " + xhr.responseText.substring(0, 30).replace(/</g, '&lt;'))); 
+                                            }
+                                        } else {
+                                            reject(new Error("XHR Status " + xhr.status));
+                                        }
+                                    }
+                                };
+                                xhr.onerror = () => reject(new Error("XHR Network Error"));
+                                xhr.send();
+                            });
+                            
+                            if (data && data.active !== undefined) {
+                                this.systemStats = { 
+                                    active: data.active, 
+                                    redis_keys: data.redis_keys,
+                                    cpu: data.cpu,
+                                    ram: data.ram
+                                };
+                                this.systemError = null;
+                            } else {
+                                throw new Error("Invalid Data (XHR)");
+                            }
+                        } catch (xhrErr) {
+                             this.systemError = "Fetch: " + e.message + " | " + xhrErr.message;
+                        }
+                    }
+                },
+                
+                async toggleBotStatus() {
+                    if (!this.systemStats) return;
+                    const newState = !this.systemStats.active;
+                    const action = newState ? 'BẬT (ON)' : 'TẮT (OFF)';
+                    if (!confirm(`Xác nhận ${action} Bot?`)) return;
                     
                     this.isLoading = true;
                     try {
-                        const res = await fetch('/api/admin/user/message', {
+                        const res = await fetch('/api/admin/system/status', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, text: msg })
+                            body: JSON.stringify({ admin_id: this.adminId, active: newState })
                         });
-                        const text = await res.text();
-                        let result; try { result = JSON.parse(text); } catch { throw new Error("Server trả về HTML lỗi."); }
-
-                        if (result.ok) this.showToast('📩 Đã gửi tin nhắn!');
-                        else alert('❌ Lỗi: ' + result.message);
-                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                        const data = await res.json();
+                        if (data.ok) {
+                            this.systemStats.active = data.active;
+                            this.showToast(`✅ Đã ${action} Bot thành công!`);
+                        } else alert('❌ Lỗi: ' + data.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); }
                     finally { this.isLoading = false; }
+                },
+                async clearCache() {
+                    if (!confirm('Xác nhận xóa Cache Screener?')) return;
+                    this.callApi('/api/admin/cache/clear', { type: 'screener' }, '✅ Đã xóa cache Screener!');
+                },
+                async forceWorker() {
+                    if (!confirm('Bắt buộc chạy Worker (Weekly Report)?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'weekly' }, '✅ Đã gửi lệnh chạy worker!');
+                },
+
+                // --- BROADCAST ACTIONS ---
+                async sendBroadcast() {
+                    if (!this.broadcastMsg.trim()) return alert('Vui lòng nhập nội dung!');
+                    if (!confirm('⚠️ Gửi tin nhắn này tới TẤT CẢ user?')) return;
+                    
+                    this.callApi('/api/admin/system/broadcast', { text: this.broadcastMsg }, '✅ Đang gửi tin nhắn...');
+                    this.broadcastMsg = '';
+                },
+
+                // --- DATA ACTIONS ---
+                async backupDb() {
+                    if (!confirm('Tạo backup và gửi về Telegram Admin?')) return;
+                    this.callApi('/api/admin/system/backup', {}, '✅ Đang tạo backup và gửi về Telegram...');
+                },
+                async deleteRange() {
+                    if (!this.deleteFromDate || !this.deleteToDate) return alert('Vui lòng chọn thời gian!');
+                    // Convert "2023-10-27T14:30" -> "2023-10-27 14:30"
+                    const startStr = this.deleteFromDate.replace('T', ' ');
+                    const endStr = this.deleteToDate.replace('T', ' ');
+                    
+                    if (!confirm(`⚠️ XÓA dữ liệu từ [${startStr}] đến [${endStr}]?\nHành động này không thể hoàn tác!`)) return;
+                    
+                    this.callApi('/api/admin/system/delete_range', { 
+                        start: startStr, 
+                        end: endStr 
+                    }, '✅ Đã xóa dữ liệu!');
+                },
+
+                // --- USER ACTIONS (Existing) ---
+                async sendMessage() {
+                    const msg = prompt(`Gửi tin nhắn cho ${this.selectedUser.name}:`);
+                    if (!msg) return;
+                    this.callApi('/api/admin/user/message', { target_id: this.selectedUser.id, text: msg }, '📩 Đã gửi tin nhắn!');
                 },
 
                 async toggleBan(shouldBan) {
                     const action = shouldBan ? 'ban' : 'unban';
                     const text = shouldBan ? 'CHẶN' : 'BỎ CHẶN';
-                    
-                    if (!confirm(`⚠️ Xác nhận ${text} user ${this.selectedUser.name}?\n(Hành động này có hiệu lực ngay lập tức)`)) return;
+                    if (!confirm(`⚠️ Xác nhận ${text} user ${this.selectedUser.name}?`)) return;
                     
                     this.isLoading = true;
                     try {
                         const res = await fetch('/api/admin/user/ban', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ 
-                                admin_id: this.adminId, 
-                                target_id: this.selectedUser.id, 
-                                action: action 
-                            })
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, action: action })
                         });
                         const result = await res.json();
                         if (result.ok) {
-                            this.selectedUser.is_banned = shouldBan; // Cập nhật UI ngay
+                            this.selectedUser.is_banned = shouldBan;
                             this.showToast(`✅ Đã ${text} thành công!`);
-                        } else {
-                            alert('❌ Lỗi: ' + result.message);
-                        }
+                        } else alert('❌ Lỗi: ' + result.message);
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
                     finally { this.isLoading = false; }
                 },
 
-                // Hàm xử lý mở chat thông minh
                 async requestContact(user) {
                     this.isLoading = true;
                     try {
-                        // 1. Gọi API
                         await fetch('/api/admin/user/contact', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ 
-                                admin_id: this.adminId, 
-                                target_id: user.id,
-                                target_name: user.name,
-                                username: user.username 
-                            })
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: user.id, target_name: user.name, username: user.username })
                         });
-                        
-                        // 2. Đóng Web App (Fix lỗi 'Telegram is not defined')
-                        // Kiểm tra xem object Telegram có tồn tại không trước khi gọi
-                        if (window.Telegram && window.Telegram.WebApp) {
-                            window.Telegram.WebApp.close();
-                        } else {
-                            console.warn("Không tìm thấy Telegram SDK. Đang chạy trên trình duyệt?");
-                            alert("✅ Đã gửi link chat về bot! Bạn hãy kiểm tra tin nhắn.");
-                        }
-                        
-                    } catch (e) {
-                        alert('Lỗi kết nối: ' + e.message);
-                    } finally {
-                        this.isLoading = false;
-                    }
+                        if (window.Telegram && window.Telegram.WebApp) window.Telegram.WebApp.close();
+                        else alert("✅ Đã gửi link chat về bot!");
+                    } catch (e) { alert('Lỗi kết nối: ' + e.message); } 
+                    finally { this.isLoading = false; }
                 },
 
                 async extendUser(days) {
@@ -2346,26 +2618,6 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     this.callApi('/api/admin/user/deactivate', {}, '🚫 Đã hủy gói thành công!');
                 },
 
-                async callApi(url, body, successMsg) {
-                    this.isLoading = true;
-                    try {
-                        const res = await fetch(url, {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, ...body })
-                        });
-                        const text = await res.text();
-                        let result; try { result = JSON.parse(text); } catch { throw new Error("Server lỗi HTML."); }
-
-                        if (result.ok) {
-                            this.showToast(successMsg);
-                            this.sheetOpen = false;
-                        } else {
-                            alert('❌ Lỗi: ' + result.message);
-                        }
-                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
-                    finally { this.isLoading = false; }
-                },
                 async saveNote() {
                     if (!this.selectedUser) return;
                     this.isLoading = true;
@@ -2373,23 +2625,38 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         const res = await fetch('/api/admin/user/note', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({ 
-                                admin_id: this.adminId, 
-                                target_id: this.selectedUser.id, 
-                                note: this.currentNote 
-                            })
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, note: this.currentNote })
                         });
                         const result = await res.json();
                         if (result.ok) {
                             this.selectedUser.admin_note = this.currentNote;
                             this.isNoteDirty = false;
                             this.showToast('✅ Đã lưu ghi chú!');
-                        } else {
-                            alert('❌ Lỗi: ' + result.message);
-                        }
+                        } else alert('❌ Lỗi: ' + result.message);
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
                     finally { this.isLoading = false; }
                 },
+
+                async callApi(url, body, successMsg) {
+                    this.isLoading = true;
+                    try {
+                        const targetId = this.selectedUser ? this.selectedUser.id : null;
+                        const res = await fetch(url, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: targetId, ...body })
+                        });
+                        const text = await res.text();
+                        let result; try { result = JSON.parse(text); } catch { throw new Error("Server lỗi HTML."); }
+
+                        if (result.ok) {
+                            this.showToast(successMsg);
+                            this.sheetOpen = false;
+                        } else alert('❌ Lỗi: ' + result.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
                 copyId(id) { navigator.clipboard.writeText(id); this.showToast('Đã sao chép ID: ' + id); },
                 showToast(msg) { this.toast.message = msg; this.toast.visible = true; setTimeout(() => this.toast.visible = false, 2500); },
                 openSheet(user) { 
