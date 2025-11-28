@@ -629,23 +629,20 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.warning(f"Lỗi khi auto-save chat_id {chat_id}: {e}")
 
-    # --- 2. FALLBACK (GÕ BẬY BẠ / KHÔNG HIỂU) ---
-    # Thay vì chỉ báo lỗi, hãy cung cấp lối thoát (Nút Dashboard & Help)
-    kb_fallback = [
-        [
-            InlineKeyboardButton("🏠 Mở Dashboard", callback_data="back_to_start"),
-            InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")
-        ]
-    ]
-
-    # Phản hồi mặc định
-    reply_text = (
-        "😅 **Xin lỗi, mình chưa hiểu ý bạn.**\n\n"
-        "💡 **Gợi ý:**\n"
-        "• Gõ mã cổ phiếu 3 chữ cái (VD: `HPG`, `FPT`) để tra cứu.\n"
-        "• Hoặc chọn tính năng nhanh bên dưới:"
-    )
-    await reply_md(update, reply_text, reply_markup=InlineKeyboardMarkup(kb_fallback))
+    # --- 2. FALLBACK (GÕ BẬY BẠ / KHÔNG HIỂU) -> CHUYỂN SANG AI ---
+    # Thay vì báo lỗi, gửi sang Worker để AI trả lời
+    
+    # Gửi tin nhắn chờ (để user biết bot đang nghĩ)
+    sent_msg = await reply_md(update, "🤖 **Đang suy nghĩ...**")
+    
+    # Push sang Worker
+    payload = {
+        "cmd": "CMD_ASK_AI",
+        "chat_id": chat_id,
+        "question": update.message.text, # Lấy text gốc (có thể có dấu)
+        "loading_msg_id": sent_msg.message_id
+    }
+    await asyncio.to_thread(push_to_worker, payload)
 
 
 @anti_spam_check
@@ -1174,6 +1171,13 @@ async def redis_gateway_loop():
                     text = payload.get('text')
                     markup_data = payload.get('reply_markup')
                     msg_type = payload.get('msg_type', 'GENERAL')
+                    
+                    # [FIX MARKDOWN] Chuyển đổi cú pháp Gemini (**) sang Telegram Legacy (*)
+                    if text:
+                        # 1. Bold: **text** -> *text*
+                        text = text.replace("**", "*")
+                        # 2. Header: ### Title -> *Title* (Telegram không hỗ trợ #)
+                        text = text.replace("### ", "*").replace("## ", "*")
                     
                     # [QUAN TRỌNG] Lấy ID để sửa
                     edit_id = payload.get('edit_id')

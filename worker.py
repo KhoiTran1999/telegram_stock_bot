@@ -48,6 +48,7 @@ from report_cache import (
     get_report_from_redis,
     delete_report_from_redis,
 )
+from ai_knowledge import BOT_KNOWLEDGE_BASE
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -117,7 +118,7 @@ except:
 GEMINI_KEYS = [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2")]
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k] # Lọc key rỗng
 
-def call_gemini_safe(model_id, contents, config=None):
+def call_gemini_safe(model_id, contents, config=None, return_usage=False):
     """Hàm gọi Gemini an toàn (Failover)"""
     last_error = None
     for api_key in GEMINI_KEYS:
@@ -126,12 +127,18 @@ def call_gemini_safe(model_id, contents, config=None):
             resp = client.models.generate_content(
                 model=model_id, contents=contents, config=config
             )
-            return getattr(resp, "text", "").strip()
+            text = getattr(resp, "text", "").strip()
+            
+            if return_usage:
+                usage = getattr(resp, "usage_metadata", None)
+                return text, usage
+                
+            return text
         except Exception as e:
             last_error = e
             continue
     log.error(f"All Gemini keys failed: {last_error}")
-    return None
+    return (None, None) if return_usage else None
 
 # --- CÁC HÀM HELPER ---
 
@@ -182,6 +189,14 @@ def extract_json_from_text(text: str) -> str:
     
     return text
 
+def remove_markdown(text):
+    """
+    Xóa các ký tự Markdown (**...**) để văn bản sạch hơn khi lưu lịch sử.
+    """
+    if not text: return ""
+    # Xóa **, __, `
+    return text.replace("**", "").replace("__", "").replace("`", "").strip()
+
 def in_session_vietnam():
     """Kiểm tra giờ giao dịch"""
     vn_tz = pytz.timezone(TIMEZONE)
@@ -217,7 +232,98 @@ def next_session_start(now):
         
     return now + datetime.timedelta(seconds=60)
 
+async def process_ask_ai(chat_id, question, loading_msg_id=None):
+    """
+    Xử lý câu hỏi CSKH bằng Gemini Flash Lite.
+    [UPDATED] Có bộ nhớ hội thoại (Context Aware) lưu trong Redis.
+    """
+    log.info(f"[{INSTANCE_ID}] 🤖 AI CSKH: {chat_id} - '{question}'")
+    
+    try:
+        # 1. Lấy lịch sử từ Redis (Context Memory)
+        history_key = f"ai_history:{chat_id}"
+        history_context = ""
+        
+        if r_client:
+            # Lấy 10 dòng gần nhất (tương đương 5 cặp hỏi-đáp)
+            # Redis List: [User: A, Bot: B, User: C, Bot: D...]
+            items = r_client.lrange(history_key, -10, -1) 
+            if items:
+                history_context = "\n".join(items)
 
+        # 2. Tạo Prompt (System + History + User)
+        full_prompt = f"""{BOT_KNOWLEDGE_BASE}
+
+---
+LỊCH SỬ HỘI THOẠI (Context):
+{history_context}
+
+User: {question}
+Bot:"""
+        
+        # 3. Gọi Gemini
+        answer, usage = await asyncio.to_thread(
+            call_gemini_safe,
+            model_id="gemini-2.0-flash-lite-preview-02-05", 
+            contents=full_prompt,
+            return_usage=True
+        )
+
+        # [DEBUG LOG] Xem raw markdown từ AI
+        log.info(f"[{INSTANCE_ID}] 🤖 AI Raw Response for {chat_id}:\n{answer}")
+        
+        if not answer:
+            answer = "😅 Xin lỗi, hiện tại mình đang bị quá tải. Bạn vui lòng thử lại sau nhé."
+        
+        # [LOG ADMIN]
+        if usage and (chat_id == ADMIN_ID):
+            try:
+                in_tok = usage.prompt_token_count
+                out_tok = usage.candidates_token_count
+                total = usage.total_token_count
+                answer += f"\n\n`[DEBUG] In: {in_tok} | Out: {out_tok} | Total: {total}`"
+            except: pass
+
+        # 4. Lưu hội thoại mới vào Redis (để AI nhớ cho lần sau)
+        if r_client:
+            # Lưu câu hỏi của User
+            r_client.rpush(history_key, f"User: {question}")
+            
+            # Lưu câu trả lời của Bot (Cần xóa phần debug token nếu có)
+            clean_answer = answer.split("\n\n`[DEBUG]")[0]
+            
+            # [MỚI] Xóa Markdown khi lưu vào lịch sử để tiết kiệm token & sạch context
+            history_text = remove_markdown(clean_answer)
+            r_client.rpush(history_key, f"Bot: {history_text}")
+            
+            # Giới hạn lịch sử: Chỉ giữ 20 tin gần nhất (10 cặp) để tiết kiệm Token
+            r_client.ltrim(history_key, -20, -1)
+            
+            # Set thời gian hết hạn cho bộ nhớ (24 giờ)
+            r_client.expire(history_key, 86400)
+
+        # 5. Gửi kết quả về Gateway
+        kb = {
+            "inline_keyboard": [[
+                {"text": "🏠 Dashboard", "callback_data": "back_to_start"},
+                {"text": "❓ Hướng dẫn", "callback_data": "menu_help"}
+            ]]
+        }
+        
+        push_telegram_msg(
+            chat_id=chat_id,
+            text=answer,
+            reply_markup=kb,
+            edit_id=loading_msg_id 
+        )
+
+    except Exception as e:
+        log.error(f"AI CSKH Error: {e}")
+        push_telegram_msg(
+            chat_id=chat_id,
+            text="⚠️ Lỗi hệ thống AI. Vui lòng thử lại sau.",
+            edit_id=loading_msg_id
+        )
 
 async def worker_inbound_loop():
     """
@@ -272,6 +378,12 @@ async def worker_inbound_loop():
                     elif cmd == "FORCE_SCREENER":
                         admin_id = payload.get('admin_id')
                         asyncio.create_task(process_force_update_screener(admin_id))
+
+                    elif cmd == "CMD_ASK_AI":
+                        chat_id = payload.get('chat_id')
+                        question = payload.get('question')
+                        loading_id = payload.get('loading_msg_id')
+                        asyncio.create_task(process_ask_ai(chat_id, question, loading_id))
 
                 except Exception as e:
                     log.error(f"Inbound Error: {e}")
