@@ -32,6 +32,23 @@ Bot Telegram thông minh hỗ trợ nhà đầu tư chứng khoán Việt Nam v�
 
 Dự án sử dụng mô hình **Gateway - Worker** để đảm bảo hiệu năng và khả năng mở rộng.
 
+```mermaid
+graph TD
+    User[User Telegram] -->|Message/Command| Gateway[Gateway (Flask/Hypercorn)]
+    Gateway -->|Push Task| Redis[(Redis Queue & Cache)]
+    Gateway -->|Read/Write| DB[(PostgreSQL)]
+    Gateway -->|Reply| User
+
+    Worker[Worker Process] -->|Pop Task| Redis
+    Worker -->|Pub Result| Redis
+    Worker -->|Read/Write| DB
+    
+    Worker -->|Fetch Data| Data[Data Sources (Vnstock, RSS)]
+    Worker -->|Analyze| AI[Gemini AI]
+    
+    Redis -->|Sub Result| Gateway
+```
+
 ### Tech Stack
 - **Language**: Python 3.12+
 - **Framework**: 
