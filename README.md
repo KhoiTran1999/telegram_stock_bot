@@ -2,6 +2,8 @@
 
 Bot Telegram thông minh hỗ trợ nhà đầu tư chứng khoán Việt Nam với khả năng theo dõi giá realtime, cảnh báo tín hiệu, và phân tích thị trường tự động bằng AI (Gemini).
 
+![Chatbot Preview](chatbotImage.png)
+
 ---
 
 ## 🎯 Tính năng nổi bật
