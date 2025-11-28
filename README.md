@@ -34,17 +34,17 @@ Dự án sử dụng mô hình **Gateway - Worker** để đảm bảo hiệu n�
 
 ```mermaid
 graph TD
-    User[User Telegram] -->|Message/Command| Gateway[Gateway (Flask/Hypercorn)]
-    Gateway -->|Push Task| Redis[(Redis Queue & Cache)]
-    Gateway -->|Read/Write| DB[(PostgreSQL)]
+    User["User Telegram"] -->|Message/Command| Gateway["Gateway (Flask/Hypercorn)"]
+    Gateway -->|Push Task| Redis[("Redis Queue & Cache")]
+    Gateway -->|Read/Write| DB[("PostgreSQL")]
     Gateway -->|Reply| User
 
-    Worker[Worker Process] -->|Pop Task| Redis
+    Worker["Worker Process"] -->|Pop Task| Redis
     Worker -->|Pub Result| Redis
     Worker -->|Read/Write| DB
     
-    Worker -->|Fetch Data| Data[Data Sources (Vnstock, RSS)]
-    Worker -->|Analyze| AI[Gemini AI]
+    Worker -->|Fetch Data| Data["Data Sources (Vnstock, RSS)"]
+    Worker -->|Analyze| AI["Gemini AI"]
     
     Redis -->|Sub Result| Gateway
 ```
