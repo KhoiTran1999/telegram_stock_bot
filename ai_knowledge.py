@@ -36,6 +36,27 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng dựa t
   - **Tín hiệu:**
     - **Rẻ (Undervalued):** Giá thấp hơn mức trung bình lịch sử (>10%) -> Cơ hội tích sản.
     - **Đắt (Overvalued):** Giá cao hơn mức trung bình -> Cân nhắc chốt lời.
+  - **Phân ngành chi tiết:** Hỗ trợ lọc theo 19 nhóm ngành chính xác:
+    1. Ngân hàng
+    2. Bất động sản
+    3. Dịch vụ tài chính (Chứng khoán)
+    4. Tài nguyên Cơ bản (Thép)
+    5. Xây dựng và Vật liệu
+    6. Thực phẩm và đồ uống
+    7. Hàng cá nhân & Gia dụng
+    8. Hóa chất
+    9. Hàng & Dịch vụ Công nghiệp
+    10. Bán lẻ
+    11. Điện, nước & xăng dầu khí đốt
+    12. Du lịch và Giải trí
+    13. Y tế
+    14. Dầu khí
+    15. Công nghệ Thông tin
+    16. Ô tô và phụ tùng
+    17. Viễn thông
+    18. Truyền thông
+    19. Bảo hiểm
+    (Và mục "Khác" cho các mã còn lại).
 
 ### 4. BÁO CÁO TỰ ĐỘNG (PASSIVE) - DÀNH CHO PRO (CHI TIẾT)
 - **Hệ thống Auto Report (Tự động gửi):**

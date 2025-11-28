@@ -21,12 +21,17 @@ from digest_template import (
     REPORT_HTML_TEMPLATE,
     REPORT_404_TEMPLATE,
     SCREENER_HTML_TEMPLATE,
+    SCREENER_WEBAPP_TEMPLATE,
     LOCKED_FEATURE_TEMPLATE,
     EOD_HTML_TEMPLATE, 
     EOD_404_TEMPLATE,
     FLASH_VIEW_HTML_TEMPLATE,
     ADMIN_MOBILE_TEMPLATE,
 )
+
+# --- GLOBAL VARIABLES ---
+_vci_blocked_date = None
+
 from telegram import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
@@ -98,6 +103,7 @@ from db_utils import (
     check_trial_eligibility,
     activate_trial_package,
     get_digest_from_redis,
+    get_historical_valuation_from_redis,
 )
 import psutil
 import time
@@ -605,23 +611,54 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- LOGIC MỚI: SMART INPUT HANDLING ---
     # Kiểm tra: Đúng 3 ký tự VÀ là chữ cái (A-Z)
     if len(user_text) == 3 and user_text.isalpha():
-        # Tạo 2 nút bấm Inline
-        kb = [
-            [
-                InlineKeyboardButton(f"➕ Theo dõi {user_text}", callback_data=f"btn_add_{user_text}"),
-                InlineKeyboardButton(f"📄 Soi hồ sơ", callback_data=f"btn_info_{user_text}")
-            ],
-            [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
-        ]
-        
-        # Gửi tin nhắn gợi ý
-        await reply_md(
-            update,
-            f"🤔 Bạn đang quan tâm mã **{user_text}** phải không?\n"
-            f"Chọn nhanh thao tác bên dưới nhé:",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
+        # [MỚI] Validate mã có tồn tại không trước khi hiện menu
+        try:
+            # Gửi action typing để user biết bot đang check
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            
+            # Gọi hàm fetch giá để check tồn tại (nhanh)
+            data = await fetch_data_smart([user_text])
+            
+            # Chỉ hiện menu nếu lấy được dữ liệu giá (tức là mã tồn tại)
+            if data and user_text in data:
+                # Kiểm tra xem mã đã có trong watchlist chưa
+                watchlist = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
+                is_watched = user_text in watchlist
+
+                base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
+                chart_url = f"{base_url}/chart/{user_text}"
+
+                # Xác định nút hành động (Thêm hoặc Xóa)
+                if is_watched:
+                    action_btn = InlineKeyboardButton(f"🗑️ Bỏ theo dõi", callback_data=f"btn_del_{user_text}")
+                else:
+                    action_btn = InlineKeyboardButton(f"➕ Theo dõi", callback_data=f"btn_add_{user_text}")
+
+                # Tạo nút bấm Inline
+                kb = [
+                    [InlineKeyboardButton(f"📊 Soi Chart {user_text}", web_app=WebAppInfo(url=chart_url))],
+                    [
+                        action_btn,
+                        InlineKeyboardButton(f"📄 Soi hồ sơ", callback_data=f"btn_info_{user_text}")
+                    ],
+                    [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+                ]
+                
+                # Gửi tin nhắn gợi ý
+                await reply_md(
+                    update,
+                    f"🤔 Bạn đang quan tâm mã **{user_text}** phải không?\n"
+                    f"Chọn nhanh thao tác bên dưới nhé:",
+                    reply_markup=InlineKeyboardMarkup(kb)
+                )
+                return
+            else:
+                # [MỚI] Báo lỗi nếu mã không tồn tại
+                await reply_md(update, f"⚠️ Mã **{user_text}** không tồn tại trên sàn chứng khoán.\nVui lòng kiểm tra lại.")
+                return
+        except Exception as e:
+            log.warning(f"Check symbol {user_text} error: {e}")
+            # Nếu lỗi check thì bỏ qua, xuống phần AI xử lý
     # ---------------------------------------
 
     # Logic cũ (Xử lý user mới + Báo lỗi)
@@ -1917,84 +1954,43 @@ async def cmd_announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @task_locked
 async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Xem bộ lọc. Nếu là Pro -> Gửi lệnh sang Worker.
+    Mở WebApp Screener để lọc cổ phiếu theo ngành và upside.
     """
     if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        await send_md(context.bot, update.effective_chat.id, "⚙️ Bot đang bảo trì.")
         return
 
     chat_id = update.effective_chat.id
-    is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-    base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
-
-    # CASE 1: FREE USER (Giữ nguyên)
-    if not is_pro:
-        web_app_url = f"{base_url}/screener/locked"
-        kb = [[InlineKeyboardButton("💎 Mở Bộ Lọc (Pro Only)", web_app=WebAppInfo(url=web_app_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        await reply_md(
-            update,
-            "💎 **Bộ Lọc Cổ Phiếu Giá Trị**\nQuét toàn thị trường tìm mã Rẻ/Đắt.\n👇 Xem demo tính năng.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+    
+    # 1. Xác định Base URL (Ưu tiên Render -> Ngrok)
+    base_url = os.getenv("RENDER_EXTERNAL_URL")
+    if not base_url:
+        base_url = os.getenv("NGROK_URL")
+    
+    if not base_url:
+        await send_md(context.bot, chat_id, "⚠️ Server chưa cấu hình URL (Render/Ngrok). Không thể mở WebApp.")
         return
 
-    # CASE 2: PRO USER -> Gửi lệnh sang Worker
-    # Gửi tin Loading
-    progress_msg = await reply_md(
-        update, 
-        f"💎 **Đang quét dữ liệu toàn thị trường...**\n`[{make_progress_bar(30)}] 30%`"
+    # Xử lý trailing slash
+    if base_url.endswith("/"):
+        base_url = base_url[:-1]
+        
+    webapp_url = f"{base_url}/screener/value"
+
+    # 2. Tạo nút mở WebApp
+    kb = [
+        [InlineKeyboardButton("🚀 Mở Bộ Lọc Cổ Phiếu", web_app=WebAppInfo(url=webapp_url))]
+    ]
+    reply_markup = InlineKeyboardMarkup(kb)
+
+    # 3. Gửi tin nhắn
+    await send_md(
+        context.bot, 
+        chat_id, 
+        "🔍 *Bộ Lọc Cổ Phiếu (Screener)*\n\n"
+        "Bấm nút bên dưới để mở công cụ lọc cổ phiếu theo ngành và biên an toàn (Upside).",
+        reply_markup=reply_markup
     )
-
-    try:
-        # Giả lập loading steps (Để tạo cảm giác mượt mà)
-        # Bước 1: Thu thập dữ liệu (30%)
-        await asyncio.sleep(0.3) 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
-            parse_mode="Markdown"
-        )
-
-        # Bước 2: Gọi AI (Thật)
-        await asyncio.sleep(0.3) 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
-            parse_mode="Markdown"
-        )
-
-        # Bước 3: Hoàn tất (100%)
-        await asyncio.sleep(0.3) 
-        sent_msg = await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
-            parse_mode="Markdown"
-        )
-    
-        # Bắn lệnh
-        payload = {
-            "cmd": "GEN_SCREENER",
-            "chat_id": chat_id,
-            "loading_msg_id": sent_msg.message_id # <--- Gửi ID để Worker sửa tin
-        }
-        await asyncio.to_thread(push_to_worker, payload)
-
-    except Exception as e:
-        log.error(f"Lỗi /report: {e}")
-        # Nếu lỗi, sửa tin nhắn loading thành báo lỗi
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
 
 async def cmd_screener_value_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -3110,6 +3106,116 @@ def view_digest(digest_id):
     
     # Render trang chính
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
+
+# --- HELPER CHO SCREENER WEBAPP ---
+def get_screener_data_for_webapp():
+    """
+    Lấy dữ liệu screener.
+    Cố gắng lấy từ cache 'global_screener_snapshot' (do Worker hoặc request trước tạo).
+    Nếu không có, tự tính toán (fallback) và cache lại 5 phút.
+    """
+    try:
+        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        
+        # 1. Thử lấy từ Cache
+        cached = r.get("global_screener_snapshot")
+        if cached:
+            return json.loads(cached)
+
+        # 2. Nếu không có, tính toán (Fallback)
+        # Lấy dữ liệu lịch sử
+        hist_data = get_historical_valuation_from_redis()
+        if not hist_data:
+            return {"data": []}
+
+        # Lấy dữ liệu thị trường (Sync call)
+        screener_df = Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700)
+        
+        # Lấy thông tin ngành
+        sectors_map = {}
+        try:
+            with open("sectors.json", "r", encoding="utf-8") as f:
+                sectors_map = json.load(f)
+        except: pass
+
+        result_data = []
+        for index, row in screener_df.iterrows():
+            sym = row['ticker']
+            if sym not in hist_data: continue
+            
+            try:
+                pe_cur = float(row['pe'])
+                pb_cur = float(row['pb'])
+                # Giá đóng cửa (đơn vị nghìn đồng)
+                current_price = float(row.get('close', 0)) * 1000 
+                if current_price == 0:
+                    current_price = float(row.get('price', 0)) * 1000
+            except: continue
+
+            pe_avg = hist_data[sym]['pe_avg']
+            pb_avg = hist_data[sym]['pb_avg']
+            
+            if pe_cur <= 0 or pb_cur <= 0: continue
+            if pe_avg <= 0 or pb_avg <= 0: continue
+
+            # Tính Upside (Biên an toàn)
+            # Upside = (Fair - Current) / Current
+            # Fair Value ước tính theo Mean Reversion
+            upside_pe = (pe_avg / pe_cur) - 1 if pe_cur > 0 else 0
+            upside_pb = (pb_avg / pb_cur) - 1 if pb_cur > 0 else 0
+            
+            avg_upside = (upside_pe + upside_pb) / 2
+            
+            # Fair Value (Display purpose)
+            fair_value = current_price * (1 + avg_upside)
+
+            # Discount logic for frontend (Negative = Undervalued/Green)
+            discount_pct = -avg_upside * 100 
+
+            # Signal
+            if avg_upside >= 0.15:
+                signal = "Undervalued"
+            elif avg_upside <= -0.15:
+                signal = "Overvalued"
+            else:
+                signal = "Fair"
+
+            sector = sectors_map.get(sym, "Khác")
+            
+            result_data.append({
+                "symbol": sym,
+                "sector": sector,
+                "price": current_price,
+                "fair": fair_value,
+                "discount": round(discount_pct, 2),
+                "signal": signal,
+                "pe": pe_cur,
+                "pe_avg": pe_avg,
+                "pb": pb_cur,
+                "pb_avg": pb_avg
+            })
+            
+        payload = {"data": result_data}
+        
+        # Cache 5 phút
+        r.set("global_screener_snapshot", json.dumps(payload), ex=300)
+        
+        return payload
+
+    except Exception as e:
+        log.error(f"Lỗi get_screener_data_for_webapp: {e}")
+        return {"data": []}
+
+@flask_app.route("/screener/value")
+def view_screener_webapp():
+    """Route hiển thị Web App Screener"""
+    return render_template_string(SCREENER_WEBAPP_TEMPLATE)
+
+@flask_app.route("/api/screener-data")
+def api_screener_data():
+    """API trả về dữ liệu JSON cho Screener WebApp"""
+    data = get_screener_data_for_webapp()
+    return jsonify(data)
 
 @flask_app.route("/info/<symbol>")
 async def view_profile(symbol: str): # <--- Đổi thành async

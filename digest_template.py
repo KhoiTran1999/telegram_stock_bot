@@ -77,6 +77,34 @@ DIGEST_HTML_TEMPLATE = """
                 --rank-other-text: #d1d5db;
             }
         }
+        
+        :root[data-theme="dark"] {
+            --border-color: rgba(255,255,255,0.15);
+            --info-bg-light: rgba(10, 132, 255, 0.15); 
+
+            --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
+            --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
+            --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
+
+            /* Nền ô chỉ số sáng hơn nền card một chút để tạo độ nổi */
+            --metric-bg: #2c2c2e; 
+
+            /* Rank 1 (Gold Dark) */
+            --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
+            --r1-border: #fbbf24; --r1-shadow: rgba(251, 191, 36, 0.1); 
+
+            /* Rank 2 (Silver Dark) */
+            --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
+            --r2-border: #9ca3af; --r2-shadow: rgba(255,255,255,0.05);
+
+            /* Rank 3 (Bronze Dark) */
+            --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
+            --r3-border: #fb923c; --r3-shadow: rgba(251, 146, 60, 0.1);
+
+            /* Rank 4+ (Dark) */
+            --rank-other-bg: rgba(255,255,255,0.1);
+            --rank-other-text: #d1d5db;
+        }
 
         body { 
             font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
@@ -387,6 +415,13 @@ DIGEST_HTML_TEMPLATE = """
 
     <script>
         Telegram.WebApp.expand();
+        
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        });
+
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
             Telegram.WebApp.ready();
@@ -526,6 +561,9 @@ PROFILE_HTML_TEMPLATE = r"""
                 --chart-grid: #3a3a3c; /* Màu lưới tối */
             }
         }
+        :root[data-theme="dark"] {
+            --chart-grid: #3a3a3c; /* Màu lưới tối */
+        }
 
         * { box-sizing: border-box; }
         
@@ -612,6 +650,13 @@ PROFILE_HTML_TEMPLATE = r"""
 
     <script>
         Telegram.WebApp.expand();
+        
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+            applyChartTheme();
+        });
 
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
@@ -624,9 +669,6 @@ PROFILE_HTML_TEMPLATE = r"""
 
             // --- [THEME ADAPTION LOGIC] ---
             applyChartTheme();
-            
-            // Lắng nghe sự kiện đổi theme của Telegram (nếu có)
-            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
         });
 
         function applyChartTheme() {
@@ -875,10 +917,17 @@ REPORT_HTML_TEMPLATE = r"""
 
     <script>
         Telegram.WebApp.expand();
+        
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+            applyChartTheme();
+        });
+
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
             applyChartTheme();
-            Telegram.WebApp.onEvent('themeChanged', applyChartTheme);
             Telegram.WebApp.ready();
         });
 
@@ -1036,23 +1085,60 @@ SCREENER_HTML_TEMPLATE = r"""
         }
 
         /* --- Dark Mode Overrides --- */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-color: #121212; 
+                --card-bg: #1e1e1e; 
+                --text-primary: #f9fafb; 
+                --text-secondary: #9ca3af;
+                --metric-border: rgba(255, 255, 255, 0.15);
+                --metric-bg: #2c2c2e;
+                
+                --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
+                --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
+                --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
+
+                --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%); 
+                --r1-border: #b45309; 
+                --r1-shadow: rgba(251, 191, 36, 0.1);
+
+                --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%); 
+                --r2-border: #4b5563; 
+                --r2-shadow: rgba(255, 255, 255, 0.05);
+
+                --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%); 
+                --r3-border: #7c2d12; 
+                --r3-shadow: rgba(251, 146, 60, 0.1);
+                
+                --rank-other-bg: rgba(255,255,255,0.1);
+                --rank-other-text: #d1d5db;
+            }
+        }
+
         [data-theme="dark"] {
             --bg-color: #121212; 
             --card-bg: #1e1e1e; 
             --text-primary: #f9fafb; 
             --text-secondary: #9ca3af;
             --metric-border: rgba(255, 255, 255, 0.15);
-            --metric-bg: #2c2c2e; /* Nền ô chỉ số sáng hơn nền card */
+            --metric-bg: #2c2c2e;
             
             --success-text: #34d399; --success-bg: rgba(5, 150, 105, 0.2);
             --danger-text: #f87171;  --danger-bg: rgba(220, 38, 38, 0.2);
             --warning-text: #fbbf24; --warning-bg: rgba(217, 119, 6, 0.2);
 
-            --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%); --r1-border: #b45309; --r1-shadow: rgba(251, 191, 36, 0.1);
-            --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%); --r2-border: #4b5563; --r2-shadow: rgba(255, 255, 255, 0.05);
-            --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%); --r3-border: #7c2d12; --r3-shadow: rgba(251, 146, 60, 0.1);
+            --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%); 
+            --r1-border: #b45309; 
+            --r1-shadow: rgba(251, 191, 36, 0.1);
+
+            --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%); 
+            --r2-border: #4b5563; 
+            --r2-shadow: rgba(255, 255, 255, 0.05);
+
+            --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%); 
+            --r3-border: #7c2d12; 
+            --r3-shadow: rgba(251, 146, 60, 0.1);
             
-            /* Rank 4+ (Dark fix) */
             --rank-other-bg: rgba(255,255,255,0.1);
             --rank-other-text: #d1d5db;
         }
@@ -1193,6 +1279,12 @@ SCREENER_HTML_TEMPLATE = r"""
         const style = document.createElement('style');
         style.innerHTML = `@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`;
         document.head.appendChild(style);
+
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        });
     </script>
 </body>
 </html>
@@ -1217,6 +1309,22 @@ LOCKED_FEATURE_TEMPLATE = r"""
             --brand-gold: #D97706;
             --brand-gold-bg: #FFFBEB;
             --btn-gradient: linear-gradient(135deg, #007aff 0%, #af52de 100%);
+        }
+        
+        /* Dark Mode */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-body: #121212;
+                --text-primary: #F9FAFB;
+                --text-secondary: #9CA3AF;
+                --brand-gold-bg: rgba(217, 119, 6, 0.2);
+            }
+        }
+        :root[data-theme="dark"] {
+            --bg-body: #121212;
+            --text-primary: #F9FAFB;
+            --text-secondary: #9CA3AF;
+            --brand-gold-bg: rgba(217, 119, 6, 0.2);
         }
         
         /* --- SMOOTH LOADING --- */
@@ -1290,6 +1398,13 @@ LOCKED_FEATURE_TEMPLATE = r"""
     
     <script>
         Telegram.WebApp.expand();
+        
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        });
+
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
             Telegram.WebApp.ready();
@@ -1333,6 +1448,16 @@ EOD_HTML_TEMPLATE = r"""
             .ai-card { background: var(--ai-bg); }
             .ai-content { color: var(--ai-content-color); }
         }
+        
+        :root[data-theme="dark"] {
+            --ai-bg: #1c273b;
+            --ai-border: #007aff;
+            --text-color: var(--tg-theme-text-color, #fff);
+            --ai-content-color: #f0f9ff;
+            --border-color: rgba(255,255,255,0.1);
+        }
+        :root[data-theme="dark"] .ai-card { background: var(--ai-bg); }
+        :root[data-theme="dark"] .ai-content { color: var(--ai-content-color); }
 
         body { font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
         
@@ -1480,6 +1605,13 @@ EOD_HTML_TEMPLATE = r"""
 
     <script>
         Telegram.WebApp.expand();
+        
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        });
+
         window.addEventListener('load', function() { 
             document.body.classList.add('loaded'); 
 
@@ -2270,6 +2402,392 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 getStatusClass(user) { return !user.is_pro ? 'bg-slate-100 text-slate-500' : (user.is_expired ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'); },
                 formatDate(isoStr) { if (!isoStr) return '—'; try { return new Date(isoStr).toLocaleDateString('vi-VN'); } catch { return isoStr; } },
                 formatMoney(num) { return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(num); }
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
+SCREENER_WEBAPP_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bộ Lọc Cổ Phiếu</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            /* --- Biến Theme Chung (Light Mode Mặc định) --- */
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+            --accent-color: var(--tg-theme-button-color, #007aff);
+            --border-color: rgba(0,0,0,0.05);
+
+            /* Badge Colors */
+            --success-bg: rgba(52, 199, 89, 0.15); --success-text: #34c759;
+            --warning-bg: rgba(255, 204, 0, 0.15); --warning-text: #d48806;
+            --danger-bg: rgba(255, 59, 48, 0.15);  --danger-text: #ff3b30;
+            
+            /* --- Màu Định giá (Rankings) - Light Mode --- */
+            --metric-bg: #f9fafb; 
+            
+            /* Rank 1 (Gold) */
+            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); 
+            --r1-border: #fbbf24; 
+            --r1-shadow: rgba(245, 158, 11, 0.25);
+            
+            /* Rank 2 (Silver) */
+            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); 
+            --r2-border: #9ca3af; 
+            --r2-shadow: rgba(156, 163, 175, 0.2);
+            
+            /* Rank 3 (Bronze) */
+            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); 
+            --r3-border: #fdba74; 
+            --r3-shadow: rgba(234, 88, 12, 0.15);
+
+            /* Rank 4+ */
+            --rank-other-bg: #e5e7eb;
+            --rank-other-text: #374151;
+        }
+        
+        /* --- Dark Mode Overrides --- */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --border-color: rgba(255,255,255,0.15);
+                --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
+                --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
+                --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
+
+                /* Nền ô chỉ số sáng hơn nền card một chút để tạo độ nổi */
+                --metric-bg: #2c2c2e; 
+
+                /* Rank 1 (Gold Dark) */
+                --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
+                --r1-border: #fbbf24; --r1-shadow: rgba(251, 191, 36, 0.1); 
+
+                /* Rank 2 (Silver Dark) */
+                --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
+                --r2-border: #9ca3af; --r2-shadow: rgba(255,255,255,0.05);
+
+                /* Rank 3 (Bronze Dark) */
+                --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
+                --r3-border: #fb923c; --r3-shadow: rgba(251, 146, 60, 0.1);
+
+                /* Rank 4+ (Dark) */
+                --rank-other-bg: rgba(255,255,255,0.1);
+                --rank-other-text: #d1d5db;
+            }
+        }
+        
+        :root[data-theme="dark"] {
+            --border-color: rgba(255,255,255,0.15);
+            --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
+            --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
+            --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
+
+            /* Nền ô chỉ số sáng hơn nền card một chút để tạo độ nổi */
+            --metric-bg: #2c2c2e; 
+
+            /* Rank 1 (Gold Dark) */
+            --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
+            --r1-border: #fbbf24; --r1-shadow: rgba(251, 191, 36, 0.1); 
+
+            /* Rank 2 (Silver Dark) */
+            --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
+            --r2-border: #9ca3af; --r2-shadow: rgba(255,255,255,0.05);
+
+            /* Rank 3 (Bronze Dark) */
+            --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
+            --r3-border: #fb923c; --r3-shadow: rgba(251, 146, 60, 0.1);
+
+            /* Rank 4+ (Dark) */
+            --rank-other-bg: rgba(255,255,255,0.1);
+            --rank-other-text: #d1d5db;
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
+            margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+        [x-cloak] { display: none !important; }
+
+        /* HEADER Styles */
+        .header { text-align: center; margin-bottom: 24px; }
+        .header-title { font-size: 28px; font-weight: 800; margin: 0; background: linear-gradient(135deg, #007aff 0%, #af52de 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .subtitle { font-size: 13px; color: var(--hint-color); font-weight: 500; margin-top: 4px; }
+
+        /* CONTROLS */
+        .control-panel { margin-bottom: 20px; }
+        .label-text { font-size: 11px; font-weight: 700; color: var(--hint-color); margin-bottom: 8px; display: block; text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        .sector-select-wrapper { position: relative; margin-bottom: 16px; }
+        .sector-select { 
+            width: 100%; appearance: none; padding: 12px 16px; border-radius: 12px; 
+            border: 1px solid var(--border-color); background: var(--card-bg); 
+            font-size: 14px; font-weight: 600; color: var(--text-color); 
+            outline: none; box-shadow: 0 2px 6px rgba(0,0,0,0.03); 
+        }
+        .select-arrow { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--hint-color); font-size: 12px; }
+
+        .toggle-wrapper { display: flex; align-items: center; gap: 8px; }
+        .toggle-btn {
+            padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer;
+            border: 1px solid var(--border-color); background: var(--card-bg); color: var(--hint-color); 
+            transition: all 0.2s; box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        }
+        .toggle-btn.active { background: var(--text-color); color: var(--bg-color); border-color: var(--text-color); }
+
+        /* --- SCREENER CARD --- */
+        .screener-card {
+            border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            transition: transform 0.2s;
+        }
+        
+        /* Rank 1 */
+        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 4px 15px var(--r1-shadow); z-index: 2; transform: scale(1.02); }
+        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4); border: 2px solid var(--card-bg); color: #fff;}
+        .card-rank-1::before { content: '👑'; position: absolute; top: -12px; left: 8px; font-size: 20px; transform: rotate(-15deg); z-index: 3; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1)); }
+        
+        /* Rank 2 */
+        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 4px 15px var(--r2-shadow); }
+        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.3); border: 2px solid var(--card-bg); color: var(--text-color); }
+        
+        /* Rank 3 */
+        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 4px 15px var(--r3-shadow); }
+        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid var(--card-bg); color: #fff;}
+        
+        /* Rank 4+ */
+        .rank-other { 
+            background: var(--rank-other-bg); 
+            color: var(--rank-other-text); 
+            font-size: 13px; border-radius: 8px; width: 26px; height: 26px; 
+            font-family: 'Inter', sans-serif; font-weight: 800; 
+            display: flex; align-items: center; justify-content: center;
+        }
+        
+        .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--border-color); opacity: 0.9; }
+        .symbol-wrap { display: flex; align-items: center; gap: 10px; }
+        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 8px; font-family: 'Oswald', sans-serif; font-weight: 700; width: 28px; height: 28px; font-size: 14px;}
+        .symbol-name { font-size: 18px; font-weight: 800; color: var(--text-color); letter-spacing: -0.5px; }
+        .sector-tag { font-size: 11px; color: var(--hint-color); font-weight: 500; background: var(--bg-color); padding: 2px 6px; border-radius: 4px; }
+
+        .signal-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
+        .sig-cheap { background: var(--success-bg); color: var(--success-text); }
+        .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
+        .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
+
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--border-color); }
+        .m-label { font-size: 10px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
+        .m-row { display: flex; justify-content: space-between; align-items: baseline; }
+        .m-curr { font-size: 15px; font-weight: 800; color: var(--text-color); }
+        .m-avg { font-size: 11px; color: var(--hint-color); font-weight: 500; }
+        
+        .loading { text-align: center; padding: 40px; color: var(--hint-color); font-size: 13px; }
+        
+        .guide-card { margin-top: 24px; padding: 16px; background: var(--card-bg); border-radius: 16px; border: 1px solid var(--border-color); }
+        .guide-title { font-size: 14px; font-weight: 700; color: var(--text-color); margin-bottom: 8px; }
+        .guide-content { font-size: 12px; color: var(--hint-color); line-height: 1.6; }
+        .guide-content p { margin: 4px 0; }
+    </style>
+</head>
+<body x-data="screenerApp()">
+    <div class="header">
+        <div class="header-title">Bộ Lọc Cổ Phiếu</div>
+        <div class="subtitle">Mean Reversion Strategy</div>
+    </div>
+
+    <div class="control-panel">
+        <label class="label-text">Chọn Nhóm Ngành</label>
+        <div class="sector-select-wrapper">
+            <select x-model="selectedSector" class="sector-select">
+                <template x-for="sec in sectors">
+                    <option :value="sec" x-text="sec"></option>
+                </template>
+            </select>
+            <div class="select-arrow"><i class="fa-solid fa-chevron-down"></i></div>
+        </div>
+
+        <div class="toggle-wrapper">
+            <span class="label-text" style="margin-bottom:0; margin-right:4px;">Chỉ số:</span>
+            <button class="toggle-btn" :class="usePE ? 'active' : ''" @click="usePE = !usePE">P/E</button>
+            <button class="toggle-btn" :class="usePB ? 'active' : ''" @click="usePB = !usePB">P/B</button>
+        </div>
+    </div>
+
+    <div x-show="isLoading" class="loading">
+        <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 24px; margin-bottom: 10px; color: var(--accent-color);"></i><br>
+        Đang tải dữ liệu thị trường...
+    </div>
+
+    <div x-show="!isLoading" x-cloak>
+        <template x-for="(stock, index) in filteredStocks" :key="stock.symbol">
+            <div class="screener-card" 
+                 :class="{
+                    'card-rank-1': index === 0,
+                    'card-rank-2': index === 1,
+                    'card-rank-3': index === 2
+                 }">
+                <div class="screener-card-header">
+                    <div class="symbol-wrap">
+                        <div class="rank-badge" 
+                             :class="index > 2 ? 'rank-other' : ''" 
+                             x-text="index + 1"></div>
+                        <div class="symbol-name" x-text="stock.symbol"></div>
+                        <span class="sector-tag" x-text="stock.sector"></span>
+                    </div>
+                    <div class="signal-badge" 
+                         :class="{
+                            'sig-cheap': stock.signal === 'Undervalued',
+                            'sig-expensive': stock.signal === 'Overvalued',
+                            'sig-fair': stock.signal === 'Fair'
+                         }"
+                         x-text="stock.signal === 'Undervalued' ? 'Rẻ' : (stock.signal === 'Overvalued' ? 'Đắt' : 'Hợp lý')"></div>
+                </div>
+                
+                <div class="metrics-grid" :style="(!usePE || !usePB) ? 'grid-template-columns: 1fr;' : ''">
+                    <div class="metric-box" x-show="usePE">
+                        <div class="m-label">P/E Ratio</div>
+                        <div class="m-row">
+                            <span class="m-curr" x-text="stock.pe.toFixed(1) + 'x'"></span>
+                            <span class="m-avg" x-text="'TB: ' + stock.pe_avg.toFixed(1)"></span>
+                        </div>
+                    </div>
+                    <div class="metric-box" x-show="usePB">
+                        <div class="m-label">P/B Ratio</div>
+                        <div class="m-row">
+                            <span class="m-curr" x-text="stock.pb.toFixed(1) + 'x'"></span>
+                            <span class="m-avg" x-text="'TB: ' + stock.pb_avg.toFixed(1)"></span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top:8px; font-size:11px; text-align:right; font-weight:600; color: var(--hint-color);">
+                    Discount: <span :style="stock.dynamic_discount < 0 ? 'color:var(--success-text)' : 'color:var(--danger-text)'" x-text="Math.abs(stock.dynamic_discount.toFixed(1)) + '%'"></span>
+                </div>
+            </div>
+        </template>
+        
+        <div x-show="filteredStocks.length === 0" class="loading">
+            Không tìm thấy mã nào trong ngành này.
+        </div>
+
+        <div class="guide-card">
+            <div class="guide-title">ℹ️ Hướng dẫn sử dụng</div>
+            <div class="guide-content">
+                <p>• <b>Mean Reversion:</b> Chiến lược tìm kiếm cổ phiếu đang có định giá thấp hơn trung bình lịch sử 5 năm của chính nó.</p>
+                <p>• <b>P/E & P/B:</b> Bạn có thể bật/tắt các chỉ số này ở trên để lọc theo tiêu chí mong muốn. Hệ thống sẽ tự động tính lại mức chiết khấu (Discount).</p>
+                <p>• <b>Xếp hạng:</b> Cổ phiếu có mức chiết khấu cao nhất (Rẻ nhất) sẽ được xếp hạng đầu tiên.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        Telegram.WebApp.expand();
+        
+        // Force Dark Mode detection
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        Telegram.WebApp.onEvent('themeChanged', function() {
+            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
+        });
+
+        function screenerApp() {
+            return {
+                isLoading: true,
+                stocks: [],
+                sectors: [
+                    'Ngân hàng', 
+                    'Bất động sản', 
+                    'Dịch vụ tài chính', 
+                    'Tài nguyên Cơ bản', 
+                    'Xây dựng và Vật liệu', 
+                    'Thực phẩm và đồ uống', 
+                    'Hàng cá nhân & Gia dụng', 
+                    'Hóa chất', 
+                    'Hàng & Dịch vụ Công nghiệp', 
+                    'Bán lẻ', 
+                    'Điện, nước & xăng dầu khí đốt', 
+                    'Du lịch và Giải trí', 
+                    'Y tế', 
+                    'Dầu khí', 
+                    'Công nghệ Thông tin', 
+                    'Ô tô và phụ tùng', 
+                    'Viễn thông', 
+                    'Truyền thông', 
+                    'Bảo hiểm', 
+                    'Khác'
+                ],
+                selectedSector: 'Ngân hàng',
+                usePE: true,
+                usePB: true,
+                
+                get filteredStocks() {
+                    // 1. Calculate dynamic discount
+                    let processed = this.stocks.map(s => {
+                        let upsides = [];
+                        if (this.usePE && s.pe > 0 && s.pe_avg > 0) {
+                            upsides.push((s.pe_avg / s.pe) - 1);
+                        }
+                        if (this.usePB && s.pb > 0 && s.pb_avg > 0) {
+                            upsides.push((s.pb_avg / s.pb) - 1);
+                        }
+                        
+                        let avg_upside = 0;
+                        if (upsides.length > 0) {
+                            avg_upside = upsides.reduce((a, b) => a + b, 0) / upsides.length;
+                        }
+                        
+                        // Discount pct: negative means undervalued (upside positive)
+                        let discount = -avg_upside * 100;
+
+                        // Recalculate signal based on dynamic discount
+                        let signal = "Fair";
+                        if (avg_upside >= 0.15) signal = "Undervalued";
+                        else if (avg_upside <= -0.15) signal = "Overvalued";
+
+                        return {
+                            ...s,
+                            dynamic_discount: discount,
+                            signal: signal
+                        };
+                    });
+
+                    // 2. Filter by sector
+                    let result = [];
+                    if (this.selectedSector === 'Khác') {
+                        result = processed.filter(s => !this.sectors.includes(s.sector) && s.sector !== 'Khác');
+                    } else {
+                        result = processed.filter(s => s.sector === this.selectedSector);
+                    }
+                    
+                    // 3. Sort by dynamic discount (most negative first)
+                    return result.sort((a,b) => a.dynamic_discount - b.dynamic_discount);
+                },
+
+                async init() {
+                    try {
+                        const res = await fetch('/api/screener-data');
+                        const json = await res.json();
+                        this.stocks = json.data || [];
+                    } catch (e) {
+                        alert('Lỗi tải dữ liệu: ' + e.message);
+                    } finally {
+                        this.isLoading = false;
+                    }
+                }
             }
         }
     </script>

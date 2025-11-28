@@ -17,7 +17,7 @@ Bot Telegram thông minh hỗ trợ nhà đầu tư chứng khoán Việt Nam v�
     - **VNINDEX**: Cảnh báo biến động ±5 điểm.
     - **VN30**: Cảnh báo biến động ±5 điểm.
 - **Biểu đồ kỹ thuật**: Vẽ chart nến, RSI, Volume ngay trong Telegram (Mini chart & Full chart).
-- **Screener (Bộ lọc)**: Lọc cổ phiếu theo tiêu chí định giá (Rẻ/Đắt) dựa trên P/E, P/B lịch sử (Mean Reversion).
+- **Screener (Bộ lọc)**: Lọc cổ phiếu theo tiêu chí định giá (Rẻ/Đắt) dựa trên P/E, P/B lịch sử (Mean Reversion). Hỗ trợ lọc theo 19 nhóm ngành chi tiết (Ngân hàng, Bất động sản, Bán lẻ, CNTT...).
 
 ### 🤖 AI & Tự động hóa (Powered by Gemini)
 - **Bản tin sáng (Morning Digest)**: Tự động tổng hợp tin tức vĩ mô & doanh nghiệp, dùng AI để tóm tắt và đánh giá tác động (7:00 AM).
@@ -63,6 +63,7 @@ graph TD
 - **Cache & Message Queue**: Redis (Lưu trạng thái, cache giá, giao tiếp giữa Gateway và Worker)
 - **AI Model**: Google Gemini 2.5 Flash/Pro
 - **Data Source**: `vnstock`, `feedparser` (RSS CafeF, Vietstock...)
+- **Frontend**: AlpineJS (Screener, Admin Dashboard), Plotly.js (Charts)
 
 ### Cấu trúc thư mục chính
 
@@ -72,11 +73,12 @@ telegram_stock_bot/
 ├── worker.py               # [BACKGROUND] Xử lý tác vụ nặng: Quét giá, AI, Gửi báo cáo
 ├── db_utils.py             # Thao tác Database (PostgreSQL)
 ├── chart_utils.py          # Vẽ biểu đồ (Matplotlib/Mplfinance)
-├── digest_template.py      # HTML Templates cho Web App (Dashboard, Report)
+├── digest_template.py      # HTML Templates cho Web App (Dashboard, Report, Screener)
 ├── news_seen_cache.py      # Quản lý cache tin tức đã gửi
 ├── profile_cache.py        # Cache thông tin hồ sơ doanh nghiệp
 ├── report_cache.py         # Cache báo cáo phân tích
 ├── redis_client.py         # Cấu hình kết nối Redis
+├── sectors.json            # Mapping mã cổ phiếu -> Ngành
 ├── update_db.py            # Script migration database
 └── requirements.txt        # Các thư viện phụ thuộc
 ```
@@ -87,7 +89,7 @@ telegram_stock_bot/
     *   Nhận tin nhắn/lệnh từ Telegram (Webhook).
     *   Xử lý các phản hồi nhanh (Menu, Setting, Add/Remove mã).
     *   Đẩy các tác vụ nặng (Tạo báo cáo AI, Lọc cổ phiếu) vào hàng đợi **Redis**.
-    *   Phục vụ các trang Web App (Dashboard, Chart View).
+    *   Phục vụ các trang Web App (Dashboard, Chart View, Screener).
 
 2.  **Worker (`worker.py`)**:
     *   Lắng nghe hàng đợi từ Redis.
@@ -97,6 +99,7 @@ telegram_stock_bot/
         *   `market_monitor_alert_loop`: Xử lý logic cảnh báo thị trường chung.
         *   `job_daily_digest`: Tạo bản tin sáng lúc 7:00.
         *   `job_scan_news`: Quét tin tức RSS định kỳ.
+        *   `job_nightly_valuation`: Tính toán P/E, P/B trung bình 5 năm hàng đêm.
     *   Xử lý AI: Gọi Gemini API để phân tích và trả kết quả về cho Gateway (qua Redis Pub/Sub).
 
 ---
@@ -181,12 +184,20 @@ SEPAY_QR_ACC=<account-number>
 Hệ thống tự động tính toán P/E và P/B trung bình 5 năm của cổ phiếu.
 - **Rẻ**: Giá hiện tại thấp hơn trung bình lịch sử (>10%).
 - **Đắt**: Giá hiện tại cao hơn trung bình lịch sử.
+- **Phân ngành**: Hỗ trợ lọc theo 19 nhóm ngành (Ngân hàng, BĐS, Thép, Bán lẻ, Hóa chất...) dựa trên dữ liệu từ `sectors.json`.
 Dữ liệu này được tính toán hàng đêm (`job_nightly_valuation`) và lưu vào Redis để truy xuất nhanh.
 
 ### 2. AI News Summary
 - Worker quét tin từ các nguồn RSS (CafeF, Vietstock, VnEconomy).
 - Gemini AI lọc tin rác, phân loại (Vĩ mô/Doanh nghiệp) và chấm điểm tác động.
 - Chỉ những tin quan trọng mới được đưa vào bản tin sáng.
+
+---
+
+## 🎨 Giao diện (UI/UX)
+- **Dark Mode**: Hỗ trợ giao diện tối tự động theo cài đặt Telegram.
+- **Responsive**: Tối ưu hiển thị trên Mobile.
+- **Interactive Charts**: Biểu đồ tương tác (Zoom, Pan) sử dụng Plotly.js.
 
 ---
 
