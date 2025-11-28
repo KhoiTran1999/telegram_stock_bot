@@ -26,6 +26,8 @@ from db_utils import (
     get_bot_active,
     get_users_with_stock_alert_off,
     get_vn30f1m_enabled_map,
+    get_vnindex_enabled_map,
+    get_vn30_enabled_map,
     get_recent_bctc_notified,
     get_recent_analysis_reports,
     get_recent_news_seen,
@@ -79,16 +81,34 @@ _stock_current_watch_cache = {}
 _stock_alert_disabled_cache = set()
 ALERT_STATE = {}
 
-# --- CẤU HÌNH VN30F1M ---
-VN30F1M_SYMBOL = "VN30F1M"
-VN30F1M_DELTA_THRESHOLD = 5    # ±5 điểm báo 1 lần
-VN30F1M_TICK_SECONDS = 5       # Chu kỳ quét nhanh hơn cổ phiếu
+# --- CẤU HÌNH MARKET MONITOR (VN30F1M, VNINDEX, VN30) ---
+MARKET_MONITORS = {
+    "VN30F1M": {
+        "threshold": 5,
+        "get_users_func": get_vn30f1m_enabled_map,
+        "msg_type": "VN30_ALERT", # Giữ nguyên legacy
+        "tick_sec": 5
+    },
+    "VNINDEX": {
+        "threshold": 5,
+        "get_users_func": get_vnindex_enabled_map,
+        "msg_type": "VNINDEX_ALERT",
+        "tick_sec": 10
+    },
+    "VN30": {
+        "threshold": 5,
+        "get_users_func": get_vn30_enabled_map,
+        "msg_type": "VN30_INDEX_ALERT",
+        "tick_sec": 10
+    }
+}
 
-# State VN30
-_vn30f1m_anchor = None
-_vn30f1m_ref_price = None
-_vn30f1m_date = None
-_vn30f1m_current_price_cache = None # Cache giá live
+# State Market Monitor
+_market_data = {
+    "VN30F1M": {"price": None, "ref": None, "anchor": None, "date": None},
+    "VNINDEX": {"price": None, "ref": None, "anchor": None, "date": None},
+    "VN30":    {"price": None, "ref": None, "anchor": None, "date": None},
+}
 
 # Biến chặn VCI theo ngày
 _vci_blocked_date = None
@@ -842,62 +862,84 @@ async def alert_loop():
 
         await asyncio.sleep(TICKER_INTERVAL_SECONDS)
 
-#============ VN30F1M_Loop ===============
+# =================================
+# MARKET MONITOR LOOP (Unified)
+# =================================
 
-def _vn30f1m_reset_if_new_day(now):
-    """Reset anchor đầu ngày"""
-    global _vn30f1m_date, _vn30f1m_anchor, _vn30f1m_ref_price
-    if (_vn30f1m_date is None) or (now.date() != _vn30f1m_date):
-        _vn30f1m_date = now.date()
-        _vn30f1m_anchor = None
-        _vn30f1m_ref_price = None
-        log.info(f"[VN30] New day: {_vn30f1m_date}. Reset anchors.")
+def _market_reset_if_new_day(now):
+    """Reset anchor đầu ngày cho tất cả Market Monitors"""
+    global _market_data
+    today = now.date()
+    
+    for sym, data in _market_data.items():
+        if data["date"] != today:
+            data["date"] = today
+            data["anchor"] = None
+            data["ref"] = None
+            log.info(f"[MARKET] New day: {today}. Reset anchor for {sym}.")
 
-def _vn30f1m_clear_after_close():
-    global _vn30f1m_anchor
-    if _vn30f1m_anchor is not None:
-        log.info("[VN30] Close session. Clear anchor.")
-    _vn30f1m_anchor = None
+def _market_clear_after_close():
+    global _market_data
+    cleared = False
+    for sym, data in _market_data.items():
+        if data["anchor"] is not None:
+            data["anchor"] = None
+            cleared = True
+    if cleared:
+        log.info("[MARKET] Close session. Clear all anchors.")
 
-async def _vn30f1m_process_tick(price: float):
+async def _market_process_tick(symbol: str, price: float):
     """
-    Xử lý logic so sánh giá. 
-    Trả về: Nội dung tin nhắn (String) nếu Trigger, ngược lại None.
+    Xử lý logic so sánh giá chung cho VN30F1M, VNINDEX, VN30.
     """
-    global _vn30f1m_anchor, _vn30f1m_ref_price
+    global _market_data
+    
+    config = MARKET_MONITORS.get(symbol)
+    if not config: return None
 
-    if _vn30f1m_anchor is None or _vn30f1m_ref_price is None:
+    state = _market_data.get(symbol)
+    if not state: return None
+
+    anchor = state["anchor"]
+    ref_price = state["ref"]
+
+    if anchor is None or ref_price is None:
         return None
 
-    delta_trigger = float(price) - float(_vn30f1m_anchor)
+    delta_trigger = float(price) - float(anchor)
+    threshold = config["threshold"]
     
-    # Trigger nếu biến động >= 5 điểm
-    if abs(delta_trigger) >= VN30F1M_DELTA_THRESHOLD:
-        delta_display = float(price) - float(_vn30f1m_ref_price)
+    # Trigger nếu biến động >= threshold
+    if abs(delta_trigger) >= threshold:
+        delta_display = float(price) - float(ref_price)
         direction = "tăng" if delta_display > 0 else "giảm"
         icon = "🟢" if delta_display > 0 else "🔴"
         trend_icon = "🚀" if delta_display > 0 else "📉"
         now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
 
         text = (
-            f"{icon} *VN30F1M {direction} {abs(delta_display):.1f} điểm*\n"
+            f"{icon} *{symbol} {direction} {abs(delta_display):.1f} điểm*\n"
             f"Giá hiện tại: *{float(price):.1f}*\n"
-            f"(So với TC: {_vn30f1m_ref_price:.1f})\n"
+            f"(So với TC: {ref_price:.1f})\n"
             f"{trend_icon} _Cập nhật lúc {now_str}_"
         )
         
         # Cập nhật mốc anchor mới
-        _vn30f1m_anchor = float(price)
-        log.info(f"[VN30] 🔔 Trigger! {price} (Delta: {delta_trigger})")
+        state["anchor"] = float(price)
+        log.info(f"[{symbol}] 🔔 Trigger! {price} (Delta: {delta_trigger})")
         return text
     
     return None
 
-# --- LOOP VN30: FETCHER (Lấy giá Hybrid) ---
-async def vn30f1m_price_fetcher_loop():
-    global _vn30f1m_current_price_cache, _vn30f1m_ref_price, _vn30f1m_anchor
+async def market_monitor_fetcher_loop():
+    """
+    Loop lấy giá chung cho VN30F1M, VNINDEX, VN30.
+    Chạy chu kỳ 5s (nhanh nhất). Các mã 10s sẽ được check time nếu cần, 
+    nhưng để đơn giản và responsive, ta fetch tất cả mỗi 5s.
+    """
+    global _market_data
     vn_tz = pytz.timezone(TIMEZONE)
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu VN30 Fetcher...")
+    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Market Monitor Fetcher (Unified)...")
 
     while True:
         now = datetime.datetime.now(vn_tz)
@@ -913,81 +955,102 @@ async def vn30f1m_price_fetcher_loop():
         try:
             today_str = now.strftime('%Y-%m-%d')
             
-            def _fetch():
+            async def _fetch_one(symbol):
                 # 1. Giá khớp (Live 1m)
-                q = Quote(symbol=VN30F1M_SYMBOL, source='VCI')
-                df = q.history(start=today_str, end=today_str, interval='1m')
+                q = Quote(symbol=symbol, source='VCI')
+                df = await asyncio.to_thread(q.history, start=today_str, end=today_str, interval='1m')
                 p_now = float(df.iloc[-1]['close']) if df is not None and not df.empty else None
                 
-                # 2. Giá tham chiếu (Board)
+                # 2. Giá tham chiếu (Ref)
+                # Logic: Nếu chưa có Ref, thử tìm trong history hôm qua hoặc board
                 p_ref = None
-                if _vn30f1m_ref_price is None and stock_trading:
-                    try:
-                        row = stock_trading.price_board([VN30F1M_SYMBOL]).iloc[0]
-                        val = row.get(('listing', 'ref_price')) or row.get('ref_price')
-                        if val: p_ref = float(val)
-                    except: pass
-                return p_now, p_ref
-
-            price_now, price_ref = await asyncio.to_thread(_fetch)
-
-            if price_now:
-                _vn30f1m_current_price_cache = price_now
+                state = _market_data.get(symbol)
                 
-                if _vn30f1m_ref_price is None and price_ref:
-                    _vn30f1m_ref_price = price_ref
-                    # Init anchor bằng Ref nếu chưa có
-                    if _vn30f1m_anchor is None: _vn30f1m_anchor = price_ref
+                if state and state["ref"] is None:
+                    # A. Thử lấy từ Board (Ưu tiên cho VN30F1M)
+                    if symbol == "VN30F1M" and stock_trading:
+                        try:
+                            row = stock_trading.price_board([symbol]).iloc[0]
+                            val = row.get(('listing', 'ref_price')) or row.get('ref_price')
+                            if val: p_ref = float(val)
+                        except: pass
+                    
+                    # B. Nếu chưa có, thử lấy Close hôm qua từ History
+                    if p_ref is None:
+                        start_prev = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+                        df_daily = await asyncio.to_thread(q.history, start=start_prev, end=today_str, interval='1D')
+                        if df_daily is not None and len(df_daily) >= 2:
+                            # Lấy close của phiên trước đó (iloc[-2])
+                            p_ref = float(df_daily.iloc[-2]['close'])
+                
+                return symbol, p_now, p_ref
+
+            # Chạy song song tất cả monitors
+            tasks = [_fetch_one(sym) for sym in MARKET_MONITORS.keys()]
+            results = await asyncio.gather(*tasks)
+
+            for sym, p_now, p_ref in results:
+                state = _market_data.get(sym)
+                if not state: continue
+
+                if p_now:
+                    state["price"] = p_now
+                    
+                    if state["ref"] is None and p_ref:
+                        state["ref"] = p_ref
+                        # Init anchor bằng Ref nếu chưa có
+                        if state["anchor"] is None: state["anchor"] = p_ref
 
         except Exception as e:
-            log.error(f"VN30 Fetch Error: {e}")
+            log.error(f"Market Fetch Error: {e}")
 
-        await asyncio.sleep(VN30F1M_TICK_SECONDS)
+        await asyncio.sleep(5) # Chu kỳ chung 5s
 
-# --- LOOP VN30: ALERT & BROADCAST ---
-async def vn30f1m_alert_loop():
+async def market_monitor_alert_loop():
     """
-    Vừa check giá, vừa gửi tin (Broadcast) qua Redis luôn.
-    Thay thế cho cả alert_loop và broadcast_loop cũ.
+    Loop kiểm tra và bắn tin cảnh báo chung.
     """
     vn_tz = pytz.timezone(TIMEZONE)
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu VN30 Alert Loop...")
+    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Market Monitor Alert Loop...")
 
     while True:
         now = datetime.datetime.now(vn_tz)
-        _vn30f1m_reset_if_new_day(now)
+        _market_reset_if_new_day(now)
 
         if not get_bot_active() or not in_session_vietnam():
-            _vn30f1m_clear_after_close()
+            _market_clear_after_close()
             await asyncio.sleep(60)
             continue
 
         try:
-            price = _vn30f1m_current_price_cache
-            if price is None:
-                await asyncio.sleep(5); continue
+            # Duyệt qua từng mã trong config
+            for symbol, config in MARKET_MONITORS.items():
+                state = _market_data.get(symbol)
+                if not state or state["price"] is None: continue
 
-            # 1. Xử lý logic
-            alert_text = await _vn30f1m_process_tick(float(price))
+                # 1. Xử lý logic
+                alert_text = await _market_process_tick(symbol, float(state["price"]))
 
-            # 2. Nếu có biến động -> Gửi tin (Broadcast)
-            if alert_text:
-                # Lấy danh sách user bật VN30
-                user_map = await asyncio.to_thread(get_vn30f1m_enabled_map)
-                count = 0
-                
-                for chat_id, enabled in user_map.items():
-                    if enabled:
-                        # PUSH REDIS
-                        push_telegram_msg(chat_id, alert_text, msg_type="VN30_ALERT")
-                        count += 1
-                
-                log.info(f"[VN30] Pushed alert to {count} users.")
+                # 2. Nếu có biến động -> Gửi tin (Broadcast)
+                if alert_text:
+                    # Lấy danh sách user bật setting tương ứng
+                    get_users = config["get_users_func"]
+                    msg_type = config["msg_type"]
+                    
+                    user_map = await asyncio.to_thread(get_users)
+                    count = 0
+                    
+                    for chat_id, enabled in user_map.items():
+                        if enabled:
+                            push_telegram_msg(chat_id, alert_text, msg_type=msg_type)
+                            count += 1
+                    
+                    log.info(f"[{symbol}] Pushed alert to {count} users.")
 
         except Exception as e:
-            log.error(f"VN30 Alert Error: {e}")
+            log.error(f"Market Alert Error: {e}")
 
-        await asyncio.sleep(VN30F1M_TICK_SECONDS)
+        await asyncio.sleep(5) # Chu kỳ chung 5s
 
 # =================================
 # Daily_user_digest_loop
@@ -2793,8 +2856,8 @@ async def main():
         stock_price_fetcher_loop(),
         alert_loop(),
         #----------------------------
-        vn30f1m_price_fetcher_loop(),
-        vn30f1m_alert_loop(),
+        market_monitor_fetcher_loop(),
+        market_monitor_alert_loop(),
         #-------------------------
         worker_inbound_loop(),
     )

@@ -12,7 +12,10 @@ Bot Telegram thông minh hỗ trợ nhà đầu tư chứng khoán Việt Nam v�
 - **Realtime Tracking**: Cập nhật giá cổ phiếu và chỉ số VN30F1M theo thời gian thực.
 - **Cảnh báo thông minh**:
   - **Stock Alert**: Báo ngay khi giá biến động mạnh (≥ 2%).
-  - **Phái sinh (VN30F1M)**: Cảnh báo khi chênh lệch điểm số vượt ngưỡng (±5 điểm).
+  - **Market Monitor (Unified)**: Theo dõi sát sao 3 chỉ số quan trọng:
+    - **VN30F1M (Phái sinh)**: Cảnh báo biến động ±5 điểm.
+    - **VNINDEX**: Cảnh báo biến động ±5 điểm.
+    - **VN30**: Cảnh báo biến động ±5 điểm.
 - **Biểu đồ kỹ thuật**: Vẽ chart nến, RSI, Volume ngay trong Telegram (Mini chart & Full chart).
 - **Screener (Bộ lọc)**: Lọc cổ phiếu theo tiêu chí định giá (Rẻ/Đắt) dựa trên P/E, P/B lịch sử (Mean Reversion).
 
@@ -90,7 +93,8 @@ telegram_stock_bot/
     *   Lắng nghe hàng đợi từ Redis.
     *   **Loops**:
         *   `alert_loop`: Quét giá cổ phiếu liên tục, bắn cảnh báo nếu biến động.
-        *   `vn30f1m_alert_loop`: Theo dõi phái sinh.
+        *   `market_monitor_fetcher_loop`: Quét giá VN30F1M, VNINDEX, VN30 (Unified).
+        *   `market_monitor_alert_loop`: Xử lý logic cảnh báo thị trường chung.
         *   `job_daily_digest`: Tạo bản tin sáng lúc 7:00.
         *   `job_scan_news`: Quét tin tức RSS định kỳ.
     *   Xử lý AI: Gọi Gemini API để phân tích và trả kết quả về cho Gateway (qua Redis Pub/Sub).

@@ -87,6 +87,10 @@ from db_utils import (
     set_vn30f1m_enabled,
     get_stock_alert_enabled_map,
     set_stock_alert_enabled,
+    get_vnindex_enabled_map,
+    set_vnindex_enabled,
+    get_vn30_enabled_map,
+    set_vn30_enabled,
     get_total_revenue_real,
     update_user_admin_note,
     get_banned_users,
@@ -733,6 +737,34 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer(f"{'✅ Đã BẬT' if want_on else '🚫 Đã TẮT'} Cảnh báo Stock!")
         
         # 🔥 GỌI HÀM cmd_setting ĐỂ UPDATE GIAO DIỆN TẠI CHỖ 🔥
+        await cmd_setting(update, context)
+
+    # 3.3. VNINDEX
+    elif data in ("set_vnindex_on", "set_vnindex_off"):
+        want_on = (data == "set_vnindex_on")
+        
+        # Check Pro
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        if want_on and not is_pro:
+             await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
+             return
+
+        await asyncio.to_thread(set_vnindex_enabled, chat_id, want_on)
+        await query.answer(f"{'✅ Đã BẬT' if want_on else '🚫 Đã TẮT'} VNINDEX!")
+        await cmd_setting(update, context)
+
+    # 3.4. VN30 Index
+    elif data in ("set_vn30_index_on", "set_vn30_index_off"):
+        want_on = (data == "set_vn30_index_on")
+        
+        # Check Pro
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        if want_on and not is_pro:
+             await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
+             return
+
+        await asyncio.to_thread(set_vn30_enabled, chat_id, want_on)
+        await query.answer(f"{'✅ Đã BẬT' if want_on else '🚫 Đã TẮT'} VN30!")
         await cmd_setting(update, context)
 
     # --- NHÓM 4: CÁC TÁC VỤ KHÁC (Report, Info, Screener, Upgrade...) ---
@@ -1680,15 +1712,21 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.to_thread(get_user_pro_expiry, chat_id),
             asyncio.to_thread(get_vn30f1m_enabled_map),
             asyncio.to_thread(get_stock_alert_enabled_map),
+            asyncio.to_thread(get_vnindex_enabled_map),
+            asyncio.to_thread(get_vn30_enabled_map),
             return_exceptions=True
         )
         
         expiry_date = results[0] if not isinstance(results[0], Exception) else None
-        vn30_map = results[1] if not isinstance(results[1], Exception) else {}
+        vn30f1m_map = results[1] if not isinstance(results[1], Exception) else {}
         stock_map = results[2] if not isinstance(results[2], Exception) else {}
+        vnindex_map = results[3] if not isinstance(results[3], Exception) else {}
+        vn30_index_map = results[4] if not isinstance(results[4], Exception) else {}
         
-        vn30_enabled = bool(vn30_map.get(chat_id, False))
+        vn30f1m_enabled = bool(vn30f1m_map.get(chat_id, False))
         stock_enabled = bool(stock_map.get(chat_id, True))
+        vnindex_enabled = bool(vnindex_map.get(chat_id, False))
+        vn30_index_enabled = bool(vn30_index_map.get(chat_id, False))
 
     except Exception as e:
         log.error(f"Setting error: {e}")
@@ -1723,21 +1761,37 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Phái sinh
     lines.append("\n📈 *Cảnh báo VN30F1M*")
-    status_vn30 = "✅ *BẬT*" if vn30_enabled else "❌ *TẮT*"
-    lines.append(status_vn30)
+    status_vn30f1m = "✅ *BẬT*" if vn30f1m_enabled else "❌ *TẮT*"
+    lines.append(status_vn30f1m)
+
+    # VNINDEX
+    lines.append("\n📉 *Cảnh báo VNINDEX*")
+    status_vnindex = "✅ *BẬT*" if vnindex_enabled else "❌ *TẮT*"
+    lines.append(status_vnindex)
+
+    # VN30
+    lines.append("\n📉 *Cảnh báo VN30*")
+    status_vn30_index = "✅ *BẬT*" if vn30_index_enabled else "❌ *TẮT*"
+    lines.append(status_vn30_index)
 
     # --- 3. TẠO BÀN PHÍM ĐIỀU KHIỂN ---
     
-    vn30_btn = "🔴 Tắt cập nhật VN30F1M" if vn30_enabled else "🟢 Bật cập nhật VN30F1M"
-    vn30_cb = "set_vn30_off" if vn30_enabled else "set_vn30_on"
+    vn30f1m_btn = "🔴 Tắt VN30F1M" if vn30f1m_enabled else "🟢 Bật VN30F1M"
+    vn30f1m_cb = "set_vn30_off" if vn30f1m_enabled else "set_vn30_on"
 
-    stock_btn = "🔴 Tắt cập nhật cổ phiếu" if stock_enabled else "🟢 Bật cập nhật cổ phiếu"
+    stock_btn = "🔴 Tắt Stock" if stock_enabled else "🟢 Bật Stock"
     stock_cb = "set_stock_off" if stock_enabled else "set_stock_on"
+
+    vnindex_btn = "🔴 Tắt VNINDEX" if vnindex_enabled else "🟢 Bật VNINDEX"
+    vnindex_cb = "set_vnindex_off" if vnindex_enabled else "set_vnindex_on"
+
+    vn30_index_btn = "🔴 Tắt VN30" if vn30_index_enabled else "🟢 Bật VN30"
+    vn30_index_cb = "set_vn30_index_off" if vn30_index_enabled else "set_vn30_index_on"
 
     kb = [
         [InlineKeyboardButton("💎 Nâng cấp / Gia hạn Pro", callback_data="btn_upgrade")],
-        [InlineKeyboardButton(stock_btn, callback_data=stock_cb)], 
-        [InlineKeyboardButton(vn30_btn, callback_data=vn30_cb)],   
+        [InlineKeyboardButton(stock_btn, callback_data=stock_cb), InlineKeyboardButton(vn30f1m_btn, callback_data=vn30f1m_cb)], 
+        [InlineKeyboardButton(vnindex_btn, callback_data=vnindex_cb), InlineKeyboardButton(vn30_index_btn, callback_data=vn30_index_cb)],   
         [InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]
     ]
     

@@ -573,13 +573,17 @@ def get_user_configs(chat_id: int):
             cur.execute("SELECT settings FROM bot_user_settings WHERE chat_id = %s", (chat_id,))
             s_row = cur.fetchone()
             
-            vn30_enabled = False
+            vn30f1m_enabled = False
             stock_enabled = True # Mặc định là BẬT
+            vnindex_enabled = False
+            vn30_enabled = False
             
             if s_row and s_row.get('settings'):
                 settings = s_row['settings']
-                vn30_enabled = settings.get('vn30f1m_enabled', False)
+                vn30f1m_enabled = settings.get('vn30f1m_enabled', False)
                 stock_enabled = settings.get('stock_alert_enabled', True)
+                vnindex_enabled = settings.get('vnindex_enabled', False)
+                vn30_enabled = settings.get('vn30_enabled', False)
 
             # 2. Lấy cấu hình Tin tức (News Pref)
             cur.execute("SELECT enable_specialized, enable_macro FROM news_pref WHERE chat_id = %s", (chat_id,))
@@ -591,8 +595,11 @@ def get_user_configs(chat_id: int):
                     news_enabled = False
 
             return {
-                "vn30": vn30_enabled,
-                "stock": stock_enabled, # <--- Key mới thêm vào
+                "vn30": vn30f1m_enabled, # Keep for backward compatibility
+                "vn30f1m": vn30f1m_enabled,
+                "stock": stock_enabled,
+                "vnindex": vnindex_enabled,
+                "vn30_index": vn30_enabled,
                 "news": news_enabled
             }
 
@@ -1977,6 +1984,60 @@ def set_stock_alert_enabled(chat_id: int, enabled: bool):
                 DO UPDATE SET
                     settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
                                || jsonb_build_object('stock_alert_enabled', EXCLUDED.settings->'stock_alert_enabled'),
+                    updated_at = NOW()
+            """, (chat_id, enabled))
+        conn.commit()
+
+def get_vnindex_enabled_map() -> dict[int, bool]:
+    """Lấy danh sách user đang bật cảnh báo VNINDEX"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id,
+                       COALESCE((settings ->> 'vnindex_enabled')::boolean, FALSE) AS enabled
+                FROM bot_user_settings
+            """)
+            rows = cur.fetchall()
+    return {int(r[0]): bool(r[1]) for r in rows}
+
+def set_vnindex_enabled(chat_id: int, enabled: bool):
+    """Cập nhật trạng thái bật/tắt VNINDEX"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('vnindex_enabled', %s))
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
+                               || jsonb_build_object('vnindex_enabled', EXCLUDED.settings->'vnindex_enabled'),
+                    updated_at = NOW()
+            """, (chat_id, enabled))
+        conn.commit()
+
+def get_vn30_enabled_map() -> dict[int, bool]:
+    """Lấy danh sách user đang bật cảnh báo VN30 Index"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT chat_id,
+                       COALESCE((settings ->> 'vn30_enabled')::boolean, FALSE) AS enabled
+                FROM bot_user_settings
+            """)
+            rows = cur.fetchall()
+    return {int(r[0]): bool(r[1]) for r in rows}
+
+def set_vn30_enabled(chat_id: int, enabled: bool):
+    """Cập nhật trạng thái bật/tắt VN30 Index"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('vn30_enabled', %s))
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    settings = COALESCE(bot_user_settings.settings, '{}'::jsonb)
+                               || jsonb_build_object('vn30_enabled', EXCLUDED.settings->'vn30_enabled'),
                     updated_at = NOW()
             """, (chat_id, enabled))
         conn.commit()

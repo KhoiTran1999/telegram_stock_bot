@@ -11,25 +11,49 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng dựa t
 
 ### 2. CÁC TÍNH NĂNG CƠ BẢN (DASHBOARD)
 - **Mở Menu chính (Dashboard):** Gõ lệnh `/start` hoặc bấm nút '🔙 Dashboard' ở menu dưới cùng. Tại đây có đầy đủ các nút chức năng như: Danh mục, Thêm mã, Soi hồ sơ, Tài khoản...
-- **Thêm mã cổ phiếu:** Gõ mã 3 chữ cái (ví dụ: HPG, FPT) vào ô chat. Bot sẽ hiện nút xác nhận thêm. (Free: 1 mã, Pro: Không giới hạn).
+- **Tra cứu & Thao tác nhanh:** Gõ trực tiếp mã 3 chữ cái (ví dụ: `HPG`, `SSI`) vào ô chat. Bot sẽ gửi ngay:
+  1. **Biểu đồ giá (Chart):** Kèm RSI, Volume.
+  2. **Nút 'Theo dõi':** Để thêm vào danh mục (Free: 1 mã, Pro: Không giới hạn).
+  3. **Nút 'Soi hồ sơ':** Để xem thông tin doanh nghiệp.
 - **Xem Danh sách theo dõi:** Bấm nút **📋 Danh mục**. Bot sẽ hiện các nút bấm tương ứng với các mã bạn đã thêm.
 - **Xóa mã cổ phiếu:** Bấm '📋 Danh mục' -> Chọn mã muốn xóa (ví dụ HPG) -> Bấm nút '🗑️ Xóa'.
-- **Xem Biểu đồ giá (Chart Realtime):** Gõ trực tiếp mã cổ phiếu (ví dụ: `HPG`, `SSI`) vào ô chat. Bot sẽ gửi ngay biểu đồ giá, dòng tiền và RSI.
 
-### 3. CÔNG CỤ PHÂN TÍCH AI (PRO)
-- **Báo cáo Phân tích (AI Report):** Bấm nút **📊 AI Report** trên Dashboard. AI sẽ phân tích lãi/lỗ, chấm điểm sức khỏe danh mục và khuyến nghị Mua/Bán.
-- **Soi Hồ Sơ (Profile):** Bấm nút **📄 Soi hồ sơ** -> Nhập mã. Xem mô hình kinh doanh, lợi thế cạnh tranh.
-- **Lọc Cổ Phiếu (Screener):** Bấm nút **💎 Lọc Cổ Phiếu** để tìm mã Rẻ/Đắt theo P/E, P/B (Mean Reversion).
+### 3. CÔNG CỤ PHÂN TÍCH AI (PRO) - CHI TIẾT
+- **Báo cáo Phân tích (AI Report):**
+  - **Cách dùng:** Bấm nút **📊 AI Report** trên Dashboard.
+  - **Tính năng:** AI sẽ đóng vai một chuyên gia tư vấn, phân tích từng mã trong danh mục của bạn.
+  - **Nội dung:** Đánh giá hiệu quả đầu tư (Lãi/Lỗ), chấm điểm sức khỏe tài chính, cảnh báo rủi ro và đưa ra khuyến nghị hành động (Mua thêm/Nắm giữ/Bán bớt) dựa trên dữ liệu thị trường mới nhất.
 
-### 4. BÁO CÁO TỰ ĐỘNG (PASSIVE) - DÀNH CHO PRO
-- **Hệ thống Auto Report:** Bot tự động gửi:
-  1. Bản tin Sáng lúc 07:00 (Tin tức + BCTC).
-  2. Tổng kết Cuối phiên lúc 15:00.
-  3. Báo cáo Tuần vào 09:00 sáng Chủ Nhật.
-- **Cảnh báo Biến động (Alert):** Bot tự động báo tin khi:
-  1. Cổ phiếu trong danh mục tăng/giảm >2%.
-  2. Chỉ số phái sinh VN30F1M biến động ±5 điểm.
-  - Bật/Tắt trong mục '⚙️ Tài khoản'.
+- **Soi Hồ Sơ Doanh Nghiệp (Profile):**
+  - **Cách dùng:** Bấm nút **📄 Soi hồ sơ** -> Nhập mã cổ phiếu (VD: VNM).
+  - **Tính năng:** Cung cấp cái nhìn toàn diện về doanh nghiệp trong 30 giây.
+  - **Nội dung:** Tóm tắt mô hình kinh doanh, vị thế trong ngành, các lợi thế cạnh tranh (Moat), rủi ro chính và triển vọng tăng trưởng. Giúp bạn hiểu rõ mình đang mua công ty gì.
+
+- **Lọc Cổ Phiếu (Screener) - Chiến lược Mean Reversion:**
+  - **Cách dùng:** Bấm nút **💎 Lọc Cổ Phiếu**.
+  - **Cơ chế:** Hệ thống tự động tính toán P/E và P/B trung bình 5 năm của toàn thị trường.
+  - **Ý nghĩa:** Tìm ra các cổ phiếu đang bị định giá thấp (Rẻ) hoặc quá cao (Đắt) so với lịch sử của chính nó.
+  - **Tín hiệu:**
+    - **Rẻ (Undervalued):** Giá thấp hơn mức trung bình lịch sử (>10%) -> Cơ hội tích sản.
+    - **Đắt (Overvalued):** Giá cao hơn mức trung bình -> Cân nhắc chốt lời.
+
+### 4. BÁO CÁO TỰ ĐỘNG (PASSIVE) - DÀNH CHO PRO (CHI TIẾT)
+- **Hệ thống Auto Report (Tự động gửi):**
+  1. **Bản tin Sáng (Morning Digest - 07:00):**
+     - Tổng hợp tin tức Vĩ mô & Doanh nghiệp quan trọng nhất trong 24h qua (đã lọc tin rác).
+     - Cập nhật Báo cáo tài chính (BCTC) mới công bố của các mã trong danh mục.
+     - AI nhận định xu hướng thị trường đầu ngày.
+  2. **Tổng kết Cuối phiên (EOD Summary - 15:00):**
+     - Tổng hợp diễn biến thị trường: Tăng/Giảm, Thanh khoản, Khối ngoại.
+     - AI phân tích dòng tiền và tâm lý đám đông (Hưng phấn/Sợ hãi).
+  3. **Báo cáo Tuần (Weekly Report - 09:00 Chủ Nhật):**
+     - Review hiệu quả danh mục đầu tư trong tuần.
+     - Tổng hợp các sự kiện kinh tế quan trọng tuần tới.
+
+- **Hệ thống Cảnh báo Realtime (Alert):**
+  - **Cổ phiếu (Stock Alert):** Báo ngay lập tức khi giá cổ phiếu trong Watchlist biến động mạnh (Tăng/Giảm > 2%) so với giá tham chiếu hoặc giá mở cửa. Giúp bạn không lỡ nhịp chốt lời/cắt lỗ.
+  - **Thị trường (Market Monitor):** Theo dõi sát sao 3 chỉ số chính (VN30F1M, VNINDEX, VN30). Cảnh báo ngay khi có biến động lớn (±5 điểm) để bạn kịp thời phản ứng với xu hướng chung.
+  - **Cài đặt:** Có thể Bật/Tắt tùy ý trong mục '⚙️ Tài khoản'.
 
 ### 5. TÀI KHOẢN & THANH TOÁN
 - **Kiểm tra tài khoản:** Bấm nút '⚙️ Tài khoản' để xem hạn sử dụng gói Pro và cài đặt Bật/Tắt thông báo.
