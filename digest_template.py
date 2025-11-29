@@ -2077,8 +2077,11 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     <i class="fa-solid fa-circle-info text-blue-500 mr-1"></i>
                     Hành động này sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code> tới Worker để ép buộc chạy lại quy trình tạo báo cáo tuần và cập nhật dữ liệu thị trường ngay lập tức.
                 </div>
-                <button @click="forceWorker()" class="w-full py-2.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-blue-100">
+                <button @click="forceWorker()" class="w-full py-2.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-blue-100 mb-2">
                     <i class="fa-solid fa-robot mr-1.5"></i> Chạy Worker Ngay
+                </button>
+                <button @click="forceNightlyValuation()" class="w-full py-2.5 bg-purple-50 text-purple-600 border border-purple-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-purple-100">
+                    <i class="fa-solid fa-moon mr-1.5"></i> Chạy Nightly Valuation
                 </button>
             </div>
         </div>
@@ -2229,6 +2232,28 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         <div class="min-w-0">
                             <div class="text-[10px] text-slate-400 font-bold uppercase truncate">Cổ Phiếu</div>
                             <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.stock ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.vnindex ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-chart-area"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">VNINDEX</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vnindex ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.vn30_index ? 'bg-orange-100 text-orange-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-chart-pie"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">VN30</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vn30_index ? 'BẬT' : 'TẮT'"></div>
                         </div>
                     </div>
                 </div>
@@ -2517,7 +2542,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     try {
                         const res = await fetch('/api/admin/system/status', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
                             body: JSON.stringify({ admin_id: this.adminId, active: newState })
                         });
                         const data = await res.json();
@@ -2535,6 +2563,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 async forceWorker() {
                     if (!confirm('Bắt buộc chạy Worker (Weekly Report)?')) return;
                     this.callApi('/api/admin/worker/force', { type: 'weekly' }, '✅ Đã gửi lệnh chạy worker!');
+                },
+                async forceNightlyValuation() {
+                    if (!confirm('Bắt buộc chạy Nightly Valuation (Tính toán định giá)?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'nightly_valuation' }, '✅ Đã gửi lệnh chạy Nightly Valuation!');
                 },
 
                 // --- BROADCAST ACTIONS ---
@@ -2581,7 +2613,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     try {
                         const res = await fetch('/api/admin/user/ban', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
                             body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, action: action })
                         });
                         const result = await res.json();
@@ -2598,7 +2633,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     try {
                         await fetch('/api/admin/user/contact', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
                             body: JSON.stringify({ admin_id: this.adminId, target_id: user.id, target_name: user.name, username: user.username })
                         });
                         if (window.Telegram && window.Telegram.WebApp) window.Telegram.WebApp.close();
@@ -2624,7 +2662,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     try {
                         const res = await fetch('/api/admin/user/note', {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
                             body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, note: this.currentNote })
                         });
                         const result = await res.json();
@@ -2643,7 +2684,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         const targetId = this.selectedUser ? this.selectedUser.id : null;
                         const res = await fetch(url, {
                             method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
                             body: JSON.stringify({ admin_id: this.adminId, target_id: targetId, ...body })
                         });
                         const text = await res.text();
@@ -3046,7 +3090,24 @@ SCREENER_WEBAPP_TEMPLATE = r"""
 
                 async init() {
                     try {
-                        const res = await fetch('/api/screener-data');
+                        // Headers to bypass ngrok warning
+                        const headers = {
+                            'ngrok-skip-browser-warning': 'true',
+                            'Content-Type': 'application/json'
+                        };
+                        
+                        const res = await fetch('/api/screener-data', {
+                            method: 'GET',
+                            headers: headers
+                        });
+
+                        // Check content type to ensure it is JSON
+                        const contentType = res.headers.get("content-type");
+                        if (!contentType || !contentType.includes("application/json")) {
+                            const text = await res.text();
+                            throw new Error("Not JSON: " + text.substring(0, 30));
+                        }
+
                         const json = await res.json();
                         this.stocks = json.data || [];
                     } catch (e) {

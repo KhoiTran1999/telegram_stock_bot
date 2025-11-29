@@ -405,6 +405,12 @@ async def worker_inbound_loop():
                         # Chạy background task để không block việc nhận lệnh khác
                         asyncio.create_task(execute_weekly_batch(requester_id=admin_id))
 
+                    # [MỚI] Xử lý lệnh chạy Nightly Valuation ngay lập tức
+                    elif cmd == "RUN_NIGHTLY_VALUATION":
+                        admin_id = payload.get('admin_id')
+                        log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
+                        asyncio.create_task(job_nightly_valuation())
+
                     elif cmd == "GEN_INFO":
                         chat_id = payload.get('chat_id')
                         symbol = payload.get('symbol')
@@ -509,25 +515,31 @@ NEWS_MAX_RSS_ENTRIES_PER_RUN = 80
 MAX_NEWS_AGE_DAYS = 14  # chỉ gửi bài trong 14 ngày gần nhất
 
 #===============================================
-def load_company_keywords_from_csv(path: str = "ssi_master_list.csv") -> dict[str, list[str]]:
+def load_company_keywords_from_json(path: str = "sectors.json") -> dict[str, list[str]]:
     """
-    Đọc danh sách công ty từ file CSV (cột: symbol, name, industry, floor),
+    Đọc danh sách công ty từ file JSON (format: {SYM: {sector: ..., name: ...}}),
     trả về dict[symbol] = [symbol, tên đầy đủ, tên rút gọn].
     """
     mapping: dict[str, list[str]] = {}
     try:
-        with open(path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return {}
-
-            for row in reader:
-                sym = (row.get("symbol") or "").strip().upper()
-                name = (row.get("name") or "").strip()
-                if not sym or not name:
-                    continue
-
-                # Tạo tên rút gọn bằng cách bỏ bớt mấy từ phổ biến
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        for sym, info in data.items():
+            sym = sym.strip().upper()
+            if isinstance(info, dict):
+                name = info.get("name", "")
+            else:
+                name = "" 
+            
+            if not sym: continue
+            
+            keywords = {sym}
+            if name:
+                name = name.strip()
+                keywords.add(name)
+                
+                # Tạo tên rút gọn
                 short = re.sub(
                     r"\b(Công ty|Cổ phần|Tập đoàn|TNHH|Ngân hàng|Thương mại|Đầu tư|Phát triển|Kỹ thuật|Tài chính)\b",
                     "",
@@ -535,21 +547,18 @@ def load_company_keywords_from_csv(path: str = "ssi_master_list.csv") -> dict[st
                     flags=re.IGNORECASE,
                 )
                 short = re.sub(r"\s+", " ", short).strip()
-
-                keywords = {sym}
-                keywords.add(name)
                 if len(short) > 2:
                     keywords.add(short)
 
-                mapping[sym] = [k for k in keywords if len(k) > 2]
+            mapping[sym] = [k for k in keywords if len(k) > 2]
 
         log.info(f"[{INSTANCE_ID}][COMPANY] Đã load {len(mapping)} công ty từ {path}.")
     except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][COMPANY] Lỗi đọc CSV {path}: {e}")
+        log.warning(f"[{INSTANCE_ID}][COMPANY] Lỗi đọc JSON {path}: {e}")
     return mapping
 
 # Map symbol -> list keyword (mã + tên doanh nghiệp)
-COMPANY_KEYWORDS= load_company_keywords_from_csv("ssi_master_list.csv")
+COMPANY_KEYWORDS = load_company_keywords_from_json("sectors.json")
 
 def is_fresh_news(
     pub_dt: datetime.datetime | None,
@@ -582,44 +591,7 @@ def is_fresh_news(
 
 
 
-def load_company_keywords_from_csv(path: str = "ssi_master_list.csv") -> dict[str, list[str]]:
-    """
-    Đọc danh sách công ty từ file CSV (cột: symbol, name, industry, floor),
-    trả về dict[symbol] = [symbol, tên đầy đủ, tên rút gọn].
-    """
-    mapping: dict[str, list[str]] = {}
-    try:
-        with open(path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return {}
 
-            for row in reader:
-                sym = (row.get("symbol") or "").strip().upper()
-                name = (row.get("name") or "").strip()
-                if not sym or not name:
-                    continue
-
-                # Tạo tên rút gọn bằng cách bỏ bớt mấy từ phổ biến
-                short = re.sub(
-                    r"\b(Công ty|Cổ phần|Tập đoàn|TNHH|Ngân hàng|Thương mại|Đầu tư|Phát triển|Kỹ thuật|Tài chính)\b",
-                    "",
-                    name,
-                    flags=re.IGNORECASE,
-                )
-                short = re.sub(r"\s+", " ", short).strip()
-
-                keywords = {sym}
-                keywords.add(name)
-                if len(short) > 2:
-                    keywords.add(short)
-
-                mapping[sym] = [k for k in keywords if len(k) > 2]
-
-        log.info(f"[{INSTANCE_ID}][COMPANY] Đã load {len(mapping)} công ty từ {path}.")
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][COMPANY] Lỗi đọc CSV {path}: {e}")
-    return mapping
 
 def fetch_rss_entries_for_urls(urls: list[str]) -> list[dict[str, Any]]:
     """
@@ -1358,6 +1330,49 @@ async def get_top_mean_reversion_stocks(limit=5):
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] Lỗi get_top_mean_reversion_stocks: {e}")
         return []
+
+# --- NEW HELPERS FOR PERSONALIZED DIGEST ---
+AI_SEMAPHORE = asyncio.Semaphore(3)
+
+def tag_news_items(items):
+    for item in items:
+        text = item['title'] + " " + item.get('summary', '')
+        text_upper = text.upper()
+        found = set()
+        # Fast check for symbols (3 chars)
+        potential_syms = set(re.findall(r"\b[A-Z]{3}\b", text_upper))
+        for sym in potential_syms:
+            if sym in COMPANY_KEYWORDS:
+                found.add(sym)
+        item['tags'] = found
+    return items
+
+async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_news):
+    async with AI_SEMAPHORE:
+        # 1. Filter Specialized News
+        my_spec = []
+        other_spec = []
+        w_set = set(str(s).upper() for s in watchlist)
+        
+        for item in all_spec_news:
+            if not item['tags'].isdisjoint(w_set):
+                my_spec.append(item)
+            else:
+                other_spec.append(item)
+        
+        # 2. Fill up (Limit total spec news to 60)
+        final_spec = my_spec[:]
+        needed = 60 - len(final_spec)
+        if needed > 0:
+            final_spec.extend(other_spec[:needed])
+            
+        # 3. Combine with Macro
+        input_news = all_macro_news + final_spec
+        
+        # 4. Call AI
+        if not input_news: return None
+        return await summarize_daily_news_with_ai(input_news)
+
     
 async def job_daily_digest():
     """
@@ -1398,27 +1413,30 @@ async def job_daily_digest():
             get_top_mean_reversion_stocks(limit=5)
         )
 
-        # 3. Xử lý AI Tin tức
-        all_news = []
-        for r in macro_rows: all_news.append({"title": r[0], "link": r[1], "source": "Vĩ mô"})
-        for r in spec_rows: all_news.append({"title": r[0], "link": r[1], "source": "DN"})
+        # 3. Chuẩn bị dữ liệu tin tức
+        macro_news_list = [{"title": r[0], "link": r[1], "source": "Vĩ mô"} for r in macro_rows]
+        spec_news_list = [{"title": r[0], "link": r[1], "source": "DN"} for r in spec_rows]
         
-        ai_text = "_Không có tin nổi bật._"
-        ai_data = None
-        
-        if all_news:
-            # Giới hạn tin đưa vào AI để tránh quá tải token (nếu cần)
-            ai_data = await summarize_daily_news_with_ai(all_news[:90]) 
-            if ai_data:
-                lines = []
-                if ai_data.get('headline'):
-                    lines.append("⚡ *TIÊU ĐIỂM*")
-                    for i in ai_data['headline']: lines.append(f"• {i['text']}")
-                if ai_data.get('comment'):
-                    lines.append(f"\n🧠 *AI:* {ai_data['comment']}")
-                ai_text = "\n".join(lines)
+        # Tagging
+        spec_news_list = tag_news_items(spec_news_list)
 
-        # 4. Chuẩn bị dữ liệu Mapping
+        # 4. Chạy AI cho từng User (Parallel)
+        user_ai_tasks = []
+        user_ids_map = [] # Keep track of order
+        
+        for chat_key, user_block in all_watch.items():
+            try: chat_id = int(chat_key)
+            except: continue
+            
+            watchlist = user_block.get("list", [])
+            user_ids_map.append(chat_id)
+            user_ai_tasks.append(generate_user_ai_digest(chat_id, watchlist, spec_news_list, macro_news_list))
+            
+        # Run gather
+        ai_results = await asyncio.gather(*user_ai_tasks)
+        user_ai_map = dict(zip(user_ids_map, ai_results))
+
+        # 5. Chuẩn bị dữ liệu Mapping
         bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
         
         # Group Reports theo mã
@@ -1436,14 +1454,17 @@ async def job_daily_digest():
             for sym in user_block.get("list", []) or []:
                 watch_to_chats.setdefault(str(sym).upper().strip(), []).append(chat_id)
 
-        # 5. Khởi tạo Payload cho từng User
+        # 6. Khởi tạo Payload cho từng User
         digest_payloads = {}
         
         def _get_payload(cid):
             if cid not in digest_payloads:
+                # Lấy AI Data riêng của user
+                my_ai_data = user_ai_map.get(cid)
+                
                 digest_payloads[cid] = {
                     "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
-                    "ai_news": ai_data, 
+                    "ai_news": my_ai_data, 
                     "value_stocks": [], 
                     "bctc": [], 
                     "reports": []
@@ -1457,7 +1478,7 @@ async def job_daily_digest():
                     _get_payload(int(chat_key))
                 except: continue
 
-        # 6. Fill dữ liệu chi tiết vào Payload
+        # 7. Fill dữ liệu chi tiết vào Payload
         
         # A. Value Stocks (Chỉ cho Pro)
         if top_value_stocks:
@@ -1508,7 +1529,7 @@ async def job_daily_digest():
                                 "link": "#", "time": t_str, "is_locked": True
                             })
 
-        # 7. Gửi tin nhắn (Push Redis)
+        # 8. Gửi tin nhắn (Push Redis)
         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
         count = 0
         
@@ -1526,6 +1547,18 @@ async def job_daily_digest():
                         {"text": "📰 Xem Chi Tiết (Web App) 🚀", "web_app": {"url": web_url}}
                     ]]
                 }
+                
+                # Format AI Text riêng cho từng user
+                ai_data = data.get("ai_news")
+                ai_text = "_Không có tin nổi bật._"
+                if ai_data:
+                    lines = []
+                    if ai_data.get('headline'):
+                        lines.append("⚡ *TIÊU ĐIỂM*")
+                        for i in ai_data['headline']: lines.append(f"• {i['text']}")
+                    if ai_data.get('comment'):
+                        lines.append(f"\n🧠 *AI:* {ai_data['comment']}")
+                    ai_text = "\n".join(lines)
                 
                 msg_text = (
                     f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"

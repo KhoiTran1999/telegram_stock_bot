@@ -31,6 +31,8 @@ def update_sector_info():
             ticker = str(row.get('symbol', '')).strip().upper()
             # Use icb_name2 (Supersector) as the main sector
             industry = str(row.get('icb_name2', '')).strip()
+            # Get company name
+            name = str(row.get('organ_name', '')).strip()
             
             # Fallback to icb_name3 if icb_name2 is missing
             if not industry or industry.lower() == 'nan':
@@ -38,7 +40,11 @@ def update_sector_info():
             
             # Basic cleaning
             if ticker and industry and industry.lower() != 'nan':
-                sector_map[ticker] = industry
+                # Save as object with name and sector
+                sector_map[ticker] = {
+                    "sector": industry,
+                    "name": name
+                }
         
         # Save to JSON file
         with open(SECTOR_FILE, 'w', encoding='utf-8') as f:

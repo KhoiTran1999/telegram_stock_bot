@@ -382,55 +382,7 @@ async def safe_edit_message(query, text, reply_markup, parse_mode="Markdown"):
     except Exception as e:
         log.warning(f"Lỗi lạ safe_edit_message: {e}")
 
-def load_industry_map_from_csv(path: str = "ssi_master_list.csv") -> dict[str, str]:
-    """
-    Đọc file CSV mapping ngành (crawl từ TOPI) và trả về dict:
-        {symbol: industry}
-    CSV mong đợi có cột: symbol, industry (hoặc industry_raw, industry).
-    """
-    mapping: dict[str, str] = {}
-    try:
-        with open(path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return {}
 
-            # Chuẩn hoá tên cột về lower để linh hoạt hơn
-            cols = [c.lower() for c in reader.fieldnames]
-            try:
-                symbol_idx = cols.index("symbol")
-            except ValueError:
-                log.warning(f"[{INSTANCE_ID}][VALUE] CSV {path} không có cột 'symbol'.")
-                return {}
-
-            # Ưu tiên cột 'industry', nếu không có thì dùng 'industry_raw'
-            industry_idx = None
-            if "industry" in cols:
-                industry_idx = cols.index("industry")
-            elif "industry_raw" in cols:
-                industry_idx = cols.index("industry_raw")
-            else:
-                log.warning(
-                    f"[{INSTANCE_ID}][VALUE] CSV {path} không có 'industry'/'industry_raw'."
-                )
-                return {}
-
-            for row in reader:
-                values = list(row.values())
-                sym = (values[symbol_idx] or "").strip().upper()
-                ind = (values[industry_idx] or "").strip()
-                if not sym or not ind:
-                    continue
-                mapping[sym] = ind
-
-    except FileNotFoundError:
-        log.warning(
-            f"[{INSTANCE_ID}][VALUE] Không tìm thấy file {path}, fallback industry='Khác'."
-        )
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}][VALUE] Lỗi đọc CSV {path}: {e}")
-
-    return mapping
 
 
 # --- HELPER CHO SCREENER MEAN REVERSION ---
@@ -2721,14 +2673,17 @@ def get_screener_data_for_webapp():
             pe_avg = hist_data[sym]['pe_avg']
             pb_avg = hist_data[sym]['pb_avg']
             
-            if pe_cur <= 0 or pb_cur <= 0: continue
-            if pe_avg <= 0 or pb_avg <= 0: continue
+            # Validate Data (Chặn NaN/Inf để tránh lỗi JSON trên iPhone)
+            if math.isnan(pe_cur) or pe_cur <= 0: continue
+            if math.isnan(pb_cur) or pb_cur <= 0: continue
+            if math.isnan(pe_avg) or pe_avg <= 0: continue
+            if math.isnan(pb_avg) or pb_avg <= 0: continue
 
             # Tính Upside (Biên an toàn)
             # Upside = (Fair - Current) / Current
             # Fair Value ước tính theo Mean Reversion
-            upside_pe = (pe_avg / pe_cur) - 1 if pe_cur > 0 else 0
-            upside_pb = (pb_avg / pb_cur) - 1 if pb_cur > 0 else 0
+            upside_pe = (pe_avg / pe_cur) - 1
+            upside_pb = (pb_avg / pb_cur) - 1
             
             avg_upside = (upside_pe + upside_pb) / 2
             
@@ -2746,25 +2701,41 @@ def get_screener_data_for_webapp():
             else:
                 signal = "Fair"
 
-            sector = sectors_map.get(sym, "Khác")
+            sector_info = sectors_map.get(sym, "Khác")
+            if isinstance(sector_info, dict):
+                sector = sector_info.get("sector", "Khác")
+            else:
+                sector = sector_info if isinstance(sector_info, str) else "Khác"
             
+            # Helper sanitize final values
+            def _s(v):
+                if v is None: return 0.0
+                if isinstance(v, float):
+                    if math.isnan(v) or math.isinf(v): return 0.0
+                return v
+
             result_data.append({
-                "symbol": sym,
-                "sector": sector,
-                "price": current_price,
-                "fair": fair_value,
-                "discount": round(discount_pct, 2),
-                "signal": signal,
-                "pe": pe_cur,
-                "pe_avg": pe_avg,
-                "pb": pb_cur,
-                "pb_avg": pb_avg
+                "symbol": str(sym),
+                "sector": str(sector) if sector else "Khác",
+                "price": _s(current_price),
+                "fair": _s(fair_value),
+                "discount": _s(round(discount_pct, 2)),
+                "signal": str(signal),
+                "pe": _s(pe_cur),
+                "pe_avg": _s(pe_avg),
+                "pb": _s(pb_cur),
+                "pb_avg": _s(pb_avg)
             })
             
         payload = {"data": result_data}
         
-        # Cache 5 phút
-        r.set("global_screener_snapshot", json.dumps(payload), ex=300)
+        # Cache 5 phút (Ensure NO NaN)
+        try:
+            json_str = json.dumps(payload, allow_nan=False)
+            r.set("global_screener_snapshot", json_str, ex=300)
+        except ValueError as e:
+            log.error(f"FATAL: Generated JSON contains NaN! {e}")
+            # Fallback: Clean recursively if needed, but _s should have caught it.
         
         return payload
 
@@ -2781,7 +2752,15 @@ def view_screener_webapp():
 def api_screener_data():
     """API trả về dữ liệu JSON cho Screener WebApp"""
     data = get_screener_data_for_webapp()
-    return jsonify(data)
+    # Force standard JSON dump to avoid NaN issues on Safari
+    try:
+        return flask_app.response_class(
+            response=json.dumps(data, ensure_ascii=False, allow_nan=False),
+            mimetype='application/json'
+        )
+    except ValueError:
+        # If data still has NaN, return empty to prevent crash
+        return jsonify({"data": []})
 
 @flask_app.route("/info/<symbol>")
 async def view_profile(symbol: str): # <--- Đổi thành async
@@ -3576,6 +3555,11 @@ async def api_admin_force_worker():
             payload = {"cmd": "RUN_WEEKLY_NOW", "admin_id": ADMIN_ID}
             await asyncio.to_thread(push_to_worker, payload)
             return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Weekly Report."})
+        
+        elif task_type == 'nightly_valuation':
+            payload = {"cmd": "RUN_NIGHTLY_VALUATION", "admin_id": ADMIN_ID}
+            await asyncio.to_thread(push_to_worker, payload)
+            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Nightly Valuation."})
         
         return jsonify({"ok": False, "message": "Unknown task"}), 400
 
