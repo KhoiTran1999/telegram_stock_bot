@@ -66,7 +66,87 @@ def migrate_trial():
     except Exception as e:
         print(f"❌ Lỗi: {e}")
 
+def migrate_paid_users():
+    print("🚀 Đang kiểm tra và thêm cột 'plan_name' vào bảng 'paid_users'...")
+    if not DATABASE_URL:
+        print("❌ Lỗi: Thiếu DATABASE_URL.")
+        return
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                sql = "ALTER TABLE paid_users ADD COLUMN IF NOT EXISTS plan_name TEXT DEFAULT 'pro';"
+                cur.execute(sql)
+            conn.commit()
+            print("✅ THÀNH CÔNG! Đã cập nhật bảng 'paid_users'.")
+    except Exception as e:
+        print(f"❌ Lỗi: {e}")
+
+def create_new_tables():
+    print("🚀 Đang tạo các bảng mới (bot_orders, analysis_report_seen, v.v.)...")
+    if not DATABASE_URL:
+        print("❌ Lỗi: Thiếu DATABASE_URL.")
+        return
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # 1. bot_orders
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_orders (
+                        order_id    TEXT PRIMARY KEY,
+                        chat_id     BIGINT NOT NULL,
+                        amount      INTEGER NOT NULL,
+                        days_to_add INTEGER NOT NULL,
+                        status      TEXT NOT NULL DEFAULT 'PENDING',
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                
+                # 2. analysis_report_seen
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS analysis_report_seen (
+                        id           SERIAL PRIMARY KEY,
+                        symbol       TEXT,
+                        link         TEXT NOT NULL,
+                        title        TEXT,
+                        published_at TIMESTAMPTZ,
+                        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(link, published_at) 
+                    )
+                """)
+                
+                # 3. bctc_notify_queue
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bctc_notify_queue (
+                        id          SERIAL PRIMARY KEY,
+                        symbol      TEXT NOT NULL,
+                        year        INTEGER NOT NULL,
+                        quarter     INTEGER NOT NULL,
+                        notify_date DATE   NOT NULL,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE(symbol, year, quarter, notify_date)
+                    )
+                """)
+                
+                # 4. bot_user_settings
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_user_settings (
+                        chat_id     BIGINT PRIMARY KEY,
+                        settings    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                
+            conn.commit()
+            print("✅ THÀNH CÔNG! Đã tạo các bảng mới.")
+    except Exception as e:
+        print(f"❌ Lỗi: {e}")
+
 if __name__ == "__main__":
     migrate_admin_note()
     add_ban_column()
     migrate_trial()
+    migrate_paid_users()
+    create_new_tables()
