@@ -10,7 +10,7 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng dựa t
 - **Liên hệ Admin:** Để báo lỗi, góp ý tính năng hoặc hợp tác, vui lòng nhắn tin trực tiếp cho Admin qua Telegram: @KhoiTran99.
 
 ### 2. CÁC TÍNH NĂNG CƠ BẢN (DASHBOARD)
-- **Mở Menu chính (Dashboard):** Gõ lệnh `/start` hoặc bấm nút '🔙 Dashboard' ở menu dưới cùng. Tại đây có đầy đủ các nút chức năng như: Danh mục, Thêm mã, Soi hồ sơ, Tài khoản...
+- **Mở Menu chính (Dashboard):** Gõ lệnh `/start` hoặc bấm nút '🏠 Dashboard' ở menu dưới cùng. Tại đây có đầy đủ các nút chức năng như: Danh mục, Thêm mã, Soi hồ sơ, Tài khoản...
 - **Tra cứu & Thao tác nhanh:** Gõ trực tiếp mã 3 chữ cái (ví dụ: `HPG`, `SSI`) vào ô chat. Bot sẽ gửi ngay:
   1. **Biểu đồ giá (Chart):** Kèm RSI, Volume.
   2. **Nút 'Theo dõi':** Để thêm vào danh mục (Free: 1 mã, Pro: Không giới hạn).

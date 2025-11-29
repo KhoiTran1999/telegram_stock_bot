@@ -314,7 +314,7 @@ Bot:"""
         # 3. Gọi Gemini
         answer, usage = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.0-flash-lite-preview-02-05", 
+            model_id="gemini-2.5-flash-lite", 
             contents=full_prompt,
             return_usage=True
         )
@@ -2161,6 +2161,36 @@ async def fetch_full_eod_data(symbols):
     return [r for r in results if r]
 
 
+async def generate_market_comment_ai(vni_data, v30_data):
+    """
+    Tạo nhận định thị trường ngắn gọn từ dữ liệu Index.
+    """
+    if not vni_data or not v30_data:
+        return "Thị trường hôm nay biến động..."
+
+    try:
+        prompt = f"""
+Bạn là chuyên gia tài chính. Hãy viết một nhận định ngắn (dưới 200 từ) về thị trường chứng khoán Việt Nam hôm nay dựa trên số liệu sau:
+
+VN-INDEX: {vni_data['price']} ({vni_data['change_str']})
+VN30: {v30_data['price']} ({v30_data['change_str']})
+
+Yêu cầu:
+- Giọng văn chuyên nghiệp, súc tích, tập trung vào xu hướng chính.
+- Không lặp lại số liệu chi tiết (vì user đã thấy rồi).
+- Nhận xét về tâm lý thị trường (Hưng phấn/Thận trọng/Hoảng loạn).
+- Có thể dùng emoji phù hợp để tăng tính sinh động.
+"""
+        comment = await asyncio.to_thread(
+            call_gemini_safe,
+            model_id="gemini-2.5-pro",
+            contents=prompt
+        )
+        return comment.strip() if comment else "Thị trường hôm nay..."
+    except Exception as e:
+        log.error(f"Lỗi AI Market Comment: {e}")
+        return "Thị trường hôm nay..."
+
 async def send_eod_summary_worker():
     """
     [WORKER] Xử lý nặng: Lấy giá EOD, Vẽ Chart, Gọi AI -> Bắn sang Gateway.
@@ -2212,10 +2242,13 @@ async def send_eod_summary_worker():
     # Chờ chart xong
     chart_vni, chart_v30 = await asyncio.gather(task_vni, task_v30)
     
+    # [NEW] Gọi AI nhận định
+    ai_comment = await generate_market_comment_ai(vni_data, v30_data)
+
     market_data = {
         "vnindex": {**vni_data, "chart_html": chart_vni},
         "vn30": {**v30_data, "chart_html": chart_v30},
-        "ai_comment": "Thị trường hôm nay..." # Gọi AI ở đây nếu muốn
+        "ai_comment": ai_comment
     }
 
     # 3. LẤY DANH SÁCH USER
@@ -2619,7 +2652,7 @@ YÊU CẦU NỘI DUNG:
 
     try:
         raw_text = call_gemini_safe(
-            model_id="gemini-2.5-flash", # Dùng Flash cho nhanh
+            model_id="gemini-2.5-flash-lite", # Dùng Flash cho nhanh
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
