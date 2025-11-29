@@ -58,6 +58,7 @@ from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
 from vnstock import Trading, Quote, Listing, Finance, Company, Screener
+from chart_utils import draw_sector_performance_chart, generate_sector_table_html
 from db_utils import (
     init_db,
     get_all_watch,
@@ -2626,6 +2627,9 @@ def view_digest(digest_id):
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
 
 # --- HELPER CHO SCREENER WEBAPP ---
+# Các mã cần loại khỏi Screener (yêu cầu business)
+EXCLUDED_TICKERS = {"VIC", "VRE", "VHM"}
+
 def get_screener_data_for_webapp():
     """
     Lấy dữ liệu screener.
@@ -2642,9 +2646,15 @@ def get_screener_data_for_webapp():
 
         # 2. Nếu không có, tính toán (Fallback)
         # Lấy dữ liệu lịch sử
-        hist_data = get_historical_valuation_from_redis()
+        hist_payload = get_historical_valuation_from_redis()
+        if not hist_payload:
+            return {"data": []}
+            
+        # [FIX] Extract 'stocks' from payload
+        hist_data = hist_payload.get("stocks", {})
         if not hist_data:
             return {"data": []}
+
 
         # Lấy dữ liệu thị trường (Sync call)
         screener_df = Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700)
@@ -2658,20 +2668,34 @@ def get_screener_data_for_webapp():
 
         result_data = []
         for index, row in screener_df.iterrows():
-            sym = row['ticker']
+            sym = str(row['ticker']).upper()
+            if sym in EXCLUDED_TICKERS: continue
             if sym not in hist_data: continue
             
             try:
                 pe_cur = float(row['pe'])
                 pb_cur = float(row['pb'])
                 # Giá đóng cửa (đơn vị nghìn đồng)
-                current_price = float(row.get('close', 0)) * 1000 
-                if current_price == 0:
-                    current_price = float(row.get('price', 0)) * 1000
+                # Ưu tiên: close -> price -> price_near_realtime
+                p_close = row.get('close', 0)
+                p_price = row.get('price', 0)
+                p_realtime = row.get('price_near_realtime', 0)
+                
+                current_price = 0.0
+                
+                try:
+                    if p_close and not math.isnan(float(p_close)) and float(p_close) > 0:
+                        current_price = float(p_close) * 1000
+                    elif p_price and not math.isnan(float(p_price)) and float(p_price) > 0:
+                        current_price = float(p_price) * 1000
+                    elif p_realtime and not math.isnan(float(p_realtime)) and float(p_realtime) > 0:
+                        current_price = float(p_realtime) * 1000
+                except:
+                    current_price = 0.0
             except: continue
 
-            pe_avg = hist_data[sym]['pe_avg']
-            pb_avg = hist_data[sym]['pb_avg']
+            pe_avg = hist_data[sym].get('pe_avg', 0)
+            pb_avg = hist_data[sym].get('pb_avg', 0)
             
             # Validate Data (Chặn NaN/Inf để tránh lỗi JSON trên iPhone)
             if math.isnan(pe_cur) or pe_cur <= 0: continue
@@ -2746,7 +2770,34 @@ def get_screener_data_for_webapp():
 @flask_app.route("/screener/value")
 def view_screener_webapp():
     """Route hiển thị Web App Screener"""
-    return render_template_string(SCREENER_WEBAPP_TEMPLATE)
+    try:
+        data_obj = get_screener_data_for_webapp()
+        items = data_obj.get("data", [])
+        
+        # [NEW] Generate Sector Chart
+        sector_chart = None
+        sector_table = None
+        try:
+            hist_payload = get_historical_valuation_from_redis()
+            if hist_payload and "sectors" in hist_payload:
+                sector_chart = draw_sector_performance_chart(hist_payload["sectors"], '12w')
+                sector_table = generate_sector_table_html(hist_payload["sectors"])
+        except Exception as e:
+            log.error(f"Chart Error: {e}")
+        
+        vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
+        generated_time = datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
+        
+        return render_template_string(
+            SCREENER_WEBAPP_TEMPLATE, 
+            items=items, 
+            generated_time=generated_time,
+            sector_chart=sector_chart,
+            sector_table=sector_table
+        )
+    except Exception as e:
+        log.error(f"View Screener Error: {e}")
+        return "Lỗi tải dữ liệu.", 500
 
 @flask_app.route("/api/screener-data")
 def api_screener_data():
@@ -3052,7 +3103,8 @@ async def view_screener_result(id): # <--- Chuyển thành ASYNC để gọi DB
         return render_template_string(
             SCREENER_HTML_TEMPLATE, 
             items=data['items'], 
-            generated_time=data['generated_time']
+            generated_time=data['generated_time'],
+            sector_chart=data.get('sector_chart', '')
         )
     except Exception as e:
         log.error(f"Lỗi render screener_result: {e}")

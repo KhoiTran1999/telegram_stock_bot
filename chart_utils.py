@@ -286,3 +286,163 @@ async def get_flash_view_data(symbol: str):
         "rsi_msg": rsi_msg,
         "volume_str": f"{total_vol/1e6:.1f}M"
     }
+
+# ==========================================
+# 4. HÀM VẼ CHART HIỆU SUẤT NGÀNH
+# ==========================================
+def draw_sector_performance_chart(sector_data, period='12w'):
+    """
+    Vẽ biểu đồ hiệu suất ngành (Horizontal Bar Chart).
+    period: '12w' hoặc '6m'
+    """
+    if not sector_data: return ""
+    
+    # 1. Prepare Data
+    items = []
+    for name, metrics in sector_data.items():
+        val = metrics.get(f'change_{period}')
+        if val is not None:
+            items.append((name, val))
+            
+    # Sort by performance
+    items.sort(key=lambda x: x[1]) # Sort ascending for horizontal bar (bottom to top)
+    
+    names = [x[0] for x in items]
+    values = [x[1] for x in items]
+
+    # [NEW] Shorten names for Mobile UI
+    display_names = []
+    for n in names:
+        # Mapping tên dài thành ngắn
+        n = n.replace("Hàng & Dịch vụ Công nghiệp", "Hàng & DV CN")
+        n = n.replace("Điện, nước & xăng dầu khí đốt", "Điện, Nước, Xăng")
+        n = n.replace("Thực phẩm và đồ uống", "Thực phẩm & ĐU")
+        n = n.replace("Xây dựng và Vật liệu", "XD & Vật liệu")
+        n = n.replace("Tài nguyên Cơ bản", "Tài nguyên CB")
+        n = n.replace("Dịch vụ tài chính", "DV Tài chính")
+        n = n.replace("Công nghệ Thông tin", "CNTT")
+        n = n.replace("Hàng cá nhân & Gia dụng", "Hàng CN & GD")
+        n = n.replace("Du lịch và Giải trí", "Du lịch & GT")
+        n = n.replace("Ô tô và phụ tùng", "Ô tô & PT")
+        n = n.replace("Truyền thông", "Truyền thông")
+        n = n.replace("Bảo hiểm", "Bảo hiểm")
+        n = n.replace("Bất động sản", "BĐS")
+        n = n.replace("Hóa chất", "Hóa chất")
+        n = n.replace("Ngân hàng", "Ngân hàng")
+        n = n.replace("Bán lẻ", "Bán lẻ")
+        n = n.replace("Y tế", "Y tế")
+        
+        # Cắt ngắn nếu vẫn quá dài
+        if len(n) > 18:
+            n = n[:16] + ".."
+        display_names.append(n)
+    
+    # 2. Colors
+    colors = ['#089981' if v >= 0 else '#f23645' for v in values]
+    
+    # 3. Draw Chart (Simplified UI - No Text Labels)
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=display_names,
+        orientation='h',
+        marker_color=colors,
+        hoverinfo='x+y',
+        marker=dict(cornerradius=4)
+    ))
+    
+    chart_height = max(300, len(items) * 30)
+    
+    fig.update_layout(
+        autosize=True,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=5, r=5, t=10, b=10), # Minimal margins
+        height=chart_height,
+        xaxis=dict(
+            showgrid=True, 
+            gridcolor='rgba(128,128,128,0.1)', 
+            zeroline=True, 
+            zerolinecolor='rgba(128,128,128,0.3)',
+            tickfont=dict(color='#9ca3af', family="Manrope, sans-serif", size=10)
+        ),
+        yaxis=dict(
+            showgrid=False, 
+            tickfont=dict(size=11, family="Manrope, sans-serif", color='#9ca3af'),
+            automargin=True
+        ),
+        dragmode=False,
+        hovermode=False,
+        font=dict(family="Manrope, sans-serif")
+    )
+    
+    return fig.to_html(full_html=False, include_plotlyjs=False, config={'displayModeBar': False, 'staticPlot': False, 'responsive': True})
+
+def generate_sector_table_html(sector_data):
+    """
+    Tạo HTML bảng hiệu suất ngành (6 Tháng vs 12 Tuần).
+    Style matches SCREENER_WEBAPP_TEMPLATE.
+    """
+    if not sector_data: return ""
+
+    # 1. Prepare Data
+    rows = []
+    for name, metrics in sector_data.items():
+        c6m = metrics.get('change_6m')
+        c12w = metrics.get('change_12w')
+        
+        if c6m is None and c12w is None: continue
+        
+        rows.append({
+            "name": name,
+            "c6m": c6m if c6m is not None else 0,
+            "c12w": c12w if c12w is not None else 0
+        })
+
+    # Sort by 6M performance descending
+    rows.sort(key=lambda x: x['c6m'], reverse=True)
+
+    # 2. Build HTML
+    # Using inline styles to match the theme variables
+    table_style = "width: 100%; border-collapse: collapse; font-size: 13px;"
+    th_style = "text-align: left; padding: 10px; color: var(--hint-color); font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border-color);"
+    td_style = "padding: 12px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-color); font-weight: 600;"
+    
+    html = f"""
+    <div style="overflow-x: auto;">
+        <table style="{table_style}">
+            <thead>
+                <tr>
+                    <th style="{th_style}">Ngành</th>
+                    <th style="{th_style} text-align: right;">6 Tháng</th>
+                    <th style="{th_style} text-align: right;">12 Tuần</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+
+    for row in rows:
+        def _fmt(val):
+            color = "var(--success-text)" if val >= 0 else "var(--danger-text)"
+            sign = "+" if val >= 0 else ""
+            return f'<span style="color: {color}; font-weight: 700;">{sign}{val:.1f}%</span>'
+
+        html += f"""
+                <tr>
+                    <td style="{td_style}">
+                        {row['name']}
+                    </td>
+                    <td style="{td_style} text-align: right;">
+                        {_fmt(row['c6m'])}
+                    </td>
+                    <td style="{td_style} text-align: right;">
+                        {_fmt(row['c12w'])}
+                    </td>
+                </tr>
+        """
+
+    html += """
+            </tbody>
+        </table>
+    </div>
+    """
+    return html

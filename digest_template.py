@@ -1055,6 +1055,7 @@ SCREENER_HTML_TEMPLATE = r"""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Định Giá Cổ Phiếu</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
@@ -1209,15 +1210,54 @@ SCREENER_HTML_TEMPLATE = r"""
         .algo-title { font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--text-primary); }
         .algo-text { font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
         .algo-formula { background: var(--metric-bg); padding: 10px 14px; border-radius: 10px; font-family: monospace; font-weight: 700; font-size: 12px; color: var(--text-primary); margin: 12px 0; display: block; border-left: 4px solid #3b82f6; }
+        
+        /* TABS */
+        .tab-nav { display: flex; gap: 8px; margin-bottom: 20px; background: var(--metric-bg); padding: 4px; border-radius: 14px; border: 1px solid var(--metric-border); }
+        .tab-item { flex: 1; text-align: center; padding: 10px; font-size: 13px; font-weight: 700; border-radius: 10px; cursor: pointer; color: var(--text-secondary); transition: all 0.2s; }
+        .tab-item.active { background: var(--card-bg); color: var(--text-primary); box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        
+        /* No Scrollbar */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Force Plotly to fit */
+        .plotly-graph-div { width: 100% !important; }
     </style>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
 </head>
-<body>
+<body x-data="{ activeTab: 'stocks' }">
     <div class="header">
         <div><span class="header-title">Định Giá Cổ Phiếu</span><span class="pro-badge">PRO 👑</span></div>
         <div class="header-subtitle">Top cổ phiếu định giá Rẻ nhất so với Lịch sử</div>
         <div class="timestamp-badge">🕒 Cập nhật: {{ generated_time }}</div>
     </div>
 
+    <!-- TAB NAVIGATION -->
+    <div class="tab-nav">
+        <div class="tab-item" :class="activeTab === 'stocks' ? 'active' : ''" @click="activeTab = 'stocks'">Cổ phiếu</div>
+        <div class="tab-item" :class="activeTab === 'sectors' ? 'active' : ''" @click="activeTab = 'sectors'; $nextTick(() => { setTimeout(resizeCharts, 100); setTimeout(resizeCharts, 400); setTimeout(resizeCharts, 800); })">Hiệu suất Ngành</div>
+    </div>
+
+    <!-- TAB 2: SECTORS -->
+    <div x-show="activeTab === 'sectors'" style="display: none;" x-transition.opacity>
+        {% if sector_chart %}
+        <div class="card" style="padding: 0; overflow: hidden;">
+            <div style="padding: 16px 16px 0 16px; font-size: 14px; font-weight: 800; color: var(--text-primary);">
+                📊 Hiệu suất Ngành (YTD)
+            </div>
+            <div style="width: 100%; overflow: hidden;">
+                {{ sector_chart | safe }}
+            </div>
+        </div>
+        {% else %}
+        <div class="card" style="padding: 20px; text-align: center; color: var(--text-secondary);">
+            Chưa có dữ liệu biểu đồ ngành.
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- TAB 1: STOCKS -->
+    <div x-show="activeTab === 'stocks'" x-transition.opacity>
     {% for item in items %}
     <div class="card {% if loop.index == 1 %}card-rank-1{% elif loop.index == 2 %}card-rank-2{% elif loop.index == 3 %}card-rank-3{% endif %} {% if loop.index > 10 %}hidden-item{% endif %}">
         <div class="card-header">
@@ -1254,6 +1294,7 @@ SCREENER_HTML_TEMPLATE = r"""
             Xếp hạng dựa trên <b>Trung bình cộng</b> của độ lệch P/E và P/B (Trọng số 50:50).
         </div>
     </div>
+    </div> <!-- End of TAB 1: STOCKS -->
 
     <script>
         Telegram.WebApp.expand();
@@ -1275,6 +1316,23 @@ SCREENER_HTML_TEMPLATE = r"""
             document.querySelectorAll('.hidden-item').forEach(i => { i.style.display = 'block'; i.style.animation = 'fadeIn 0.5s ease'; });
             document.getElementById('btnToggle').style.display = 'none';
         }
+
+        function resizeCharts() {
+            const chartDivs = document.querySelectorAll('.plotly-graph-div');
+            chartDivs.forEach(div => {
+                if (window.Plotly && div.offsetParent !== null) {
+                    // Get actual parent container width
+                    const container = div.parentElement;
+                    const containerWidth = container ? container.offsetWidth : (window.innerWidth - 32);
+                    
+                    // Force relayout with explicit width, then enable autosize
+                    Plotly.relayout(div, { 
+                        'width': containerWidth,
+                        'autosize': true 
+                    });
+                }
+            });
+        }
         
         const style = document.createElement('style');
         style.innerHTML = `@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`;
@@ -1285,6 +1343,24 @@ SCREENER_HTML_TEMPLATE = r"""
         Telegram.WebApp.onEvent('themeChanged', function() {
             document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
         });
+        
+        // Setup IntersectionObserver to resize charts when sectors tab becomes visible
+        if (window.IntersectionObserver && window.Plotly) {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting && entry.target.querySelector('.plotly-graph-div')) {
+                        setTimeout(resizeCharts, 150);
+                        setTimeout(resizeCharts, 500);
+                    }
+                });
+            }, { threshold: 0.1 });
+            
+            // Wait for DOM, then observe sectors tab
+            setTimeout(() => {
+                const sectorsDiv = document.querySelector('[x-show="activeTab === \'sectors\'"]');
+                if (sectorsDiv) observer.observe(sectorsDiv);
+            }, 500);
+        }
     </script>
 </body>
 </html>
@@ -2729,6 +2805,7 @@ SCREENER_WEBAPP_TEMPLATE = r"""
     <title>Bộ Lọc Cổ Phiếu</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -2913,38 +2990,74 @@ SCREENER_WEBAPP_TEMPLATE = r"""
         .guide-title { font-size: 14px; font-weight: 700; color: var(--text-color); margin-bottom: 8px; }
         .guide-content { font-size: 12px; color: var(--hint-color); line-height: 1.6; }
         .guide-content p { margin: 4px 0; }
+        
+        /* TABS */
+        .tab-nav { display: flex; gap: 8px; margin-bottom: 20px; background: var(--metric-bg); padding: 4px; border-radius: 14px; border: 1px solid var(--border-color); }
+        .tab-item { flex: 1; text-align: center; padding: 10px; font-size: 13px; font-weight: 700; border-radius: 10px; cursor: pointer; color: var(--hint-color); transition: all 0.2s; }
+        .tab-item.active { background: var(--card-bg); color: var(--text-color); box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
     </style>
 </head>
-<body x-data="screenerApp()">
+<body x-data="screenerApp()" x-init="init()">
     <div class="header">
         <div class="header-title">Bộ Lọc Cổ Phiếu</div>
         <div class="subtitle">Mean Reversion Strategy</div>
     </div>
 
-    <div class="control-panel">
-        <label class="label-text">Chọn Nhóm Ngành</label>
-        <div class="sector-select-wrapper">
-            <select x-model="selectedSector" class="sector-select">
-                <template x-for="sec in sectors">
-                    <option :value="sec" x-text="sec"></option>
-                </template>
-            </select>
-            <div class="select-arrow"><i class="fa-solid fa-chevron-down"></i></div>
-        </div>
-
-        <div class="toggle-wrapper">
-            <span class="label-text" style="margin-bottom:0; margin-right:4px;">Chỉ số:</span>
-            <button class="toggle-btn" :class="usePE ? 'active' : ''" @click="usePE = !usePE">P/E</button>
-            <button class="toggle-btn" :class="usePB ? 'active' : ''" @click="usePB = !usePB">P/B</button>
-        </div>
+    <!-- TAB NAVIGATION -->
+    <div class="tab-nav">
+        <div class="tab-item" :class="activeTab === 'stocks' ? 'active' : ''" @click="setTab('stocks')">Cổ phiếu</div>
+        <div class="tab-item" :class="activeTab === 'sectors' ? 'active' : ''" @click="setTab('sectors')">Hiệu suất Ngành</div>
     </div>
 
-    <div x-show="isLoading" class="loading">
-        <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 24px; margin-bottom: 10px; color: var(--accent-color);"></i><br>
-        Đang tải dữ liệu thị trường...
+    <!-- TAB 2: SECTORS -->
+    <div x-show="activeTab === 'sectors'" style="display: none;" x-transition.opacity>
+        {% if sector_chart %}
+        <div class="screener-card" style="margin-bottom: 20px; padding: 12px;">
+            <div class="label-text" style="margin-bottom: 12px;">📊 Hiệu suất ngành (12 tuần)</div>
+            <div style="overflow-x: auto;">
+                {{ sector_chart | safe }}
+            </div>
+        </div>
+        {% else %}
+        <div class="screener-card" style="padding: 20px; text-align: center; color: var(--hint-color);">
+            Chưa có dữ liệu biểu đồ ngành.
+        </div>
+        {% endif %}
+
+        <!-- Sector Table -->
+        {% if sector_table %}
+        <div class="screener-card" style="margin-top: 20px; padding: 0; overflow: hidden;">
+             {{ sector_table | safe }}
+        </div>
+        {% endif %}
     </div>
 
-    <div x-show="!isLoading" x-cloak>
+    <!-- TAB 1: STOCKS -->
+    <div x-show="activeTab === 'stocks'" x-transition.opacity>
+        <div class="control-panel">
+            <label class="label-text">Chọn Nhóm Ngành</label>
+            <div class="sector-select-wrapper">
+                <select x-model="selectedSector" class="sector-select">
+                    <template x-for="sec in sectors">
+                        <option :value="sec" x-text="sec"></option>
+                    </template>
+                </select>
+                <div class="select-arrow"><i class="fa-solid fa-chevron-down"></i></div>
+            </div>
+
+            <div class="toggle-wrapper">
+                <span class="label-text" style="margin-bottom:0; margin-right:4px;">Chỉ số:</span>
+                <button class="toggle-btn" :class="usePE ? 'active' : ''" @click="usePE = !usePE">P/E</button>
+                <button class="toggle-btn" :class="usePB ? 'active' : ''" @click="usePB = !usePB">P/B</button>
+            </div>
+        </div>
+
+        <div x-show="isLoading" class="loading">
+            <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 24px; margin-bottom: 10px; color: var(--accent-color);"></i><br>
+            Đang tải dữ liệu thị trường...
+        </div>
+
+        <div x-show="!isLoading" x-cloak>
         <template x-for="(stock, index) in filteredStocks" :key="stock.symbol">
             <div class="screener-card" 
                  :class="{
@@ -3005,6 +3118,7 @@ SCREENER_WEBAPP_TEMPLATE = r"""
             </div>
         </div>
     </div>
+    </div>
 
     <script>
         Telegram.WebApp.expand();
@@ -3015,10 +3129,34 @@ SCREENER_WEBAPP_TEMPLATE = r"""
             document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
         });
 
+        function resizePlotlyCharts() {
+            if (!window.Plotly || !Plotly.Plots || typeof Plotly.Plots.resize !== 'function') {
+                return;
+            }
+            requestAnimationFrame(() => {
+                document.querySelectorAll('.plotly-graph-div').forEach((el) => {
+                    try {
+                        Plotly.Plots.resize(el);
+                    } catch (err) {
+                        console.warn('Plotly resize error', err);
+                    }
+                });
+            });
+        }
+
+        let _resizeTimer = null;
+        window.addEventListener('resize', () => {
+            if (_resizeTimer) {
+                clearTimeout(_resizeTimer);
+            }
+            _resizeTimer = setTimeout(resizePlotlyCharts, 150);
+        });
+
         function screenerApp() {
             return {
-                isLoading: true,
-                stocks: [],
+                activeTab: 'stocks',
+                isLoading: false,
+                stocks: {{ items | tojson }},
                 sectors: [
                     'Ngân hàng', 
                     'Bất động sản', 
@@ -3044,6 +3182,21 @@ SCREENER_WEBAPP_TEMPLATE = r"""
                 selectedSector: 'Ngân hàng',
                 usePE: true,
                 usePB: true,
+
+                init() {
+                    this.$nextTick(() => {
+                        if (this.activeTab === 'sectors') {
+                            resizePlotlyCharts();
+                        }
+                    });
+                },
+
+                setTab(tab) {
+                    this.activeTab = tab;
+                    if (tab === 'sectors') {
+                        this.$nextTick(() => resizePlotlyCharts());
+                    }
+                },
                 
                 get filteredStocks() {
                     // 1. Calculate dynamic discount
@@ -3088,34 +3241,7 @@ SCREENER_WEBAPP_TEMPLATE = r"""
                     return result.sort((a,b) => a.dynamic_discount - b.dynamic_discount);
                 },
 
-                async init() {
-                    try {
-                        // Headers to bypass ngrok warning
-                        const headers = {
-                            'ngrok-skip-browser-warning': 'true',
-                            'Content-Type': 'application/json'
-                        };
-                        
-                        const res = await fetch('/api/screener-data', {
-                            method: 'GET',
-                            headers: headers
-                        });
-
-                        // Check content type to ensure it is JSON
-                        const contentType = res.headers.get("content-type");
-                        if (!contentType || !contentType.includes("application/json")) {
-                            const text = await res.text();
-                            throw new Error("Not JSON: " + text.substring(0, 30));
-                        }
-
-                        const json = await res.json();
-                        this.stocks = json.data || [];
-                    } catch (e) {
-                        alert('Lỗi tải dữ liệu: ' + e.message);
-                    } finally {
-                        this.isLoading = false;
-                    }
-                }
+                init() {}
             }
         }
     </script>

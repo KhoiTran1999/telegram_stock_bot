@@ -18,6 +18,7 @@ Bot Telegram thông minh hỗ trợ nhà đầu tư chứng khoán Việt Nam v�
     - **VN30**: Cảnh báo biến động ±5 điểm.
 - **Biểu đồ kỹ thuật**: Vẽ chart nến, RSI, Volume ngay trong Telegram (Mini chart & Full chart).
 - **Screener (Bộ lọc)**: Lọc cổ phiếu theo tiêu chí định giá (Rẻ/Đắt) dựa trên P/E, P/B lịch sử (Mean Reversion). Hỗ trợ lọc theo 19 nhóm ngành chi tiết (Ngân hàng, Bất động sản, Bán lẻ, CNTT...).
+- **Hiệu suất ngành**: Tab riêng trong WebApp Screener hiển thị biểu đồ Plotly + bảng so sánh % biến động 12 tuần và 6 tháng của từng ngành (bao gồm VNINDEX). Cho phép đánh giá nhanh dòng tiền luân chuyển giữa các nhóm.
 
 ### 🤖 AI & Tự động hóa (Powered by Gemini)
 - **Bản tin sáng (Morning Digest)**: Tự động tổng hợp tin tức vĩ mô & doanh nghiệp, dùng AI để tóm tắt và đánh giá tác động (7:00 AM).
@@ -187,6 +188,14 @@ Hệ thống tự động tính toán P/E và P/B trung bình 5 năm của cổ 
 - **Đắt**: Giá hiện tại cao hơn trung bình lịch sử.
 - **Phân ngành**: Hỗ trợ lọc theo 19 nhóm ngành (Ngân hàng, BĐS, Thép, Bán lẻ, Hóa chất...) dựa trên dữ liệu từ `sectors.json`.
 Dữ liệu này được tính toán hàng đêm (`job_nightly_valuation`) và lưu vào Redis để truy xuất nhanh.
+
+### 2. Hiệu suất ngành (Sector Performance)
+- **Nguồn dữ liệu**: Sử dụng cùng payload định giá (Redis `historical_valuation`) nhưng tổng hợp theo ngành. Chỉ các mã đạt điều kiện thanh khoản ≥ 50 tỷ và vốn hóa ≥ 5.000 tỷ mới tham gia tính toán, đồng thời loại bỏ một số mã đặc biệt (VIC/VHM/VRE) để tránh bóp méo số liệu.
+- **Cách tính**:
+    - `change_12w`: % biến động giá dựa trên giá đóng cửa hiện tại so với giá cách đây ~84 ngày (12 tuần, dữ liệu daily).
+    - `change_6m`: % biến động giá so với mốc ~180 ngày trước.
+    - Mỗi ngành lấy trung bình cộng giản đơn của các mã trong ngành có dữ liệu hợp lệ (mỗi mã 1 phiếu). VNINDEX được thêm như một “ngành tham chiếu”.
+- **Hiển thị**: WebApp Screener tab “Hiệu suất Ngành” gồm biểu đồ thanh Plotly và bảng so sánh 12W/6M đã được sort giảm dần theo 6M (fallback 12W khi thiếu dữ liệu). Dữ liệu làm mới 1 lần/đêm cùng job định giá.
 
 ### 2. AI News Summary
 - Worker quét tin từ các nguồn RSS (CafeF, Vietstock, VnEconomy).

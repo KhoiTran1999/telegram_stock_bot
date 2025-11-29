@@ -19,7 +19,7 @@ import feedparser
 import re
 import csv
 from datetime import timedelta
-from chart_utils import generate_mini_chart
+from chart_utils import generate_mini_chart, draw_sector_performance_chart
 from db_utils import (
     get_all_watch,
     get_all_pro_chat_ids,
@@ -713,8 +713,12 @@ async def fetch_data_smart(symbols: list):
                         pct = ((match_p - ref_p) / ref_p * 100) if ref_p > 0 else 0.0
                         results[sym] = {"price": match_p, "pct": pct}
                     except: continue
-        except Exception:
+        except BaseException as e:
+            if isinstance(e, asyncio.CancelledError):
+                raise e
+            # Bắt cả SystemExit nếu VCI rate limit
             _vci_blocked_date = today_date
+            log.warning(f"[{INSTANCE_ID}] VCI Fetch Error (Rate Limit? {type(e).__name__}). Switch to Fallback.")
 
     # 2. TCBS Fallback (Code rút gọn cho ví dụ)
     missing = [s for s in symbols if s not in results]
@@ -1076,111 +1080,92 @@ def _clean_vnstock_columns(df):
     df.columns = new_columns
     return df
 
-async def summarize_daily_news_with_ai(news_items: list) -> dict | None:
-    """
-    Phiên bản ULTIMATE: Tối ưu hóa tư duy nhà đầu tư, dynamic tags và chống trùng lặp.
-    """
-    if not news_items:
-        return None
+# ===============================================================
+# COMPREHENSIVE MARKET DATA TASK (ĐỊNH GIÁ + HIỆU SUẤT NGÀNH)
+# ===============================================================
 
-    # 1. Chuẩn bị dữ liệu thô (Kèm NHÃN GỢI Ý từ Code)
-    # Tăng nhẹ giới hạn lên 90 tin để bao phủ rộng hơn
-    items_to_process = news_items[:90]
-    raw_text = ""
-    for i, item in enumerate(items_to_process, 1):
-        source_hint = f"[{item.get('source', 'N/A').upper()}]"
-        raw_text += f"{i}. {source_hint} {item['title']} -- Link: {item['link']}\n"
+def load_symbol_sector_map(path="sectors.json") -> dict[str, str]:
+    """
+    Đọc file sectors.json để lấy mapping {Mã: Ngành}.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        mapping = {}
+        for sym, info in data.items():
+            if isinstance(info, dict) and "sector" in info:
+                mapping[sym.upper()] = info["sector"]
+        return mapping
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] Lỗi load sectors.json: {e}")
+        return {}
 
-    # 2. PROMPT "ULTIMATE"
+async def summarize_daily_news_with_ai(news_list):
+    """
+    Tóm tắt tin tức bằng AI (Gemini).
+    Input: List of dict {title, link, source}
+    Output: Dict {headline: [{text, link}], comment: str}
+    """
+    if not news_list: return None
+
+    # Chuẩn bị prompt
+    news_text = ""
+    for i, item in enumerate(news_list[:40]): # Limit 40 tin để không quá dài
+        news_text += f"- [{item['source']}] {item['title']}\n"
+
     prompt = f"""
-Bạn là Giám đốc Chiến lược (Chief Strategy Officer) của một quỹ đầu tư lớn tại Việt Nam.
-Nhiệm vụ: Soạn thảo bản tin "Market Intelligence" gửi cho các nhà đầu tư VIP vào đầu ngày.
+Bạn là trợ lý tài chính thông minh. Hãy đọc danh sách tin tức chứng khoán Việt Nam dưới đây và thực hiện 2 nhiệm vụ:
 
-DỮ LIỆU ĐẦU VÀO (Kèm gợi ý [TAG] từ robot thu thập):
-{raw_text}
+1. **TIÊU ĐIỂM**: Chọn ra 3-5 tin quan trọng nhất, có tác động lớn đến thị trường hoặc các mã cổ phiếu lớn. Viết lại ngắn gọn (dưới 15 từ/tin).
+2. **NHẬN ĐỊNH**: Viết một đoạn bình luận ngắn (dưới 50 từ) tổng hợp tâm lý thị trường dựa trên các tin này (Tích cực/Tiêu cực/Thận trọng...).
 
----
-### 🧠 QUY TRÌNH TƯ DUY XỬ LÝ (Chain-of-Thought):
+DANH SÁCH TIN:
+{news_text}
 
-1.  **THẨM ĐỊNH & SÀNG LỌC (Strict Filtering):**
-    * **Loại bỏ ngay:** Tin rác, tin quảng cáo, tin đời sống/pháp luật (vụ án, thẩm mỹ viện, tai nạn), tin trùng lặp.
-    * **Phân loại lại (Re-classify):** Đừng tin hoàn toàn vào [TAG] của robot.
-        * Tin về *Tỉnh/Thành phố, Bộ ngành, Lãi suất, Giá vàng/Dầu* -> Bắt buộc là **MACRO**.
-        * Tin về *Công ty niêm yết, Tập đoàn lớn* -> Bắt buộc là **CORPORATE**.
-
-2.  **CHẤM ĐIỂM TÁC ĐỘNG (Impact Scoring):**
-    * Chỉ chọn tin có khả năng làm giá cổ phiếu biến động (Score >= 6).
-
-3.  **VIẾT NỘI DUNG (Investor Style):**
-    * Không viết kiểu báo chí ("cho biết", "theo đó"). Viết kiểu dân tài chính: Ngắn, trực diện, tập trung vào con số/kết quả.
-    * Ví dụ: Thay vì "VNM công bố trả cổ tức", viết "VNM chốt quyền cổ tức 15% tiền mặt".
-
----
-### 📝 YÊU CẦU ĐẦU RA (JSON FORMAT):
-
+YÊU CẦU OUTPUT (JSON Thuần):
 {{
   "headline": [
-    // Chọn ĐÚNG 3 tin chấn động nhất thị trường (Score 9-10).
-    // Yêu cầu: Dynamic Tag (VD: "Vĩ mô", "Bank", "BĐS", "Thế giới"). KHÔNG dùng tag "HOT" chung chung.
-    {{ "text": "Nội dung tóm tắt...", "link": "URL", "tag": "Tên Nhóm Tin" }}
+    {{"text": "Nội dung tin 1...", "link": ""}}, 
+    {{"text": "Nội dung tin 2...", "link": ""}}
   ],
-  
-  "corporate": [
-    // Tối đa 8 tin doanh nghiệp tiêu biểu nhất.
-    // QUAN TRỌNG: Không lặp lại tin đã đưa vào mục "headline".
-    {{ 
-      "ticker": "ABC", // BẮT BUỘC suy luận mã 3 chữ cái (VD: HPG, VHM, STB). Nếu không chắc chắn 100%, để null.
-      "text": "Nội dung tóm tắt (tập trung KQKD, Cổ tức, Dự án)", 
-      "link": "URL" 
-    }}
-  ],
-  
-  "macro": [
-    // Tối đa 5 tin vĩ mô quan trọng nhất.
-    // QUAN TRỌNG: Không lặp lại tin đã đưa vào mục "headline".
-    {{ "text": "Nội dung tóm tắt...", "link": "URL" }}
-  ],
-  
-  "sentiment_score": 7, // Thang điểm: 1-3 (Tiêu cực), 4-6 (Thận trọng/Trung lập), 7-10 (Tích cực/Hưng phấn).
-  "comment": "Nhận định xu hướng dòng tiền và tâm lý thị trường dựa trên các tin trên (dưới 20 từ)."
+  "comment": "Nhận định thị trường..."
 }}
+Lưu ý: Field "link" để trống cũng được vì khó map lại chính xác, hoặc nếu bạn tự tin thì điền link gốc.
 """
-
-    # 3. Gọi Gemini (Giữ nguyên)
     try:
-        config = {"response_mime_type": "application/json"}
-        json_str = await asyncio.to_thread(
+        # Gọi Gemini (Dùng Flash cho nhanh và rẻ)
+        json_text = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-pro", 
+            model_id="gemini-2.5-flash-lite",
             contents=prompt,
-            config=config
+            config={'response_mime_type': 'application/json'}
         )
-        clean_json_str = json_str.replace("```json", "").replace("```", "").strip()
-        import json
-        return json.loads(clean_json_str)
+        return extract_json_from_text(json_text)
     except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi tóm tắt JSON AI: {e}")
+        log.error(f"Summarize News Error: {e}")
         return None
 
-async def calculate_historical_valuation_task():
+async def calculate_market_comprehensive_data():
     """
-    TÁC VỤ NẶNG: Tính trung bình P/E, P/B 5 năm cho toàn thị trường.
-    Đã FIX: Áp dụng _clean_vnstock_columns để xử lý MultiIndex.
+    TÁC VỤ NẶNG (Nightly):
+    1. Tính P/E, P/B trung bình 5 năm (Mean Reversion).
+    2. Tính hiệu suất giá (12 tuần, 6 tháng).
+    3. Tổng hợp chỉ số ngành (Sector Performance).
+    4. Lưu tất cả vào Redis để WebApp/Bot dùng chung.
     """
-    log.info(f"[{INSTANCE_ID}] 🧮 Bắt đầu tính toán định giá lịch sử (Mean Reversion)...")
+    log.info(f"[{INSTANCE_ID}] 🏗️ Bắt đầu Job tổng hợp dữ liệu thị trường (Valuation + Performance)...")
     
-    # 1. BỌC TRY/EXCEPT TỔNG QUÁT ĐỂ NGĂN TASK SẬP
     try:
-        # 1. Lấy danh sách mã (Lọc sơ bộ để giảm tải)
+        # 1. Chuẩn bị dữ liệu đầu vào
+        sector_map = await asyncio.to_thread(load_symbol_sector_map)
+        
+        # Lấy danh sách mã từ Screener (Lọc thanh khoản & Vốn hóa)
         screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
-        # --- LOGIC LỌC CƠ SỞ (Giữ nguyên) ---
         MIN_MARKET_CAP = 5000 
-        MIN_TRADING_VAL = 10 
+        MIN_TRADING_VAL = 50 # [UPDATED] Tăng điều kiện thanh khoản lên 50 tỷ
         screener['market_cap'] = pd.to_numeric(screener['market_cap'], errors='coerce').fillna(0)
-        liq_col = 'total_trading_value'
-        if 'avg_trading_value_20d' in screener.columns:
-            liq_col = 'avg_trading_value_20d' 
+        liq_col = 'total_trading_value' if 'total_trading_value' in screener.columns else 'avg_trading_value_20d'
         screener[liq_col] = pd.to_numeric(screener[liq_col], errors='coerce').fillna(0)
 
         valid_df = screener[
@@ -1188,96 +1173,241 @@ async def calculate_historical_valuation_task():
             (screener[liq_col] >= MIN_TRADING_VAL)
         ]
         valid_tickers = valid_df['ticker'].tolist()
-        log.info(f"[{INSTANCE_ID}] Tìm thấy {len(valid_tickers)} mã đủ tiêu chuẩn (Vốn hóa > {MIN_MARKET_CAP} tỷ, GTGD > {MIN_TRADING_VAL} tỷ).")
-        
-        history_data = {}
-        count = 0
-        consecutive_errors = 0 
+        log.info(f"[{INSTANCE_ID}] Danh sách cần xử lý: {len(valid_tickers)} mã.")
 
-        # 2. Loop và tính toán
+        # Cấu trúc dữ liệu lưu Redis
+        # {
+        #    "stocks": { "HPG": { "pe_avg":..., "change_6m":..., "sector":... }, ... },
+        #    "sectors": { "Thép": { "change_6m":..., "count":... }, ... },
+        #    "updated_at": "..."
+        # }
+        stocks_data = {}
+        sector_accumulators = {} # { "Thép": {"sum_12w": 0, "sum_6m": 0, "count": 0} }
+
+        consecutive_errors = 0
+        
+        # 2. Loop xử lý từng mã (Batching)
+        BATCH_SIZE = 10
+        BATCH_SLEEP = 30
+
         for i, sym in enumerate(valid_tickers):
-            
-            # 🔥 [RATE LIMIT] Nghỉ dài hơn sau mỗi 20 mã
-            if i > 0 and i % 20 == 0:
-                log.info(f"[{INSTANCE_ID}] 💤 Đã xử lý {i} mã. Nghỉ 5s để tránh Rate Limit...")
-                await asyncio.sleep(5) 
+            # Log progress
+            log.info(f"[{INSTANCE_ID}] Processing {i+1}/{len(valid_tickers)}: {sym}")
 
-            # 🔥 [RATE LIMIT] Nếu gặp lỗi liên tiếp > 5 lần (bị chặn IP)
+            # Rate Limit (Batching)
+            if i > 0 and i % BATCH_SIZE == 0:
+                log.info(f"[{INSTANCE_ID}] 💤 Đã xong batch {BATCH_SIZE} mã. Nghỉ {BATCH_SLEEP}s để hồi API...")
+                await asyncio.sleep(BATCH_SLEEP)
+
             if consecutive_errors > 5:
-                log.warning(f"[{INSTANCE_ID}] ⚠️ Phát hiện bị chặn liên tục. Ngủ 120s để cooldown...")
-                await asyncio.sleep(120) 
-                consecutive_errors = 0 
+                log.warning(f"[{INSTANCE_ID}] ⚠️ Bị chặn liên tục. Ngủ 120s...")
+                await asyncio.sleep(120)
+                consecutive_errors = 0
 
-            # BỌC TRY/EXCEPT TỪNG MÃ
             try:
-                # Gọi Finance lấy dữ liệu năm (có timeout)
-                fin_df = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi')),
-                    timeout=30.0 
-                )
+                # --- A. Fetch Dữ liệu (Chạy song song Ratio & History) ---
+                async def _fetch_ratio():
+                    return await asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi'))
                 
+                async def _fetch_history():
+                    # Lấy 190 ngày để đảm bảo đủ 6 tháng (khoảng 180 ngày)
+                    end_d = datetime.datetime.now()
+                    start_d = end_d - datetime.timedelta(days=190)
+                    q = Quote(symbol=sym, source='VCI')
+                    return await asyncio.to_thread(q.history, start=start_d.strftime('%Y-%m-%d'), end=end_d.strftime('%Y-%m-%d'), interval='1D')
+
+                # Chạy song song 2 request để tiết kiệm thời gian
+                fin_df, hist_df = await asyncio.gather(_fetch_ratio(), _fetch_history())
+                
+                # --- B. Xử lý Valuation (P/E, P/B Avg) ---
+                val_stats = {}
                 if fin_df is not None and not fin_df.empty:
+                    fin_df = _clean_vnstock_columns(fin_df)
+                    df_5y = fin_df.head(5)
+                    pe_s = pd.to_numeric(df_5y.get('pe', []), errors='coerce')
+                    pb_s = pd.to_numeric(df_5y.get('pb', []), errors='coerce')
+                    pe_s = pe_s[pe_s > 0]
+                    pb_s = pb_s[pb_s > 0]
                     
-                    # 🔥🔥🔥 FIX: GỌI HÀM LÀM SẠCH CỘT Ở ĐÂY 🔥🔥🔥
-                    fin_df = _clean_vnstock_columns(fin_df) 
+                    if len(pe_s) >= 3: val_stats['pe_avg'] = pe_s.mean()
+                    if len(pb_s) >= 3: val_stats['pb_avg'] = pb_s.mean()
+
+                # --- C. Xử lý Performance (12W, 6M) ---
+                perf_stats = {}
+                if hist_df is not None and not hist_df.empty:
+                    # Chuẩn hóa cột
+                    hist_df.columns = hist_df.columns.str.lower().str.strip()
+                    if 'time' in hist_df.columns: hist_df['time'] = pd.to_datetime(hist_df['time'])
+                    hist_df = hist_df.sort_values('time')
                     
-                    df_5y = fin_df.head(5) 
+                    closes = pd.to_numeric(hist_df['close'], errors='coerce')
+                    dates = hist_df['time'].tolist()
                     
-                    # Ép kiểu số (Tên cột đã được làm sạch thành 'pe' và 'pb')
-                    pe_series = pd.to_numeric(df_5y['pe'], errors='coerce')
-                    pb_series = pd.to_numeric(df_5y['pb'], errors='coerce')
+                    if len(closes) > 0:
+                        price_now = closes.iloc[-1]
+                        date_now = dates[-1]
+                        
+                        # Hàm tìm giá tại thời điểm T - days
+                        def _get_change(days_back):
+                            target_date = date_now - datetime.timedelta(days=days_back)
+                            # Tìm ngày gần nhất trong quá khứ (<= target_date)
+                            # Vì list đã sort, ta tìm ngược từ dưới lên
+                            idx = -1
+                            for k in range(len(dates)-1, -1, -1):
+                                if dates[k] <= target_date:
+                                    idx = k
+                                    break
+                            
+                            if idx != -1 and closes.iloc[idx] > 0:
+                                p_old = closes.iloc[idx]
+                                return ((price_now - p_old) / p_old) * 100
+                            return None
+
+                        perf_stats['change_12w'] = _get_change(84)  # 12 tuần ~ 84 ngày
+                        perf_stats['change_6m'] = _get_change(180) # 6 tháng ~ 180 ngày
+
+                # --- D. Tổng hợp ---
+                if val_stats or perf_stats:
+                    sector_name = sector_map.get(sym, "Khác")
                     
-                    # Lọc bỏ giá trị âm/0 (lỗ)
-                    pe_series = pe_series[pe_series > 0]
-                    pb_series = pb_series[pb_series > 0]
+                    item_data = {
+                        "sector": sector_name,
+                        **val_stats,
+                        **perf_stats
+                    }
+                    stocks_data[sym] = item_data
                     
-                    if len(pe_series) >= 3 and len(pb_series) >= 3:
-                        history_data[sym] = {
-                            'pe_avg': pe_series.mean(),
-                            'pb_avg': pb_series.mean()
-                        }
-                        count += 1
-                        consecutive_errors = 0 
+                    # Cộng dồn cho Sector (Chỉ tính nếu có dữ liệu)
+                    if sector_name != "Khác":
+                        if sector_name not in sector_accumulators:
+                            sector_accumulators[sector_name] = {"sum_12w": 0.0, "cnt_12w": 0, "sum_6m": 0.0, "cnt_6m": 0}
+                        
+                        acc = sector_accumulators[sector_name]
+                        
+                        if perf_stats.get('change_12w') is not None:
+                            acc['sum_12w'] += perf_stats['change_12w']
+                            acc['cnt_12w'] += 1
+                            
+                        if perf_stats.get('change_6m') is not None:
+                            acc['sum_6m'] += perf_stats['change_6m']
+                            acc['cnt_6m'] += 1
+
+                    consecutive_errors = 0
                 
-                # 🔥 [RATE LIMIT] Tăng delay cơ bản 
-                await asyncio.sleep(1.5) 
+                # Delay nhẹ
+                await asyncio.sleep(1.0)
+
+            except BaseException as e:
+                # [FIX] Check cancellation first
+                if isinstance(e, asyncio.CancelledError):
+                    raise e
+
+                # Bắt cả SystemExit do vnstock raise khi bị Rate Limit
+                consecutive_errors += 1
+                err_str = str(e)
                 
-            except asyncio.TimeoutError:
-                consecutive_errors += 1
-                log.warning(f"Lỗi tính toán {sym}: Timeout (30s). Nghỉ 5s rồi thử mã kế tiếp.")
-                await asyncio.sleep(5.0)
-                continue
-            except Exception as e:
-                consecutive_errors += 1
-                log.warning(f"Lỗi tính toán {sym} (Exception: {type(e).__name__}): {e}")
-                # Nếu lỗi từng mã lẻ tẻ, nghỉ 5s rồi thử mã kế tiếp
-                await asyncio.sleep(5.0)
-                continue
-        
-        # 3. Lưu vào Redis
-        if history_data:
-            await asyncio.to_thread(save_historical_valuation_to_redis, history_data)
-            log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất tính toán. Đã lưu dữ liệu lịch sử cho {count} mã.")
-        else:
-            log.warning(f"[{INSTANCE_ID}] ⚠️ Không tính được dữ liệu lịch sử nào.")
+                # Check SystemExit explicitly
+                is_system_exit = isinstance(e, SystemExit) or type(e).__name__ == 'SystemExit'
+                
+                if "Rate limit exceeded" in err_str or is_system_exit:
+                    log.warning(f"[{INSTANCE_ID}] ⚠️ Rate Limit Hit ({sym}) - {type(e).__name__}. Ngủ 60s...")
+                    await asyncio.sleep(60.0)
+                else:
+                    log.warning(f"Lỗi xử lý {sym}: {type(e).__name__} - {e}")
+                    await asyncio.sleep(2.0)
+
+        # 3. Tính chỉ số ngành (Trung bình cộng)
+        sectors_final = {}
+        for sec_name, acc in sector_accumulators.items():
+            avg_12w = (acc['sum_12w'] / acc['cnt_12w']) if acc['cnt_12w'] > 0 else None
+            avg_6m = (acc['sum_6m'] / acc['cnt_6m']) if acc['cnt_6m'] > 0 else None
             
-    # XỬ LÝ LỖI TỔNG QUÁT (Task sẽ ngủ 120s rồi thoát khỏi hàm, không raise)
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] ❌ LỖI NGHIÊM TRỌNG (Mean Reversion Task) - Dừng 120s rồi thoát: {e}")
-        await asyncio.sleep(120)
+            sectors_final[sec_name] = {
+                "change_12w": avg_12w,
+                "change_6m": avg_6m,
+                "count": max(acc['cnt_12w'], acc['cnt_6m'])
+            }
+
+        # --- [NEW] Thêm VNINDEX vào danh sách Sector ---
+        try:
+            log.info(f"[{INSTANCE_ID}] Đang lấy dữ liệu VNINDEX...")
+            end_d = datetime.datetime.now()
+            start_d = end_d - datetime.timedelta(days=190)
+            
+            # Hàm lấy history VNINDEX
+            def _get_vnindex_hist():
+                q = Quote(symbol='VNINDEX', source='VCI')
+                return q.history(start=start_d.strftime('%Y-%m-%d'), end=end_d.strftime('%Y-%m-%d'), interval='1D')
+
+            vnindex_df = await asyncio.to_thread(_get_vnindex_hist)
+            
+            if vnindex_df is not None and not vnindex_df.empty:
+                vnindex_df.columns = vnindex_df.columns.str.lower().str.strip()
+                if 'time' in vnindex_df.columns: vnindex_df['time'] = pd.to_datetime(vnindex_df['time'])
+                vnindex_df = vnindex_df.sort_values('time')
+                
+                closes = pd.to_numeric(vnindex_df['close'], errors='coerce')
+                dates = vnindex_df['time'].tolist()
+                
+                if len(closes) > 0:
+                    price_now = closes.iloc[-1]
+                    date_now = dates[-1]
+                    
+                    def _get_change_idx(days_back):
+                        target_date = date_now - datetime.timedelta(days=days_back)
+                        idx = -1
+                        for k in range(len(dates)-1, -1, -1):
+                            if dates[k] <= target_date:
+                                idx = k
+                                break
+                        if idx != -1 and closes.iloc[idx] > 0:
+                            p_old = closes.iloc[idx]
+                            return ((price_now - p_old) / p_old) * 100
+                        return None
+
+                    vn_12w = _get_change_idx(84)
+                    vn_6m = _get_change_idx(180)
+                    
+                    sectors_final['VNINDEX'] = {
+                        "change_12w": vn_12w,
+                        "change_6m": vn_6m,
+                        "count": 1
+                    }
+                    log.info(f"[{INSTANCE_ID}] ✅ Đã thêm VNINDEX: 12W={vn_12w:.1f}%, 6M={vn_6m:.1f}%")
+        except Exception as e:
+            log.warning(f"[{INSTANCE_ID}] ⚠️ Lỗi lấy VNINDEX: {e}")
+
+        # 4. Lưu Redis
+        final_payload = {
+            "updated_at": datetime.datetime.now().isoformat(),
+            "stocks": stocks_data,
+            "sectors": sectors_final
+        }
+        
+        await asyncio.to_thread(save_historical_valuation_to_redis, final_payload)
+        log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất Comprehensive Data. Đã lưu {len(stocks_data)} mã và {len(sectors_final)} ngành.")
+
+    except BaseException as e:
+        if isinstance(e, asyncio.CancelledError):
+            raise e
+        log.error(f"[{INSTANCE_ID}] ❌ LỖI NGHIÊM TRỌNG (Comprehensive Task): {type(e).__name__} - {e}")
+        await asyncio.sleep(60)
 
 async def get_top_mean_reversion_stocks(limit=5):
     """
-    Lấy Top cổ phiếu rẻ nhất theo chiến lược Mean Reversion cho Digest.
-    Trả về danh sách các dict chứa đầy đủ thông tin định dạng cho UI.
+    Lấy Top cổ phiếu rẻ nhất (Mean Reversion) từ Redis (Cấu trúc mới).
     """
     try:
-        # 1. Lấy dữ liệu lịch sử từ Redis
-        hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
-        if not hist_data:
-            log.warning(f"[{INSTANCE_ID}] Digest: Chưa có dữ liệu định giá lịch sử. Đang kích hoạt tính toán...")
-            asyncio.create_task(calculate_historical_valuation_task())
+        # 1. Lấy dữ liệu từ Redis
+        full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+        
+        # Nếu chưa có hoặc format cũ -> chạy lại task
+        if not full_data or "stocks" not in full_data:
+            log.warning(f"[{INSTANCE_ID}] Redis chưa có dữ liệu Comprehensive. Đang kích hoạt tính toán...")
+            asyncio.create_task(calculate_market_comprehensive_data())
             return []
+
+        hist_data = full_data["stocks"] # Lấy phần stocks
 
         # 2. Lấy dữ liệu hiện tại từ Screener API
         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
@@ -1288,15 +1418,20 @@ async def get_top_mean_reversion_stocks(limit=5):
             sym = row['ticker']
             if sym not in hist_data: continue
             
+            stock_info = hist_data[sym]
+            
+            # Check có đủ dữ liệu PE/PB avg không
+            if 'pe_avg' not in stock_info or 'pb_avg' not in stock_info:
+                continue
+
             try:
                 pe_cur = float(row['pe'])
                 pb_cur = float(row['pb'])
             except: continue
 
-            pe_avg = hist_data[sym]['pe_avg']
-            pb_avg = hist_data[sym]['pb_avg']
+            pe_avg = stock_info['pe_avg']
+            pb_avg = stock_info['pb_avg']
             
-            # 🔥 [FIX]: Loại bỏ cổ phiếu lỗ (PE âm) hoặc lỗi dữ liệu (<= 0)
             if pe_cur <= 0 or pb_cur <= 0: continue
             if pe_avg <= 0 or pb_avg <= 0: continue
 
@@ -1788,7 +1923,7 @@ async def job_nightly_valuation():
     try:
         # Gọi task tính toán nặng (đã có sẵn trong worker.py)
         # Task này đã bao gồm logic try/except và rate limit bên trong
-        await calculate_historical_valuation_task()
+        await calculate_market_comprehensive_data()
         
         log.info("[NIGHTLY] ✅ Job tính toán hoàn tất.")
         
@@ -2734,12 +2869,10 @@ async def process_screener_view(chat_id, loading_msg_id=None):
     3. Tính toán & Tạo Web App.
     """
     try:
-        # 1. Lấy dữ liệu lịch sử (Mean Reversion)
-        hist_data = get_historical_valuation_from_redis()
+        # 1. Lấy dữ liệu lịch sử (Mean Reversion + Sector)
+        full_data = get_historical_valuation_from_redis()
         
-        # Nếu chưa có dữ liệu lịch sử -> Báo user chờ hoặc chạy tính toán ngay (tùy chọn)
-        # Ở đây ta chọn giải pháp an toàn: Báo lỗi để Admin chạy lại job đêm
-        if not hist_data:
+        if not full_data:
             push_telegram_msg(
                 chat_id=chat_id,
                 text="⚠️ Dữ liệu định giá lịch sử chưa sẵn sàng. Vui lòng thử lại sau hoặc báo Admin.",
@@ -2747,6 +2880,14 @@ async def process_screener_view(chat_id, loading_msg_id=None):
                 edit_id=loading_msg_id
             )
             return
+
+        # Handle new format vs old format
+        if "stocks" in full_data:
+            hist_stocks = full_data["stocks"]
+            hist_sectors = full_data.get("sectors", {})
+        else:
+            hist_stocks = full_data
+            hist_sectors = {}
 
         # 2. Lấy dữ liệu thị trường hiện tại (Screener)
         # Chạy trong thread để không block
@@ -2756,15 +2897,19 @@ async def process_screener_view(chat_id, loading_msg_id=None):
         processed_items = []
         for index, row in screener_df.iterrows():
             sym = row['ticker']
-            if sym not in hist_data: continue
+            if sym not in hist_stocks: continue
             
             try:
                 pe_cur = float(row['pe'])
                 pb_cur = float(row['pb'])
             except: continue
 
-            pe_avg = hist_data[sym]['pe_avg']
-            pb_avg = hist_data[sym]['pb_avg']
+            stock_info = hist_stocks[sym]
+            # Check keys
+            if 'pe_avg' not in stock_info or 'pb_avg' not in stock_info: continue
+
+            pe_avg = stock_info['pe_avg']
+            pb_avg = stock_info['pb_avg']
             
             if pe_cur <= 0 or pb_cur <= 0: continue
             if pe_avg <= 0 or pb_avg <= 0: continue
@@ -2802,10 +2947,16 @@ async def process_screener_view(chat_id, loading_msg_id=None):
         processed_items.sort(key=lambda x: x['avg_discount'])
         top_items = processed_items[:50] # Top 50 mã rẻ nhất
 
+        # [NEW] Vẽ Chart Sector
+        sector_chart_html = ""
+        if hist_sectors:
+            sector_chart_html = await asyncio.to_thread(draw_sector_performance_chart, hist_sectors, '12w')
+
         digest_id = uuid.uuid4().hex
         vn_tz = pytz.timezone(TIMEZONE)
         payload = {
             "items": top_items,
+            "sector_chart": sector_chart_html,
             "generated_time": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
         }
         
@@ -2845,7 +2996,7 @@ async def process_force_update_screener(admin_id):
     
     try:
         start = time.time()
-        await calculate_historical_valuation_task() # Hàm này đã có ở worker.py từ bước trước
+        await calculate_market_comprehensive_data() # Đã cập nhật sang hàm Comprehensive
         duration = time.time() - start
         
         push_telegram_msg(admin_id, f"✅ **Hoàn tất cập nhật Screener!**\n⏱ Thời gian: {duration/60:.1f} phút.", msg_type="SYSTEM_MSG")

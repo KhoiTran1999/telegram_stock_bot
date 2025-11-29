@@ -29,8 +29,10 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng dựa t
   - **Tính năng:** Cung cấp cái nhìn toàn diện về doanh nghiệp trong 30 giây.
   - **Nội dung:** Tóm tắt mô hình kinh doanh, vị thế trong ngành, các lợi thế cạnh tranh (Moat), rủi ro chính và triển vọng tăng trưởng. Giúp bạn hiểu rõ mình đang mua công ty gì.
 
-- **Lọc Cổ Phiếu (Screener) - Chiến lược Mean Reversion:**
-  - **Cách dùng:** Bấm nút **💎 Lọc Cổ Phiếu**.
+- **💎 Lọc Cổ Phiếu (Bộ công cụ tổng hợp):** Đây là trung tâm các bộ lọc nâng cao và sẽ còn được mở rộng. Hiện có 2 nhóm chính:
+
+  **(A) Chiến lược Mean Reversion**
+  - **Cách dùng:** Bấm nút **💎 Lọc Cổ Phiếu** và ở tab mặc định "Cổ phiếu".
   - **Cơ chế:** Hệ thống tự động tính toán P/E và P/B trung bình 5 năm của toàn thị trường.
   - **Ý nghĩa:** Tìm ra các cổ phiếu đang bị định giá thấp (Rẻ) hoặc quá cao (Đắt) so với lịch sử của chính nó.
   - **Tín hiệu:**
@@ -57,6 +59,14 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng dựa t
     18. Truyền thông
     19. Bảo hiểm
     (Và mục "Khác" cho các mã còn lại).
+  **(B) Tab Hiệu suất Ngành**
+  - Trong WebApp Screener, chuyển tab "Hiệu suất Ngành" để xem biểu đồ thanh và bảng % tăng/giảm **12 tuần (12W)** và **6 tháng (6M)** của từng nhóm ngành, có thêm VNINDEX làm mốc tham chiếu.
+  - **Cách tính đơn giản:**
+    1. Mỗi cổ phiếu đạt tiêu chí thanh khoản/vốn hóa sẽ được tính % biến động so với giá 84 ngày trước (12W) và 180 ngày trước (6M).
+    2. Mỗi ngành lấy trung bình cộng của các mã nằm trong ngành đó → ra con số 12W và 6M hiển thị trong bảng (cột `count` cho biết đang có bao nhiêu mã đóng góp dữ liệu).
+    3. Nếu ngành thiếu dữ liệu 6M thì hệ thống dùng 12W để sắp xếp, tránh để trống.
+  - **Cách đọc:** Thanh màu xanh = ngành đang tăng trưởng tốt trong khoảng thời gian chọn; thanh đỏ = ngành suy yếu. So sánh 12W vs 6M sẽ giúp phát hiện dòng tiền mới chuyển hướng.
+  - **Ghi nhớ để trả lời user:** Đây là trung bình theo từng mã, không cân theo vốn hóa nên có thể khác số liệu trên các bảng tổng hợp của CTCK khác.
 
 ### 4. BÁO CÁO TỰ ĐỘNG (PASSIVE) - DÀNH CHO PRO (CHI TIẾT)
 - **Hệ thống Auto Report (Tự động gửi):**
