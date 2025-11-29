@@ -158,16 +158,24 @@ for idx in sorted(_gemini_keys_map.keys()):
     GEMINI_KEYS.append(_gemini_keys_map[idx])
 
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k] # Lọc key rỗng
+_gemini_key_index = 0 # Biến đếm toàn cục để xoay vòng
 
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
-    """Hàm gọi Gemini an toàn (Failover) với cơ chế xoay vòng Key mỗi giờ"""
+    """Hàm gọi Gemini an toàn (Failover) với cơ chế Round Robin (Xoay vòng từng request)"""
+    global _gemini_key_index
     last_error = None
     
-    # Xoay vòng key dựa trên giờ hiện tại để phân tải và tránh bị tắt key do không dùng
+    # [UPDATED] Cơ chế Round Robin: Chia bài đều lần lượt cho từng Key
+    # Đảm bảo Key A vừa dùng xong sẽ không bị gọi lại ngay ở request tiếp theo (trừ khi chỉ có 1 key).
     if GEMINI_KEYS:
-        current_hour = datetime.datetime.now().hour
-        start_index = current_hour % len(GEMINI_KEYS)
-        rotated_keys = GEMINI_KEYS[start_index:] + GEMINI_KEYS[:start_index]
+        # Lấy vị trí bắt đầu dựa trên biến đếm
+        start_idx = _gemini_key_index % len(GEMINI_KEYS)
+        
+        # Tạo danh sách ưu tiên bắt đầu từ key đó: [Key_2, Key_3, ..., Key_1]
+        rotated_keys = GEMINI_KEYS[start_idx:] + GEMINI_KEYS[:start_idx]
+        
+        # Tăng biến đếm cho lần gọi sau
+        _gemini_key_index += 1
     else:
         rotated_keys = []
 
