@@ -177,6 +177,17 @@ SEPAY_QR_ACC=<account-number>
 | `/trial` | Kích hoạt dùng thử gói Pro 10 ngày. |
 | `/admin` | (Admin only) Mở trang quản trị. |
 | `/announce <msg>` | (Admin only) Gửi thông báo tới tất cả user. |
+| `/agent <macro|biz|tech|all>` | (Admin only) Trigger thủ công bộ 3 agent (Vĩ mô, Doanh nghiệp, Kỹ thuật) để thu thập dữ liệu và log kết quả. |
+| `/agentlog <macro|biz|tech|all>` | (Admin only) Đọc nhanh dữ liệu agent/bundle đang lưu trên Redis và log ra chat. |
+
+---
+
+### 🧠 Multi-Agent Manual Trigger
+
+- Lệnh `/agent` chỉ dành cho Admin, cho phép chạy từng agent hoặc toàn bộ pipeline.
+- Worker lưu kết quả từng agent vào Redis dưới dạng `agent:<type>:current` (TTL 24h) và bundle tổng hợp tại `agent:bundle:<chat_id>:current` (TTL 7 ngày).
+- Sau khi xử lý xong, Worker tự động gửi báo cáo Markdown gồm request ID, scope và trạng thái của từng agent để admin dễ dàng tinh chỉnh prompt.
+- Sử dụng `/agentlog <type>` để đọc lại cache hiện tại (macro, biz, tech hoặc all) mà không cần rerun agent.
 
 ---
 

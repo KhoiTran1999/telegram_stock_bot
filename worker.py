@@ -18,6 +18,11 @@ from typing import Any
 import feedparser
 import re
 import csv
+import tempfile
+import urllib3
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, urljoin # Để parse REDIS_URL
 from datetime import timedelta
 from chart_utils import generate_mini_chart, draw_sector_performance_chart
 from db_utils import (
@@ -56,6 +61,8 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.redis import RedisJobStore
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from urllib.parse import urlparse # Để parse REDIS_URL
 
 # --- CẤU HÌNH CƠ BẢN ---
@@ -70,6 +77,18 @@ BASE_URL = os.getenv("RENDER_EXTERNAL_URL", "https://google.com") # URL của Ga
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
 REDIS_CHANNEL_INBOUND = 'worker_inbound'
+AGENT_TYPES = ("macro", "biz", "tech")
+AGENT_RESULT_TTL = 24 * 60 * 60  # 24h
+AGENT_BUNDLE_TTL = 7 * 24 * 60 * 60  # 7 ngày
+MACRO_NEWS_LOOKBACK_HOURS = 48
+MACRO_GSO_MONTH_LIMIT = 3
+GSO_BASE_URL = "https://www.nso.gov.vn"
+HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
 # Cấu hình Loop
 FETCHER_INTERVAL_SECONDS = 20
@@ -230,6 +249,376 @@ def push_telegram_msg(chat_id, text, reply_markup=None, msg_type='GENERAL', **kw
         # log.info(f"📤 Pushed to Redis for {chat_id}")
     except Exception as e:
         log.error(f"❌ Lỗi push Redis: {e}")
+
+
+def _agent_result_key(agent_type: str) -> str:
+    return f"agent:{agent_type}:current"
+
+
+def _agent_bundle_key(chat_id: int) -> str:
+    return f"agent:bundle:{chat_id}:current"
+
+
+def save_agent_result(agent_type: str, payload: dict):
+    if not r_client:
+        return
+    try:
+        r_client.setex(
+            _agent_result_key(agent_type),
+            AGENT_RESULT_TTL,
+            json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception as exc:
+        log.error(f"Save agent {agent_type} result error: {exc}")
+
+
+def save_agent_bundle(chat_id: int, payload: dict):
+    if not r_client:
+        return
+    try:
+        r_client.setex(
+            _agent_bundle_key(chat_id),
+            AGENT_BUNDLE_TTL,
+            json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception as exc:
+        log.error(f"Save agent bundle error: {exc}")
+
+
+def _build_agent_stub(agent_type: str, request_id: str, ts_iso: str) -> dict:
+    return {
+        "agent": agent_type,
+        "request_id": request_id,
+        "generated_at": ts_iso,
+        "insights": [],
+        "raw_data": {},
+        "notes": "TODO: thêm logic crawl+LLM cho agent này.",
+    }
+
+
+def write_agent_payload_to_file(agent_type: str, request_id: str, payload: dict) -> str:
+    tmp_dir = tempfile.gettempdir()
+    filename = f"{agent_type}_agent_{request_id}.json"
+    path = os.path.join(tmp_dir, filename)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        log.error(f"Write agent file error: {exc}")
+    return path
+
+
+def get_index_snapshot(symbol: str, now: datetime.datetime | None = None) -> dict | None:
+    now = now or datetime.datetime.now()
+    try:
+        q = Quote(symbol=symbol, source='VCI')
+        start_dt = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+        end_dt = now.strftime('%Y-%m-%d')
+        df = q.history(start=start_dt, end=end_dt, interval='1D')
+        if df is None or len(df) < 2:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        price = float(last['close'])
+        prev_close = float(prev['close'])
+        change = price - prev_close
+        pct = (change / prev_close * 100) if prev_close else 0.0
+
+        cls = "t-ref"
+        if change > 0:
+            cls = "t-up"
+        elif change < 0:
+            cls = "t-down"
+
+        sign = "+" if change > 0 else ""
+
+        volume_val = float(last.get('volume') or 0)
+
+        return {
+            "price": f"{price:,.2f}",
+            "change_str": f"{sign}{change:,.2f} ({sign}{pct:.2f}%)",
+            "cls": cls,
+            "raw_price": price,
+            "raw_change": change,
+            "raw_pct": pct,
+            "raw_volume": volume_val,
+            "raw_prev_close": prev_close,
+            "raw": {
+                "price": price,
+                "prev_close": prev_close,
+                "change": change,
+                "pct": pct,
+                "volume": volume_val,
+            }
+        }
+    except Exception as exc:
+        log.warning(f"Index snapshot error for {symbol}: {exc}")
+        return None
+
+
+async def collect_index_pair() -> dict:
+    now = datetime.datetime.now()
+    vni_data, v30_data = await asyncio.gather(
+        asyncio.to_thread(get_index_snapshot, 'VNINDEX', now),
+        asyncio.to_thread(get_index_snapshot, 'VN30', now)
+    )
+    return {"vnindex": vni_data, "vn30": v30_data}
+
+
+async def collect_macro_news(limit: int = 20) -> list[dict]:
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    since = now_utc - datetime.timedelta(hours=MACRO_NEWS_LOOKBACK_HOURS)
+    rows = await asyncio.to_thread(get_recent_news_seen, "MACRO", since)
+    news = []
+    for title, link, published, created_at in rows:
+        news.append({
+            "title": title,
+            "link": link,
+            "published": published.isoformat() if published else None,
+            "created_at": created_at.isoformat() if created_at else None,
+        })
+        if len(news) >= limit:
+            break
+    return news
+
+
+def get_macro_target_periods(now: datetime.datetime | None = None, max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[tuple[int, int]]:
+    now = now or datetime.datetime.now()
+    current_month = now.month
+    current_year = now.year
+
+    if current_month >= 10:
+        anchor_month = 10
+    elif current_month >= 7:
+        anchor_month = 7
+    elif current_month >= 4:
+        anchor_month = 4
+    else:
+        anchor_month = 1
+
+    anchor_year = current_year
+    periods = []
+    temp_m, temp_y = anchor_month, anchor_year
+
+    while True:
+        periods.append((temp_m, temp_y))
+        if temp_m == current_month and temp_y == current_year:
+            break
+        temp_m += 1
+        if temp_m > 12:
+            temp_m = 1
+            temp_y += 1
+
+    if max_months and len(periods) > max_months:
+        periods = periods[-max_months:]
+
+    return periods
+
+
+def fetch_html(url: str) -> BeautifulSoup | None:
+    try:
+        resp = requests.get(url, headers=HTTP_HEADERS, timeout=20, verify=False)
+        if resp.status_code == 200:
+            return BeautifulSoup(resp.content, 'html.parser')
+    except Exception as exc:
+        log.warning(f"GSO fetch error {url}: {exc}")
+    return None
+
+
+def _extract_gso_paragraphs(content_div) -> list[str]:
+    if not content_div:
+        return []
+
+    collected = []
+    seen = set()
+    target_tags = ("p", "li", "h2", "h3", "h4", "h5", "blockquote")
+
+    for node in content_div.find_all(target_tags):
+        text = node.get_text(" ", strip=True)
+        if not text:
+            continue
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+        if text.lower().startswith("chia sẻ bài viết"):
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        collected.append(text)
+
+    return collected
+
+
+def crawl_gso_month(month: int, year: int) -> dict | None:
+    list_url = f"{GSO_BASE_URL}/bai-top/{year}/{month:02d}/"
+    soup = fetch_html(list_url)
+    if not soup:
+        return None
+
+    target_link = None
+    for link in soup.find_all('a', href=True):
+        title = (link.get_text(strip=True) or '').lower()
+        href = link['href']
+        if "kinh tế" in title and "xã hội" in title:
+            target_link = urljoin(GSO_BASE_URL, href)
+            break
+
+    if not target_link:
+        return {
+            "month": month,
+            "year": year,
+            "article_url": None,
+            "paragraphs": [],
+            "attachments": [],
+            "status": "not_found",
+        }
+
+    article_soup = fetch_html(target_link)
+    if not article_soup:
+        return {
+            "month": month,
+            "year": year,
+            "article_url": target_link,
+            "paragraphs": [],
+            "attachments": [],
+            "status": "fetch_failed",
+        }
+
+    content_div = article_soup.find('div', class_=re.compile(r'(entry-content|post-content|article-body)'))
+    paragraphs = _extract_gso_paragraphs(content_div)
+
+    attachments = []
+    for link in article_soup.find_all('a', href=True):
+        href = link['href']
+        if re.search(r'\.(xls|xlsx|pdf|doc|docx)$', href, re.IGNORECASE):
+            abs_url = urljoin(GSO_BASE_URL, href)
+            attachments.append({
+                "name": os.path.basename(abs_url),
+                "url": abs_url,
+            })
+
+    return {
+        "month": month,
+        "year": year,
+        "article_url": target_link,
+        "paragraphs": paragraphs,
+        "attachments": attachments,
+        "status": "ok" if paragraphs or attachments else "empty",
+    }
+
+
+def collect_gso_reports_sync(max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[dict]:
+    reports = []
+    for month, year in get_macro_target_periods(max_months=max_months):
+        report = crawl_gso_month(month, year)
+        if report:
+            reports.append(report)
+    return reports
+
+
+async def run_macro_agent(chat_id: int, request_id: str, ts_iso: str) -> dict:
+    gso_reports = await asyncio.to_thread(collect_gso_reports_sync)
+    redis_payload = {
+        "generated_at": ts_iso,
+        "gso_reports": gso_reports,
+    }
+
+    payload = _build_agent_stub("macro", request_id, ts_iso)
+    payload.update({
+        "notes": f"GSO raw data snapshot lúc {ts_iso} (không AI summary)",
+        "raw_data": {
+            "gso_count": len(gso_reports),
+        },
+        "redis_json": redis_payload,
+    })
+
+    file_path = write_agent_payload_to_file("macro", request_id, payload)
+    payload["debug_file_path"] = file_path
+    return payload
+
+
+def format_agent_bundle_message(chat_id: int, request_id: str, scope: str, bundle: dict) -> str:
+    lines = [
+        "🤖 *Multi-Agent Pipeline*",
+        f"👤 Chat: `{chat_id}`",
+        f"🆔 Request: `{request_id}`",
+        f"🎯 Scope: `{scope}`",
+        f"🕒 Thời gian: {bundle.get('generated_at', '—')}",
+    ]
+
+    agents = bundle.get("agents", {})
+    for agent_type in AGENT_TYPES:
+        if agent_type not in agents:
+            continue
+        agent_payload = agents[agent_type]
+        redis_key = _agent_result_key(agent_type)
+        lines.append("")
+        lines.append(f"*{agent_type.upper()} Agent*")
+        lines.append(f"• Redis key: `{redis_key}`")
+        notes = agent_payload.get("notes") or "—"
+        lines.append(f"• Notes: {notes}")
+        insight_count = len(agent_payload.get("insights", []))
+        lines.append(f"• Insights: {insight_count} items")
+        debug_file = agent_payload.get("debug_file_path")
+        if debug_file:
+            lines.append(f"• File: `{debug_file}`")
+
+    lines.append("")
+    lines.append("🧠 *AI Summary (stub)*")
+    lines.append(bundle.get("ai_summary", "TODO: Bổ sung prompt tổng hợp."))
+
+    return "\n".join(lines)
+
+
+async def handle_agent_run(payload: dict):
+    chat_id = payload.get("chat_id")
+    scope = (payload.get("scope") or "all").lower()
+    request_id = payload.get("request_id") or str(uuid.uuid4())
+
+    if not chat_id:
+        log.warning("CMD_AGENT_RUN thiếu chat_id")
+        return
+
+    if scope not in AGENT_TYPES and scope != "all":
+        scope = "all"
+
+    target_agents = AGENT_TYPES if scope == "all" else (scope,)
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    ts_iso = now.isoformat()
+
+    agent_outputs = {}
+    for agent_type in target_agents:
+        try:
+            if agent_type == "macro":
+                result = await run_macro_agent(chat_id, request_id, ts_iso)
+            else:
+                result = _build_agent_stub(agent_type, request_id, ts_iso)
+        except Exception as exc:
+            log.error(f"Agent {agent_type} run error: {exc}")
+            result = _build_agent_stub(agent_type, request_id, ts_iso)
+            result["notes"] = f"Lỗi thực thi: {exc}"[:200]
+
+        agent_outputs[agent_type] = result
+        save_agent_result(agent_type, result)
+
+    bundle = {
+        "chat_id": chat_id,
+        "request_id": request_id,
+        "generated_at": ts_iso,
+        "scope": scope,
+        "agents": agent_outputs,
+        "ai_summary": "AI summary chưa bật. Dữ liệu đang được kiểm tra thủ công.",
+    }
+
+    save_agent_bundle(chat_id, bundle)
+
+    message = format_agent_bundle_message(chat_id, request_id, scope, bundle)
+    push_telegram_msg(chat_id, message, msg_type="ADMIN_AGENT")
 
 def extract_json_from_text(text: str) -> str:
     """
@@ -439,6 +828,9 @@ async def worker_inbound_loop():
                     elif cmd == "FORCE_SCREENER":
                         admin_id = payload.get('admin_id')
                         asyncio.create_task(process_force_update_screener(admin_id))
+
+                    elif cmd == "CMD_AGENT_RUN":
+                        asyncio.create_task(handle_agent_run(payload))
 
                     elif cmd == "CMD_ASK_AI":
                         chat_id = payload.get('chat_id')
@@ -2349,37 +2741,9 @@ async def send_eod_summary_worker():
     task_v30 = generate_mini_chart("VN30")
     
     # --- 2. LẤY DỮ LIỆU INDEX ---
-    def _get_index_data(symbol):
-        try:
-            q = Quote(symbol=symbol, source='VCI')
-            df = q.history(start=(now - datetime.timedelta(days=5)).strftime('%Y-%m-%d'), 
-                           end=now.strftime('%Y-%m-%d'), interval='1D')
-            if df is None or len(df) < 2: return None
-            
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
-            
-            price = float(last['close'])
-            change = price - float(prev['close'])
-            pct = (change / float(prev['close'])) * 100
-            
-            cls = "t-ref"
-            if change > 0: cls = "t-up"
-            elif change < 0: cls = "t-down"
-            sign = "+" if change > 0 else ""
-            
-            return {
-                "price": f"{price:,.2f}",
-                "change_str": f"{sign}{change:,.2f} ({sign}{pct:.2f}%)",
-                "cls": cls,
-                "raw_price": price, "raw_change": change, "raw_vol": float(last['volume'])
-            }
-        except Exception: return None
-
-    # Chạy song song lấy số liệu Index
     vni_data, v30_data = await asyncio.gather(
-        asyncio.to_thread(_get_index_data, 'VNINDEX'),
-        asyncio.to_thread(_get_index_data, 'VN30')
+        asyncio.to_thread(get_index_snapshot, 'VNINDEX', now),
+        asyncio.to_thread(get_index_snapshot, 'VN30', now)
     )
 
     # Chờ chart xong

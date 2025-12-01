@@ -28,7 +28,6 @@ from digest_template import (
     FLASH_VIEW_HTML_TEMPLATE,
     ADMIN_MOBILE_TEMPLATE,
 )
-
 # --- GLOBAL VARIABLES ---
 _vci_blocked_date = None
 
@@ -258,6 +257,15 @@ ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
 REDIS_CHANNEL_INBOUND = 'worker_inbound'
+VALID_AGENT_SCOPES = {"macro", "biz", "tech", "all"}
+
+
+def _agent_result_key(agent_type: str) -> str:
+    return f"agent:{agent_type}:current"
+
+
+def _agent_bundle_key(chat_id: int) -> str:
+    return f"agent:bundle:{chat_id}:current"
 
 def push_to_worker(payload):
     """Gửi lệnh sang Worker"""
@@ -1341,6 +1349,134 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("👑 Mở Admin Dashboard", web_app=WebAppInfo(url=web_app_url))]]
     
     await reply_md(update, "👇 Bấm bên dưới để vào trang quản trị:", reply_markup=InlineKeyboardMarkup(kb))
+
+# /agentlog <macro|biz|tech|all>
+async def cmd_agentlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command để xem nhanh dữ liệu agent lưu trên Redis."""
+    if ADMIN_ID is None or not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+
+    chat_id = update.effective_chat.id if update.effective_chat else user_id
+
+    try:
+        await asyncio.to_thread(log_command_usage, chat_id, "/agentlog", ADMIN_ID)
+    except Exception as exc:
+        log.warning(f"/agentlog log error: {exc}")
+
+    scope = (context.args[0].lower() if context.args else "all")
+    if scope not in VALID_AGENT_SCOPES:
+        valid_text = ", ".join(sorted(VALID_AGENT_SCOPES))
+        await reply_md(update, f"⚠️ Cú pháp: `/agentlog <{valid_text}>`")
+        return
+
+    # Thử lấy dữ liệu từ Redis
+    try:
+        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    except Exception as exc:
+        log.error(f"/agentlog Redis error: {exc}")
+        await reply_md(update, "⚠️ Không kết nối được Redis.")
+        return
+
+    def _load_agent(agent_type: str):
+        key = _agent_result_key(agent_type)
+        raw = r.get(key)
+        if not raw:
+            return key, None
+        try:
+            return key, json.loads(raw)
+        except json.JSONDecodeError:
+            return key, {"error": "JSON lỗi", "raw": raw}
+
+    lines = ["🗂 *Agent Cache Snapshot*"]
+
+    if scope == "all" or scope == "bundle":
+        bundle_key = _agent_bundle_key(chat_id)
+        bundle_raw = r.get(bundle_key)
+        if bundle_raw:
+            try:
+                bundle_data = json.loads(bundle_raw)
+            except json.JSONDecodeError:
+                bundle_data = {"error": "JSON lỗi", "raw": bundle_raw}
+        else:
+            bundle_data = None
+
+        lines.append("")
+        lines.append(f"*BUNDLE* key `{bundle_key}`")
+        if bundle_data:
+            request_id = bundle_data.get("request_id", "?")
+            generated_at = bundle_data.get("generated_at", "?")
+            scope_saved = bundle_data.get("scope", "?")
+            lines.append(f"• Request: `{request_id}` | Scope: `{scope_saved}`")
+            lines.append(f"• Generated at: {generated_at}")
+            lines.append(f"• AI Summary: {bundle_data.get('ai_summary', '—')}")
+        else:
+            lines.append("• Không tìm thấy dữ liệu bundle cho chat này.")
+
+    target_agents = [scope] if scope in ("macro", "biz", "tech") else ["macro", "biz", "tech"]
+
+    for agent_type in target_agents:
+        key, agent_data = _load_agent(agent_type)
+        lines.append("")
+        lines.append(f"*{agent_type.upper()}* key `{key}`")
+        if not agent_data:
+            lines.append("• Không tìm thấy dữ liệu.")
+            continue
+        request_id = agent_data.get("request_id", "?")
+        generated_at = agent_data.get("generated_at", "?")
+        notes = agent_data.get("notes", "—")
+        insights = agent_data.get("insights")
+        insight_count = len(insights) if isinstance(insights, list) else 0
+        lines.append(f"• Request: `{request_id}` | Generated at: {generated_at}")
+        lines.append(f"• Insights: {insight_count} mục")
+        lines.append(f"• Notes: {notes}")
+
+    await reply_md(update, "\n".join(lines))
+
+# /agent <macro|biz|tech|all>
+async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger multi-agent crawl via command (admin only)."""
+    if ADMIN_ID is None or not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+
+    chat_id = update.effective_chat.id if update.effective_chat else user_id
+
+    # Log command usage for audit
+    try:
+        await asyncio.to_thread(log_command_usage, chat_id, "/agent", ADMIN_ID)
+    except Exception as exc:
+        log.warning(f"/agent log error: {exc}")
+
+    scope = (context.args[0].lower() if context.args else "all")
+    if scope not in VALID_AGENT_SCOPES:
+        valid_text = ", ".join(sorted(VALID_AGENT_SCOPES))
+        await reply_md(update, f"⚠️ Cú pháp: `/agent <{valid_text}>`")
+        return
+
+    request_id = str(uuid.uuid4())[:8]
+    payload = {
+        "cmd": "CMD_AGENT_RUN",
+        "chat_id": chat_id,
+        "scope": scope,
+        "request_id": request_id,
+    }
+
+    await asyncio.to_thread(push_to_worker, payload)
+
+    scope_label = scope.upper()
+    await reply_md(
+        update,
+        f"🚀 Đang khởi chạy agent *{scope_label}*\n"
+        f"🆔 Request: `{request_id}`\n"
+        "⏳ Worker sẽ phản hồi khi hoàn tất.",
+    )
 
 # (Nhớ thêm tg_app.add_handler(CommandHandler("admin", cmd_admin)) vào main)
 
@@ -3871,8 +4007,9 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("start", "🏠 Mở Dashboard chính"),
             # ("admin", "(admin) Mở Dashboard Admin"),
             # ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
+            ("agent", "macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
+            ("agentlog", "macro|biz|tech|all - Xem log hoạt động Agent"),
         ]
-        
 
         # Tách commands
         user_cmds = [(c, d) for c, d in commands if "(admin)" not in d]
@@ -4015,6 +4152,8 @@ async def main():
     tg_app.add_handler(CommandHandler("setting", cmd_setting))
     tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
     tg_app.add_handler(CommandHandler("trial", cmd_trial))
+    tg_app.add_handler(CommandHandler("agent", cmd_agent))
+    tg_app.add_handler(CommandHandler("agentlog", cmd_agentlog))
 
     # --- ADMIN COMMANDS (Quản trị viên) ---
     # 1. Hệ thống
