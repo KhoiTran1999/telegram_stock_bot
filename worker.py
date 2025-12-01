@@ -14,7 +14,7 @@ import uuid
 import time
 import pandas as pd
 pd.set_option('future.no_silent_downcasting', True)
-from typing import Any
+from typing import Any, Optional
 import feedparser
 import re
 import csv
@@ -24,6 +24,10 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin # Để parse REDIS_URL
 from datetime import timedelta
+from flask import Flask, jsonify
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
+from asgiref.wsgi import WsgiToAsgi
 from chart_utils import generate_mini_chart, draw_sector_performance_chart
 from db_utils import (
     get_all_watch,
@@ -89,6 +93,53 @@ HTTP_HEADERS = {
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+PORT = int(os.getenv("PORT") or os.getenv("PASSENGER_PORT", "10001"))
+
+flask_app = Flask(__name__)
+
+
+@flask_app.get("/")
+@flask_app.get("/healthz")
+def worker_healthcheck():
+    """Expose a minimal HTTP endpoint so Render sees an open port."""
+    return jsonify({
+        "status": "ok",
+        "service": "worker",
+        "instance": INSTANCE_ID,
+        "time": datetime.datetime.now().isoformat(),
+    })
+
+
+wsgi_app = WsgiToAsgi(flask_app)
+_worker_task: Optional[asyncio.Task] = None
+
+
+async def asgi_wrapper_app(scope, receive, send):
+    """ASGI wrapper to manage worker background tasks via Hypercorn lifespan."""
+    global _worker_task
+
+    if scope["type"] == "lifespan":
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                log.info(f"[{INSTANCE_ID}] Lifespan startup → booting worker runtime.")
+                if _worker_task is None:
+                    _worker_task = asyncio.create_task(run_worker_runtime())
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                log.info(f"[{INSTANCE_ID}] Lifespan shutdown → stopping worker runtime.")
+                if _worker_task:
+                    _worker_task.cancel()
+                    try:
+                        await _worker_task
+                    except asyncio.CancelledError:
+                        pass
+                    _worker_task = None
+                await send({"type": "lifespan.shutdown.complete"})
+                break
+    elif scope["type"] == "http":
+        await wsgi_app(scope, receive, send)
 
 # Cấu hình Loop
 FETCHER_INTERVAL_SECONDS = 20
@@ -1931,13 +1982,13 @@ async def job_daily_digest():
         since_utc = now_utc - datetime.timedelta(hours=24)
 
         (
-            bctc_rows, 
-            report_rows, 
-            macro_rows, 
+            bctc_rows,
+            report_rows,
+            macro_rows,
             spec_rows,
-            all_watch, 
-            pro_chat_ids, 
-            top_value_stocks
+            all_watch,
+            pro_chat_ids,
+            top_value_stocks,
         ) = await asyncio.gather(
             asyncio.to_thread(get_recent_bctc_notified, since_utc),
             asyncio.to_thread(get_recent_analysis_reports, since_utc),
@@ -1945,7 +1996,7 @@ async def job_daily_digest():
             asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
             asyncio.to_thread(get_all_watch),
             asyncio.to_thread(get_all_pro_chat_ids),
-            get_top_mean_reversion_stocks(limit=5)
+            get_top_mean_reversion_stocks(limit=5),
         )
 
         # 3. Chuẩn bị dữ liệu tin tức
@@ -3393,7 +3444,7 @@ def job_listener(event):
         log.error(f"Lỗi trong job_listener: {e}")
 
 # =========== MAIN ENTRY POINT ============
-async def main():
+async def run_worker_runtime():
     log.info(f"[{INSTANCE_ID}] Worker starting (Advanced APScheduler Mode)...")
 
     # --- 1. CẤU HÌNH REDIS JOB STORE ---
@@ -3480,16 +3531,33 @@ async def main():
     scheduler.start()
     log.info("✅ APScheduler đã kích hoạt các tác vụ định kỳ.")
     
-    # Chạy song song 2 loop
-    await asyncio.gather(
-        stock_price_fetcher_loop(),
-        alert_loop(),
-        #----------------------------
-        market_monitor_fetcher_loop(),
-        market_monitor_alert_loop(),
-        #-------------------------
-        worker_inbound_loop(),
-    )
+    # Chạy song song các loop chính
+    try:
+        await asyncio.gather(
+            stock_price_fetcher_loop(),
+            alert_loop(),
+            #----------------------------
+            market_monitor_fetcher_loop(),
+            market_monitor_alert_loop(),
+            #-------------------------
+            worker_inbound_loop(),
+        )
+    except asyncio.CancelledError:
+        log.info(f"[{INSTANCE_ID}] Worker runtime cancelled. Shutting down gracefully...")
+        raise
+    finally:
+        try:
+            scheduler.shutdown(wait=False)
+            log.info(f"[{INSTANCE_ID}] Scheduler stopped.")
+        except Exception as exc:
+            log.warning(f"[{INSTANCE_ID}] Scheduler shutdown error: {exc}")
+
+
+async def main():
+    config = Config()
+    config.bind = [f"0.0.0.0:{PORT}"]
+    log.info(f"[{INSTANCE_ID}] Starting worker keepalive server on port {PORT}...")
+    await serve(asgi_wrapper_app, config)
 
 if __name__ == "__main__":
     try:
