@@ -382,8 +382,8 @@ async def collect_macro_news(limit: int = 20) -> list[dict]:
         if len(news) >= limit:
             break
     return news
-
-
+  
+ 
 def get_macro_target_periods(now: datetime.datetime | None = None, max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[tuple[int, int]]:
     now = now or datetime.datetime.now()
     current_month = now.month
