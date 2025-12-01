@@ -392,6 +392,17 @@ async def safe_edit_message(query, text, reply_markup, parse_mode="Markdown"):
         log.warning(f"Lỗi lạ safe_edit_message: {e}")
 
 
+async def delete_message_safely(chat_id: int, message_id: int):
+    """Delete message without breaking the loop when Telegram rejects it."""
+    try:
+        await tg_app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except BadRequest as exc:
+        if "message to delete not found" in str(exc).lower():
+            return
+        log.warning(f"[GATEWAY] Delete message error: {exc}")
+    except Exception as exc:
+        log.warning(f"[GATEWAY] Unexpected delete error: {exc}")
+
 
 
 # --- HELPER CHO SCREENER MEAN REVERSION ---
@@ -1297,6 +1308,7 @@ async def redis_gateway_loop():
 
                                     except Exception as e2:
                                         log.error(f"[{INSTANCE_ID}][GATEWAY] ❌ Edit thất bại hoàn toàn (chat={chat_id}, msg={edit_id}): {e2}")
+                                        await delete_message_safely(chat_id, edit_id)
 
                             if msg_type in ["DIGEST", "EOD_SUMMARY"]:
                                 await send_digest_with_pin(tg_app.bot, chat_id, text, reply_markup=markup_data)
