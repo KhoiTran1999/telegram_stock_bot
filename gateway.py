@@ -4010,7 +4010,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("agent", "macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
             ("agentlog", "macro|biz|tech|all - Xem log hoạt động Agent"),
         ]
-
+ 
         # Tách commands
         user_cmds = [(c, d) for c, d in commands if "(admin)" not in d]
         admin_cmds = commands
