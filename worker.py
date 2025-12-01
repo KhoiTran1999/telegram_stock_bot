@@ -3399,20 +3399,30 @@ async def main():
     # --- 1. CẤU HÌNH REDIS JOB STORE ---
     # Parse URL Redis từ biến môi trường để lấy host, port, password
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    r_parse = urlparse(redis_url)
-    
-    # Cấu hình lưu trữ Job vào Redis (Persistence)
+    # 2. Tạo biến chứa tham số kết nối mặc định
+    connection_kwargs = {}
+
+    # 3. KIỂM TRA THÔNG MINH:
+    # Chỉ thêm cấu hình bỏ qua SSL nếu URL bắt đầu bằng "rediss://" (Secure Redis)
+    if redis_url.startswith("rediss://"):
+        connection_kwargs['ssl_cert_reqs'] = None
+
+    # 4. Tạo Pool với tham số động
+    # Nếu ở Local: connection_kwargs rỗng -> Không lỗi
+    # Nếu ở Cloud: connection_kwargs có ssl_cert_reqs -> Fix lỗi Connection Closed
+    pool = redis.ConnectionPool.from_url(
+        redis_url,
+        **connection_kwargs 
+    )
+
+    # 5. Khởi tạo JobStore
     jobstores = {
         'default': RedisJobStore(
-            jobs_key='stockbot_jobs', 
-            run_times_key='stockbot_running', 
-            host=r_parse.hostname, 
-            port=r_parse.port, 
-            password=r_parse.password,
-            db=0 # Hoặc lấy từ r_parse.path nếu cần
+            jobs_key='stockbot_jobs',
+            run_times_key='stockbot_running',
+            connection_pool=pool
         )
-    }
-
+}
     # --- 2. CẤU HÌNH MẶC ĐỊNH (DEFAULTS) ---
     job_defaults = {
         'coalesce': True,             # Nếu lỡ nhiều lần, chỉ chạy bù 1 lần cuối
