@@ -19,5 +19,12 @@ jobs:
           git config --global user.email "khoitran200199@gmail.com"
           git config --global user.name "khoitran200199-lab"
           
-          # Dùng cú pháp x-access-token để an toàn nhất
-          git push https://x-access-token:$API_TOKEN@github.com/KhoiTran1999/telegram_stock_bot.git main --force
+          # QUAN TRỌNG: Xóa header auth mặc định do actions/checkout tạo ra
+          # Để tránh việc nó tự động dùng github-actions[bot]
+          git config --unset-all http.https://github.com/.extraheader || true
+          
+          # Gán URL mới có chứa Token trực tiếp vào remote 'origin'
+          git remote set-url origin https://KhoiTran1999:$API_TOKEN@github.com/KhoiTran1999/telegram_stock_bot.git
+          
+          # Push thẳng (lúc này origin đã chứa token rồi nên không cần điền lại)
+          git push origin main --force
