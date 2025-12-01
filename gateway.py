@@ -1274,6 +1274,7 @@ async def redis_gateway_loop():
                         # CHIẾN THUẬT 1: ƯU TIÊN SỬA TIN CŨ (EDIT)
                         # =========================================
                         if edit_id:
+                            log.info(f"[{INSTANCE_ID}][GATEWAY] ✏️ Đang sửa tin {edit_id} cho chat {chat_id}")
                             try:
                                 # Thử 1: Sửa chuẩn Markdown
                                 await tg_app.bot.edit_message_text(
@@ -1283,11 +1284,11 @@ async def redis_gateway_loop():
                                     parse_mode="Markdown",
                                     reply_markup=markup_data
                                 )
-                                # log.info(f"✏️ Đã sửa tin {edit_id}")
+                                log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id}")
                                 continue # ✅ Thành công -> Dừng, không gửi mới
                                 
                             except Exception as e:
-                                # log.warning(f"⚠️ Edit Markdown lỗi: {e}. Thử Plain Text...")
+                                log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Edit Markdown lỗi: {e}. Thử Plain Text...")
                                 try:
                                     # Thử 2: Sửa bằng Plain Text (Bỏ format để chắc chắn không lỗi)
                                     # Hàm escape_markdown_v2 giúp text không bị lỗi parse, nhưng an toàn nhất là parse_mode=None
@@ -1298,11 +1299,11 @@ async def redis_gateway_loop():
                                         parse_mode=None, # Không dùng Markdown
                                         reply_markup=markup_data
                                     )
-                                    log.info(f"✏️ Đã sửa tin {edit_id} (Plain Text)")
+                                    log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id} (Plain Text)")
                                     continue # ✅ Thành công -> Dừng
                                     
                                 except Exception as e2:
-                                    log.error(f"❌ Edit thất bại hoàn toàn: {e2}. Chuyển sang gửi mới.")
+                                    log.error(f"[{INSTANCE_ID}][GATEWAY] ❌ Edit thất bại hoàn toàn (chat={chat_id}, msg={edit_id}): {e2}. Chuyển sang gửi mới.")
                                     # Nếu cả 2 cách đều thua (ví dụ tin quá cũ), đành chịu -> Xuống gửi mới
                         
                         # =========================================

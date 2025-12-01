@@ -289,6 +289,10 @@ def push_telegram_msg(chat_id, text, reply_markup=None, msg_type='GENERAL', **kw
         # Merge thêm các tham số phụ (như delete_id) vào payload
         payload.update(kwargs)
 
+        edit_id = payload.get("edit_id")
+        if edit_id:
+            log.info(f"[{INSTANCE_ID}] 📤 Push edit payload chat={chat_id} msg={edit_id} type={msg_type}")
+
         # Serialize nút bấm (nếu có)
         if reply_markup:
             if hasattr(reply_markup, 'to_dict'):
