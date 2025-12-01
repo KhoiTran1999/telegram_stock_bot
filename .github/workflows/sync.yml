@@ -20,4 +20,8 @@ jobs:
           
           # Lệnh push sang tài khoản ĐÍCH (KhoiTran1999)
           # Sử dụng secret token đã lưu
+<<<<<<< HEAD
           git push https://KhoiTran1999:${{ secrets.API_TOKEN_GITHUB_B }}@github.com/KhoiTran1999/telegram_stock_bot.git main --force
+=======
+          git push https://KhoiTran1999:${{ secrets.API_TOKEN_GITHUB_B }}@github.com/KhoiTran1999/telegram_stock_bot.git main --force
+>>>>>>> ce5b3f51c60820d9f727ce3853c64f3a82b3c07d
