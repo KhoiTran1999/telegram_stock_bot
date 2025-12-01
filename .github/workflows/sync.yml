@@ -14,12 +14,10 @@ jobs:
 
       - name: Push to KhoiTran1999
         env:
-          # Gán Secret vào biến môi trường để bảo mật và tránh lỗi cú pháp
           API_TOKEN: ${{ secrets.API_TOKEN_GITHUB_B }}
         run: |
-          # Cấu hình user
           git config --global user.email "khoitran200199@gmail.com"
           git config --global user.name "khoitran200199-lab"
           
-          # Dùng biến $API_TOKEN
-          git push https://KhoiTran1999:$API_TOKEN@github.com/KhoiTran1999/telegram_stock_bot.git main --force
+          # Dùng cú pháp x-access-token để an toàn nhất
+          git push https://x-access-token:$API_TOKEN@github.com/KhoiTran1999/telegram_stock_bot.git main --force
