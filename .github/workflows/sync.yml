@@ -1,0 +1,23 @@
+name: Sync to KhoiTran1999
+
+on:
+  push:
+    branches: [ "main" ] # Hoặc "master" nếu nhánh chính của bạn tên là master
+
+jobs:
+  sync-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Push to KhoiTran1999
+        run: |
+          # Cấu hình user của tài khoản GỐC (khoitran200199-lab)
+          git config --global user.email "khoitran200199@gmail.com"
+          git config --global user.name "khoitran200199-lab"
+          
+          # Lệnh push sang tài khoản ĐÍCH (KhoiTran1999)
+          # Sử dụng secret token đã lưu
+          git push https://KhoiTran1999:${{ secrets.API_TOKEN_GITHUB_B }}@github.com/KhoiTran1999/telegram_stock_bot.git main --force
