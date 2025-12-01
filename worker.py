@@ -100,6 +100,7 @@ flask_app = Flask(__name__)
 
 
 @flask_app.get("/")
+@flask_app.get("/health")
 @flask_app.get("/healthz")
 def worker_healthcheck():
     """Expose a minimal HTTP endpoint so Render sees an open port."""
@@ -825,77 +826,86 @@ async def worker_inbound_loop():
     [WORKER] Lắng nghe lệnh từ Gateway (ví dụ: User gõ /report).
     """
     log.info(f"[{INSTANCE_ID}] 🎧 Worker lắng nghe lệnh từ '{REDIS_CHANNEL_INBOUND}'...")
-    try:
-        pubsub = r_client.pubsub()
-        pubsub.subscribe(REDIS_CHANNEL_INBOUND)
+    while True:
+        pubsub = None
+        try:
+            pubsub = r_client.pubsub()
+            pubsub.subscribe(REDIS_CHANNEL_INBOUND)
 
-        while True:
-            message = pubsub.get_message(ignore_subscribe_messages=True)
-            if message:
+            while True:
+                message = pubsub.get_message(ignore_subscribe_messages=True)
+                if message:
+                    try:
+                        payload = json.loads(message['data'])
+                        cmd = payload.get('cmd')
+                        
+                        if cmd == "GEN_REPORT":
+                            chat_id = payload.get('chat_id')
+                            symbols = payload.get('symbols')
+
+                            # [MỚI] Lấy loading_msg_id từ payload
+                            loading_id = payload.get('loading_msg_id')
+
+                            # Chạy async để không block việc nhận lệnh khác
+                            asyncio.create_task(process_report_for_user(chat_id, symbols, loading_msg_id=loading_id))
+                            
+                        # [MỚI] Xử lý lệnh chạy Weekly ngay lập tức
+                        elif cmd == "RUN_WEEKLY_NOW":
+                            admin_id = payload.get('admin_id')
+                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Weekly từ {admin_id}")
+                            # Chạy background task để không block việc nhận lệnh khác
+                            asyncio.create_task(execute_weekly_batch(requester_id=admin_id))
+
+                        # [MỚI] Xử lý lệnh chạy Nightly Valuation ngay lập tức
+                        elif cmd == "RUN_NIGHTLY_VALUATION":
+                            admin_id = payload.get('admin_id')
+                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
+                            asyncio.create_task(job_nightly_valuation())
+
+                        elif cmd == "GEN_INFO":
+                            chat_id = payload.get('chat_id')
+                            symbol = payload.get('symbol')
+                            loading_id = payload.get('loading_msg_id')
+                            
+                            # Chạy Async
+                            asyncio.create_task(process_profile_for_user(
+                                chat_id, 
+                                symbol, 
+                                loading_msg_id=loading_id
+                            ))
+
+                        elif cmd == "GEN_SCREENER":
+                            chat_id = payload.get('chat_id')
+                            loading_id = payload.get('loading_msg_id')
+                            asyncio.create_task(process_screener_view(chat_id, loading_id))
+
+                        elif cmd == "FORCE_SCREENER":
+                            admin_id = payload.get('admin_id')
+                            asyncio.create_task(process_force_update_screener(admin_id))
+
+                        elif cmd == "CMD_AGENT_RUN":
+                            asyncio.create_task(handle_agent_run(payload))
+
+                        elif cmd == "CMD_ASK_AI":
+                            chat_id = payload.get('chat_id')
+                            question = payload.get('question')
+                            loading_id = payload.get('loading_msg_id')
+                            asyncio.create_task(process_ask_ai(chat_id, question, loading_id))
+
+                    except Exception as e:
+                        log.error(f"Inbound Error: {e}")
+                
+                await asyncio.sleep(0.1)
+
+        except Exception as e:
+            log.error(f"Worker Inbound Crash: {e}")
+            await asyncio.sleep(5)
+        finally:
+            if pubsub:
                 try:
-                    payload = json.loads(message['data'])
-                    cmd = payload.get('cmd')
-                    
-                    if cmd == "GEN_REPORT":
-                        chat_id = payload.get('chat_id')
-                        symbols = payload.get('symbols')
-
-                        # [MỚI] Lấy loading_msg_id từ payload
-                        loading_id = payload.get('loading_msg_id')
-
-                        # Chạy async để không block việc nhận lệnh khác
-                        asyncio.create_task(process_report_for_user(chat_id, symbols, loading_msg_id=loading_id))
-                        
-                    # [MỚI] Xử lý lệnh chạy Weekly ngay lập tức
-                    elif cmd == "RUN_WEEKLY_NOW":
-                        admin_id = payload.get('admin_id')
-                        log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Weekly từ {admin_id}")
-                        # Chạy background task để không block việc nhận lệnh khác
-                        asyncio.create_task(execute_weekly_batch(requester_id=admin_id))
-
-                    # [MỚI] Xử lý lệnh chạy Nightly Valuation ngay lập tức
-                    elif cmd == "RUN_NIGHTLY_VALUATION":
-                        admin_id = payload.get('admin_id')
-                        log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
-                        asyncio.create_task(job_nightly_valuation())
-
-                    elif cmd == "GEN_INFO":
-                        chat_id = payload.get('chat_id')
-                        symbol = payload.get('symbol')
-                        loading_id = payload.get('loading_msg_id')
-                        
-                        # Chạy Async
-                        asyncio.create_task(process_profile_for_user(
-                            chat_id, 
-                            symbol, 
-                            loading_msg_id=loading_id
-                        ))
-
-                    elif cmd == "GEN_SCREENER":
-                        chat_id = payload.get('chat_id')
-                        loading_id = payload.get('loading_msg_id')
-                        asyncio.create_task(process_screener_view(chat_id, loading_id))
-
-                    elif cmd == "FORCE_SCREENER":
-                        admin_id = payload.get('admin_id')
-                        asyncio.create_task(process_force_update_screener(admin_id))
-
-                    elif cmd == "CMD_AGENT_RUN":
-                        asyncio.create_task(handle_agent_run(payload))
-
-                    elif cmd == "CMD_ASK_AI":
-                        chat_id = payload.get('chat_id')
-                        question = payload.get('question')
-                        loading_id = payload.get('loading_msg_id')
-                        asyncio.create_task(process_ask_ai(chat_id, question, loading_id))
-
-                except Exception as e:
-                    log.error(f"Inbound Error: {e}")
-            
-            await asyncio.sleep(0.1)
-    except Exception as e:
-        log.error(f"Worker Inbound Crash: {e}")
-        await asyncio.sleep(5)
+                    pubsub.close()
+                except Exception:
+                    pass
 
 
 # ==============================================
@@ -3556,7 +3566,9 @@ async def run_worker_runtime():
 async def main():
     config = Config()
     config.bind = [f"0.0.0.0:{PORT}"]
-    log.info(f"[{INSTANCE_ID}] Starting worker keepalive server on port {PORT}...")
+    log.info(
+        f"[{INSTANCE_ID}] Health endpoint: http://0.0.0.0:{PORT}/health"
+    )
     await serve(asgi_wrapper_app, config)
 
 if __name__ == "__main__":
