@@ -4016,8 +4016,8 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             ("start", "🏠 Mở Dashboard chính"),
             # ("admin", "(admin) Mở Dashboard Admin"),
             # ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
-            ("agent", "macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
-            ("agentlog", "macro|biz|tech|all - Xem log hoạt động Agent"),
+            ("agent", "(admin) macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
+            ("agentlog", "(admin) macro|biz|tech|all - Xem log hoạt động Agent"),
         ]
    
         # Tách commands
