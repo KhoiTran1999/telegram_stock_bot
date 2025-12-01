@@ -460,23 +460,6 @@ async def collect_index_pair() -> dict:
     return {"vnindex": vni_data, "vn30": v30_data}
 
 
-async def collect_macro_news(limit: int = 20) -> list[dict]:
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    since = now_utc - datetime.timedelta(hours=MACRO_NEWS_LOOKBACK_HOURS)
-    rows = await asyncio.to_thread(get_recent_news_seen, "MACRO", since)
-    news = []
-    for title, link, published, created_at in rows:
-        news.append({
-            "title": title,
-            "link": link,
-            "published": published.isoformat() if published else None,
-            "created_at": created_at.isoformat() if created_at else None,
-        })
-        if len(news) >= limit:
-            break
-    return news
-  
- 
 def get_macro_target_periods(now: datetime.datetime | None = None, max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[tuple[int, int]]:
     now = now or datetime.datetime.now()
     current_month = now.month
@@ -613,17 +596,24 @@ def collect_gso_reports_sync(max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[di
 
 
 async def run_macro_agent(chat_id: int, request_id: str, ts_iso: str) -> dict:
-    gso_reports = await asyncio.to_thread(collect_gso_reports_sync)
+    gso_reports, index_pair = await asyncio.gather(
+        asyncio.to_thread(collect_gso_reports_sync),
+        collect_index_pair(),
+    )
+
     redis_payload = {
         "generated_at": ts_iso,
         "gso_reports": gso_reports,
+        "indexes": index_pair,
     }
 
     payload = _build_agent_stub("macro", request_id, ts_iso)
     payload.update({
-        "notes": f"GSO raw data snapshot lúc {ts_iso} (không AI summary)",
+        "notes": f"GSO raw data snapshot lúc {ts_iso} (kèm VNINDEX & VN30 raw)",
         "raw_data": {
             "gso_count": len(gso_reports),
+            "has_vnindex": bool(index_pair.get("vnindex")) if index_pair else False,
+            "has_vn30": bool(index_pair.get("vn30")) if index_pair else False,
         },
         "redis_json": redis_payload,
     })
