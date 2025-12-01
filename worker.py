@@ -334,41 +334,6 @@ def push_telegram_msg(chat_id, text, reply_markup=None, msg_type='GENERAL', **kw
         log.error(f"❌ Lỗi push Redis: {e}")
 
 
-TICKER_REGEX = re.compile(r"\b[A-Z]{3,5}\b")
-DOMAIN_KEYWORDS = [
-    "cổ phiếu",
-    "chứng khoán",
-    "thị trường",
-    "vnindex",
-    "vn30",
-    "vn30f1m",
-    "watchlist",
-    "danh mục",
-    "báo cáo",
-    "ai report",
-    "screener",
-    "dashboard",
-    "tài khoản",
-    "nâng cấp",
-    "thanh toán",
-    "alert",
-    "bot",
-    "gso",
-]
-
-
-def is_question_in_domain(question: str) -> bool:
-    """Ràng buộc AI chỉ xử lý câu hỏi liên quan đến chứng khoán/Bot."""
-    if not question:
-        return False
-
-    if TICKER_REGEX.search(question.strip()):
-        return True
-
-    text = question.lower()
-    return any(keyword in text for keyword in DOMAIN_KEYWORDS)
-
-
 def default_ai_reply_markup():
     """Nút mặc định quay lại Dashboard/Hướng dẫn."""
     return {
@@ -662,9 +627,6 @@ async def run_macro_agent(chat_id: int, request_id: str, ts_iso: str) -> dict:
         },
         "redis_json": redis_payload,
     })
-
-    file_path = write_agent_payload_to_file("macro", request_id, payload)
-    payload["debug_file_path"] = file_path
     return payload
 
 
@@ -813,19 +775,6 @@ async def process_ask_ai(chat_id, question, loading_msg_id=None):
 
     try:
         kb = default_ai_reply_markup()
-
-        # 0. Guard: chỉ xử lý câu hỏi đúng phạm vi
-        if not is_question_in_domain(question or ""):
-            push_telegram_msg(
-                chat_id=chat_id,
-                text=(
-                    "🤖 Xin lỗi, mình chỉ hỗ trợ các câu hỏi về chứng khoán Việt Nam, "
-                    "cổ phiếu cụ thể hoặc cách sử dụng Bot. Bạn hãy hỏi lại với nội dung phù hợp nhé!"
-                ),
-                reply_markup=kb,
-                edit_id=loading_msg_id
-            )
-            return
 
         # 1. Lấy lịch sử từ Redis (Context Memory)
         history_key = f"ai_history:{chat_id}"
