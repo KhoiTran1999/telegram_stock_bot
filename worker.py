@@ -199,6 +199,33 @@ except Exception as e:
     log.error(f"[{INSTANCE_ID}] ❌ Lỗi kết nối Redis: {e}")
     r_client = None
 
+
+def _reconnect_redis_client() -> redis.Redis | None:
+    """Thử tạo lại Redis client dùng chung."""
+    global r_client
+    try:
+        r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        r_client.ping()
+        log.info(f"[{INSTANCE_ID}] 🔁 Redis client đã được kết nối lại thành công.")
+        return r_client
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] ❌ Không thể reconnect Redis: {exc}")
+        r_client = None
+        return None
+
+
+def ensure_redis_client() -> redis.Redis | None:
+    """Đảm bảo r_client còn sống; nếu không sẽ reconnect."""
+    global r_client
+    if r_client is None:
+        return _reconnect_redis_client()
+    try:
+        r_client.ping()
+        return r_client
+    except Exception as exc:
+        log.warning(f"[{INSTANCE_ID}] ⚠️ Redis ping thất bại: {exc}. Đang reconnect...")
+        return _reconnect_redis_client()
+
 # Khởi tạo Trading object (VCI)
 try:
     stock_trading = Trading(source="VCI")
@@ -305,6 +332,51 @@ def push_telegram_msg(chat_id, text, reply_markup=None, msg_type='GENERAL', **kw
         # log.info(f"📤 Pushed to Redis for {chat_id}")
     except Exception as e:
         log.error(f"❌ Lỗi push Redis: {e}")
+
+
+TICKER_REGEX = re.compile(r"\b[A-Z]{3,5}\b")
+DOMAIN_KEYWORDS = [
+    "cổ phiếu",
+    "chứng khoán",
+    "thị trường",
+    "vnindex",
+    "vn30",
+    "vn30f1m",
+    "watchlist",
+    "danh mục",
+    "báo cáo",
+    "ai report",
+    "screener",
+    "dashboard",
+    "tài khoản",
+    "nâng cấp",
+    "thanh toán",
+    "alert",
+    "bot",
+    "gso",
+]
+
+
+def is_question_in_domain(question: str) -> bool:
+    """Ràng buộc AI chỉ xử lý câu hỏi liên quan đến chứng khoán/Bot."""
+    if not question:
+        return False
+
+    if TICKER_REGEX.search(question.strip()):
+        return True
+
+    text = question.lower()
+    return any(keyword in text for keyword in DOMAIN_KEYWORDS)
+
+
+def default_ai_reply_markup():
+    """Nút mặc định quay lại Dashboard/Hướng dẫn."""
+    return {
+        "inline_keyboard": [[
+            {"text": "🏠 Dashboard", "callback_data": "back_to_start"},
+            {"text": "❓ Hướng dẫn", "callback_data": "menu_help"}
+        ]]
+    }
 
 
 def _agent_result_key(agent_type: str) -> str:
@@ -736,21 +808,30 @@ def next_session_start(now):
     return now + datetime.timedelta(seconds=60)
 
 async def process_ask_ai(chat_id, question, loading_msg_id=None):
-    """
-    Xử lý câu hỏi CSKH bằng Gemini Flash Lite.
-    [UPDATED] Có bộ nhớ hội thoại (Context Aware) lưu trong Redis.
-    """
+    """Xử lý câu hỏi CSKH bằng Gemini Flash Lite với bộ nhớ hội thoại."""
     log.info(f"[{INSTANCE_ID}] 🤖 AI CSKH: {chat_id} - '{question}'")
-    
+
     try:
+        kb = default_ai_reply_markup()
+
+        # 0. Guard: chỉ xử lý câu hỏi đúng phạm vi
+        if not is_question_in_domain(question or ""):
+            push_telegram_msg(
+                chat_id=chat_id,
+                text=(
+                    "🤖 Xin lỗi, mình chỉ hỗ trợ các câu hỏi về chứng khoán Việt Nam, "
+                    "cổ phiếu cụ thể hoặc cách sử dụng Bot. Bạn hãy hỏi lại với nội dung phù hợp nhé!"
+                ),
+                reply_markup=kb,
+                edit_id=loading_msg_id
+            )
+            return
+
         # 1. Lấy lịch sử từ Redis (Context Memory)
         history_key = f"ai_history:{chat_id}"
         history_context = ""
-        
         if r_client:
-            # Lấy 10 dòng gần nhất (tương đương 5 cặp hỏi-đáp)
-            # Redis List: [User: A, Bot: B, User: C, Bot: D...]
-            items = r_client.lrange(history_key, -10, -1) 
+            items = r_client.lrange(history_key, -10, -1)
             if items:
                 history_context = "\n".join(items)
 
@@ -763,18 +844,18 @@ LỊCH SỬ HỘI THOẠI (Context):
 
 User: {question}
 Bot:"""
-        
+
         # 3. Gọi Gemini
         answer, usage = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-flash-lite", 
+            model_id="gemini-2.5-flash-lite",
             contents=full_prompt,
-            return_usage=True
+            return_usage=True,
         )
-        
+
         if not answer:
             answer = "😅 Xin lỗi, hiện tại mình đang bị quá tải. Bạn vui lòng thử lại sau nhé."
-        
+
         # [LOG ADMIN]
         if usage and (chat_id == ADMIN_ID):
             try:
@@ -782,39 +863,24 @@ Bot:"""
                 out_tok = usage.candidates_token_count
                 total = usage.total_token_count
                 answer += f"\n\n`[DEBUG] In: {in_tok} | Out: {out_tok} | Total: {total}`"
-            except: pass
+            except Exception:
+                pass
 
         # 4. Lưu hội thoại mới vào Redis (để AI nhớ cho lần sau)
         if r_client:
-            # Lưu câu hỏi của User
             r_client.rpush(history_key, f"User: {question}")
-            
-            # Lưu câu trả lời của Bot (Cần xóa phần debug token nếu có)
             clean_answer = answer.split("\n\n`[DEBUG]")[0]
-            
-            # [MỚI] Xóa Markdown khi lưu vào lịch sử để tiết kiệm token & sạch context
             history_text = remove_markdown(clean_answer)
             r_client.rpush(history_key, f"Bot: {history_text}")
-            
-            # Giới hạn lịch sử: Chỉ giữ 20 tin gần nhất (10 cặp) để tiết kiệm Token
             r_client.ltrim(history_key, -20, -1)
-            
-            # Set thời gian hết hạn cho bộ nhớ (24 giờ)
             r_client.expire(history_key, 86400)
 
         # 5. Gửi kết quả về Gateway
-        kb = {
-            "inline_keyboard": [[
-                {"text": "🏠 Dashboard", "callback_data": "back_to_start"},
-                {"text": "❓ Hướng dẫn", "callback_data": "menu_help"}
-            ]]
-        }
-        
         push_telegram_msg(
             chat_id=chat_id,
             text=answer,
             reply_markup=kb,
-            edit_id=loading_msg_id 
+            edit_id=loading_msg_id,
         )
 
     except Exception as e:
@@ -822,45 +888,52 @@ Bot:"""
         push_telegram_msg(
             chat_id=chat_id,
             text="⚠️ Lỗi hệ thống AI. Vui lòng thử lại sau.",
-            edit_id=loading_msg_id
+            edit_id=loading_msg_id,
+            reply_markup=default_ai_reply_markup(),
         )
-
 async def worker_inbound_loop():
-    """
-    [WORKER] Lắng nghe lệnh từ Gateway (ví dụ: User gõ /report).
-    """
+    """[WORKER] Lắng nghe lệnh từ Gateway (ví dụ: User gõ /report)."""
+    global r_client
     log.info(f"[{INSTANCE_ID}] 🎧 Worker lắng nghe lệnh từ '{REDIS_CHANNEL_INBOUND}'...")
+
     while True:
         pubsub = None
         try:
-            pubsub = r_client.pubsub()
+            client = ensure_redis_client()
+            if not client:
+                log.error(f"[{INSTANCE_ID}] ❌ Không thể kết nối Redis inbound. Chờ 5s rồi thử lại...")
+                await asyncio.sleep(5)
+                continue
+
+            pubsub = client.pubsub()
             pubsub.subscribe(REDIS_CHANNEL_INBOUND)
+            log.info(f"[{INSTANCE_ID}] ✅ Worker đã subscribe '{REDIS_CHANNEL_INBOUND}'")
 
             while True:
-                message = pubsub.get_message(ignore_subscribe_messages=True)
+                try:
+                    message = pubsub.get_message(ignore_subscribe_messages=True)
+                except Exception as err:
+                    log.warning(f"[{INSTANCE_ID}] ⚠️ Worker Redis inbound lỗi: {err}. Sẽ reconnect...")
+                    break
+
                 if message:
                     try:
                         payload = json.loads(message['data'])
                         cmd = payload.get('cmd')
-                        
+
                         if cmd == "GEN_REPORT":
                             chat_id = payload.get('chat_id')
                             symbols = payload.get('symbols')
-
-                            # [MỚI] Lấy loading_msg_id từ payload
                             loading_id = payload.get('loading_msg_id')
+                            asyncio.create_task(
+                                process_report_for_user(chat_id, symbols, loading_msg_id=loading_id)
+                            )
 
-                            # Chạy async để không block việc nhận lệnh khác
-                            asyncio.create_task(process_report_for_user(chat_id, symbols, loading_msg_id=loading_id))
-                            
-                        # [MỚI] Xử lý lệnh chạy Weekly ngay lập tức
                         elif cmd == "RUN_WEEKLY_NOW":
                             admin_id = payload.get('admin_id')
                             log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Weekly từ {admin_id}")
-                            # Chạy background task để không block việc nhận lệnh khác
                             asyncio.create_task(execute_weekly_batch(requester_id=admin_id))
 
-                        # [MỚI] Xử lý lệnh chạy Nightly Valuation ngay lập tức
                         elif cmd == "RUN_NIGHTLY_VALUATION":
                             admin_id = payload.get('admin_id')
                             log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
@@ -870,13 +943,9 @@ async def worker_inbound_loop():
                             chat_id = payload.get('chat_id')
                             symbol = payload.get('symbol')
                             loading_id = payload.get('loading_msg_id')
-                            
-                            # Chạy Async
-                            asyncio.create_task(process_profile_for_user(
-                                chat_id, 
-                                symbol, 
-                                loading_msg_id=loading_id
-                            ))
+                            asyncio.create_task(
+                                process_profile_for_user(chat_id, symbol, loading_msg_id=loading_id)
+                            )
 
                         elif cmd == "GEN_SCREENER":
                             chat_id = payload.get('chat_id')
@@ -898,11 +967,12 @@ async def worker_inbound_loop():
 
                     except Exception as e:
                         log.error(f"Inbound Error: {e}")
-                
+
                 await asyncio.sleep(0.1)
 
         except Exception as e:
             log.error(f"Worker Inbound Crash: {e}")
+            r_client = None
             await asyncio.sleep(5)
         finally:
             if pubsub:

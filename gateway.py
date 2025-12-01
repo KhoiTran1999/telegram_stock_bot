@@ -1230,108 +1230,104 @@ async def auto_on_after_delay(initial_active: bool):
                 log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
 
 async def redis_gateway_loop():
-    """
-    [GATEWAY] Loop chuyên trách: Nghe Redis -> Gửi/Sửa Telegram.
-    Phiên bản 'Bất tử': Retry Edit nếu lỗi format.
-    """
-    log.info(f"[{INSTANCE_ID}][GATEWAY] 🎧 Đang lắng nghe kênh '{REDIS_CHANNEL_OUTBOUND}'...")
-    
-    try:
-        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        pubsub = r.pubsub()
-        pubsub.subscribe(REDIS_CHANNEL_OUTBOUND)
-        
-        while True:
-            message = pubsub.get_message(ignore_subscribe_messages=True)
-            
-            if message:
+    """[GATEWAY] Lắng nghe Redis -> Gửi/Sửa Telegram (có cơ chế tự reconnect)."""
+    log.info(f"[{INSTANCE_ID}][GATEWAY] 🎧 Khởi chạy Redis outbound loop trên kênh '{REDIS_CHANNEL_OUTBOUND}'")
+
+    while True:
+        pubsub = None
+        try:
+            r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+            pubsub = r.pubsub()
+            pubsub.subscribe(REDIS_CHANNEL_OUTBOUND)
+            log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã subscribe kênh Redis outbound")
+
+            while True:
                 try:
-                    raw_data = message['data']
-                    payload = json.loads(raw_data)
-                    
-                    chat_id = payload.get('chat_id')
-                    text = payload.get('text')
-                    markup_data = payload.get('reply_markup')
-                    msg_type = payload.get('msg_type', 'GENERAL')
-                    
-                    # [FIX MARKDOWN] Chuyển đổi cú pháp Gemini (**) sang Telegram Legacy (*)
-                    if text:
-                        # 1. Bold: **text** -> *text*
-                        text = text.replace("**", "*")
-                        # 2. Header: ### Title -> *Title* (Telegram không hỗ trợ #)
-                        text = text.replace("### ", "*").replace("## ", "*")
-                    
-                    # [QUAN TRỌNG] Lấy ID để sửa
-                    edit_id = payload.get('edit_id')
+                    message = pubsub.get_message(ignore_subscribe_messages=True)
+                except Exception as err:
+                    log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Lỗi get_message: {err}. Thử reconnect...")
+                    break
 
-                    # --- XỬ LÝ LOGIC DỌN DẸP ---
-                    if msg_type == "TRIGGER_CLEANUP":
-                        asyncio.create_task(cleanup_after_eod())
-                        continue
+                if message:
+                    try:
+                        raw_data = message['data']
+                        payload = json.loads(raw_data)
 
-                    if chat_id and text:
-                        # =========================================
-                        # CHIẾN THUẬT 1: ƯU TIÊN SỬA TIN CŨ (EDIT)
-                        # =========================================
-                        if edit_id:
-                            log.info(f"[{INSTANCE_ID}][GATEWAY] ✏️ Đang sửa tin {edit_id} cho chat {chat_id}")
-                            try:
-                                # Thử 1: Sửa chuẩn Markdown
-                                await tg_app.bot.edit_message_text(
-                                    chat_id=chat_id,
-                                    message_id=edit_id,
-                                    text=text,
-                                    parse_mode="Markdown",
-                                    reply_markup=markup_data
-                                )
-                                log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id}")
-                                continue # ✅ Thành công -> Dừng, không gửi mới
-                                
-                            except Exception as e:
-                                log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Edit Markdown lỗi: {e}. Thử Plain Text...")
+                        chat_id = payload.get('chat_id')
+                        text = payload.get('text')
+                        markup_data = payload.get('reply_markup')
+                        msg_type = payload.get('msg_type', 'GENERAL')
+
+                        if text:
+                            text = text.replace("**", "*")
+                            text = text.replace("### ", "*").replace("## ", "*")
+
+                        edit_id = payload.get('edit_id')
+
+                        if msg_type == "TRIGGER_CLEANUP":
+                            asyncio.create_task(cleanup_after_eod())
+                            continue
+
+                        if chat_id and text:
+                            if edit_id:
+                                log.info(f"[{INSTANCE_ID}][GATEWAY] ✏️ Đang sửa tin {edit_id} cho chat {chat_id}")
                                 try:
-                                    # Thử 2: Sửa bằng Plain Text (Bỏ format để chắc chắn không lỗi)
-                                    # Hàm escape_markdown_v2 giúp text không bị lỗi parse, nhưng an toàn nhất là parse_mode=None
                                     await tg_app.bot.edit_message_text(
                                         chat_id=chat_id,
                                         message_id=edit_id,
-                                        text=text.replace("*", "").replace("_", ""), # Xóa sơ các ký tự MD
-                                        parse_mode=None, # Không dùng Markdown
+                                        text=text,
+                                        parse_mode="Markdown",
                                         reply_markup=markup_data
                                     )
-                                    log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id} (Plain Text)")
-                                    continue # ✅ Thành công -> Dừng
-                                    
-                                except Exception as e2:
-                                    log.error(f"[{INSTANCE_ID}][GATEWAY] ❌ Edit thất bại hoàn toàn (chat={chat_id}, msg={edit_id}): {e2}. Chuyển sang gửi mới.")
-                                    # Nếu cả 2 cách đều thua (ví dụ tin quá cũ), đành chịu -> Xuống gửi mới
-                        
-                        # =========================================
-                        # CHIẾN THUẬT 2: GỬI MỚI (SEND)
-                        # =========================================
-                        if msg_type in ["DIGEST", "EOD_SUMMARY"]:
-                            await send_digest_with_pin(tg_app.bot, chat_id, text, reply_markup=markup_data)
-                        else:
-                            await send_md(
-                                tg_app.bot, 
-                                chat_id=chat_id, 
-                                text=text, 
-                                msg_type=msg_type,
-                                reply_markup=markup_data
-                            )
-                    
-                except json.JSONDecodeError:
-                    log.warning(f"⚠️ [GATEWAY] Lỗi JSON: {message['data']}")
-                except Exception as e:
-                    log.error(f"❌ [GATEWAY] Lỗi xử lý: {e}")
-                
-                continue
-            
-            await asyncio.sleep(0.05)
+                                    log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id}")
+                                    continue
 
-    except Exception as e:
-        log.error(f"💀 [GATEWAY] Lỗi Fatal: {e}")
-        await asyncio.sleep(5)
+                                except Exception as e:
+                                    log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Edit Markdown lỗi: {e}. Thử Plain Text...")
+                                    try:
+                                        await tg_app.bot.edit_message_text(
+                                            chat_id=chat_id,
+                                            message_id=edit_id,
+                                            text=text.replace("*", "").replace("_", ""),
+                                            parse_mode=None,
+                                            reply_markup=markup_data
+                                        )
+                                        log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id} (Plain Text)")
+                                        continue
+
+                                    except Exception as e2:
+                                        log.error(f"[{INSTANCE_ID}][GATEWAY] ❌ Edit thất bại hoàn toàn (chat={chat_id}, msg={edit_id}): {e2}")
+
+                            if msg_type in ["DIGEST", "EOD_SUMMARY"]:
+                                await send_digest_with_pin(tg_app.bot, chat_id, text, reply_markup=markup_data)
+                            else:
+                                await send_md(
+                                    tg_app.bot,
+                                    chat_id=chat_id,
+                                    text=text,
+                                    msg_type=msg_type,
+                                    reply_markup=markup_data
+                                )
+
+                    except json.JSONDecodeError:
+                        log.warning(f"⚠️ [GATEWAY] Lỗi JSON: {message['data']}")
+                    except Exception as e:
+                        log.error(f"❌ [GATEWAY] Lỗi xử lý: {e}")
+
+                    continue
+
+                await asyncio.sleep(0.05)
+
+        except Exception as e:
+            log.error(f"💀 [GATEWAY] Lỗi Redis outbound: {e}. Sẽ thử reconnect sau 5s")
+            await asyncio.sleep(5)
+
+        finally:
+            if pubsub:
+                try:
+                    pubsub.close()
+                except Exception:
+                    pass
 
 # ==============================================
 # COMMAND HANDLERS
