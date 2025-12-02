@@ -3869,7 +3869,7 @@ def call_chatgpt_for_report(symbols: list[str], agent_payload: dict[str, dict]) 
     vn_tz = pytz.timezone(TIMEZONE)
     date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
 
-    prompt = f"""
+    base_prompt = f"""
 Bạn là một Chuyên gia Quản lý Quỹ (Fund Manager) hàng đầu tại Việt Nam. 
 Nhiệm vụ của bạn là phân tích danh mục: {symbols_str} (Ngày báo cáo: {date_str}).
 
@@ -3914,25 +3914,44 @@ LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
 4. Dùng dấu (*) để nhấn mạnh cho các tiêu đề đầu dòng. Ví dụ: *Động lực chính (Key Drivers):*, *Tăng trưởng doanh thu và lợi nhuận ổn định:*
 5. KHÔNG thêm bất kỳ lời dẫn hay giải thích nào ngoài khối JSON.
 """
-
+    prompt = base_prompt
     log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Multi-Agent): {symbols_str}")
 
-    try:
-        raw_text = call_gemini_safe(
-            model_id="gemini-2.5-flash",
-            contents=prompt,
-            config={'response_mime_type': 'application/json'}
-        )
-        clean_text = escape_control_chars_in_json_strings(extract_json_from_text(raw_text))
+    last_error: Exception | None = None
+    for attempt in range(1, 3):  # Tối đa 2 lần gọi
         try:
-            json.loads(clean_text)
-        except Exception as json_err:
-            log.error(f"❌ JSON LỖI CÚ PHÁP:\n{clean_text}")
-            raise json_err
-        return clean_text
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report: {e}")
-        raise e
+            raw_text = call_gemini_safe(
+                model_id="gemini-2.5-flash",
+                contents=prompt,
+                config={'response_mime_type': 'application/json'}
+            )
+            if not raw_text:
+                raise RuntimeError("Gemini trả về rỗng hoặc None")
+
+            clean_text = escape_control_chars_in_json_strings(extract_json_from_text(raw_text))
+            try:
+                json.loads(clean_text)
+                return clean_text
+            except json.JSONDecodeError as json_err:
+                log.error(
+                    f"❌ JSON LỖI CÚ PHÁP (attempt {attempt}): {json_err}\n{clean_text[:5000]}"
+                )
+                last_error = json_err
+                prompt = (
+                    f"{base_prompt}\n\n⚠️ Lần thử #{attempt} JSON không hợp lệ vì: {json_err}. "
+                    "Hãy trả về duy nhất một khối JSON hợp lệ chuẩn RFC 8259, không kèm chú thích."
+                )
+                continue
+        except Exception as e:
+            last_error = e
+            log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report (attempt {attempt}): {e}")
+            prompt = (
+                f"{base_prompt}\n\n⚠️ Lần thử #{attempt} gặp lỗi hệ thống: {e}. "
+                "Hãy xuất lại toàn bộ JSON hợp lệ ngay lập tức."
+            )
+            time.sleep(1)
+
+    raise last_error if last_error else RuntimeError("Gemini không phản hồi JSON hợp lệ")
 
 
 def _normalize_watch_symbols(raw_symbols: list[str] | None) -> list[str]:
