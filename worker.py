@@ -14,6 +14,14 @@ from google import genai
 import uuid
 import time
 import pandas as pd
+import numpy as np
+
+# pandas-ta (custom build) still expects numpy.NaN to exist; numpy>=2 drops it.
+# Create the alias before importing pandas_ta so the package can import cleanly.
+if not hasattr(np, "NaN"):
+    np.NaN = np.nan
+
+import pandas_ta as ta  # noqa: F401  # Registers the DataFrame .ta accessor
 pd.set_option('future.no_silent_downcasting', True)
 from typing import Any, Optional
 import feedparser
@@ -111,6 +119,40 @@ TECH_INDICATOR_COLUMN_MAP = {
     "BBU_20_2.0": "BB_Upper",
     "BBM_20_2.0": "BB_Middle",
     "BBL_20_2.0": "BB_Lower",
+}
+REPORT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "general_market_comment": {"type": "string"},
+        "general_portfolio_comment": {"type": "string"},
+        "portfolio_health_score": {"type": "string"},
+        "stocks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "industry": {"type": "string"},
+                    "analysis": {"type": "string"},
+                    "key_metrics": {"type": "string"},
+                    "action": {"type": "string"},
+                },
+                "required": [
+                    "symbol",
+                    "industry",
+                    "analysis",
+                    "key_metrics",
+                    "action",
+                ],
+            },
+        },
+    },
+    "required": [
+        "general_market_comment",
+        "general_portfolio_comment",
+        "portfolio_health_score",
+        "stocks",
+    ],
 }
 MACRO_NEWS_LOOKBACK_HOURS = 48
 MACRO_GSO_MONTH_LIMIT = 3
@@ -1668,13 +1710,12 @@ async def worker_inbound_loop():
 
             pubsub = client.pubsub()
             pubsub.subscribe(REDIS_CHANNEL_INBOUND)
-            log.info(f"[{INSTANCE_ID}] ✅ Worker đã subscribe '{REDIS_CHANNEL_INBOUND}'")
 
             while True:
                 try:
                     message = pubsub.get_message(ignore_subscribe_messages=True)
                 except Exception as err:
-                    log.warning(f"[{INSTANCE_ID}] ⚠️ Worker Redis inbound lỗi: {err}. Sẽ reconnect...")
+
                     break
 
                 if message:
@@ -3919,10 +3960,16 @@ LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
     last_error: Exception | None = None
     for attempt in range(1, 3):  # Tối đa 2 lần gọi
         try:
+            generation_config = {
+                "response_mime_type": "application/json",
+            }
+            if REPORT_RESPONSE_SCHEMA:
+                generation_config["response_schema"] = REPORT_RESPONSE_SCHEMA
+
             raw_text = call_gemini_safe(
                 model_id="gemini-2.5-flash",
                 contents=prompt,
-                config={'response_mime_type': 'application/json'}
+                config=generation_config,
             )
             if not raw_text:
                 raise RuntimeError("Gemini trả về rỗng hoặc None")
