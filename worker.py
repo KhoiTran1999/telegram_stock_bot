@@ -14,7 +14,6 @@ from google import genai
 import uuid
 import time
 import pandas as pd
-import pandas_ta as ta  # Kích hoạt pandas_ta accessor
 pd.set_option('future.no_silent_downcasting', True)
 from typing import Any, Optional
 import feedparser
