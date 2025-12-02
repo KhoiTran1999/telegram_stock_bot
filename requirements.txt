@@ -62,7 +62,7 @@ openai==2.7.2
 openpyxl==3.1.5
 packaging==25.0
 pandas==2.3.3
-pandas-ta
+pandas_ta
 parso==0.8.5
 pillow==12.0.0
 pluggy==1.6.0
