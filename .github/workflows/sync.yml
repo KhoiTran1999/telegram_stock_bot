@@ -6,6 +6,7 @@ on:
 
 jobs:
   sync-repo:
+    if: github.repository == 'khoitran200199-lab/telegram_stock_bot_anotherAccount'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
