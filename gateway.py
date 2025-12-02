@@ -1268,13 +1268,11 @@ async def redis_gateway_loop():
             r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
             pubsub = r.pubsub()
             pubsub.subscribe(REDIS_CHANNEL_OUTBOUND)
-            log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã subscribe kênh Redis outbound")
 
             while True:
                 try:
                     message = pubsub.get_message(ignore_subscribe_messages=True)
                 except Exception as err:
-                    log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Lỗi get_message: {err}. Thử reconnect...")
                     break
 
                 if message:
