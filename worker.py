@@ -84,7 +84,21 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 INSTANCE_ID = "WORKER_01" # Định danh cho Worker
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
-BASE_URL = os.getenv("RENDER_EXTERNAL_URL", "https://google.com") # URL của Gateway
+
+def _resolve_web_base_url() -> str:
+    """Worker phải dùng URL Gateway, không phải domain riêng của Worker."""
+    candidates = [
+        os.getenv("GATEWAY_BASE_URL"),
+        os.getenv("WEB_APP_BASE_URL"),
+        os.getenv("NGROK_URL"),
+        os.getenv("RENDER_EXTERNAL_URL"),
+    ]
+    for candidate in candidates:
+        if candidate:
+            return candidate.rstrip("/")
+    return "https://google.com"
+
+BASE_URL = _resolve_web_base_url()  # URL công khai của Gateway/WebApp
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GSO_DATA_DIR = os.path.join(BASE_DIR, "GSO_Data")
 os.makedirs(GSO_DATA_DIR, exist_ok=True)
