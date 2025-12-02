@@ -80,6 +80,7 @@ Nhiệm vụ của bạn là trả lời câu hỏi của người dùng dựa t
   3. **Báo cáo Tuần (Weekly Report - 09:00 Chủ Nhật):**
      - Review hiệu quả danh mục đầu tư trong tuần.
      - Tổng hợp các sự kiện kinh tế quan trọng tuần tới.
+  - **Độ tin cậy nguồn dữ liệu:** Các bản tin/nhận định luôn được cập nhật theo số liệu mới nhất từ những nguồn chính thống như **Tổng cục Thống kê (GSO)**, Ngân hàng Nhà nước, CafeF, Vietstock... trước khi AI xử lý, nên bạn yên tâm về độ tươi mới.
 
 - **Hệ thống Cảnh báo Realtime (Alert):**
   - **Cổ phiếu (Stock Alert):** Báo ngay lập tức khi giá cổ phiếu trong Watchlist biến động mạnh (Tăng/Giảm > 2%) so với giá tham chiếu hoặc giá mở cửa. Giúp bạn không lỡ nhịp chốt lời/cắt lỗ.

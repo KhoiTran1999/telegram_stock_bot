@@ -158,6 +158,34 @@ def make_progress_bar(percent: int, width: int = 8) -> str:
 _user_last_action_time = {}
 SPAM_COOLDOWN = 1  # Giây
 
+TASK_LOCK_TTL_SECONDS = 180
+TASK_LOCK_PREFIX = "lock:user_task"
+
+
+def _task_lock_key(chat_id: int) -> str:
+    return f"{TASK_LOCK_PREFIX}:{chat_id}"
+
+
+def acquire_task_lock(chat_id: int) -> bool:
+    r = get_redis()
+    return bool(r.set(_task_lock_key(chat_id), "1", nx=True, ex=TASK_LOCK_TTL_SECONDS))
+
+
+def release_task_lock(chat_id: int):
+    try:
+        r = get_redis()
+        r.delete(_task_lock_key(chat_id))
+    except Exception as exc:
+        log.error(f"Redis release lock error {chat_id}: {exc}")
+
+
+def is_task_locked(chat_id: int) -> bool:
+    try:
+        r = get_redis()
+        return bool(r.exists(_task_lock_key(chat_id)))
+    except Exception:
+        return False
+
 def is_user_spamming(user_id: int) -> bool:
     """
     Kiểm tra spam. 
@@ -202,48 +230,38 @@ def anti_spam_check(func):
     return wrapper
 
 
-# --- DECORATOR 2: KHÓA TÁC VỤ NẶNG (Cho /report, /info...) ---
-def task_locked(func):
-    """
-    Decorator khóa tác vụ dùng Redis.
-    Cải tiến: Tự động mở khóa NGAY LẬP TỨC sau khi hàm chạy xong.
-    TTL 45s chỉ là phương án dự phòng nếu server bị sập.
-    """
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not update.effective_chat:
-            return await func(update, context, *args, **kwargs)
-            
-        chat_id = update.effective_chat.id
-        
-        try:
-            r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-            lock_key = f"lock:user_task:{chat_id}"
-            
-            # 1. Thử đặt khóa (Nếu đã có khóa -> Chặn)
-            is_locked = r.set(lock_key, "1", nx=True, ex=45)
-            
-            if not is_locked:
-                # Nếu bị khóa, âm thầm bỏ qua hoặc báo nhẹ
-                # (Không gửi alert popup để tránh làm phiền nếu user lỡ bấm đúp)
+def task_locked(func=None, *, manual_release: bool = False):
+    """Decorator khóa tác vụ dùng Redis với tuỳ chọn tự mở khóa."""
+
+    def decorator(inner_func):
+        @wraps(inner_func)
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            if not update.effective_chat:
+                return await inner_func(update, context, *args, **kwargs)
+
+            chat_id = update.effective_chat.id
+
+            try:
+                acquired = acquire_task_lock(chat_id)
+            except Exception as exc:
+                log.error(f"Redis Lock Error: {exc}")
+                return await inner_func(update, context, *args, **kwargs)
+
+            if not acquired:
                 return
 
-            # 2. Chạy hàm chính
             try:
-                return await func(update, context, *args, **kwargs)
-            except Exception as e:
-                raise e
+                return await inner_func(update, context, *args, **kwargs)
             finally:
-                # 3. QUAN TRỌNG: Xóa khóa ngay lập tức dù thành công hay thất bại
-                # Để user có thể bấm nút tiếp theo ngay
-                r.delete(lock_key)
-            
-        except Exception as e:
-            # Fallback: Nếu Redis lỗi, cho chạy luôn
-            log.error(f"Redis Lock Error: {e}")
-            return await func(update, context, *args, **kwargs)
+                if not manual_release:
+                    release_task_lock(chat_id)
 
-    return wrapper
+        return wrapper
+
+    if callable(func):
+        return decorator(func)
+
+    return decorator
 # ==============================================
 # CẤU HÌNH CƠ BẢN
 # ==============================================
@@ -1269,6 +1287,11 @@ async def redis_gateway_loop():
                         markup_data = payload.get('reply_markup')
                         msg_type = payload.get('msg_type', 'GENERAL')
 
+                        if msg_type == "TASK_UNLOCK":
+                            if chat_id:
+                                release_task_lock(chat_id)
+                            continue
+
                         if text:
                             text = text.replace("**", "*")
                             text = text.replace("### ", "*").replace("## ", "*")
@@ -2231,237 +2254,248 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Cache nội dung report theo danh mục vào Redis (theo cache_key = danh mục chuẩn hoá)
 # ==============================================
 
-@task_locked
+@task_locked(manual_release=True)
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     (UX PRO) AI Report với thanh tiến trình (Progress Bar).
     """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
+    if not update or not update.effective_chat:
         return
-
-    vn_tz = pytz.timezone(TIMEZONE)
-    if not update or not update.effective_chat: return
     chat_id = update.effective_chat.id
+    lock_should_persist = False
 
-    # 1. Xác định trạng thái Pro
-    is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-    watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
-    symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
-    cache_key = make_report_cache_key(symbols) if symbols else "EMPTY"
-    web_app_url = f"{base_url}/report/view/{cache_key}?chat_id={chat_id}"
-
-    # --- NHÁNH 1: FREE USER (GIỮ NGUYÊN) ---
-    if not is_pro:
-        # (Code cũ phần Free giữ nguyên, chỉ copy lại cho đủ)
-        try: await asyncio.to_thread(log_command_usage, chat_id, "/report (Free)", ADMIN_ID)
-        except: pass
-        kb = [[InlineKeyboardButton("📊 Xem Báo Cáo AI", web_app=WebAppInfo(url=web_app_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        await reply_md(update, "📊 **Báo Cáo Danh Mục AI**\n\nAI sẽ phân tích chuyên sâu sức khỏe danh mục.\n👇 Nhấn nút bên dưới để xem chi tiết.", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    # --- NHÁNH 2: PRO USER (CÓ PROGRESS BAR) ---
-    await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
-    if not symbols:
-        await reply_md(update, "📭 Danh mục trống. Hãy dùng `/add` để thêm mã trước nhé!")
-        return
-
-    # 2. Check Cache (Gateway vẫn check cache được để phản hồi nhanh)
-    cache_key = make_report_cache_key(symbols)
-    cached = await asyncio.to_thread(get_report_from_redis, cache_key)
-
-    if cached and not cached[2]: # Not error
-        text_json, generated_at, _, _ = cached
-        time_str = "vừa xong"
-        if generated_at:
-             try: time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
-             except: pass
-        kb = [[InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        await reply_md(update, f"✅ Báo cáo danh mục *{', '.join(symbols)}* đã sẵn sàng (bản lưu lúc {time_str}).", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    # B. Cache Miss -> CHẠY TIẾN TRÌNH
-    
-    # B1. Gửi tin nhắn khởi tạo (0%)
-    progress_msg = await reply_md(
-        update, 
-        f"⏳ **Khởi động AI Analyst...**\n"
-        f"`[{make_progress_bar(10)}] 10%`"
-    )
-    
     try:
-        # Giả lập loading steps (Để tạo cảm giác mượt mà)
-        # Bước 1: Thu thập dữ liệu (30%)
-        await asyncio.sleep(0.5) 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
-            parse_mode="Markdown"
+        if not BOT_ACTIVE:
+            await reply_md(update, "⚙️ Bot đang bảo trì.")
+            return
+
+        vn_tz = pytz.timezone(TIMEZONE)
+
+        # 1. Xác định trạng thái Pro
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
+        symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
+        cache_key = make_report_cache_key(symbols) if symbols else "EMPTY"
+        web_app_url = f"{base_url}/report/view/{cache_key}?chat_id={chat_id}"
+
+        # --- NHÁNH 1: FREE USER (GIỮ NGUYÊN) ---
+        if not is_pro:
+            try:
+                await asyncio.to_thread(log_command_usage, chat_id, "/report (Free)", ADMIN_ID)
+            except Exception:
+                pass
+            kb = [[InlineKeyboardButton("📊 Xem Báo Cáo AI", web_app=WebAppInfo(url=web_app_url))],
+                  [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            await reply_md(
+                update,
+                "📊 **Báo Cáo Danh Mục AI**\n\nAI sẽ phân tích chuyên sâu sức khỏe danh mục.\n👇 Nhấn nút bên dưới để xem chi tiết.",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            return
+
+        # --- NHÁNH 2: PRO USER (CÓ PROGRESS BAR) ---
+        await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
+        if not symbols:
+            await reply_md(update, "📭 Danh mục trống. Hãy dùng `/add` để thêm mã trước nhé!")
+            return
+
+        # 2. Check Cache (Gateway vẫn check cache được để phản hồi nhanh)
+        cache_key = make_report_cache_key(symbols)
+        cached = await asyncio.to_thread(get_report_from_redis, cache_key)
+
+        if cached and not cached[2]:  # Not error
+            text_json, generated_at, _, _ = cached
+            time_str = "vừa xong"
+            if generated_at:
+                try:
+                    time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
+                except Exception:
+                    pass
+            kb = [[InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
+                  [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            await reply_md(
+                update,
+                f"✅ Báo cáo danh mục *{', '.join(symbols)}* đã sẵn sàng (bản lưu lúc {time_str}).",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            return
+
+        # B. Cache Miss -> CHẠY TIẾN TRÌNH
+
+        progress_msg = await reply_md(
+            update,
+            f"⏳ **Khởi động AI Analyst...**\n"
+            f"`[{make_progress_bar(10)}] 10%`"
         )
 
-        # Bước 2: Gọi AI (Thật)
-        # Trước khi gọi AI, update lên 60%
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
-            parse_mode="Markdown"
-        )
-
-        # Bước 3: Hoàn tất (100%)
-        sent_msg = await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
-            parse_mode="Markdown"
-        )
-        await asyncio.sleep(0.5) # Dừng xíu để user thấy 100%
-
-        # Bắn lệnh
-        payload = {
-            "cmd": "GEN_REPORT",
-            "chat_id": chat_id,
-            "symbols": symbols,
-            "loading_msg_id": sent_msg.message_id
-        }
-        await asyncio.to_thread(push_to_worker, payload)
-
-    except Exception as e:
-        log.error(f"Lỗi /report: {e}")
-        # Nếu lỗi, sửa tin nhắn loading thành báo lỗi
         try:
+            await asyncio.sleep(0.5)
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
+                text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
                 parse_mode="Markdown"
             )
-        except:
-            pass
+
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
+                parse_mode="Markdown"
+            )
+
+            sent_msg = await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
+                parse_mode="Markdown"
+            )
+            await asyncio.sleep(0.5)
+
+            payload = {
+                "cmd": "GEN_REPORT",
+                "chat_id": chat_id,
+                "symbols": symbols,
+                "loading_msg_id": sent_msg.message_id
+            }
+            await asyncio.to_thread(push_to_worker, payload)
+            lock_should_persist = True
+
+        except Exception as e:
+            log.error(f"Lỗi /report: {e}")
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+    finally:
+        if not lock_should_persist:
+            release_task_lock(chat_id)
 
 
 
 # ==============================================
 # COMMAND: /info <MÃ> (HỒ SƠ DOANH NGHIỆP)
 # ==============================================
-@task_locked
+@task_locked(manual_release=True)
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     (Gateway) Nhận lệnh /info -> Check Cache -> Nếu thiếu thì gọi Worker.
     """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
+    if not update or not update.effective_chat:
         return
-
     chat_id = update.effective_chat.id
+    lock_should_persist = False
 
-    # 1. Parse Argument
-    if not context.args:
-        kb = [[InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        await reply_md(update, "⚠️ Cách dùng: `/info <MÃ>` (VD: `/info FPT`)", reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    symbol = context.args[0].strip().upper()
-    
-    # 2. Check Paywall (Giữ nguyên logic chặn Free user ở Gateway để đỡ tốn resource Worker)
-    is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-    base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
-    web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
-
-    if not is_pro:
-        # Logic Free User (Gửi nút xem demo hoặc chặn) - Giữ nguyên code cũ của bạn
-        try: await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol} (Free)", ADMIN_ID)
-        except: pass
-        kb = [[InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
-              [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-        await reply_md(
-            update,
-            f"🏢 **Hồ Sơ Doanh Nghiệp: {symbol}**\n\nPhân tích mô hình kinh doanh & vị thế.\n👇 Nhấn nút bên dưới để xem.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
-
-    # 3. Pro User: Check Cache Redis (Gateway tự check được vì Redis chung)
-    try: await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
-    except: pass
-    
-    cache_key = make_profile_cache_key(symbol)
-    cached = await asyncio.to_thread(get_profile_from_redis, cache_key) # Import hàm này từ profile_cache.py
-
-    # CASE A: Có Cache -> Trả về ngay lập tức
-    if cached:
-        text, _, is_error, _ = cached
-        if not is_error:
-            kb = [
-                [InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
-                [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
-            ]
-            await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=InlineKeyboardMarkup(kb))
+    try:
+        if not BOT_ACTIVE:
+            await reply_md(update, "⚙️ Bot đang bảo trì.")
             return
 
-    # B. Cache Miss -> CHẠY TIẾN TRÌNH
-    
-    # B1. Gửi tin nhắn khởi tạo (0%)
-    progress_msg = await reply_md(
-        update, 
-        f"⏳ **Đang truy xuất dữ liệu {symbol}...**\nBot đang đọc BCTC và tổng hợp tin tức.\n"
-        f"`[{make_progress_bar(10)}] 10%`"
-    )
-    
-    try:
-        # Giả lập loading steps (Để tạo cảm giác mượt mà)
-        # Bước 1: Thu thập dữ liệu (30%)
-        await asyncio.sleep(0.5) 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
-            parse_mode="Markdown"
-        )
+        if not context.args:
+            kb = [[InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            await reply_md(update, "⚠️ Cách dùng: `/info <MÃ>` (VD: `/info FPT`)", reply_markup=InlineKeyboardMarkup(kb))
+            return
 
-        # Bước 2: Gọi AI (Thật)
-        await asyncio.sleep(0.5) 
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
-            parse_mode="Markdown"
-        )
+        symbol = context.args[0].strip().upper()
 
-        # Bước 3: Hoàn tất (100%)
-        await asyncio.sleep(0.5) 
-        sent_msg = await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=progress_msg.message_id,
-            text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
-            parse_mode="Markdown"
-        )
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
+        web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
 
-        # Bắn lệnh sang Worker
-        payload = {
-            "cmd": "GEN_INFO",
-            "chat_id": chat_id,
-            "symbol": symbol,
-            "loading_msg_id": sent_msg.message_id # <--- Gửi ID đi để sửa
-        }
-        await asyncio.to_thread(push_to_worker, payload)
+        if not is_pro:
+            try:
+                await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol} (Free)", ADMIN_ID)
+            except Exception:
+                pass
+            kb = [[InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
+                  [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
+            await reply_md(
+                update,
+                f"🏢 **Hồ Sơ Doanh Nghiệp: {symbol}**\n\nPhân tích mô hình kinh doanh & vị thế.\n👇 Nhấn nút bên dưới để xem.",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            return
 
-    except Exception as e:
-        log.error(f"Lỗi /report: {e}")
-        # Nếu lỗi, sửa tin nhắn loading thành báo lỗi
         try:
+            await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
+        except Exception:
+            pass
+
+        cache_key = make_profile_cache_key(symbol)
+        cached = await asyncio.to_thread(get_profile_from_redis, cache_key)
+
+        if cached:
+            text, _, is_error, _ = cached
+            if not is_error:
+                kb = [
+                    [InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
+                    [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]
+                ]
+                await reply_md(update, f"✅ Hồ sơ *{symbol}* đã sẵn sàng.", reply_markup=InlineKeyboardMarkup(kb))
+                return
+
+        progress_msg = await reply_md(
+            update,
+            f"⏳ **Đang truy xuất dữ liệu {symbol}...**\nBot đang đọc BCTC và tổng hợp tin tức.\n"
+            f"`[{make_progress_bar(10)}] 10%`"
+        )
+
+        try:
+            await asyncio.sleep(0.5)
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
-                text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
+                text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
                 parse_mode="Markdown"
             )
-        except:
-            pass
+
+            await asyncio.sleep(0.5)
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
+                parse_mode="Markdown"
+            )
+
+            await asyncio.sleep(0.5)
+            sent_msg = await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=progress_msg.message_id,
+                text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
+                parse_mode="Markdown"
+            )
+
+            payload = {
+                "cmd": "GEN_INFO",
+                "chat_id": chat_id,
+                "symbol": symbol,
+                "loading_msg_id": sent_msg.message_id
+            }
+            await asyncio.to_thread(push_to_worker, payload)
+            lock_should_persist = True
+
+        except Exception as e:
+            log.error(f"Lỗi /report: {e}")
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_msg.message_id,
+                    text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
+    finally:
+        if not lock_should_persist:
+            release_task_lock(chat_id)
 
 
 #==========================================
@@ -3698,7 +3732,7 @@ async def api_admin_clear_cache():
     try:
         data = request.get_json()
         req_admin_id = data.get("admin_id")
-        cache_type = data.get("type") # 'screener', 'report', 'info'
+        cache_type = data.get("type") # 'screener', 'report', 'info', 'all'
 
         if not req_admin_id or int(req_admin_id) != ADMIN_ID:
             return jsonify({"ok": False, "message": "Unauthorized"}), 403
@@ -3706,7 +3740,11 @@ async def api_admin_clear_cache():
         r = get_redis()
         deleted = 0
         
-        if cache_type == 'screener':
+        if cache_type == 'all':
+            r.flushdb()
+            msg = "Đã xóa toàn bộ dữ liệu Redis (flushdb)."
+
+        elif cache_type == 'screener':
             # Logic cũ: push lệnh sang worker để tính lại, hoặc xóa key
             # Ở đây ta xóa key snapshot để lần tới nó tự tính lại
             r.delete("global_screener_snapshot")

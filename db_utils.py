@@ -243,10 +243,18 @@ def get_admin_dashboard_data():
     """
     with get_conn() as conn:
         with conn.cursor(row_factory=rows.dict_row) as cur:
+            # Dùng CTE để hợp nhất mọi nguồn chat_id (users, paid_users, bot_watch)
             cur.execute("""
+                WITH all_ids AS (
+                    SELECT chat_id FROM users
+                    UNION
+                    SELECT chat_id FROM paid_users
+                    UNION
+                    SELECT chat_id FROM bot_watch
+                )
                 SELECT 
-                    u.chat_id as id,
-                    COALESCE(u.full_name, u.username, 'User ' || u.chat_id) as name,
+                    ids.chat_id as id,
+                    COALESCE(u.full_name, u.username, 'User ' || ids.chat_id::text) as name,
                     u.username,
                     u.admin_note,
                     COALESCE(u.is_banned, FALSE) as is_banned,
@@ -258,18 +266,19 @@ def get_admin_dashboard_data():
                     p.expiry_date,
                     p.plan_name, -- Lấy thêm plan_name để biết là gói 'trial' hay 'pro'
                     CASE WHEN p.expiry_date > NOW() THEN true ELSE false END as is_pro,
-                    CASE WHEN p.expiry_date <= NOW() THEN true ELSE false END as is_expired,
+                    CASE WHEN p.expiry_date <= NOW() AND p.expiry_date IS NOT NULL THEN true ELSE false END as is_expired,
                     
                     -- Tính số ngày còn lại
-                    EXTRACT(DAY FROM (p.expiry_date - NOW()))::int as days_left,
+                    CASE WHEN p.expiry_date IS NOT NULL THEN EXTRACT(DAY FROM (p.expiry_date - NOW()))::int ELSE NULL END as days_left,
                     
                     -- Watchlist
                     COALESCE(w.watch_list, '[]'::jsonb) as watchlist
                     
-                FROM users u
-                LEFT JOIN paid_users p ON u.chat_id = p.chat_id
-                LEFT JOIN bot_watch w ON u.chat_id = w.chat_id
-                ORDER BY u.last_active_at DESC
+                FROM all_ids ids
+                LEFT JOIN users u ON u.chat_id = ids.chat_id
+                LEFT JOIN paid_users p ON p.chat_id = ids.chat_id
+                LEFT JOIN bot_watch w ON w.chat_id = ids.chat_id
+                ORDER BY COALESCE(u.last_active_at, p.expiry_date, NOW() - INTERVAL '365 days') DESC
             """)
             return cur.fetchall()
 
@@ -295,51 +304,40 @@ def get_all_watch():
     """
     data: dict[str, dict] = {}
     chat_ids_from_redis = set()
+    redis_loaded = False
 
     # 1) Thử đọc từ Redis trước
     try:
         r = get_redis()
         chat_ids_from_redis = r.smembers("watch_chat_ids") or set()
-        
         if chat_ids_from_redis:
-            for cid_str in chat_ids_from_redis:
-                try:
-                    cid = int(cid_str)
-                except Exception:
-                    continue
-                
-                # Cố gắng lấy cache của user này
-                raw = r.get(f"watch:{cid}")
-                
-                if raw is not None:
-                    # === CACHE HIT ===
-                    try:
-                        wl = json.loads(raw)
-                    except Exception:
-                        wl = [] # Cache lỗi thì coi như rỗng
-                    data[str(cid)] = {"list": wl}
-                else:
-                    # === CACHE MISS (Do bị Invalidate hoặc hết hạn) ===
-                    # Gọi hàm "get" đơn lẻ (hàm này đã có logic fallback DB
-                    # và tự động warm-up lại cache)
-                    redis_debug_log(f"get_all_watch: Cache miss cho {cid}, gọi fallback...")
-                    wl_fallback = get_watch_list_for_chat(cid) # Đã bao gồm DB + warm-up
-                    if wl_fallback is not None:
-                         data[str(cid)] = {"list": wl_fallback}
-                    # (Nếu wl_fallback là None, tức là user không có trong DB)
-            
-            # Nếu data có nội dung thì trả về, không cần fallback toàn bộ
-            if data:
-                return data
+            redis_loaded = True
 
+        for cid_str in chat_ids_from_redis:
+            try:
+                cid = int(cid_str)
+            except Exception:
+                continue
+
+            raw = r.get(f"watch:{cid}")
+            if raw is not None:
+                try:
+                    wl = json.loads(raw)
+                except Exception:
+                    wl = []
+                data[str(cid)] = {"list": wl}
+            else:
+                redis_debug_log(f"get_all_watch: Cache miss cho {cid}, gọi fallback...")
+                wl_fallback = get_watch_list_for_chat(cid)
+                if wl_fallback is not None:
+                    data[str(cid)] = {"list": wl_fallback}
     except Exception as e:
         redis_debug_log(f"Redis error in get_all_watch(): {e}")
-        # Bỏ qua và fallback DB toàn bộ bên dưới
+        chat_ids_from_redis = set()
 
-    # 2) Fallback: đọc toàn bộ từ DB (giữ nguyên logic của bạn)
-    # (Trường hợp Redis sập, hoặc set "watch_chat_ids" rỗng)
-    
-    redis_debug_log("Redis empty/error → fallback DB (get_all_watch)")
+    redis_entry_count = len(data)
+
+    # 2) Luôn đọc toàn bộ từ DB để đảm bảo không bỏ sót user nào
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT chat_id, watch_list FROM bot_watch")
@@ -348,17 +346,20 @@ def get_all_watch():
     for chat_id, watch_list in rows:
         data[str(chat_id)] = {"list": watch_list or []}
 
-    # 3) Warm lại Redis từ DB (best-effort, giữ nguyên)
-    try:
-        r = get_redis()
-        r.delete("watch_chat_ids")
-        for chat_id, watch_list in rows:
-            key = f"watch:{chat_id}"
-            wl = watch_list or []
-            r.set(key, json.dumps(wl))
-            r.sadd("watch_chat_ids", chat_id)
-    except Exception:
-        pass
+    need_warm = (not redis_loaded) or (redis_entry_count < len(rows))
+
+    # 3) Warm lại Redis nếu cần (Redis rỗng hoặc thiếu user)
+    if need_warm:
+        try:
+            r = get_redis()
+            r.delete("watch_chat_ids")
+            for chat_id, watch_list in rows:
+                key = f"watch:{chat_id}"
+                wl = watch_list or []
+                r.set(key, json.dumps(wl))
+                r.sadd("watch_chat_ids", chat_id)
+        except Exception:
+            pass
 
     return data
 

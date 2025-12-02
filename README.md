@@ -23,7 +23,11 @@ Bot Telegram thông minh hỗ trợ nhà đầu tư chứng khoán Việt Nam v�
 ### 🤖 AI & Tự động hóa (Powered by Gemini)
 - **Bản tin sáng (Morning Digest)**: Tự động tổng hợp tin tức vĩ mô & doanh nghiệp, dùng AI để tóm tắt và đánh giá tác động (7:00 AM).
 - **Tổng kết cuối ngày (EOD Summary)**: AI nhận định thị trường, dòng tiền và tâm lý đám đông sau giờ giao dịch (15:00).
-- **Phân tích danh mục**: Đánh giá sức khỏe danh mục đầu tư, so sánh định giá hiện tại với lịch sử 5 năm.
+- **Báo cáo danh mục `/report`**:
+    - Giao diện WebApp mới với tiến trình realtime (10% → 70%) giúp Pro user biết trạng thái AI Analyst.
+    - Gateway kiểm tra cache theo danh mục chuẩn hoá; nếu báo cáo còn hạn sẽ mở ngay, nếu không sẽ đẩy task `GEN_REPORT` sang Worker qua Redis.
+    - Worker tái sử dụng `report_cache`, giảm lượt gọi Gemini cho báo cáo trùng và cho phép Weekly Batch tái phát lại báo cáo cũ nếu chưa cần cập nhật.
+    - Free user vẫn có thể mở bản báo cáo gần nhất ở chế độ chỉ đọc (không phát sinh lượt AI mới).
 
 ### 👤 Quản lý người dùng
 - **Phân cấp tài khoản**:

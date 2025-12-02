@@ -830,7 +830,7 @@ REPORT_HTML_TEMPLATE = r"""
 
         .market-card { background-color: var(--card-bg); border-radius: 16px; padding: 16px; margin-bottom: 24px; border-left: 4px solid var(--accent-color); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
         .market-title { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--hint-color); margin-bottom: 8px; letter-spacing: 0.5px; }
-        .market-text { font-size: 14px; line-height: 1.6; font-weight: 400; }
+        .market-text { font-size: 14px; line-height: 1.6; font-weight: 400; white-space: pre-line; }
 
         /* Stock List */
         .stock-card { background-color: var(--card-bg); border-radius: 16px; padding: 16px; margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
@@ -838,7 +838,18 @@ REPORT_HTML_TEMPLATE = r"""
         .st-symbol { font-size: 18px; font-weight: 800; color: var(--text-color); }
         .st-industry { font-size: 12px; color: var(--hint-color); font-weight: 500; margin-left: 6px; }
         
-        .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
+        .st-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 6px 14px;
+            margin: 12px 0;
+            border-radius: 10px;
+            text-transform: uppercase;
+            width: fit-content;
+        }
         .act-buy { background-color: var(--success-bg); color: var(--success-text); }
         .act-hold { background-color: var(--warning-bg); color: var(--warning-text); }
         .act-sell { background-color: var(--danger-bg); color: var(--danger-text); }
@@ -853,7 +864,7 @@ REPORT_HTML_TEMPLATE = r"""
         }
 
         .st-analysis { font-size: 14px; line-height: 1.6; margin-bottom: 12px; color: var(--text-color); white-space: pre-line; }
-        .st-metrics { background-color: var(--bg-color); border-radius: 10px; padding: 10px; font-size: 12px; color: var(--hint-color); display: flex; align-items: center; gap: 6px; }
+        .st-metrics { background-color: var(--bg-color); border-radius: 10px; padding: 10px; font-size: 12px; color: var(--hint-color); display: flex; align-items: center; gap: 6px; white-space: pre-line; }
         .st-metrics-icon { font-size: 14px; }
 
         .footer { text-align: center; margin-top: 30px; font-size: 12px; color: var(--hint-color); padding-bottom: 40px; }
@@ -877,6 +888,13 @@ REPORT_HTML_TEMPLATE = r"""
         <div class="market-text">{{ data.general_market_comment }}</div>
     </div>
 
+    {% if data.general_portfolio_comment %}
+    <div class="market-card">
+        <div class="market-title">TỔNG QUAN DANH MỤC</div>
+        <div class="market-text">{{ data.general_portfolio_comment }}</div>
+    </div>
+    {% endif %}
+
     <div style="margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--hint-color); text-transform: uppercase; letter-spacing: 0.5px;">Chi tiết cổ phiếu</div>
     
     {% for stock in data.stocks %}
@@ -886,13 +904,6 @@ REPORT_HTML_TEMPLATE = r"""
                 <span class="st-symbol">{{ stock.symbol }}</span>
                 <span class="st-industry">{{ stock.industry }}</span>
             </div>
-            {% set act = stock.action | lower %}
-            {% set badge_class = 'act-neutral' %}
-            {% if 'mua' in act or 'tăng' in act %} {% set badge_class = 'act-buy' %}
-            {% elif 'giữ' in act or 'nắm' in act %} {% set badge_class = 'act-hold' %}
-            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %} {% set badge_class = 'act-sell' %}
-            {% endif %}
-            <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
         </div>
         
         {% if stock.chart_html %}
@@ -902,6 +913,16 @@ REPORT_HTML_TEMPLATE = r"""
         {% endif %}
         
         <div class="st-analysis">{{ stock.analysis }}</div>
+
+        <div>
+            {% set act = stock.action | lower %}
+            {% set badge_class = 'act-neutral' %}
+            {% if 'mua' in act or 'tăng' in act %} {% set badge_class = 'act-buy' %}
+            {% elif 'giữ' in act or 'nắm' in act %} {% set badge_class = 'act-hold' %}
+            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %} {% set badge_class = 'act-sell' %}
+            {% endif %}
+            <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
+        </div>
         
         {% if stock.key_metrics %}
         <div class="st-metrics">
@@ -927,9 +948,24 @@ REPORT_HTML_TEMPLATE = r"""
 
         window.addEventListener('load', function() {
             document.body.classList.add('loaded');
+            applyInlineMarkdown();
             applyChartTheme();
             Telegram.WebApp.ready();
         });
+
+        function applyInlineMarkdown() {
+            const selectors = ['.market-text', '.st-analysis', '.st-metrics'];
+            selectors.forEach(selector => {
+                document.querySelectorAll(selector).forEach(el => {
+                    if (!el || !el.innerHTML) {
+                        return;
+                    }
+                    el.innerHTML = el.innerHTML
+                        .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+                        .replace(/\*(.*?)\*/g, '<b>$1</b>');
+                });
+            });
+        }
 
         function applyChartTheme() {
             // Logic đổi màu biểu đồ theo Theme Telegram
@@ -2004,11 +2040,18 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 </div>
                 
                 <div class="px-4 mt-1">
-                    <div class="relative">
-                        <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
-                        <input type="text" x-model="searchQuery" placeholder="Tìm tên, ID, SĐT..." 
-                               class="w-full pl-10 pr-4 py-2.5 bg-slate-100 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm">
+                    <div class="flex items-center gap-2">
+                        <div class="relative flex-1">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                            <input type="text" x-model="searchQuery" placeholder="Tìm tên, ID, SĐT..." 
+                                   class="w-full pl-10 pr-4 py-2.5 bg-slate-100 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm">
+                        </div>
+                        <button @click="refreshUsers(true)" class="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-500 active:scale-95 transition"
+                                :class="usersLoading ? 'opacity-70 pointer-events-none' : ''" title="Tải lại danh sách">
+                            <i class="fa-solid fa-rotate-right" :class="usersLoading ? 'animate-spin text-blue-600' : ''"></i>
+                        </button>
                     </div>
+                    <p x-show="usersError" class="text-xs text-red-500 font-semibold mt-2" x-text="'⚠️ ' + usersError" x-cloak></p>
                 </div>
 
                 <div class="mt-3 pl-4 flex gap-2 overflow-x-auto no-scrollbar pb-1">
@@ -2024,6 +2067,9 @@ ADMIN_MOBILE_TEMPLATE = r"""
             </div>
 
             <div class="p-4 space-y-3">
+                <div x-show="usersLoading" class="py-3 text-center text-xs text-slate-400" x-cloak>
+                    <i class="fa-solid fa-circle-notch animate-spin mr-1"></i> Đang tải danh sách user...
+                </div>
                 <!-- Stats Cards -->
                 <div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 snap-x">
                     <div class="snap-center shrink-0 w-36 p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl text-white shadow-lg shadow-blue-200">
@@ -2088,7 +2134,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     </div>
                 </template>
                 
-                <div x-show="filteredUsers.length === 0" class="py-10 text-center" x-cloak>
+                <div x-show="!usersLoading && filteredUsers.length === 0" class="py-10 text-center" x-cloak>
                     <div class="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
                         <i class="fa-solid fa-filter text-slate-300 text-xl"></i>
                     </div>
@@ -2141,8 +2187,18 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         <span class="text-sm font-bold text-slate-700">Cache Redis</span>
                         <span class="text-xs font-mono bg-slate-100 px-2 py-1 rounded" x-text="(systemStats && systemStats.redis_keys !== undefined) ? systemStats.redis_keys + ' keys' : '...'"></span>
                     </div>
+                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">Chọn loại cache</label>
+                    <div class="relative mb-3">
+                        <select x-model="cacheClearType" class="w-full appearance-none bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:ring-2 focus:ring-orange-200">
+                            <template x-for="opt in cacheOptions" :key="opt.value">
+                                <option :value="opt.value" x-text="opt.label"></option>
+                            </template>
+                        </select>
+                        <span class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"><i class="fa-solid fa-chevron-down"></i></span>
+                    </div>
                     <button @click="clearCache()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100">
-                        <i class="fa-solid fa-broom mr-1.5"></i> Xóa Cache
+                        <i class="fa-solid fa-broom mr-1.5"></i>
+                        <span x-text="'Xóa Cache ' + cacheLabel(cacheClearType)"></span>
                     </button>
                 </div>
             </div>
@@ -2451,6 +2507,8 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 isNoteDirty: false,
                 toast: { visible: false, message: '' },
                 users: {{ initial_data | safe }},
+                usersLoading: false,
+                usersError: null,
                 adminId: '{{ admin_id }}',
                 
                 // New State
@@ -2459,6 +2517,13 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 broadcastMsg: '',
                 deleteFromDate: '',
                 deleteToDate: '',
+                cacheClearType: 'screener',
+                cacheOptions: [
+                    { value: 'screener', label: 'Screener' },
+                    { value: 'report', label: 'Report' },
+                    { value: 'info', label: 'Info' },
+                    { value: 'all', label: 'All (Flush Redis)' },
+                ],
 
                 userTabs: [
                     { id: 'all', label: 'Tất cả' },
@@ -2518,9 +2583,41 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         yesterday.setDate(yesterday.getDate() - 1);
                         this.deleteFromDate = yesterday.toISOString().slice(0, 16);
                     } catch (e) { console.error("Date init error", e); }
+
+                    if (this.adminId) {
+                        this.refreshUsers();
+                    }
                 },
 
                 // --- SYSTEM ACTIONS ---
+                async refreshUsers(showToast = false) {
+                    const aid = String(this.adminId || '').trim();
+                    if (!aid) {
+                        this.usersError = "Thiếu Admin ID";
+                        return;
+                    }
+
+                    this.usersLoading = true;
+                    this.usersError = null;
+                    const url = `/api/admin/users?admin_id=${encodeURIComponent(aid)}&_t=${Date.now()}`;
+
+                    try {
+                        const res = await fetch(url, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                        });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        const payload = await res.json();
+                        if (!Array.isArray(payload)) throw new Error('Payload không hợp lệ');
+                        this.users = payload;
+                        if (showToast) this.showToast('🔄 Đã tải lại danh sách');
+                    } catch (err) {
+                        console.error('Fetch users error', err);
+                        this.usersError = err.message || String(err);
+                    } finally {
+                        this.usersLoading = false;
+                    }
+                },
+
                 async fetchSystemStatus() {
                     this.systemStats = null;
                     this.systemError = null;
@@ -2632,9 +2729,18 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); }
                     finally { this.isLoading = false; }
                 },
+                cacheLabel(type) {
+                    const opt = this.cacheOptions.find(o => o.value === type);
+                    return opt ? opt.label : type;
+                },
                 async clearCache() {
-                    if (!confirm('Xác nhận xóa Cache Screener?')) return;
-                    this.callApi('/api/admin/cache/clear', { type: 'screener' }, '✅ Đã xóa cache Screener!');
+                    const label = this.cacheLabel(this.cacheClearType);
+                    if (!confirm(`Xác nhận xóa cache ${label}?`)) return;
+                    this.callApi(
+                        '/api/admin/cache/clear',
+                        { type: this.cacheClearType },
+                        `✅ Đã xóa cache ${label}!`
+                    );
                 },
                 async forceWorker() {
                     if (!confirm('Bắt buộc chạy Worker (Weekly Report)?')) return;
@@ -2699,6 +2805,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         if (result.ok) {
                             this.selectedUser.is_banned = shouldBan;
                             this.showToast(`✅ Đã ${text} thành công!`);
+                            await this.refreshUsers();
                         } else alert('❌ Lỗi: ' + result.message);
                     } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
                     finally { this.isLoading = false; }
@@ -2770,6 +2877,9 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         let result; try { result = JSON.parse(text); } catch { throw new Error("Server lỗi HTML."); }
 
                         if (result.ok) {
+                            if (targetId) {
+                                await this.refreshUsers();
+                            }
                             this.showToast(successMsg);
                             this.sheetOpen = false;
                         } else alert('❌ Lỗi: ' + result.message);

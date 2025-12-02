@@ -6,13 +6,15 @@ import pytz
 import logging
 import os
 import random
-from vnstock import Trading, Quote, Screener, Finance, Company
+import shutil
+from vnstock import Trading, Quote, Screener, Finance, Company, Vnstock
 import redis
 from dotenv import load_dotenv
 from google import genai
 import uuid
 import time
 import pandas as pd
+import pandas_ta as ta  # Kích hoạt pandas_ta accessor
 pd.set_option('future.no_silent_downcasting', True)
 from typing import Any, Optional
 import feedparser
@@ -76,6 +78,9 @@ INSTANCE_ID = "WORKER_01" # Định danh cho Worker
 ADMIN_ID_STR = os.getenv("ADMIN_ID")
 ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
 BASE_URL = os.getenv("RENDER_EXTERNAL_URL", "https://google.com") # URL của Gateway
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GSO_DATA_DIR = os.path.join(BASE_DIR, "GSO_Data")
+os.makedirs(GSO_DATA_DIR, exist_ok=True)
 
 # Cấu hình Redis Output
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -84,8 +89,54 @@ REDIS_CHANNEL_INBOUND = 'worker_inbound'
 AGENT_TYPES = ("macro", "biz", "tech")
 AGENT_RESULT_TTL = 24 * 60 * 60  # 24h
 AGENT_BUNDLE_TTL = 7 * 24 * 60 * 60  # 7 ngày
+BIZ_CACHE_KEY_PREFIX = "biz_cache"
+BIZ_CACHE_TTL_SECONDS = 90 * 24 * 60 * 60  # 90 ngày
+BIZ_AGENT_MAX_DATASET_PERIODS = 20
+BIZ_AGENT_BATCH_SIZE = 10
+BIZ_AGENT_BATCH_PAUSE_SECONDS = 8  # Nghỉ giữa các batch để tránh rate limit
+TECH_AGENT_HISTORY_DAYS = 365
+TECH_AGENT_EXPORT_LOOKBACK_DAYS = 200
+TECH_AGENT_BATCH_SIZE = 5
+TECH_AGENT_BATCH_PAUSE_SECONDS = 5
+TECH_AGENT_MAX_SYMBOLS = 30
+TECH_INDICATOR_COLUMN_MAP = {
+    "time": "Date",
+    "close": "Close",
+    "EMA_20": "EMA20",
+    "EMA_50": "EMA50",
+    "EMA_200": "EMA200",
+    "RSI_14": "RSI",
+    "MACD_12_26_9": "MACD_Line",
+    "MACDs_12_26_9": "MACD_Signal",
+    "MACDh_12_26_9": "MACD_Hist",
+    "BBU_20_2.0": "BB_Upper",
+    "BBM_20_2.0": "BB_Middle",
+    "BBL_20_2.0": "BB_Lower",
+}
 MACRO_NEWS_LOOKBACK_HOURS = 48
 MACRO_GSO_MONTH_LIMIT = 3
+MACRO_GSO_LOOKBACK_MONTHS = 12
+MACRO_SECTOR_NAMES = [
+    "Bán lẻ",
+    "Bảo hiểm",
+    "Bất động sản",
+    "Công nghệ Thông tin",
+    "Du lịch và Giải trí",
+    "Dầu khí",
+    "Dịch vụ tài chính",
+    "Hàng & Dịch vụ Công nghiệp",
+    "Hàng cá nhân & Gia dụng",
+    "Hóa chất",
+    "Ngân hàng",
+    "Thực phẩm và đồ uống",
+    "Truyền thông",
+    "Tài nguyên Cơ bản",
+    "Viễn thông",
+    "Xây dựng và Vật liệu",
+    "Y tế",
+    "Ô tô và phụ tùng",
+    "Điện, nước & xăng dầu khí đốt",
+]
 GSO_BASE_URL = "https://www.nso.gov.vn"
 HTTP_HEADERS = {
     "User-Agent": (
@@ -258,6 +309,18 @@ for idx in sorted(_gemini_keys_map.keys()):
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k] # Lọc key rỗng
 _gemini_key_index = 0 # Biến đếm toàn cục để xoay vòng
 
+
+def _get_rotated_gemini_keys() -> list[str]:
+    """Trả về danh sách key theo cơ chế xoay vòng."""
+    global _gemini_key_index
+    if not GEMINI_KEYS:
+        return []
+    start_idx = _gemini_key_index % len(GEMINI_KEYS)
+    rotated = GEMINI_KEYS[start_idx:] + GEMINI_KEYS[:start_idx]
+    _gemini_key_index += 1
+    return rotated
+
+
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
     """Hàm gọi Gemini an toàn (Failover) với cơ chế Round Robin (Xoay vòng từng request)"""
     global _gemini_key_index
@@ -265,17 +328,7 @@ def call_gemini_safe(model_id, contents, config=None, return_usage=False):
     
     # [UPDATED] Cơ chế Round Robin: Chia bài đều lần lượt cho từng Key
     # Đảm bảo Key A vừa dùng xong sẽ không bị gọi lại ngay ở request tiếp theo (trừ khi chỉ có 1 key).
-    if GEMINI_KEYS:
-        # Lấy vị trí bắt đầu dựa trên biến đếm
-        start_idx = _gemini_key_index % len(GEMINI_KEYS)
-        
-        # Tạo danh sách ưu tiên bắt đầu từ key đó: [Key_2, Key_3, ..., Key_1]
-        rotated_keys = GEMINI_KEYS[start_idx:] + GEMINI_KEYS[:start_idx]
-        
-        # Tăng biến đếm cho lần gọi sau
-        _gemini_key_index += 1
-    else:
-        rotated_keys = []
+    rotated_keys = _get_rotated_gemini_keys()
 
     for api_key in rotated_keys:
         try:
@@ -332,6 +385,16 @@ def push_telegram_msg(chat_id, text, reply_markup=None, msg_type='GENERAL', **kw
         # log.info(f"📤 Pushed to Redis for {chat_id}")
     except Exception as e:
         log.error(f"❌ Lỗi push Redis: {e}")
+
+
+def push_task_unlock_signal(chat_id: int):
+    """Gửi tín hiệu yêu cầu Gateway mở khóa tác vụ cho chat_id."""
+    if not chat_id:
+        return
+    try:
+        push_telegram_msg(chat_id=chat_id, text="", msg_type="TASK_UNLOCK")
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] ❌ Lỗi gửi tín hiệu unlock {chat_id}: {exc}")
 
 
 def default_ai_reply_markup():
@@ -401,6 +464,246 @@ def write_agent_payload_to_file(agent_type: str, request_id: str, payload: dict)
     return path
 
 
+def write_temp_json_file(filename: str, payload: dict | list | None) -> str | None:
+    tmp_dir = tempfile.gettempdir()
+    path = os.path.join(tmp_dir, filename)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return path
+    except Exception as exc:
+        log.error(f"Write temp JSON error ({filename}): {exc}")
+        return None
+
+
+def _biz_cache_key(symbol: str) -> str:
+    symbol = (symbol or "").strip().upper()
+    return f"{BIZ_CACHE_KEY_PREFIX}:{symbol}" if symbol else f"{BIZ_CACHE_KEY_PREFIX}:UNKNOWN"
+
+
+def get_biz_cache(symbol: str) -> dict | None:
+    client = ensure_redis_client()
+    if not client:
+        return None
+    try:
+        raw = client.get(_biz_cache_key(symbol))
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] Biz cache read error {symbol}: {exc}")
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception as exc:
+        log.warning(f"[{INSTANCE_ID}] Biz cache parse error {symbol}: {exc}")
+        return None
+
+
+def save_biz_cache(symbol: str, datasets: dict) -> dict | None:
+    client = ensure_redis_client()
+    payload = {
+        "symbol": (symbol or "").strip().upper(),
+        "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "source": "Finance-VCI",
+        "dataset_limit": BIZ_AGENT_MAX_DATASET_PERIODS,
+        "datasets": datasets or {},
+    }
+    if not client:
+        return payload
+    try:
+        client.setex(
+            _biz_cache_key(symbol),
+            BIZ_CACHE_TTL_SECONDS,
+            json.dumps(payload, ensure_ascii=False),
+        )
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] Biz cache write error {symbol}: {exc}")
+    return payload
+
+
+def _flatten_finance_df(df: pd.DataFrame | None, limit: int = BIZ_AGENT_MAX_DATASET_PERIODS) -> list[dict]:
+    if df is None or df.empty:
+        return []
+    df = df.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        flat_cols = []
+        for col in df.columns.values:
+            if isinstance(col, tuple):
+                flat_cols.append("_".join(str(part).strip() for part in col if part))
+            else:
+                flat_cols.append(str(col).strip())
+        df.columns = flat_cols
+    df.columns = [str(col).strip() for col in df.columns]
+
+    # Giữ nguyên thứ tự gốc (API trả mới nhất trước), chỉ cắt 20 kỳ đầu tiên
+    limited_df = df.head(limit)
+    try:
+        records = json.loads(limited_df.to_json(orient="records", date_format="iso"))
+    except Exception:
+        records = limited_df.replace({pd.NA: None}).to_dict(orient="records")
+    return records
+
+
+def _collect_finance_datasets(symbol: str) -> dict:
+    stock = Finance(symbol=symbol, source="VCI")
+    datasets = {}
+    fetch_plan = [
+        ("ratio_year", lambda: stock.ratio(period="year", lang="vi")),
+        ("balance_sheet_quarter", lambda: stock.balance_sheet(period="quarter", lang="vi")),
+        ("income_statement_quarter", lambda: stock.income_statement(period="quarter", lang="vi")),
+        ("cash_flow_quarter", lambda: stock.cash_flow(period="quarter", lang="vi")),
+    ]
+
+    for name, getter in fetch_plan:
+        try:
+            df = getter()
+        except Exception as exc:
+            log.warning(f"[{INSTANCE_ID}] Finance fetch error {symbol}-{name}: {exc}")
+            continue
+        records = _flatten_finance_df(df)
+        if records:
+            datasets[name] = records
+        time.sleep(1)
+
+    return datasets
+
+
+def _build_finance_preview(datasets: dict) -> dict:
+    preview: dict[str, Any] = {}
+    ratio_rows = (datasets or {}).get("ratio_year") or []
+    if ratio_rows:
+        latest = ratio_rows[0]
+        preview["pe"] = latest.get("pe") or latest.get("pe_ttm")
+        preview["pb"] = latest.get("pb") or latest.get("pb_ttm")
+        preview["roe"] = latest.get("roe")
+    income_rows = (datasets or {}).get("income_statement_quarter") or []
+    if income_rows:
+        latest_income = income_rows[0]
+        preview["revenue"] = latest_income.get("revenue") or latest_income.get("net_revenue")
+        preview["profit_after_tax"] = latest_income.get("profit_after_tax") or latest_income.get("pat")
+    cash_rows = (datasets or {}).get("cash_flow_quarter") or []
+    if cash_rows:
+        cf = cash_rows[0]
+        preview["operating_cf"] = cf.get("cash_from_operating_activities")
+    return {k: v for k, v in preview.items() if v is not None}
+
+
+def _tech_agent_date_bounds(
+    now: datetime.datetime | None = None,
+) -> tuple[str, str, datetime.datetime]:
+    now = now or datetime.datetime.now()
+    start_calc = now - datetime.timedelta(days=TECH_AGENT_HISTORY_DAYS)
+    export_cutoff = now - datetime.timedelta(days=TECH_AGENT_EXPORT_LOOKBACK_DAYS)
+    return (
+        start_calc.strftime("%Y-%m-%d"),
+        now.strftime("%Y-%m-%d"),
+        export_cutoff,
+    )
+
+
+def _tech_agent_fetch_history(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame | None:
+    stock = Vnstock().stock(symbol=symbol, source="VCI")
+    try:
+        df = stock.quote.history(start=start_date, end=end_date, interval="1D")
+    except Exception as exc:
+        log.warning(f"[{INSTANCE_ID}] [TECH] Lỗi lấy dữ liệu {symbol}: {exc}")
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    if "time" not in df.columns and "tradingDate" in df.columns:
+        df = df.rename(columns={"tradingDate": "time"})
+
+    if "time" not in df.columns:
+        log.warning(f"[{INSTANCE_ID}] [TECH] Không có cột thời gian cho {symbol}")
+        return None
+
+    df["time"] = pd.to_datetime(df["time"])
+    df.sort_values("time", inplace=True)
+    df.set_index("time", inplace=True)
+    return df
+
+
+def _tech_agent_compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    working = df.copy()
+    working["EMA_20"] = working.ta.ema(length=20)
+    working["EMA_50"] = working.ta.ema(length=50)
+    ema_200 = working.ta.ema(length=200)
+    working["EMA_200"] = ema_200.iloc[:, 0] if isinstance(ema_200, pd.DataFrame) else ema_200
+    working["RSI_14"] = working.ta.rsi(length=14)
+    working.ta.macd(fast=12, slow=26, signal=9, append=True)
+    working.ta.bbands(length=20, std=2, append=True)
+    return working
+
+
+def _tech_agent_build_records(
+    df: pd.DataFrame,
+    export_cutoff: datetime.datetime,
+) -> list[dict]:
+    df_export = df[df.index >= export_cutoff].copy()
+    if df_export.empty:
+        return []
+
+    df_export.reset_index(inplace=True)
+    df_export["time"] = df_export["time"].dt.strftime("%Y-%m-%d")
+    available_cols = [col for col in TECH_INDICATOR_COLUMN_MAP if col in df_export.columns]
+    if not available_cols:
+        return []
+
+    df_final = df_export[available_cols].rename(columns=TECH_INDICATOR_COLUMN_MAP)
+    if "EMA200" in df_final.columns:
+        df_final = df_final[df_final["EMA200"].notna()]
+    try:
+        records = df_final.to_dict(orient="records")
+    except Exception:
+        records = df_final.replace({pd.NA: None}).to_dict(orient="records")
+    return records
+
+
+def _collect_tech_indicator_dataset(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    export_cutoff: datetime.datetime,
+) -> dict:
+    payload = {
+        "symbol": symbol,
+        "records": [],
+        "error": None,
+        "stats": {},
+    }
+
+    df = _tech_agent_fetch_history(symbol, start_date, end_date)
+    if df is None:
+        payload["error"] = "Không lấy được dữ liệu lịch sử."
+        return payload
+
+    if len(df) < TECH_AGENT_HISTORY_DAYS:
+        log.warning(
+            f"[{INSTANCE_ID}] [TECH] {symbol} chỉ có {len(df)} phiên, vẫn tiếp tục tính chỉ báo."
+        )
+
+    enriched = _tech_agent_compute_indicators(df)
+    records = _tech_agent_build_records(enriched, export_cutoff)
+    if not records:
+        payload["error"] = "Không tạo được bản ghi chỉ báo."
+        return payload
+
+    payload["records"] = records
+    payload["stats"] = {
+        "total_rows": len(df),
+        "export_rows": len(records),
+        "start_date": records[0]["Date"] if records else None,
+        "end_date": records[-1]["Date"] if records else None,
+    }
+    return payload
+
+
 def get_index_snapshot(symbol: str, now: datetime.datetime | None = None) -> dict | None:
     now = now or datetime.datetime.now()
     try:
@@ -449,15 +752,6 @@ def get_index_snapshot(symbol: str, now: datetime.datetime | None = None) -> dic
     except Exception as exc:
         log.warning(f"Index snapshot error for {symbol}: {exc}")
         return None
-
-
-async def collect_index_pair() -> dict:
-    now = datetime.datetime.now()
-    vni_data, v30_data = await asyncio.gather(
-        asyncio.to_thread(get_index_snapshot, 'VNINDEX', now),
-        asyncio.to_thread(get_index_snapshot, 'VN30', now)
-    )
-    return {"vnindex": vni_data, "vn30": v30_data}
 
 
 def get_macro_target_periods(now: datetime.datetime | None = None, max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[tuple[int, int]]:
@@ -595,25 +889,474 @@ def collect_gso_reports_sync(max_months: int = MACRO_GSO_MONTH_LIMIT) -> list[di
     return reports
 
 
+def _download_gso_attachment(url: str, folder: str | None = None) -> str | None:
+    folder = folder or os.path.join(tempfile.gettempdir(), "gso_assets")
+    os.makedirs(folder, exist_ok=True)
+
+    parsed = urlparse(url)
+    filename = os.path.basename(parsed.path) or f"gso_{uuid.uuid4().hex}"
+    if "?" in filename:
+        filename = filename.split("?")[0]
+    local_path = os.path.join(folder, filename)
+    if os.path.exists(local_path):
+        base, ext = os.path.splitext(filename)
+        local_path = os.path.join(folder, f"{base}_{uuid.uuid4().hex[:8]}{ext}")
+
+    try:
+        with requests.get(url, headers=HTTP_HEADERS, timeout=40, verify=False, stream=True) as resp:
+            resp.raise_for_status()
+            with open(local_path, "wb") as out:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        out.write(chunk)
+        return local_path
+    except Exception as exc:
+        log.warning(f"[GSO] Lỗi tải file {url}: {exc}")
+        return None
+
+
+def _convert_excel_to_multi_sheet_csv(xlsx_path: str) -> str | None:
+    if not xlsx_path or not os.path.exists(xlsx_path):
+        return None
+
+    base = os.path.splitext(os.path.basename(xlsx_path))[0]
+    csv_path = os.path.join(os.path.dirname(xlsx_path), f"{base}_ALL_SHEETS.csv")
+
+    try:
+        sheets = pd.read_excel(xlsx_path, sheet_name=None)
+    except Exception as exc:
+        log.error(f"[GSO] Không đọc được Excel {xlsx_path}: {exc}")
+        return None
+
+    try:
+        with open(csv_path, "w", encoding="utf-8") as csv_file:
+            for sheet_name, df in sheets.items():
+                header = f"\n\n{'=' * 20} SHEET: {sheet_name} {'=' * 20}\n"
+                csv_file.write(header)
+                df.to_csv(csv_file, index=False)
+        return csv_path
+    except Exception as exc:
+        log.error(f"[GSO] Không thể chuyển đổi CSV {xlsx_path}: {exc}")
+        return None
+
+
+def _prepare_gso_csv_asset(report: dict) -> dict | None:
+    attachments = (report or {}).get("attachments") or []
+    for attachment in attachments:
+        url = attachment.get("url")
+        name = (attachment.get("name") or "").lower()
+        if not url:
+            continue
+        url_lower = url.lower()
+        if not (name.endswith((".xlsx", ".xls")) or url_lower.endswith((".xlsx", ".xls"))):
+            continue
+
+        xlsx_path = _download_gso_attachment(url)
+        if not xlsx_path:
+            continue
+        csv_path = _convert_excel_to_multi_sheet_csv(xlsx_path)
+        if not csv_path:
+            continue
+
+        return {
+            "attachment_url": url,
+            "attachment_name": attachment.get("name"),
+            "xlsx_path": xlsx_path,
+            "csv_path": csv_path,
+        }
+
+    return None
+
+
+def _derive_gso_period_tokens(report: dict | None, fallback_label: str | None = None) -> tuple[str | None, str | None]:
+    """Return (slug, display) for naming & messaging."""
+    month = report.get("month") if report else None
+    year = report.get("year") if report else None
+    display = fallback_label
+    slug = None
+
+    if isinstance(month, int) and isinstance(year, int):
+        slug = f"{int(year):04d}{int(month):02d}"
+        display = display or f"{int(month):02d}/{int(year)}"
+    elif fallback_label:
+        cleaned = fallback_label.replace("/", "")
+        if cleaned.isdigit() and len(cleaned) == 6:
+            slug = cleaned
+        display = fallback_label
+
+    return slug, display
+
+
+def _persist_gso_csv_asset(report: dict, preferred_label: str | None = None) -> dict | None:
+    csv_path = (report or {}).get("csv_path")
+    if not csv_path or not os.path.exists(csv_path):
+        return None
+
+    slug, display = _derive_gso_period_tokens(report, preferred_label)
+    if not slug:
+        slug = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"MACRO_{slug}.csv"
+    dest_path = os.path.join(GSO_DATA_DIR, filename)
+
+    shutil.copy2(csv_path, dest_path)
+
+    # Không lưu file tạm sau khi đã chuyển sang CSV
+    try:
+        os.remove(csv_path)
+    except OSError:
+        pass
+
+    xlsx_path = (report or {}).get("xlsx_path")
+    if xlsx_path and os.path.exists(xlsx_path):
+        try:
+            os.remove(xlsx_path)
+        except OSError:
+            pass
+
+    metadata = {
+        "csv_path": dest_path,
+        "filename": filename,
+        "period_label": display or slug,
+        "attachment_url": (report or {}).get("attachment_url"),
+        "saved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "file_size_bytes": os.path.getsize(dest_path),
+    }
+    return metadata
+
+
+def collect_latest_gso_report(
+    max_months: int = MACRO_GSO_LOOKBACK_MONTHS,
+) -> tuple[dict | None, str | None, list[str]]:
+    """Get the latest available GSO report by walking backward month by month."""
+    now = datetime.datetime.now()
+    month = now.month
+    year = now.year
+    tried_labels: list[str] = []
+
+    for _ in range(max_months):
+        label = f"{int(month):02d}/{int(year)}"
+        tried_labels.append(label)
+        report = crawl_gso_month(month, year)
+        if report:
+            asset = _prepare_gso_csv_asset(report)
+            if asset:
+                report.update(asset)
+                return report, label, tried_labels
+            else:
+                log.info(f"[GSO] Không tìm thấy file Excel cho kỳ {label}.")
+
+        month -= 1
+        if month < 1:
+            month = 12
+            year -= 1
+
+    return None, None, tried_labels
+
+
 async def run_macro_agent(chat_id: int, request_id: str, ts_iso: str) -> dict:
-    gso_reports, index_pair = await asyncio.gather(
-        asyncio.to_thread(collect_gso_reports_sync),
-        collect_index_pair(),
+    latest_report, latest_label, tried_labels = await asyncio.to_thread(
+        collect_latest_gso_report
     )
 
-    redis_payload = {
-        "generated_at": ts_iso,
-        "gso_reports": gso_reports,
-        "indexes": index_pair,
+    csv_path = (latest_report or {}).get("csv_path")
+    if not latest_report or not csv_path or not os.path.exists(csv_path):
+        target_label = latest_label or (tried_labels[0] if tried_labels else "N/A")
+        attempts = ", ".join(tried_labels) if tried_labels else "không xác định"
+        note = (
+            "Chưa tìm thấy báo cáo GSO có file Excel phù hợp. "
+            f"Các kỳ đã thử: {attempts}."
+        )
+        payload = _build_agent_stub("macro", request_id, ts_iso)
+        empty_stats = {
+            "gso_period": target_label,
+            "attempts": tried_labels,
+            "csv_path": None,
+            "gso_data_dir": GSO_DATA_DIR,
+            "errors": [note],
+        }
+        payload.update({
+            "notes": note,
+            "raw_data": empty_stats,
+            "redis_json": {
+                "generated_at": ts_iso,
+                "status": "CSV_MISSING",
+                "gso_data_dir": GSO_DATA_DIR,
+                "attempts": tried_labels,
+                "message": note,
+            },
+        })
+        return payload
+
+    if tried_labels and latest_label and latest_label != tried_labels[0]:
+        log.info(
+            f"[{INSTANCE_ID}] Macro agent fallback dùng báo cáo {latest_label} sau khi thử {tried_labels}"
+        )
+
+    persisted_meta = await asyncio.to_thread(
+        _persist_gso_csv_asset,
+        latest_report,
+        latest_label,
+    )
+
+    if not persisted_meta:
+        note = "Không thể lưu file CSV GSO vào thư mục dự án."
+        payload = _build_agent_stub("macro", request_id, ts_iso)
+        error_stats = {
+            "gso_period": latest_label,
+            "attempts": tried_labels,
+            "csv_path": None,
+            "gso_data_dir": GSO_DATA_DIR,
+            "errors": [note],
+        }
+        payload.update({
+            "notes": note,
+            "raw_data": error_stats,
+            "redis_json": {
+                "generated_at": ts_iso,
+                "status": "CSV_PERSIST_FAILED",
+                "attempts": tried_labels,
+                "message": note,
+            },
+        })
+        return payload
+
+    note = (
+        f"Đã tải báo cáo GSO kỳ {persisted_meta['period_label']} và lưu CSV tại "
+        f"{persisted_meta['csv_path']}."
+    )
+
+    stats = {
+        "gso_period": persisted_meta["period_label"],
+        "csv_path": persisted_meta["csv_path"],
+        "filename": persisted_meta["filename"],
+        "attachment_url": persisted_meta.get("attachment_url"),
+        "saved_at": persisted_meta["saved_at"],
+        "file_size_bytes": persisted_meta["file_size_bytes"],
+        "attempts": tried_labels,
     }
 
     payload = _build_agent_stub("macro", request_id, ts_iso)
     payload.update({
-        "notes": f"GSO raw data snapshot lúc {ts_iso} (kèm VNINDEX & VN30 raw)",
+        "notes": note,
+        "raw_data": stats,
+        "redis_json": {
+            "generated_at": ts_iso,
+            "status": "CSV_SAVED",
+            "period": stats["gso_period"],
+            "csv_path": stats["csv_path"],
+            "attempts": tried_labels,
+        },
+    })
+    return payload
+
+
+async def run_tech_agent(chat_id: int, request_id: str, ts_iso: str, symbols: list[str]) -> dict:
+    normalized = []
+    for sym in symbols or []:
+        if not sym:
+            continue
+        cleaned = str(sym).strip().upper()
+        if not cleaned:
+            continue
+        if cleaned not in normalized:
+            normalized.append(cleaned)
+
+    payload = _build_agent_stub("tech", request_id, ts_iso)
+    if not normalized:
+        payload.update({
+            "notes": "Danh mục rỗng hoặc không hợp lệ.",
+            "raw_data": {"processed_symbols": 0},
+            "redis_json": {
+                "generated_at": ts_iso,
+                "symbols": [],
+                "processed_symbols": [],
+                "errors": ["Không tìm thấy mã nào để xử lý."],
+            },
+        })
+        return payload
+
+    if len(normalized) > TECH_AGENT_MAX_SYMBOLS:
+        trimmed = normalized[:TECH_AGENT_MAX_SYMBOLS]
+        skipped = normalized[TECH_AGENT_MAX_SYMBOLS:]
+        log.info(
+            f"[{INSTANCE_ID}] [TECH] Giới hạn {TECH_AGENT_MAX_SYMBOLS} mã, bỏ qua: {skipped}"
+        )
+        normalized = trimmed
+    else:
+        skipped = []
+
+    start_str, end_str, export_cutoff = _tech_agent_date_bounds()
+    entries: dict[str, list[dict]] = {}
+    stats_by_symbol: dict[str, dict] = {}
+    errors: list[str] = []
+
+    total = len(normalized)
+    log.info(f"[{INSTANCE_ID}] [TECH] Chat {chat_id} request {request_id} xử lý {total} mã.")
+
+    for batch_start in range(0, total, TECH_AGENT_BATCH_SIZE):
+        batch = normalized[batch_start: batch_start + TECH_AGENT_BATCH_SIZE]
+        log.info(
+            f"[{INSTANCE_ID}] [TECH] Batch {batch_start // TECH_AGENT_BATCH_SIZE + 1}: {batch}"
+        )
+        for sym in batch:
+            try:
+                dataset = await asyncio.to_thread(
+                    _collect_tech_indicator_dataset,
+                    sym,
+                    start_str,
+                    end_str,
+                    export_cutoff,
+                )
+                if dataset.get("error"):
+                    raise RuntimeError(dataset["error"])
+                entries[sym] = dataset.get("records", [])
+                stats_by_symbol[sym] = dataset.get("stats", {})
+            except Exception as exc:
+                err_msg = f"{sym}: {exc}"
+                errors.append(err_msg[:200])
+                log.error(f"[{INSTANCE_ID}] [TECH] {err_msg}")
+
+        if batch_start + TECH_AGENT_BATCH_SIZE < total:
+            await asyncio.sleep(TECH_AGENT_BATCH_PAUSE_SECONDS)
+
+    date_context = {
+        "history_days": TECH_AGENT_HISTORY_DAYS,
+        "export_lookback_days": TECH_AGENT_EXPORT_LOOKBACK_DAYS,
+        "start_date": start_str,
+        "end_date": end_str,
+    }
+
+    redis_payload = {
+        "generated_at": ts_iso,
+        "symbols": normalized,
+        "processed_symbols": list(entries.keys()),
+        "errors": errors,
+        "entries": entries,
+        "stats": stats_by_symbol,
+        "date_context": date_context,
+        "skipped_symbols": skipped,
+    }
+
+    success_count = len(entries)
+    note = (
+        f"Đã tính chỉ báo cho {success_count}/{len(normalized)} mã. "
+        f"Khoảng dữ liệu xuất: {TECH_AGENT_EXPORT_LOOKBACK_DAYS} ngày gần nhất."
+    )
+    if skipped:
+        note += f" Bỏ qua {len(skipped)} mã do vượt giới hạn."
+    if errors:
+        note += f" Có {len(errors)} lỗi trong quá trình xử lý."
+
+    payload.update({
+        "notes": note,
         "raw_data": {
-            "gso_count": len(gso_reports),
-            "has_vnindex": bool(index_pair.get("vnindex")) if index_pair else False,
-            "has_vn30": bool(index_pair.get("vn30")) if index_pair else False,
+            "entries": entries,
+            "stats": stats_by_symbol,
+            "errors": errors,
+            "date_context": date_context,
+            "skipped_symbols": skipped,
+        },
+        "redis_json": redis_payload,
+    })
+    return payload
+
+
+async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: list[str]) -> dict:
+    normalized = []
+    for sym in symbols or []:
+        if not sym:
+            continue
+        cleaned = str(sym).strip().upper()
+        if not cleaned:
+            continue
+        if cleaned not in normalized:
+            normalized.append(cleaned)
+
+    payload = _build_agent_stub("biz", request_id, ts_iso)
+    if not normalized:
+        payload.update({
+            "notes": "Danh mục rỗng hoặc không hợp lệ.",
+            "raw_data": {"processed_symbols": 0},
+            "redis_json": {
+                "generated_at": ts_iso,
+                "symbols": [],
+                "processed_symbols": [],
+                "fresh_symbols": [],
+                "cached_symbols": [],
+                "errors": ["Không tìm thấy mã nào để xử lý."],
+            },
+        })
+        return payload
+
+    fresh_symbols: list[str] = []
+    cached_symbols: list[str] = []
+    errors: list[str] = []
+    meta_by_symbol: dict[str, dict] = {}
+    datasets_for_debug: dict[str, dict] = {}
+
+    total = len(normalized)
+    log.info(f"[{INSTANCE_ID}] [BIZ] Chat {chat_id} request {request_id} xử lý {total} mã.")
+
+    for batch_start in range(0, total, BIZ_AGENT_BATCH_SIZE):
+        batch = normalized[batch_start: batch_start + BIZ_AGENT_BATCH_SIZE]
+        log.info(f"[{INSTANCE_ID}] [BIZ] Batch {batch_start // BIZ_AGENT_BATCH_SIZE + 1}: {batch}")
+        for sym in batch:
+            try:
+                cache_payload = get_biz_cache(sym)
+                if cache_payload is None:
+                    datasets = await asyncio.to_thread(_collect_finance_datasets, sym)
+                    if not datasets:
+                        raise RuntimeError("Không thu thập được dữ liệu nào")
+                    cache_payload = save_biz_cache(sym, datasets)
+                    status = "fresh"
+                    fresh_symbols.append(sym)
+                else:
+                    status = "cached"
+                    cached_symbols.append(sym)
+
+                datasets = (cache_payload or {}).get("datasets", {})
+                datasets_for_debug[sym] = datasets
+                preview = _build_finance_preview(datasets)
+                meta_by_symbol[sym] = {
+                    "redis_key": _biz_cache_key(sym),
+                    "status": status,
+                    "fetched_at": cache_payload.get("fetched_at") if cache_payload else None,
+                    "dataset_count": len(datasets),
+                    "datasets": list(datasets.keys()),
+                    "preview": preview,
+                }
+            except Exception as exc:
+                err_msg = f"{sym}: {exc}"
+                errors.append(err_msg[:200])
+                log.error(f"[{INSTANCE_ID}] [BIZ] {err_msg}")
+
+        if batch_start + BIZ_AGENT_BATCH_SIZE < total:
+            await asyncio.sleep(BIZ_AGENT_BATCH_PAUSE_SECONDS)
+
+    redis_payload = {
+        "generated_at": ts_iso,
+        "symbols": normalized,
+        "processed_symbols": list(meta_by_symbol.keys()),
+        "fresh_symbols": fresh_symbols,
+        "cached_symbols": cached_symbols,
+        "errors": errors,
+        "entries": meta_by_symbol,
+        "dataset_limit": BIZ_AGENT_MAX_DATASET_PERIODS,
+        "batch_size": BIZ_AGENT_BATCH_SIZE,
+        "rest_seconds": BIZ_AGENT_BATCH_PAUSE_SECONDS,
+    }
+
+    payload.update({
+        "notes": (
+            f"Đã xử lý {len(meta_by_symbol)} mã (fresh {len(fresh_symbols)}, cache {len(cached_symbols)}). "
+            f"Giới hạn mỗi bảng {BIZ_AGENT_MAX_DATASET_PERIODS} kỳ."
+        ),
+        "raw_data": {
+            "fresh_symbols": fresh_symbols,
+            "cached_symbols": cached_symbols,
+            "errors": errors,
+            "entries": meta_by_symbol,
+            "datasets": datasets_for_debug,
         },
         "redis_json": redis_payload,
     })
@@ -671,11 +1414,25 @@ async def handle_agent_run(payload: dict):
     now = datetime.datetime.now(vn_tz)
     ts_iso = now.isoformat()
 
+    user_watch_symbols: list[str] | None = None
+    if any(agent in target_agents for agent in ("biz", "tech")):
+        try:
+            all_watch = await asyncio.to_thread(get_all_watch)
+            watch_block = (all_watch or {}).get(str(chat_id)) or {}
+            user_watch_symbols = watch_block.get("list") or []
+        except Exception as exc:
+            log.error(f"[{INSTANCE_ID}] [WATCHLIST] Lỗi lấy danh mục user {chat_id}: {exc}")
+            user_watch_symbols = []
+
     agent_outputs = {}
     for agent_type in target_agents:
         try:
             if agent_type == "macro":
                 result = await run_macro_agent(chat_id, request_id, ts_iso)
+            elif agent_type == "biz":
+                result = await run_biz_agent(chat_id, request_id, ts_iso, user_watch_symbols or [])
+            elif agent_type == "tech":
+                result = await run_tech_agent(chat_id, request_id, ts_iso, user_watch_symbols or [])
             else:
                 result = _build_agent_stub(agent_type, request_id, ts_iso)
         except Exception as exc:
@@ -684,7 +1441,10 @@ async def handle_agent_run(payload: dict):
             result["notes"] = f"Lỗi thực thi: {exc}"[:200]
 
         agent_outputs[agent_type] = result
-        save_agent_result(agent_type, result)
+        if agent_type != "tech":
+            save_agent_result(agent_type, result)
+        else:
+            log.info(f"[{INSTANCE_ID}] [TECH] Bỏ qua cache Redis cho agent tech.")
 
     bundle = {
         "chat_id": chat_id,
@@ -695,10 +1455,29 @@ async def handle_agent_run(payload: dict):
         "ai_summary": "AI summary chưa bật. Dữ liệu đang được kiểm tra thủ công.",
     }
 
-    save_agent_bundle(chat_id, bundle)
+    if scope == "tech":
+        bundle_to_cache = None
+    else:
+        bundle_to_cache = bundle
+        if "tech" in (bundle_to_cache.get("agents") or {}):
+            cached_agents = {
+                agent: payload
+                for agent, payload in bundle_to_cache["agents"].items()
+                if agent != "tech"
+            }
+            bundle_to_cache = {
+                **bundle_to_cache,
+                "agents": cached_agents,
+            }
 
-    message = format_agent_bundle_message(chat_id, request_id, scope, bundle)
-    push_telegram_msg(chat_id, message, msg_type="ADMIN_AGENT")
+    if bundle_to_cache:
+        save_agent_bundle(chat_id, bundle_to_cache)
+    else:
+        log.info(f"[{INSTANCE_ID}] [TECH] Không cache bundle Redis khi chỉ chạy agent tech.")
+
+    log.info(
+        f"[{INSTANCE_ID}] Agent run hoàn tất cho chat {chat_id} scope '{scope}'."
+    )
 
 def extract_json_from_text(text: str) -> str:
     """
@@ -715,6 +1494,50 @@ def extract_json_from_text(text: str) -> str:
     text = text.replace("```json", "").replace("```", "").strip()
     
     return text
+
+_JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
+
+def escape_control_chars_in_json_strings(text: str) -> str:
+    """Escape newline/tab chars that Gemini đôi khi trả về trần trong chuỗi JSON."""
+    if not text:
+        return text
+
+    def _escape_fragment(match: re.Match) -> str:
+        fragment = match.group(0)
+        if not any(ord(ch) < 0x20 for ch in fragment):
+            return fragment
+
+        chars = [fragment[0]]  # opening quote
+        i = 1
+        end = len(fragment) - 1
+        while i < end:
+            ch = fragment[i]
+            if ch == '\\':
+                # Giữ nguyên escape sequence hiện hữu
+                chars.append(ch)
+                i += 1
+                if i < end:
+                    chars.append(fragment[i])
+                i += 1
+                continue
+
+            code_point = ord(ch)
+            if ch == '\n':
+                chars.append('\\n')
+            elif ch == '\r':
+                chars.append('\\r')
+            elif ch == '\t':
+                chars.append('\\t')
+            elif code_point < 0x20:
+                chars.append(f"\\u{code_point:04x}")
+            else:
+                chars.append(ch)
+            i += 1
+
+        chars.append(fragment[-1])  # closing quote
+        return ''.join(chars)
+
+    return _JSON_STRING_RE.sub(_escape_fragment, text)
 
 def remove_markdown(text):
     """
@@ -787,7 +1610,7 @@ Bot:"""
         # 3. Gọi Gemini
         answer, usage = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-flash-lite",
+            model_id=".5-flash-lite",
             contents=full_prompt,
             return_usage=True,
         )
@@ -864,9 +1687,13 @@ async def worker_inbound_loop():
                             chat_id = payload.get('chat_id')
                             symbols = payload.get('symbols')
                             loading_id = payload.get('loading_msg_id')
-                            asyncio.create_task(
-                                process_report_for_user(chat_id, symbols, loading_msg_id=loading_id)
-                            )
+                            async def _run_report_task():
+                                try:
+                                    await process_report_for_user(chat_id, symbols, loading_msg_id=loading_id)
+                                finally:
+                                    push_task_unlock_signal(chat_id)
+
+                            asyncio.create_task(_run_report_task())
 
                         elif cmd == "RUN_WEEKLY_NOW":
                             admin_id = payload.get('admin_id')
@@ -882,9 +1709,13 @@ async def worker_inbound_loop():
                             chat_id = payload.get('chat_id')
                             symbol = payload.get('symbol')
                             loading_id = payload.get('loading_msg_id')
-                            asyncio.create_task(
-                                process_profile_for_user(chat_id, symbol, loading_msg_id=loading_id)
-                            )
+                            async def _run_info_task():
+                                try:
+                                    await process_profile_for_user(chat_id, symbol, loading_msg_id=loading_id)
+                                finally:
+                                    push_task_unlock_signal(chat_id)
+
+                            asyncio.create_task(_run_info_task())
 
                         elif cmd == "GEN_SCREENER":
                             chat_id = payload.get('chat_id')
@@ -1602,7 +2433,7 @@ Lưu ý: Field "link" để trống cũng được vì khó map lại chính xá
         # Gọi Gemini (Dùng Flash cho nhanh và rẻ)
         json_text = await asyncio.to_thread(
             call_gemini_safe,
-            model_id="gemini-2.5-flash-lite",
+            model_id="gemini-2.5-pro",
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -2969,72 +3800,122 @@ async def get_financial_context_string(symbols: list[str]) -> str:
     lines.append("-" * 60)
     return "\n".join(lines)
 
-def call_chatgpt_for_report(symbols: list[str]) -> str:
-    """
-    (PHIÊN BẢN MỚI - MEAN REVERSION CONTEXT)
-    Gọi Gemini tạo báo cáo danh mục với dữ liệu so sánh lịch sử.
-    """
+def call_chatgpt_for_report(symbols: list[str], agent_payload: dict[str, dict]) -> str:
+    """Gọi Gemini tạo báo cáo dựa trên output của macro/biz/tech agents."""
     if not GEMINI_KEYS:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
 
-    # Giới hạn số mã để đảm bảo tốc độ
-    if len(symbols) > 6:
-        symbols = symbols[:6]
+    normalized: list[str] = []
+    for sym in symbols or []:
+        cleaned = str(sym).strip().upper()
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
 
-    # --- 1. TẠO CONTEXT (Dùng hàm async mới viết ở trên) ---
-    # Vì hàm call_chatgpt_for_report thường được gọi trong to_thread (sync wrapper),
-    # nên ta cần chạy hàm async này trong event loop hiện tại hoặc loop mới.
-    
-    try:
-        # Cách gọi async function từ trong hàm sync (chạy trong thread)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        context_str = loop.run_until_complete(get_financial_context_string(symbols))
-        loop.close()
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi tạo context tài chính cho AI: {e}")
-        context_str = ""
+    if not normalized:
+        raise ValueError("Danh sách mã trống khi tạo báo cáo.")
 
-    # --- 2. CHUẨN BỊ PROMPT ---
-    symbols_str = ", ".join(symbols)
+    if len(normalized) > 6:
+        normalized = normalized[:6]
+
+    def _fallback(obj):
+        return str(obj)
+
+    def _format_agent_block(data: dict | None) -> str:
+        return json.dumps(data or {}, ensure_ascii=False, indent=2, default=_fallback)
+
+    def _read_macro_csv(agent_payload: dict | None) -> str:
+        macro_data = (agent_payload or {}).get("macro") or {}
+        raw_meta = macro_data.get("raw_data") or {}
+        csv_path = raw_meta.get("csv_path") or ((macro_data.get("redis_json") or {}).get("csv_path"))
+
+        meta_text = _format_agent_block(raw_meta)
+        if not csv_path:
+            return (
+                "Thông tin GSO:\n" + meta_text +
+                "\n\nDữ liệu CSV: Không tìm thấy đường dẫn csv_path trong macro agent."
+            )
+
+        if not os.path.exists(csv_path):
+            return (
+                "Thông tin GSO:\n" + meta_text +
+                f"\n\nDữ liệu CSV: File không tồn tại tại đường dẫn {csv_path}."
+            )
+
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                csv_text = f.read()
+        except Exception as exc:
+            return (
+                "Thông tin GSO:\n" + meta_text +
+                f"\n\nDữ liệu CSV: Lỗi đọc file ({exc})."
+            )
+
+        if not csv_text.strip():
+            return (
+                "Thông tin GSO:\n" + meta_text +
+                "\n\nDữ liệu CSV: File trống hoặc không có nội dung."
+            )
+
+        return (
+            "Thông tin GSO:\n" + meta_text +
+            f"\n\nDữ liệu CSV (tất cả sheet) từ {csv_path}:\n" + csv_text
+        )
+
+    macro_block = _read_macro_csv(agent_payload)
+    biz_block = _format_agent_block((agent_payload or {}).get("biz"))
+    tech_block = _format_agent_block((agent_payload or {}).get("tech"))
+
+    symbols_str = ", ".join(normalized)
     vn_tz = pytz.timezone(TIMEZONE)
     date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
 
     prompt = f"""
-Bạn là chuyên gia phân tích chứng khoán Việt Nam theo trường phái **Mean Reversion** (Đầu tư giá trị dựa trên sự đảo chiều về trung bình).
-Hãy phân tích danh mục đầu tư: {symbols_str} (Ngày báo cáo: {date_str}).
+Bạn là một Chuyên gia Quản lý Quỹ (Fund Manager) hàng đầu tại Việt Nam. 
+Nhiệm vụ của bạn là phân tích danh mục: {symbols_str} (Ngày báo cáo: {date_str}).
 
-{context_str}
+DỮ LIỆU ĐẦU VÀO (SỐ LIỆU THỰC TẾ):
 
-YÊU CẦU FORMAT OUTPUT (JSON THUẦN):
+1. BỐI CẢNH VĨ MÔ (GSO):
+{macro_block}
+
+2. DỮ LIỆU TÀI CHÍNH DOANH NGHIỆP:
+{biz_block}
+
+3. CHỈ BÁO KỸ THUẬT:
+{tech_block}
+
+YÊU CẦU ĐẦU RA (JSON FORMAT):
 {{
-  "general_market_comment": "Đoạn văn (khoảng 3-4 câu) tổng quan về thị trường và định hướng danh mục.",
-  "portfolio_health_score": 8.5, 
+  "general_market_comment": "Cho nhận về tình hình vĩ mô hiện tại",
+  "general_portfolio_comment": "Đánh giá tổng quan về danh mục hiện tại",
+  "portfolio_health_score": "dựa vào triển vọng từ 3-6 tháng, hãy đánh giá danh mục trên thang điểm 10",
   "stocks": [
     {{
       "symbol": "MÃ",
       "industry": "Tên ngành",
-      "action": "Mua / Nắm giữ / Hạ tỷ trọng / Theo dõi",
-      "analysis": "Phân tích chi tiết (1000-1200 ký tự). BẮT BUỘC trình bày thành các ý gạch đầu dòng (•), mỗi ý xuống dòng (\\n) riêng biệt. Nội dung phải bao hàm các khía cạnh sau:\\n• KQKD & Lợi thế: Tăng trưởng doanh thu/LN, thị phần, biên lợi nhuận...\\n• Động lực (Catalyst): Dự án mới, game M&A, chính sách ủng hộ...\\n• Định giá: So sánh P/E, P/B với trung bình ngành (đã cung cấp ở trên) để kết luận Đắt/Rẻ.\\n• Rủi ro: Pháp lý, tỷ giá, chi phí đầu vào...",
-      "key_metrics": "Tóm tắt chỉ số (VD: P/E 10.x (TB 15.x)"
+        "analysis": "Dựa vào file BỐI CẢNH VĨ MÔ (GSO) và file DỮ LIỆU TÀI CHÍNH DOANH NGHIỆP, hãy đưa ra phân tích kĩ đâu là động lực Key Drivers (Động lực chính) cho doanh nghiệp tăng trưởng trong 3-6 tháng tới. Cơ hội và rủi ro là gì.",
+        "key_metrics": "...",
+        "action": "hãy dựa vào file CHỈ BÁO KỸ THUẬT cộng với phần analysis ở trên để đưa ra quyết định mua, bán hay nắm giữ và giải thích lý do"
     }}
-  ]
+  ] 
 }}
 
+
 LƯU Ý:
-1. **QUAN TRỌNG:** Nếu P/E hoặc P/B thấp hơn trung bình 5 năm > 10%, hãy coi đó là tín hiệu tích cực (Rẻ). Ngược lại là rủi ro (Đắt).
-2. Trường `analysis` là MỘT CHUỖI VĂN BẢN (String) chứa các ký tự xuống dòng (\\n) để tách ý, KHÔNG được là object JSON.
-3. Giọng văn: Khách quan, sắc sảo, dựa trên số liệu.
-4. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU TÀI CHÍNH'.
+1. **QUAN TRỌNG:** Nếu health_score từ 7 trở lên, hãy coi đó là tín hiệu tích cực (Rẻ). Ngược lại là rủi ro (Đắt).
+2. Giọng văn: Khách quan, sắc sảo, dựa trên số liệu.
+3. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU ĐẦU VÀO (SỐ LIỆU THỰC TẾ)'.
+4. Hãy đưa ra số liệu dẫn chứng cụ thể.
 
 LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
 1. Trả về đúng định dạng JSON chuẩn (RFC 8259).
 2. KHÔNG được có dấu phẩy (,) ở phần tử cuối cùng của danh sách hoặc object (Trailing comma prohibited).
-3. Nếu trong nội dung văn bản có dấu ngoặc kép ("), HÃY thay thế bằng dấu nháy đơn (') hoặc escape nó (\").
-4. KHÔNG thêm bất kỳ lời dẫn hay giải thích nào ngoài khối JSON.
+3. Dùng gạch đầu dòng (•) để tách ý chính, dùng dấu (-) để liệt kê ý con và dấu cách dòng bằng ký tự xuống dòng (\n).
+4. Dùng dấu (*) để nhấn mạnh cho các tiêu đề đầu dòng. Ví dụ: *Động lực chính (Key Drivers):*, *Tăng trưởng doanh thu và lợi nhuận ổn định:*
+5. KHÔNG thêm bất kỳ lời dẫn hay giải thích nào ngoài khối JSON.
 """
 
-    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Mean Reversion): {symbols_str}")
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Multi-Agent): {symbols_str}")
 
     try:
         raw_text = call_gemini_safe(
@@ -3042,72 +3923,176 @@ LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
-        # Làm sạch mạnh bằng Regex
-        clean_text = extract_json_from_text(raw_text)
+        clean_text = escape_control_chars_in_json_strings(extract_json_from_text(raw_text))
         try:
             json.loads(clean_text)
         except Exception as json_err:
-            log.error(f"❌ JSON LỖI CÚ PHÁP:\n{clean_text}") # In ra để copy ném vào jsonlint.com kiểm tra
+            log.error(f"❌ JSON LỖI CÚ PHÁP:\n{clean_text}")
             raise json_err
         return clean_text
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] Lỗi Gemini Report: {e}")
         raise e
 
-async def process_report_for_user(chat_id, symbols, source="on_demand", loading_msg_id=None):
-    """
-    Hàm chung: Gọi AI -> Lưu Cache -> Bắn tin về Gateway.
-    """
-    try:
-        # 1. Kiểm tra/Cắt ngắn danh sách
-        if len(symbols) > 6: symbols = symbols[:6]
-        cache_key = make_report_cache_key(symbols)
 
-        # 2. Gọi AI (Nặng)
-        json_text = await asyncio.to_thread(call_chatgpt_for_report, symbols)
-        
-        # 3. Lưu Cache
+def _normalize_watch_symbols(raw_symbols: list[str] | None) -> list[str]:
+    """Loại bỏ mã trống, chuẩn hoá chữ hoa và giữ thứ tự xuất hiện đầu tiên."""
+    normalized: list[str] = []
+    for sym in raw_symbols or []:
+        cleaned = str(sym).strip().upper()
+        if not cleaned:
+            continue
+        if cleaned in normalized:
+            continue
+        normalized.append(cleaned)
+    return normalized
+
+
+async def _send_report_message(
+    chat_id: int,
+    llm_symbols: list[str],
+    cache_key: str,
+    json_text: str,
+    loading_msg_id: int | None = None,
+):
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Report JSON hỏng cho key {cache_key}") from exc
+
+    stocks = data.get("stocks") or []
+    if not isinstance(stocks, list):
+        raise ValueError("Trường 'stocks' phải là list hợp lệ.")
+
+    digest_id = uuid.uuid4().hex
+    webapp_payload = {
+        "portfolio_health_score": data.get("portfolio_health_score"),
+        "general_market_comment": data.get("general_market_comment"),
+        "general_portfolio_comment": data.get("general_portfolio_comment"),
+        "stocks": stocks,
+        "is_pro": True,
+    }
+
+    r_client.set(f"digest_web:report:{digest_id}", json.dumps(webapp_payload), ex=86400)
+
+    web_slug = cache_key or digest_id
+    web_url = f"{BASE_URL}/report/view/{web_slug}?chat_id={chat_id}"
+    kb = {
+        "inline_keyboard": [
+            [{"text": "📊 Xem Báo Cáo Chi Tiết", "web_app": {"url": web_url}}],
+            [{"text": "❌ Đóng", "callback_data": "close_msg"}],
+        ]
+    }
+
+    push_telegram_msg(
+        chat_id=chat_id,
+        text=f"🚀 **Phân tích hoàn tất!**\nĐã xử lý xong danh mục: *{', '.join(llm_symbols)}*",
+        reply_markup=kb,
+        msg_type="REPORT_RESULT",
+        edit_id=loading_msg_id,
+    )
+
+
+async def try_send_cached_report(
+    chat_id: int,
+    llm_symbols: list[str],
+    cache_key: str,
+    loading_msg_id: int | None = None,
+) -> bool:
+    """Nếu cache report còn hạn thì gửi lại luôn để tiết kiệm quota."""
+    if not cache_key:
+        return False
+
+    cached_entry = await asyncio.to_thread(get_report_from_redis, cache_key)
+    if not cached_entry:
+        return False
+
+    cached_text, generated_at, is_error, _wait_sec = cached_entry
+    if is_error:
+        return False
+
+    try:
+        await _send_report_message(chat_id, llm_symbols, cache_key, cached_text, loading_msg_id)
+        log.info(
+            f"[{INSTANCE_ID}] ♻️ Dùng lại cache report {cache_key} cho chat {chat_id} (gen at {generated_at})."
+        )
+        return True
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] ❌ Lỗi gửi cache report {cache_key}: {exc}")
+        return False
+
+async def process_report_for_user(
+    chat_id,
+    symbols,
+    source="on_demand",
+    loading_msg_id=None,
+    *,
+    prefer_cache: bool = False,
+) -> bool:
+    """Chạy pipeline báo cáo. Trả về True nếu dùng cache, False nếu gọi AI."""
+    try:
+        watch_symbols = _normalize_watch_symbols(symbols or [])
+
+        if not watch_symbols:
+            push_telegram_msg(
+                chat_id,
+                "⚠️ Danh mục trống. Vui lòng cập nhật watchlist rồi thử lại.",
+                msg_type="GENERAL",
+                edit_id=loading_msg_id,
+            )
+            return False
+
+        llm_symbols = watch_symbols[:6]
+        cache_key = make_report_cache_key(llm_symbols)
+
+        if prefer_cache:
+            cache_hit = await try_send_cached_report(chat_id, llm_symbols, cache_key, loading_msg_id)
+            if cache_hit:
+                return True
+
+        request_id = str(uuid.uuid4())
+        vn_tz = pytz.timezone(TIMEZONE)
+        ts_iso = datetime.datetime.now(vn_tz).isoformat()
+
+        async def _safe_agent(agent_type: str, coro):
+            try:
+                return await coro
+            except Exception as exc:
+                log.error(f"[{INSTANCE_ID}] Agent {agent_type} error: {exc}")
+                stub = _build_agent_stub(agent_type, request_id, ts_iso)
+                stub["notes"] = f"Lỗi thực thi: {exc}"[:200]
+                return stub
+
+        macro_result, biz_result, tech_result = await asyncio.gather(
+            _safe_agent("macro", run_macro_agent(chat_id, request_id, ts_iso)),
+            _safe_agent("biz", run_biz_agent(chat_id, request_id, ts_iso, watch_symbols)),
+            _safe_agent("tech", run_tech_agent(chat_id, request_id, ts_iso, watch_symbols)),
+        )
+
+        save_agent_result("macro", macro_result)
+        save_agent_result("biz", biz_result)
+
+        agent_payload = {
+            "macro": macro_result,
+            "biz": biz_result,
+            "tech": tech_result,
+        }
+
+        json_text = await asyncio.to_thread(
+            call_chatgpt_for_report,
+            llm_symbols,
+            agent_payload,
+        )
+
         save_report_to_redis(cache_key, json_text, source=source)
 
-        # 4. Chuẩn bị Web App Data
-        # (Logic này bạn copy từ cmd_report cũ để parse JSON ra object data)
-        data = json.loads(json_text) 
-        
-        # Tạo link Web App
-        digest_id = uuid.uuid4().hex
-        # Lưu digest data cho Web App (TTL 24h)
-        # Lưu ý: data của report AI cần được bọc lại để web app hiểu
-        webapp_payload = {
-            "portfolio_health_score": data.get("portfolio_health_score"),
-            "general_market_comment": data.get("general_market_comment"),
-            "stocks": data.get("stocks"),
-            "is_pro": True
-        }
-        r_client.set(f"digest_web:report:{digest_id}", json.dumps(webapp_payload), ex=86400)
-        
-        web_url = f"{BASE_URL}/report/view/{cache_key}?chat_id={chat_id}" # Hoặc dùng digest_id nếu bạn sửa route webapp
-        
-        kb = {
-            "inline_keyboard": [
-                [{"text": "📊 Xem Báo Cáo Chi Tiết", "web_app": {"url": web_url}}],
-                [{"text": "❌ Đóng", "callback_data": "close_msg"}]
-            ]
-        }
-        
-        # 5. Bắn kết quả về Gateway
-        # Dùng msg_type="REPORT_RESULT" để Gateway biết mà xử lý (ví dụ xóa msg loading)
-        push_telegram_msg(
-            chat_id=chat_id,
-            text=f"🚀 **Phân tích hoàn tất!**\nĐã xử lý xong danh mục: *{', '.join(symbols)}*",
-            reply_markup=kb,
-            msg_type="REPORT_RESULT",
-            edit_id=loading_msg_id
-        )
-        
+        await _send_report_message(chat_id, llm_symbols, cache_key, json_text, loading_msg_id)
+        return False
+
     except Exception as e:
         log.error(f"Report Process Error for {chat_id}: {e}")
-        # Bắn tin lỗi về
         push_telegram_msg(chat_id, "⚠️ Lỗi khi tạo báo cáo. Vui lòng thử lại.", msg_type="GENERAL")
+        return False
 
 async def execute_weekly_batch(requester_id=None):
     """
@@ -3127,6 +4112,7 @@ async def execute_weekly_batch(requester_id=None):
         
         count = 0
         skipped = 0
+        last_ai_call_ts: float | None = None
         
         for chat_key, block in all_watch.items():
             try:
@@ -3137,13 +4123,33 @@ async def execute_weekly_batch(requester_id=None):
                     continue
                 
                 watch_list = block.get("list", [])
-                symbols = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+                filtered = [s.upper() for s in watch_list if not s.upper().startswith("VN")]
+                normalized_symbols = _normalize_watch_symbols(filtered)
                 
-                if symbols:
-                    # Gọi hàm xử lý chung (Process & Push to Gateway)
-                    # source="weekly_loop" để ghi log cache đúng nguồn
-                    await process_report_for_user(chat_id, symbols, source="weekly_loop")
-                    count += 1
+                if normalized_symbols:
+                    llm_symbols = normalized_symbols[:6]
+                    cache_key = make_report_cache_key(llm_symbols)
+
+                    cache_hit = await try_send_cached_report(chat_id, llm_symbols, cache_key)
+                    if cache_hit:
+                        count += 1
+                    else:
+                        if last_ai_call_ts is not None:
+                            elapsed = time.monotonic() - last_ai_call_ts
+                            wait_seconds = 60 - elapsed
+                            if wait_seconds > 0:
+                                log.info(
+                                    f"[{INSTANCE_ID}][WEEKLY_BATCH] ⏳ Chờ {wait_seconds:.1f}s để tránh vượt quota AI."
+                                )
+                                await asyncio.sleep(wait_seconds)
+
+                        await process_report_for_user(
+                            chat_id,
+                            normalized_symbols,
+                            source="weekly_loop",
+                        )
+                        last_ai_call_ts = time.monotonic()
+                        count += 1
                     
                 await asyncio.sleep(2) # Rate limit nhẹ
                 
@@ -3244,8 +4250,6 @@ YÊU CẦU NỘI DUNG:
     except Exception as e:
         log.error(f"[{INSTANCE_ID}] Lỗi Gemini Profile: {e}")
         raise e
-
-# Trong worker.py (Gần chỗ process_report_for_user)
 
 from profile_cache import make_profile_cache_key, save_profile_to_redis # Nhớ import
 
