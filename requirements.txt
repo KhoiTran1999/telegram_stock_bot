@@ -57,12 +57,13 @@ kiwisolver==1.4.9
 MarkupSafe==3.0.3
 matplotlib==3.10.7
 matplotlib-inline==0.2.1
-numpy==2.3.4
+numpy==2.2.6
 openai==2.7.2
 openpyxl==3.1.5
 packaging==25.0
 pandas==2.3.3
-pandas_ta
+pandas_ta==0.3.14b0; python_version < "3.11"
+pandas-ta==0.4.71b0; python_version >= "3.12"
 parso==0.8.5
 pillow==12.0.0
 pluggy==1.6.0
