@@ -641,7 +641,7 @@ def _collect_finance_datasets(symbol: str) -> dict:
     stock = Finance(symbol=symbol, source="VCI")
     datasets = {}
     fetch_plan = [
-        ("ratio_year", lambda: stock.ratio(period="year", lang="vi")),
+        ("ratio_year", lambda: stock.ratio(period="quarter", lang="vi")),
         ("balance_sheet_quarter", lambda: stock.balance_sheet(period="quarter", lang="vi")),
         ("income_statement_quarter", lambda: stock.income_statement(period="quarter", lang="vi")),
         ("cash_flow_quarter", lambda: stock.cash_flow(period="quarter", lang="vi")),
