@@ -4088,7 +4088,7 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
             # --- CÁC LỆNH CỐT LÕI ---
             ("start", "🏠 Mở Dashboard chính"),
             ("help", "📘 Hướng dẫn nhanh"),
-            ("alert", "🔔 Báo nhanh biến động 1 mã /alert hpg"),
+            ("alert", "(admin) Báo nhanh biến động 1 mã /alert hpg"),
             ("admin", "(admin) Mở Dashboard Admin"),
             ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
             ("agent", "(admin) macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
