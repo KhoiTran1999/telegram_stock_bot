@@ -134,6 +134,16 @@ TECH_INDICATOR_COLUMN_MAP = {
     "BBM_20_2.0": "BB_Middle",
     "BBL_20_2.0": "BB_Lower",
 }
+ALERT_FUN_LINES_UP = [
+    "Tăng mạnh quá! 🚀",
+    "Xanh tím rồi! 💜",
+    "Tiền vào như nước 🌊",
+]
+ALERT_FUN_LINES_DOWN = [
+    "Giảm rồi... 📉",
+    "Đỏ lửa 🔥",
+    "Bình tĩnh quan sát 👀",
+]
 REPORT_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1316,6 +1326,162 @@ async def run_tech_agent(chat_id: int, request_id: str, ts_iso: str, symbols: li
     return payload
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_indicator_metrics(record: dict | None) -> dict[str, float | None]:
+    if not isinstance(record, dict):
+        return {}
+
+    aliases = {
+        "close": ("Close", "close"),
+        "ema20": ("EMA20", "ema20", "EMA_20"),
+        "ema50": ("EMA50", "ema50", "EMA_50"),
+        "ema200": ("EMA200", "ema200", "EMA_200"),
+        "rsi": ("RSI", "rsi", "RSI_14"),
+        "macd_line": ("MACD_Line", "MACD", "macd_line", "MACD_12_26_9"),
+        "macd_signal": ("MACD_Signal", "MACDs", "macd_signal", "MACDs_12_26_9"),
+        "bb_upper": ("BB_Upper", "BBU", "BBU_20_2.0"),
+        "bb_lower": ("BB_Lower", "BBL", "BBL_20_2.0"),
+    }
+
+    metrics: dict[str, float | None] = {}
+    for key, candidates in aliases.items():
+        val = None
+        for candidate in candidates:
+            if candidate in record:
+                val = _safe_float(record.get(candidate))
+                if val is not None:
+                    break
+        metrics[key] = val
+
+    metrics["date"] = record.get("Date") or record.get("time")
+    return metrics
+
+
+def _build_deterministic_tech_summary(
+    symbol: str,
+    metrics: dict[str, float | None],
+    price: float | None,
+    pct: float | None,
+) -> str:
+    segments: list[str] = []
+    current_price = _safe_float(price) or metrics.get("close")
+
+    if pct is not None:
+        segments.append(f"Biến động hiện tại {pct:+.2f}%.")
+
+    ema20 = metrics.get("ema20")
+    ema50 = metrics.get("ema50")
+    ema200 = metrics.get("ema200")
+    rsi = metrics.get("rsi")
+    bb_upper = metrics.get("bb_upper")
+    bb_lower = metrics.get("bb_lower")
+    macd_line = metrics.get("macd_line")
+    macd_signal = metrics.get("macd_signal")
+
+    if current_price is not None and ema20 is not None:
+        diff = current_price - ema20
+        relation = "trên" if diff >= 0 else "dưới"
+        segments.append(f"Giá đang {relation} EMA20 {abs(diff):.2f}đ.")
+
+    if ema20 and ema50 and ema200:
+        if ema20 > ema50 > ema200:
+            segments.append("Các EMA xếp tăng (20>50>200).")
+        elif ema20 < ema50 < ema200:
+            segments.append("Các EMA xếp giảm (20<50<200).")
+
+    if rsi is not None:
+        if rsi >= 70:
+            segments.append(f"RSI {rsi:.0f} → vùng quá mua.")
+        elif rsi <= 30:
+            segments.append(f"RSI {rsi:.0f} → vùng quá bán.")
+        else:
+            segments.append(f"RSI {rsi:.0f}, trạng thái trung tính.")
+
+    if current_price is not None and bb_upper and bb_lower:
+        range_width = bb_upper - bb_lower
+        if range_width > 0:
+            pos = (current_price - bb_lower) / range_width
+            if pos >= 0.9:
+                segments.append("Giá bám dải trên Bollinger.")
+            elif pos <= 0.1:
+                segments.append("Giá chạm dải dưới Bollinger.")
+
+    if macd_line is not None and macd_signal is not None:
+        if macd_line > macd_signal:
+            segments.append("MACD nằm trên đường tín hiệu.")
+        elif macd_line < macd_signal:
+            segments.append("MACD nằm dưới đường tín hiệu.")
+
+    if not segments:
+        return f"Chưa đủ dữ liệu kỹ thuật cho {symbol}."
+
+    trimmed = segments[:3]
+    return " ".join(trimmed)
+
+
+def _build_tech_prompt(symbol: str, metrics: dict[str, float | None], price: float | None, pct: float | None) -> str | None:
+    base_price = _safe_float(price) or metrics.get("close")
+    if base_price is None:
+        return None
+
+    lines = [f"Mã: {symbol}", f"Giá hiện tại: {base_price:.2f}"]
+    if pct is not None:
+        lines.append(f"Biến động trong phiên: {pct:+.2f}%")
+
+    for label, key in [
+        ("EMA20", "ema20"),
+        ("EMA50", "ema50"),
+        ("EMA200", "ema200"),
+        ("RSI", "rsi"),
+        ("MACD", "macd_line"),
+        ("MACD_signal", "macd_signal"),
+    ]:
+        val = metrics.get(key)
+        if val is not None:
+            lines.append(f"{label}: {val:.2f}")
+
+    bb_upper = metrics.get("bb_upper")
+    bb_lower = metrics.get("bb_lower")
+    if bb_upper is not None and bb_lower is not None:
+        lines.append(f"Bollinger: [{bb_lower:.2f}, {bb_upper:.2f}]")
+
+    bullet = "\n".join(lines)
+    prompt = (
+        "Bạn là trợ lý phân tích kỹ thuật. Hãy nhận xét nhanh cho mã "
+        f"{symbol} dựa trên dữ liệu sau:\n{bullet}\n"
+        "Viết tối đa 2 câu, giọng trung lập, nêu xu hướng ngắn hạn và nhận định rủi ro hay cơ hội."
+        "Không ghi tiêu hoặc giới thiệu, chỉ tập trung vào nội dung")
+    return prompt
+
+
+async def _generate_ai_tech_summary(
+    symbol: str,
+    metrics: dict[str, float | None],
+    price: float | None,
+    pct: float | None,
+) -> str | None:
+    prompt = _build_tech_prompt(symbol, metrics, price, pct)
+    if not prompt:
+        return None
+
+    text = await asyncio.to_thread(
+        call_gemini_safe,
+        "gemini-2.5-flash-lite",
+        prompt,
+    )
+    if not text:
+        return None
+    return text.strip()
+
+
 async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: list[str]) -> dict:
     normalized = []
     for sym in symbols or []:
@@ -1841,6 +2007,9 @@ async def worker_inbound_loop():
                         elif cmd == "CMD_AGENT_RUN":
                             asyncio.create_task(handle_agent_run(payload))
 
+                        elif cmd == "CMD_MANUAL_ALERT":
+                            asyncio.create_task(handle_manual_alert(payload))
+
                         elif cmd == "CMD_ASK_AI":
                             chat_id = payload.get('chat_id')
                             question = payload.get('question')
@@ -2186,6 +2355,138 @@ async def stock_price_fetcher_loop():
         await asyncio.sleep(FETCHER_INTERVAL_SECONDS)
 
 # --- LOOP 2: ALERT (So sánh & Bắn tin) ---
+
+async def _dispatch_symbol_tech_followup(chat_id: int, symbol_contexts: list[dict[str, Any]]):
+    unique_symbols: list[str] = []
+    context_map: dict[str, dict[str, Any]] = {}
+    for ctx in symbol_contexts or []:
+        symbol = str(ctx.get("symbol") or "").strip().upper()
+        if not symbol or symbol in context_map:
+            continue
+        context_map[symbol] = {
+            "price": ctx.get("price"),
+            "pct": ctx.get("pct"),
+        }
+        unique_symbols.append(symbol)
+
+    if not unique_symbols:
+        return
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    ts_iso = datetime.datetime.now(vn_tz).isoformat()
+    request_id = str(uuid.uuid4())
+
+    entries: dict[str, list[dict]] = {}
+    try:
+        agent_payload = await run_tech_agent(chat_id, request_id, ts_iso, unique_symbols)
+        raw_block = (agent_payload.get("raw_data") or {}) if agent_payload else {}
+        entries = raw_block.get("entries") or {}
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] ⚠️ Tech follow-up error: {exc}")
+
+    summaries: list[str] = []
+    for symbol in unique_symbols:
+        record_list = entries.get(symbol) or []
+        latest_record = record_list[-1] if record_list else None
+        metrics = _collect_indicator_metrics(latest_record)
+        price = context_map[symbol]["price"]
+        pct = context_map[symbol]["pct"]
+        deterministic = _build_deterministic_tech_summary(symbol, metrics, price, pct)
+
+        ai_summary = None
+        try:
+            ai_summary = await _generate_ai_tech_summary(symbol, metrics, price, pct)
+        except Exception as exc:
+            log.warning(f"[{INSTANCE_ID}] ⚠️ AI tech summary failed for {symbol}: {exc}")
+
+        final_line = ai_summary or deterministic
+        summaries.append(f"*{symbol}*: {final_line}")
+
+    if not summaries:
+        return
+    body_lines = [f"🤖 *Soi Chart nhanh {symbol}*", *summaries]
+    push_telegram_msg(
+        chat_id=chat_id,
+        text="\n".join(body_lines),
+        msg_type="STOCK_ALERT_TECH",
+    )
+
+
+async def handle_manual_alert(payload: dict):
+    chat_id = payload.get("chat_id")
+    symbols = payload.get("symbols") or []
+
+    if not chat_id:
+        log.warning("CMD_MANUAL_ALERT thiếu chat_id")
+        return
+
+    normalized: list[str] = []
+    for sym in symbols:
+        cleaned = str(sym or "").strip().upper()
+        if not cleaned:
+            continue
+        if cleaned not in normalized:
+            normalized.append(cleaned)
+
+    if not normalized:
+        push_telegram_msg(chat_id, "⚠️ Vui lòng cung cấp mã hợp lệ (VD: /alert HPG).", msg_type="STOCK_ALERT")
+        return
+
+    try:
+        data = await fetch_data_smart(normalized)
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}] Manual alert fetch error: {exc}")
+        push_telegram_msg(chat_id, "⚠️ Không lấy được dữ liệu giá. Vui lòng thử lại sau.", msg_type="STOCK_ALERT")
+        return
+
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    messages: list[str] = []
+    buttons = {"inline_keyboard": []}
+    tech_followups: list[dict[str, Any]] = []
+
+    for sym in normalized:
+        quote = (data or {}).get(sym)
+        if not quote:
+            continue
+
+        try:
+            price = float(quote.get("price"))
+            pct = float(quote.get("pct"))
+        except (TypeError, ValueError):
+            continue
+
+        icon = "🟢" if pct >= 0 else "🔴"
+        fun_line = random.choice(ALERT_FUN_LINES_UP if pct >= 0 else ALERT_FUN_LINES_DOWN)
+        msg = (
+            f"{icon} *{sym} {'tăng' if pct >= 0 else 'giảm'} {pct:+.2f}%*\n"
+            f"Giá: {price:,.0f}\n_{fun_line}_"
+        )
+        messages.append(msg)
+
+        chart_url = f"{BASE_URL}/chart/{sym}"
+        buttons["inline_keyboard"].append([
+            {"text": f"📊 Soi Chart {sym}", "web_app": {"url": chart_url}}
+        ])
+
+        tech_followups.append({"symbol": sym, "price": price, "pct": pct})
+
+    if not messages:
+        push_telegram_msg(chat_id, "⚠️ Không tìm thấy dữ liệu hợp lệ cho các mã vừa nhập.", msg_type="STOCK_ALERT")
+        return
+
+    body = "\n".join(messages)
+    push_telegram_msg(
+        chat_id=chat_id,
+        text=body,
+        reply_markup=buttons if buttons["inline_keyboard"] else None,
+        msg_type="STOCK_ALERT",
+    )
+
+    if tech_followups:
+        asyncio.create_task(_dispatch_symbol_tech_followup(chat_id, tech_followups))
+
+
 async def alert_loop():
     global ALERT_STATE, _stock_alert_disabled_cache
     vn_tz = pytz.timezone(TIMEZONE)
@@ -2193,9 +2494,6 @@ async def alert_loop():
     
     # Load danh sách chặn alert lần đầu
     _stock_alert_disabled_cache = await asyncio.to_thread(get_users_with_stock_alert_off)
-
-    FUN_UP = ["Tăng mạnh quá! 🚀", "Xanh tím rồi! 💜", "Tiền vào như nước 🌊"]
-    FUN_DOWN = ["Giảm rồi... 📉", "Đỏ lửa 🔥", "Bình tĩnh quan sát 👀"]
 
     while True:
         now = datetime.datetime.now(vn_tz)
@@ -2233,6 +2531,7 @@ async def alert_loop():
                 personal_state = ALERT_STATE[chat_key]
                 
                 messages = []
+                tech_followups: list[dict[str, Any]] = []
                 buttons = { "inline_keyboard": [] } # Cấu trúc nút bấm Telegram
 
                 for sym in processing_list:
@@ -2249,7 +2548,7 @@ async def alert_loop():
                     
                     if abs(delta) >= 2.0: # Ngưỡng 2%
                         icon = "🟢" if pct >= 0 else "🔴"
-                        fun_line = random.choice(FUN_UP if pct >= 0 else FUN_DOWN)
+                        fun_line = random.choice(ALERT_FUN_LINES_UP if pct >= 0 else ALERT_FUN_LINES_DOWN)
                         
                         msg = (
                             f"{icon} *{sym_u} {'tăng' if pct>=0 else 'giảm'} {pct:+.2f}%*\n"
@@ -2266,6 +2565,12 @@ async def alert_loop():
                         # Cập nhật state
                         personal_state[sym_u] = { "last_pct": float(pct), "last_alert_at": now.isoformat() }
 
+                        tech_followups.append({
+                            "symbol": sym_u,
+                            "price": price,
+                            "pct": pct,
+                        })
+
                 # Bắn tin sang Redis nếu có biến động
                 if messages:
                     header = f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
@@ -2279,6 +2584,9 @@ async def alert_loop():
                         msg_type="STOCK_ALERT"
                     )
                     log.info(f"🔔 Pushed alert for {chat_id}")
+
+                    if tech_followups:
+                        asyncio.create_task(_dispatch_symbol_tech_followup(chat_id, tech_followups))
 
         except Exception as e:
             log.error(f"Alert Loop Error: {e}")

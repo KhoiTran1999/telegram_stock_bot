@@ -1810,6 +1810,38 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not BOT_ACTIVE:
+        await reply_md(update, "⚙️ Bot đang bảo trì.")
+        return
+
+    chat_id = update.effective_chat.id if update and update.effective_chat else None
+    if not chat_id:
+        return
+
+    await track_user_activity(update)
+    await asyncio.to_thread(log_command_usage, chat_id, "/alert", ADMIN_ID)
+
+    if not context.args:
+        await reply_md(update, "⚠️ Cách dùng: /alert <MÃ> (ví dụ: /alert HPG)")
+        return
+
+    raw_symbol = context.args[0].strip().upper()
+    cleaned = re.sub(r"[^A-Z0-9]", "", raw_symbol)
+    if not cleaned:
+        await reply_md(update, "⚠️ Mã không hợp lệ. Vui lòng nhập như: /alert HPG")
+        return
+
+    payload = {
+        "cmd": "CMD_MANUAL_ALERT",
+        "chat_id": chat_id,
+        "symbols": [cleaned],
+    }
+
+    await reply_md(update, f"🔔 Đang kiểm tra *{cleaned}*. Bot sẽ báo ngay khi có dữ liệu.")
+    await asyncio.to_thread(push_to_worker, payload)
+
+
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not BOT_ACTIVE:
         await reply_md(update, "⚙️ Bot đang bảo trì.")
@@ -4055,8 +4087,10 @@ async def run_background_startup_tasks(admin_id: int | None, initial_active: boo
         commands = [
             # --- CÁC LỆNH CỐT LÕI ---
             ("start", "🏠 Mở Dashboard chính"),
-            # ("admin", "(admin) Mở Dashboard Admin"),
-            # ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
+            ("help", "📘 Hướng dẫn nhanh"),
+            ("alert", "🔔 Báo nhanh biến động 1 mã /alert hpg"),
+            ("admin", "(admin) Mở Dashboard Admin"),
+            ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
             ("agent", "(admin) macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
             ("agentlog", "(admin) macro|biz|tech|all - Xem log hoạt động Agent"),
         ]
@@ -4191,6 +4225,7 @@ async def main():
     # Quản lý danh mục
     tg_app.add_handler(CommandHandler("add", cmd_add))
     tg_app.add_handler(CommandHandler("remove", cmd_remove))
+    tg_app.add_handler(CommandHandler("alert", cmd_alert))
     tg_app.add_handler(CommandHandler("list", cmd_list))
     
     # Tính năng AI & Dữ liệu (Gateway gọi Worker)
