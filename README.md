@@ -27,12 +27,14 @@ Bot phục vụ toàn bộ trải nghiệm theo dõi thị trường: người d
 - Flash View (intraday line chart + orderbook heatbar) phục vụ yêu cầu tức thời.
 - Admin dashboard (route `/admin/dashboard`) để xem user, gia hạn Pro, broadcast, cập nhật ghi chú và theo dõi doanh thu.
 - Thanh toán tự động SePay qua webhook `/sepay-webhook` (optional) với mã đơn PAY_xxx.
+- **Contribute WebApp:** Giao diện cho phép Pro User đóng góp ghi chú/insight về mã cổ phiếu. Hỗ trợ soạn thảo, xem trạng thái duyệt (Pending/Approved/Rejected) và lịch sử đóng góp.
 
 ### Data & Cache Layer
 - PostgreSQL cho người dùng, watchlist, lịch sử thanh toán, log tin nhắn (`db_utils.py`).
 - Redis dùng cho Pub/Sub, cache báo cáo, cache profile, cache “tin đã đọc”, queue tác vụ và lưu job APScheduler (`redis_client.py`, `report_cache.py`, `profile_cache.py`, `news_seen_cache.py`).
 - `manual_valuation.py` cung cấp hàm `fetch_manual_pe_pb` cùng Redis TTL 24h để bảo toàn hạn mức API vnstock.
 - Dữ liệu macro Tổng cục Thống Kê lưu tại `GSO_Data/` được tái sử dụng cho Morning Digest.
+- `stock_personalization` table (PostgreSQL) nâng cấp để hỗ trợ quy trình Crowdsourcing: lưu trữ ghi chú từ cộng đồng, trạng thái kiểm duyệt và thông tin người đóng góp.
 
 ## Kiến trúc & luồng xử lý
 
@@ -55,6 +57,7 @@ graph TD
 
 - `gateway.py`: host webhook `/webhook`, SePay webhook, các trang WebApp (digest, screener, admin, flash view) và toàn bộ command handlers. Những tác vụ dài >5s sẽ publish payload vào `worker_inbound` channel.
 - `worker.py`: chạy dưới Hypercorn để cung cấp endpoint `/health`, đồng thời khởi động runtime `run_worker_runtime()` gồm các loop realtime và APScheduler với `RedisJobStore`. Kết quả trả về Gateway qua channel `telegram_outbound` hoặc ghi cache (VD: `digest_web:*`).
+- ... `gateway.py`: host webhook ..., các trang WebApp (digest, screener, admin, flash view, **contribute**) ...
 
 ## Background processing
 
@@ -200,6 +203,10 @@ Worker expose `/health` tại `PORT` (mặc định 10001) để Render kiểm t
 | `/agent <macro|biz|tech|all>` | Admin | Chạy bộ agent tương ứng, lưu cache `agent:<type>:current`. |
 | `/agentlog <macro|biz|tech|all>` | Admin | Đọc lại cache agent/bundle đang lưu. |
 | `/restore_core` | Admin | Hỗ trợ khôi phục dữ liệu từ file backup. |
+
+| Nút bấm | Đối tượng | Chức năng |
+| --- | --- | --- |
+| `✍️ Đóng góp` | Pro | Mở WebApp để gửi ghi chú phân tích cho Admin duyệt. |
 
 Người dùng cũng có thể gõ trực tiếp mã (`HPG`, `VCB`...) để bot trả ra chart mini + nút thao tác.
 
