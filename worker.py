@@ -38,6 +38,7 @@ from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
 from chart_utils import generate_mini_chart, draw_sector_performance_chart
+from manual_valuation import fetch_manual_pe_pb
 from db_utils import (
     get_all_watch,
     get_all_pro_chat_ids,
@@ -2984,6 +2985,29 @@ Lưu ý: Field "link" để trống cũng được vì khó map lại chính xá
         log.error(f"Summarize News Error: {e}")
         return None
 
+def _normalize_price_value(raw: Any) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    if value < 500:
+        value *= 1000.0
+    return value
+
+
+def _extract_price_from_screener_row(row: pd.Series) -> float | None:
+    candidates = ("close", "price", "price_near_realtime")
+    for key in candidates:
+        if key not in row:
+            continue
+        price = _normalize_price_value(row.get(key))
+        if price:
+            return price
+    return None
+
+
 async def calculate_market_comprehensive_data():
     """
     TÁC VỤ NẶNG (Nightly):
@@ -3014,6 +3038,13 @@ async def calculate_market_comprehensive_data():
         valid_tickers = valid_df['ticker'].tolist()
         log.info(f"[{INSTANCE_ID}] Danh sách cần xử lý: {len(valid_tickers)} mã.")
 
+        price_hints: dict[str, float] = {}
+        for _, row in valid_df.iterrows():
+            sym = str(row['ticker']).strip().upper()
+            hint = _extract_price_from_screener_row(row)
+            if sym and hint:
+                price_hints[sym] = hint
+
         # Cấu trúc dữ liệu lưu Redis
         # {
         #    "stocks": { "HPG": { "pe_avg":..., "change_6m":..., "sector":... }, ... },
@@ -3024,10 +3055,11 @@ async def calculate_market_comprehensive_data():
         sector_accumulators = {} # { "Thép": {"sum_12w": 0, "sum_6m": 0, "count": 0} }
 
         consecutive_errors = 0
+        manual_alerts: list[str] = []
         
         # 2. Loop xử lý từng mã (Batching)
-        BATCH_SIZE = 10
-        BATCH_SLEEP = 30
+        BATCH_SIZE = 5
+        BATCH_SLEEP = 60
 
         for i, sym in enumerate(valid_tickers):
             # Log progress
@@ -3105,14 +3137,43 @@ async def calculate_market_comprehensive_data():
                         perf_stats['change_12w'] = _get_change(84)  # 12 tuần ~ 84 ngày
                         perf_stats['change_6m'] = _get_change(180) # 6 tháng ~ 180 ngày
 
+                manual_payload: dict[str, Any] = {}
+                try:
+                    manual_result = await asyncio.to_thread(
+                        fetch_manual_pe_pb,
+                        sym,
+                        use_cache=True,
+                        price=price_hints.get(sym),
+                    )
+                except Exception as exc:
+                    log.warning(f"[{INSTANCE_ID}] Manual valuation fatal for {sym}: {exc}")
+                    manual_result = None
+                if manual_result:
+                    manual_fields = {
+                        "pe_manual": manual_result.pe,
+                        "pb_manual": manual_result.pb,
+                        "manual_price": manual_result.price,
+                        "manual_eps_ttm": manual_result.eps_ttm,
+                        "manual_bvps": manual_result.bvps,
+                        "manual_updated_at": manual_result.computed_at,
+                    }
+                    for key, value in manual_fields.items():
+                        if value is not None:
+                            manual_payload[key] = value
+                    if manual_result.error:
+                        manual_payload["manual_error"] = manual_result.error
+                    if manual_result.needs_admin_alert and manual_result.error:
+                        manual_alerts.append(f"{sym}: {manual_result.error}")
+
                 # --- D. Tổng hợp ---
-                if val_stats or perf_stats:
+                if val_stats or perf_stats or manual_payload:
                     sector_name = sector_map.get(sym, "Khác")
                     
                     item_data = {
                         "sector": sector_name,
                         **val_stats,
-                        **perf_stats
+                        **perf_stats,
+                        **manual_payload,
                     }
                     stocks_data[sym] = item_data
                     
@@ -3134,7 +3195,7 @@ async def calculate_market_comprehensive_data():
                     consecutive_errors = 0
                 
                 # Delay nhẹ
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
 
             except BaseException as e:
                 # [FIX] Check cancellation first
@@ -3226,6 +3287,18 @@ async def calculate_market_comprehensive_data():
         await asyncio.to_thread(save_historical_valuation_to_redis, final_payload)
         log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất Comprehensive Data. Đã lưu {len(stocks_data)} mã và {len(sectors_final)} ngành.")
 
+        if manual_alerts and ADMIN_ID:
+            deduped = list(dict.fromkeys(manual_alerts))
+            preview = "\n".join(deduped[:10])
+            remainder = ""
+            if len(deduped) > 10:
+                remainder = f"\n... và {len(deduped) - 10} mã khác."
+            push_telegram_msg(
+                ADMIN_ID,
+                "⚠️ Manual PE/PB thiếu dữ liệu:\n" + preview + remainder,
+                msg_type="SYSTEM_MSG",
+            )
+
     except BaseException as e:
         if isinstance(e, asyncio.CancelledError):
             raise e
@@ -3263,31 +3336,29 @@ async def get_top_mean_reversion_stocks(limit=5):
 
         hist_data = full_data["stocks"] # Lấy phần stocks
 
-        # 2. Lấy dữ liệu hiện tại từ Screener API
-        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
-        
         processed_items = []
         
-        for index, row in screener_df.iterrows():
-            sym = row['ticker']
-            if sym not in hist_data: continue
-            
-            stock_info = hist_data[sym]
-            
-            # Check có đủ dữ liệu PE/PB avg không
-            if 'pe_avg' not in stock_info or 'pb_avg' not in stock_info:
+        for sym, stock_info in hist_data.items():
+            pe_avg = stock_info.get('pe_avg')
+            pb_avg = stock_info.get('pb_avg')
+            if not pe_avg or not pb_avg:
                 continue
 
-            try:
-                pe_cur = float(row['pe'])
-                pb_cur = float(row['pb'])
-            except: continue
+            pe_cur = stock_info.get('pe_manual')
+            pb_cur = stock_info.get('pb_manual')
+            if pe_cur is None or pb_cur is None:
+                manual = await asyncio.to_thread(fetch_manual_pe_pb, sym)
+                pe_cur = manual.pe
+                pb_cur = manual.pb
+                if manual.needs_admin_alert and manual.error:
+                    log.warning(f"[{INSTANCE_ID}] Manual valuation missing for {sym}: {manual.error}")
 
-            pe_avg = stock_info['pe_avg']
-            pb_avg = stock_info['pb_avg']
-            
-            if pe_cur <= 0 or pb_cur <= 0: continue
-            if pe_avg <= 0 or pb_avg <= 0: continue
+            if not pe_cur or not pb_cur:
+                continue
+            if pe_cur <= 0 or pb_cur <= 0:
+                continue
+            if pe_avg <= 0 or pb_avg <= 0:
+                continue
 
             # --- TÍNH TOÁN LOGIC ---
             pe_discount = (pe_cur - pe_avg) / pe_avg
@@ -4336,35 +4407,28 @@ async def get_financial_context_string(symbols: list[str]) -> str:
     # 1. Lấy dữ liệu Lịch sử (Redis)
     hist_data = await asyncio.to_thread(get_historical_valuation_from_redis) or {}
     
-    # 2. Lấy dữ liệu Hiện tại (Snapshot Screener)
-    try:
-        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX,UPCOM"}, limit=1700))
-    except Exception as e:
-        log.warning(f"[{INSTANCE_ID}] Lỗi lấy Screener context: {e}")
-        screener_df = None
-
     lines = ["\n🔍 **DỮ LIỆU TÀI CHÍNH (REALTIME vs TRUNG BÌNH 5 NĂM):**"]
     lines.append("(Sử dụng số liệu dưới đây để đánh giá Đắt/Rẻ theo Mean Reversion)")
     lines.append("-" * 60)
-
-    # Map dữ liệu để tra cứu nhanh
-    curr_map = {}
-    if screener_df is not None and not screener_df.empty:
-        screener_df['ticker'] = screener_df['ticker'].astype(str).str.upper().str.strip()
-        curr_map = screener_df.set_index('ticker').to_dict('index')
 
     for sym in symbols:
         sym_u = sym.upper()
         lines.append(f"📌 **{sym_u}**:")
         
-        curr = curr_map.get(sym_u, {})
         hist = hist_data.get(sym_u, {})
         
         # Chỉ số
-        pe_cur = float(curr.get('pe', 0) or 0)
-        pb_cur = float(curr.get('pb', 0) or 0)
         pe_avg = float(hist.get('pe_avg', 0) or 0)
         pb_avg = float(hist.get('pb_avg', 0) or 0)
+
+        pe_cur = hist.get('pe_manual')
+        pb_cur = hist.get('pb_manual')
+        if pe_cur is None or pb_cur is None:
+            manual = await asyncio.to_thread(fetch_manual_pe_pb, sym_u)
+            pe_cur = manual.pe
+            pb_cur = manual.pb
+            if manual.needs_admin_alert and manual.error:
+                log.warning(f"[{INSTANCE_ID}] Manual valuation missing for {sym_u}: {manual.error}")
 
         info = []
         if pe_cur > 0 and pe_avg > 0:
@@ -4372,14 +4436,17 @@ async def get_financial_context_string(symbols: list[str]) -> str:
             state = "RẺ HƠN" if diff < 0 else "ĐẮT HƠN"
             info.append(f"   - P/E: {pe_cur:.1f}x (TB 5 năm: {pe_avg:.1f}x) -> {state} {abs(diff):.1f}%")
         
-        if pb_cur > 0 and pb_avg > 0:
-            diff = (pb_cur - pb_avg) / pb_avg * 100
-            state = "RẺ HƠN" if diff < 0 else "ĐẮT HƠN"
-            info.append(f"   - P/B: {pb_cur:.1f}x (TB 5 năm: {pb_avg:.1f}x) -> {state} {abs(diff):.1f}%")
+        pe_cur_val = float(pe_cur or 0)
+        pb_cur_val = float(pb_cur or 0)
 
-        if not info:
-            lines.append("   ⚠️ (Thiếu dữ liệu lịch sử hoặc lỗ)")
+        if pe_cur_val > 0 and pe_avg > 0:
+            info.append(f"P/E: hiện {pe_cur_val:.1f} vs TB5 {pe_avg:.1f} ({pe_cur_val/pe_avg:.2f}x)")
         else:
+            info.append("P/E: Không khả dụng")
+        if pb_cur_val > 0 and pb_avg > 0:
+            info.append(f"P/B: hiện {pb_cur_val:.1f} vs TB5 {pb_avg:.1f} ({pb_cur_val/pb_avg:.2f}x)")
+        else:
+            info.append("P/B: Không khả dụng")
             lines.extend(info)
 
     lines.append("-" * 60)
