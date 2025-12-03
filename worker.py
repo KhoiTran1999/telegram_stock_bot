@@ -1972,7 +1972,7 @@ Bot:"""
         # 3. Gọi Gemini
         answer, usage = await asyncio.to_thread(
             call_gemini_safe,
-            model_id=".5-flash-lite",
+            model_id="gemini-2.5-flash-lite",
             contents=full_prompt,
             return_usage=True,
         )
