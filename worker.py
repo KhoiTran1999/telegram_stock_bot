@@ -144,6 +144,7 @@ ALERT_FUN_LINES_DOWN = [
     "Đỏ lửa 🔥",
     "Bình tĩnh quan sát 👀",
 ]
+TECH_ALERT_CACHE_TTL_SECONDS = 180
 REPORT_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -267,6 +268,7 @@ _stock_current_price_cache = {}
 _stock_current_watch_cache = {}
 _stock_alert_disabled_cache = set()
 ALERT_STATE = {}
+_tech_alert_summary_cache: dict[str, dict[str, Any]] = {}
 
 # --- CẤU HÌNH MARKET MONITOR (VN30F1M, VNINDEX, VN30) ---
 MARKET_MONITORS = {
@@ -539,6 +541,32 @@ def write_temp_json_file(filename: str, payload: dict | list | None) -> str | No
     except Exception as exc:
         log.error(f"Write temp JSON error ({filename}): {exc}")
         return None
+
+
+def _get_cached_tech_summary(symbol: str) -> str | None:
+    entry = _tech_alert_summary_cache.get(symbol)
+    if not entry:
+        return None
+
+    ts: datetime.datetime | None = entry.get("ts")
+    if not ts:
+        return None
+
+    age = datetime.datetime.now(datetime.timezone.utc) - ts
+    if age.total_seconds() > TECH_ALERT_CACHE_TTL_SECONDS:
+        _tech_alert_summary_cache.pop(symbol, None)
+        return None
+
+    return entry.get("text")
+
+
+def _set_cached_tech_summary(symbol: str, text: str) -> None:
+    if not symbol or not text:
+        return
+    _tech_alert_summary_cache[symbol] = {
+        "text": text,
+        "ts": datetime.datetime.now(datetime.timezone.utc),
+    }
 
 
 def _biz_cache_key(symbol: str) -> str:
@@ -2376,16 +2404,31 @@ async def _dispatch_symbol_tech_followup(chat_id: int, symbol_contexts: list[dic
     ts_iso = datetime.datetime.now(vn_tz).isoformat()
     request_id = str(uuid.uuid4())
 
+    cached_texts: dict[str, str] = {}
+    missing_symbols: list[str] = []
+    for symbol in unique_symbols:
+        cached = _get_cached_tech_summary(symbol)
+        if cached:
+            cached_texts[symbol] = cached
+        else:
+            missing_symbols.append(symbol)
+
     entries: dict[str, list[dict]] = {}
-    try:
-        agent_payload = await run_tech_agent(chat_id, request_id, ts_iso, unique_symbols)
-        raw_block = (agent_payload.get("raw_data") or {}) if agent_payload else {}
-        entries = raw_block.get("entries") or {}
-    except Exception as exc:
-        log.error(f"[{INSTANCE_ID}] ⚠️ Tech follow-up error: {exc}")
+    if missing_symbols:
+        try:
+            agent_payload = await run_tech_agent(chat_id, request_id, ts_iso, missing_symbols)
+            raw_block = (agent_payload.get("raw_data") or {}) if agent_payload else {}
+            entries = raw_block.get("entries") or {}
+        except Exception as exc:
+            log.error(f"[{INSTANCE_ID}] ⚠️ Tech follow-up error: {exc}")
 
     summaries: list[str] = []
     for symbol in unique_symbols:
+        cache_hit = cached_texts.get(symbol)
+        if cache_hit:
+            summaries.append(f"*{symbol}*: {cache_hit}")
+            continue
+
         record_list = entries.get(symbol) or []
         latest_record = record_list[-1] if record_list else None
         metrics = _collect_indicator_metrics(latest_record)
@@ -2400,6 +2443,8 @@ async def _dispatch_symbol_tech_followup(chat_id: int, symbol_contexts: list[dic
             log.warning(f"[{INSTANCE_ID}] ⚠️ AI tech summary failed for {symbol}: {exc}")
 
         final_line = ai_summary or deterministic
+        if final_line:
+            _set_cached_tech_summary(symbol, final_line)
         summaries.append(f"*{symbol}*: {final_line}")
 
     if not summaries:
