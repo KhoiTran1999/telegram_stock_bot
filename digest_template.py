@@ -2290,19 +2290,37 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 </div>
                 <div x-show="!personalizationLoading && personalizationFilteredNotesList.length" class="divide-y divide-slate-100 rounded-xl border border-slate-100" x-cloak>
                     <template x-for="item in personalizationVisibleNotes" :key="item.id || item.symbol">
-                        <div class="px-3 py-3 space-y-2 hover:bg-slate-50 transition">
-                            <div class="flex items-center justify-between gap-3">
-                                <div class="font-mono text-sm font-bold text-blue-600" x-text="item.symbol"></div>
-                                <div class="text-[11px] text-slate-400 text-right">
+                        <div class="px-3 py-3 space-y-2 hover:bg-slate-50 transition border-b border-slate-100 last:border-0 relative group">
+                            <div class="flex justify-between items-start gap-2">
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-mono text-sm font-extrabold text-blue-600" x-text="item.symbol"></span>
+                                        
+                                        <span class="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border"
+                                            :class="item.status === 'PENDING' ? 'bg-yellow-50 text-yellow-600 border-yellow-200' : (item.status === 'APPROVED' ? 'bg-green-50 text-green-600 border-green-200' : 'bg-red-50 text-red-600 border-red-200')" 
+                                            x-text="item.status"></span>
+                                    </div>
+
+                                    <div class="flex items-center gap-1 mt-1" x-show="item.contributor_id">
+                                        <i class="fa-solid fa-user text-[10px] text-slate-400"></i>
+                                        <span class="text-[10px] text-slate-500 font-bold" x-text="item.contributor_name || 'User ' + item.contributor_id"></span>
+                                        <span class="text-[9px] text-slate-300 font-mono bg-slate-100 px-1 rounded ml-1" x-text="'ID:' + item.contributor_id"></span>
+                                    </div>
+                                </div>
+
+                                <div class="text-[10px] text-slate-400 text-right">
                                     <span x-text="item.expires_at ? 'Hết hạn: ' + formatDateTime(item.expires_at) : 'Không hạn'" class="block"></span>
                                     <span x-text="item.updated_at ? 'Cập nhật: ' + formatDateTime(item.updated_at) : ''"></span>
                                 </div>
                             </div>
-                            <div class="text-sm text-slate-600 whitespace-pre-line" x-text="item.note"></div>
-                            <div class="flex justify-between items-center pt-1 text-[11px] text-slate-400">
-                                <span x-text="item.created_at ? 'Tạo: ' + formatDateTime(item.created_at) : ''"></span>
-                                <button @click="openPersonalizationModal(item)" class="text-xs font-bold text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-lg hover:bg-slate-100 active:scale-95">
-                                    Sửa
+
+                            <div class="text-sm text-slate-700 whitespace-pre-line pl-1" x-text="item.note"></div>
+
+                            <div class="flex justify-between items-center pt-2 mt-1 border-t border-dashed border-slate-100">
+                                <span class="text-[10px] text-slate-400" x-text="item.created_at ? 'Tạo: ' + formatDateTime(item.created_at) : ''"></span>
+                                
+                                <button @click="openPersonalizationModal(item)" class="text-xs font-bold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100 active:scale-95 shadow-sm">
+                                    <i class="fa-solid fa-pen mr-1"></i> Sửa
                                 </button>
                             </div>
                         </div>
@@ -2345,6 +2363,107 @@ ADMIN_MOBILE_TEMPLATE = r"""
             </div>
         </div>
 
+        <!-- TAB: MODERATION -->
+         <div x-show="activeTab === 'moderation'" class="p-4 space-y-4" x-cloak>
+            <div class="flex justify-between items-center mb-2">
+                <h2 class="text-lg font-bold text-slate-800">Duyệt Đóng Góp</h2>
+                <button @click="loadPendingNotes()" class="text-blue-600 text-xs font-bold bg-blue-50 px-3 py-1.5 rounded-lg active:scale-95">
+                    <i class="fa-solid fa-rotate-right mr-1"></i> Tải lại
+                </button>
+            </div>
+
+            <div x-show="!pendingNotes.length" class="text-center py-10 bg-white rounded-2xl border border-slate-100 border-dashed">
+                <div class="text-4xl mb-2">🎉</div>
+                <p class="text-sm text-slate-500 font-medium">Không có bài nào chờ duyệt.</p>
+            </div>
+
+            <div class="space-y-4">
+                <template x-for="note in pendingNotes" :key="note.id">
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                        <div class="bg-slate-50 px-4 py-2 border-b border-slate-100 flex justify-between items-center">
+                            <div class="flex items-center gap-2">
+                                <span class="bg-blue-600 text-white text-xs font-bold px-2 py-0.5 rounded font-mono" x-text="note.symbol"></span>
+                                <span class="text-xs text-slate-500 font-medium truncate max-w-[120px]" x-text="note.contributor_name"></span>
+                            </div>
+                            <span class="text-[10px] text-slate-400" x-text="formatDateShort(note.created_at)"></span>
+                        </div>
+                        
+                        <div class="p-4">
+                            <p class="text-sm text-slate-700 whitespace-pre-line mb-4" x-text="note.note"></p>
+                            
+                            <div class="grid grid-cols-2 gap-3">
+                                <button @click="openModerateModal(note, 'APPROVE')" 
+                                        class="py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-bold active:scale-95 flex justify-center items-center gap-1">
+                                    <i class="fa-solid fa-check"></i> Duyệt & Sửa
+                                </button>
+                                <button @click="openModerateModal(note, 'REJECT')" 
+                                        class="py-2 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-bold active:scale-95 flex justify-center items-center gap-1">
+                                    <i class="fa-solid fa-xmark"></i> Từ chối
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <div x-show="modTotalPages > 1" class="flex justify-center items-center gap-4 mt-4 pb-4" x-cloak>
+                <button @click="changeModPage(modCurrentPage - 1)" 
+                        :disabled="modCurrentPage <= 1"
+                        class="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 disabled:opacity-50 text-xs font-bold shadow-sm">
+                    Trước
+                </button>
+                <span class="text-xs font-bold text-slate-500" x-text="modCurrentPage + ' / ' + modTotalPages"></span>
+                <button @click="changeModPage(modCurrentPage + 1)" 
+                        :disabled="modCurrentPage >= modTotalPages"
+                        class="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 disabled:opacity-50 text-xs font-bold shadow-sm">
+                    Sau
+                </button>
+            </div>
+
+        </div>
+
+        <div x-show="modModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4" x-cloak>
+            <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-5" @click.away="modModalOpen = false">
+                
+                <h3 class="text-lg font-bold mb-1" :class="modAction === 'APPROVE' ? 'text-green-600' : 'text-red-600'"
+                    x-text="modAction === 'APPROVE' ? 'Duyệt bài đăng' : 'Từ chối bài đăng'"></h3>
+                <p class="text-xs text-slate-400 mb-4">Hành động này sẽ gửi thông báo đến người đóng góp.</p>
+
+                <div class="space-y-3">
+                    <div x-show="modAction === 'APPROVE'">
+                        <label class="text-[10px] font-bold text-slate-500 uppercase">Nội dung (Sửa nếu cần)</label>
+                        <textarea x-model="modForm.note" rows="4" 
+                                  @click.stop
+                                  class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm focus:ring-2 focus:ring-green-500 outline-none"></textarea>
+                        
+                        <label class="text-[10px] font-bold text-slate-500 uppercase mt-2 block">Hết hạn (Optional)</label>
+                        <input type="datetime-local" x-model="modForm.expires_at" 
+                               @click.stop
+                               class="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm">
+                    </div>
+
+                    <div x-show="modAction === 'REJECT'">
+                        <label class="text-[10px] font-bold text-slate-500 uppercase">Lý do từ chối (Gửi cho user)</label>
+                        <textarea id="rejectReasonInput"
+                                  x-model="modForm.admin_comment" 
+                                  rows="3" 
+                                  @click.stop 
+                                  class="w-full bg-red-50 border border-red-200 rounded-lg p-2 text-sm text-slate-800 focus:ring-2 focus:ring-red-500 outline-none placeholder-red-300" 
+                                  placeholder="VD: Nội dung quá ngắn, không chính xác..."></textarea>
+                    </div>
+
+                    <div class="flex gap-3 pt-2">
+                        <button @click="modModalOpen = false" class="flex-1 py-2.5 bg-slate-100 text-slate-500 font-bold text-sm rounded-xl">Hủy</button>
+                        <button @click="submitModerate()" 
+                                class="flex-1 py-2.5 text-white font-bold text-sm rounded-xl shadow-lg active:scale-95 transition"
+                                :class="modAction === 'APPROVE' ? 'bg-green-600 shadow-green-200' : 'bg-red-600 shadow-red-200'">
+                            <span x-text="modAction === 'APPROVE' ? 'Xác nhận Duyệt' : 'Xác nhận Từ chối'"></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <!-- BOTTOM NAVIGATION -->
@@ -2364,6 +2483,11 @@ ADMIN_MOBILE_TEMPLATE = r"""
         <button @click="activeTab = 'data'; loadPersonalizationNotes()" :class="activeTab === 'data' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
             <i class="fa-solid fa-database text-xl"></i>
             <span class="text-[10px] font-bold">Data</span>
+        </button>
+        <button @click="activeTab = 'moderation'; loadPendingNotes()" :class="activeTab === 'moderation' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-14 transition-colors relative">
+            <i class="fa-solid fa-list-check text-lg"></i>
+            <span class="text-[9px] font-bold">Duyệt</span>
+            <div x-show="pendingNotes.length > 0" class="absolute top-1 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white" x-cloak></div>
         </button>
     </div>
 
@@ -2729,6 +2853,97 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     const end = Math.min(total, start + this.personalizationPageSize - 1);
                     return `Hiển thị ${start}-${end} / ${total}`;
                 },
+                // --- MODERATION DATA (CHÈN THÊM VÀO ĐÂY) ---
+                pendingNotes: [],
+                modModalOpen: false,
+                modAction: '', // APPROVE / REJECT
+                modForm: { note_id: null, note: '', expires_at: '', admin_comment: '' },
+                modCurrentPage: 1,
+                modTotalPages: 1,
+                // --- MODERATION LOGIC ---
+                async loadPendingNotes(page = 1) {
+                    try {
+                        const res = await fetch(`/api/admin/contributions/pending?admin_id=${this.adminId}&page=${page}`, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                        });
+                        const payload = await res.json();
+                        if(payload.ok) {
+                            this.pendingNotes = payload.data;
+                            this.modCurrentPage = payload.pagination.current_page;
+                            this.modTotalPages = payload.pagination.total_pages;
+                        }
+                    } catch(e) { console.error(e); }
+                },
+
+                // Hàm chuyển trang
+                changeModPage(page) {
+                    if (page < 1 || page > this.modTotalPages) return;
+                    this.loadPendingNotes(page);
+                },
+
+                openModerateModal(note, action) {
+                    this.modAction = action;
+                    
+                    // Reset form sạch sẽ để tránh lỗi binding
+                    this.modForm = {
+                        note_id: note.id,
+                        note: note.note || '', // Đảm bảo không null
+                        expires_at: note.expires_at ? note.expires_at.slice(0,16) : '',
+                        admin_comment: '' // <--- QUAN TRỌNG: Phải reset về rỗng để điền mới
+                    };
+                    
+                    this.modModalOpen = true;
+                    
+                    // Hack nhỏ: Tự động focus vào ô textarea sau khi modal hiện
+                    if (action === 'REJECT') {
+                        setTimeout(() => {
+                            const el = document.getElementById('rejectReasonInput');
+                            if(el) el.focus();
+                        }, 100);
+                    }
+                },
+
+                async submitModerate() {
+                    this.isLoading = true;
+                    try {
+                        const body = {
+                            admin_id: this.adminId,
+                            note_id: this.modForm.note_id,
+                            action: this.modAction,
+                            note: this.modForm.note,
+                            expires_at: this.modForm.expires_at,
+                            admin_comment: this.modForm.admin_comment
+                        };
+
+                        const res = await fetch('/api/admin/contributions/moderate', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify(body)
+                        });
+                        
+                        const result = await res.json();
+                        if (result.ok) {
+                            alert(this.modAction === 'APPROVE' ? '✅ Đã duyệt!' : '☑️ Đã từ chối.');
+                            this.modModalOpen = false;
+                            this.loadPendingNotes();
+                            // Reload Data tab nếu đang mở
+                            if(this.loadPersonalizationNotes) this.loadPersonalizationNotes(true);
+                        } else {
+                            alert('Lỗi: ' + result.message);
+                        }
+                    } catch(e) { alert('Lỗi mạng'); }
+                    finally { this.isLoading = false; }
+                },
+                
+                // Helper format ngày giờ ngắn gọn cho list
+                formatDateShort(iso) {
+                    if(!iso) return '';
+                    const d = new Date(iso);
+                    return d.getDate() + '/' + (d.getMonth()+1) + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+                },
 
                 init() {
                     // Fallback: Get Admin ID from URL if template injection failed
@@ -2756,6 +2971,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     if (this.adminId) {
                         this.refreshUsers();
                         this.loadPersonalizationNotes();
+                        this.loadPendingNotes();
                     }
                 },
 
@@ -3676,4 +3892,300 @@ SCREENER_WEBAPP_TEMPLATE = r"""
 </body>
 </html>
 """
+
+#-------------------------------------
+
+CONTRIBUTE_HTML_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Đóng Góp Kiến Thức</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #F8FAFC; }
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body x-data="contributeApp()" class="pb-10">
+    
+    <div class="bg-white px-4 py-4 shadow-sm border-b border-gray-100 sticky top-0 z-10">
+        <div class="flex justify-between items-center">
+            <h1 class="text-lg font-bold text-slate-800">Đóng góp của bạn</h1>
+            <button @click="openModal()" class="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-semibold shadow-md active:scale-95 transition">
+                <i class="fa-solid fa-pen mr-1"></i> Viết mới
+            </button>
+        </div>
+    </div>
+
+    <div class="p-4 space-y-3">
+        <div x-show="loading" class="text-center py-8 text-slate-400">
+            <i class="fa-solid fa-circle-notch animate-spin text-2xl"></i>
+        </div>
+
+        <div x-show="!loading && notes.length === 0" class="text-center py-10" x-cloak>
+            <div class="bg-blue-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-3 text-blue-500 text-2xl">
+                <i class="fa-regular fa-lightbulb"></i>
+            </div>
+            <h3 class="text-slate-700 font-bold">Chưa có đóng góp nào</h3>
+            <p class="text-slate-400 text-sm mt-1 px-6">Hãy chia sẻ kiến thức về các mã cổ phiếu để giúp cộng đồng đầu tư tốt hơn!</p>
+        </div>
+
+        <template x-for="note in notes" :key="note.id">
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative group">
+                <div class="flex justify-between items-start mb-2">
+                    <span class="font-mono font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-sm" x-text="note.symbol"></span>
+                    <span class="text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wide"
+                          :class="{
+                              'bg-yellow-100 text-yellow-700': note.status === 'PENDING',
+                              'bg-green-100 text-green-700': note.status === 'APPROVED',
+                              'bg-red-100 text-red-700': note.status === 'REJECTED'
+                          }"
+                          x-text="statusLabel(note.status)"></span>
+                </div>
+                
+                <div x-data="{ expanded: false }">
+                    <p class="text-slate-600 text-sm whitespace-pre-line break-words mb-1" 
+                       :class="expanded ? '' : 'line-clamp-3'" 
+                       x-text="note.note"></p>
+                    
+                    <button x-show="note.note.length > 150" 
+                            @click="expanded = !expanded" 
+                            class="text-[11px] font-bold text-blue-500 hover:underline mb-3 block focus:outline-none">
+                        <span x-text="expanded ? 'Thu gọn' : 'Xem thêm...'"></span>
+                    </button>
+                </div>
+                
+                <div x-show="note.admin_comment" class="bg-red-50 p-2 rounded-lg text-xs text-red-600 mb-3 border border-red-100">
+                    <span class="font-bold"><i class="fa-solid fa-circle-info mr-1"></i>Admin:</span>
+                    <span x-text="note.admin_comment"></span>
+                </div>
+
+                <div class="flex justify-between items-center text-xs text-slate-400 pt-2 border-t border-slate-50">
+                    <span x-text="formatDate(note.updated_at || note.created_at)"></span>
+                    
+                    <div class="flex gap-3">
+                        <template x-if="note.status === 'PENDING'">
+                            <div class="flex gap-3">
+                                <button @click="openModal(note)" class="text-slate-500 font-bold hover:text-blue-600 transition">Sửa</button>
+                                <button @click="deleteNote(note.id)" class="text-slate-500 font-bold hover:text-red-500 transition">Xóa</button>
+                            </div>
+                        </template>
+
+                        <template x-if="note.status === 'APPROVED'">
+                            <span class="text-green-600 font-bold flex items-center gap-1">
+                                <i class="fa-solid fa-lock"></i> Đã khóa
+                            </span>
+                        </template>
+
+                        <template x-if="note.status === 'REJECTED'">
+                            <span class="text-red-400 font-medium italic">
+                                Tự xóa sau 7 ngày
+                            </span>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </template>
+        <div x-show="totalPages > 1" class="flex justify-center items-center gap-4 mt-6 pt-4 border-t border-slate-100" x-cloak>
+            <button @click="changePage(currentPage - 1)" 
+                    :disabled="currentPage <= 1"
+                    class="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-sm">
+                <i class="fa-solid fa-chevron-left"></i>
+            </button>
+            
+            <span class="text-sm font-bold text-slate-600">
+                Trang <span x-text="currentPage"></span> / <span x-text="totalPages"></span>
+            </span>
+            
+            <button @click="changePage(currentPage + 1)" 
+                    :disabled="currentPage >= totalPages"
+                    class="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95 shadow-sm">
+                <i class="fa-solid fa-chevron-right"></i>
+            </button>
+        </div>
+    </div>
+
+    <div x-show="isModalOpen" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm" x-cloak>
+        <div class="bg-white w-full sm:max-w-md p-5 rounded-t-2xl sm:rounded-2xl shadow-2xl" @click.away="closeModal()">
+            <h3 class="text-lg font-bold text-slate-800 mb-4" x-text="form.id ? 'Chỉnh sửa đóng góp' : 'Đóng góp mới'"></h3>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">Mã cổ phiếu</label>
+                    <input type="text" x-model="form.symbol" 
+                           :disabled="!!form.id" 
+                           placeholder="VD: HPG" 
+                           maxlength="3"
+                           @input="form.symbol = form.symbol.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)"
+                           class="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm font-bold uppercase focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-60 caret-blue-600">
+                </div>
+                
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">Nội dung</label>
+                    
+                    <textarea x-model="form.note" rows="5" maxlength="1000" 
+                              placeholder="Chia sẻ góc nhìn, thông tin nội bộ hoặc phân tích của bạn..."
+                              class="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none caret-blue-600"></textarea>
+                    
+                    <div class="flex justify-between mt-1">
+                        <span class="text-[10px] text-red-500" x-show="form.note.length > 0 && form.note.length < 10">Tối thiểu 10 ký tự</span>
+                        <span class="text-[10px] text-slate-400 ml-auto" x-text="form.note.length + '/1000'"></span>
+                    </div>
+                </div
+
+                <div class="bg-yellow-50 text-yellow-700 p-3 rounded-lg text-xs flex items-start gap-2 mb-4">
+                    <div class="text-sm">⚠️ Lưu ý: Khi bài viết đã được <b class="text-green-600">Duyệt</b> hoặc <b class="text-red-400">Từ chối</b>, bạn không thể chỉnh sửa hoặc xóa nó nữa.</div>
+                </div>
+
+                <button @click="saveNote()" 
+                        class="w-full mt-4 bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 active:scale-95 transition flex justify-center items-center gap-2"
+                        :disabled="isSaving" :class="isSaving ? 'opacity-70' : ''">
+                    <span x-show="isSaving" class="animate-spin"><i class="fa-solid fa-circle-notch"></i></span>
+                    <span x-text="isSaving ? 'Đang gửi...' : 'Gửi cho Admin'"></span>
+                </button>
+                
+                <button @click="closeModal()" class="w-full text-slate-400 text-sm font-bold py-2">Hủy bỏ</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chatId = new URLSearchParams(window.location.search).get('chat_id');
+
+        function contributeApp() {
+            return {
+                loading: false,
+                isSaving: false,
+                isModalOpen: false,
+                notes: [],
+                currentPage: 1,
+                totalPages: 1,
+                form: { id: null, symbol: '', note: '', status: '' },
+
+                init() {
+                    Telegram.WebApp.ready();
+                    Telegram.WebApp.expand();
+                    this.loadNotes();
+                },
+
+                async loadNotes(page = 1) { // Nhận tham số page
+                    this.loading = true;
+                    try {
+                        const res = await fetch(`/api/user/contributions?chat_id=${chatId}&page=${page}`, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                        });
+                        const payload = await res.json();
+                        
+                        if (payload.ok) {
+                            this.notes = payload.data;
+                            // Cập nhật phân trang
+                            this.currentPage = payload.pagination.current_page;
+                            this.totalPages = payload.pagination.total_pages;
+                        }
+                    } catch (e) { alert('Lỗi tải dữ liệu'); }
+                    finally { this.loading = false; }
+                },
+
+                changePage(page) {
+                    if (page < 1 || page > this.totalPages) return;
+                    this.loadNotes(page);
+                    window.scrollTo({ top: 0, behavior: 'smooth' }); // Cuộn lên đầu
+                },
+
+                openModal(note = null) {
+                    if (note && note.status !== 'PENDING') {
+                        alert("Bạn không thể sửa bài đã được xử lý.");
+                        return;
+                    }
+                    if (note) {
+                        this.form = { ...note }; // Clone data
+                    } else {
+                        this.form = { id: null, symbol: '', note: '', status: '' };
+                    }
+                    this.isModalOpen = true;
+                },
+
+                closeModal() {
+                    this.isModalOpen = false;
+                },
+
+                async saveNote() {
+                    // CẬP NHẬT LOGIC VALIDATE TẠI ĐÂY
+                    const noteContent = (this.form.note || '').trim();
+                    const symbol = (this.form.symbol || '').trim();
+
+                    if (!symbol) return alert("Vui lòng nhập mã cổ phiếu");
+                    if (!noteContent) return alert("Vui lòng nhập nội dung");
+                    
+                    if (noteContent.length < 10) {
+                        return alert("Nội dung quá ngắn. Vui lòng viết ít nhất 10 ký tự để đóng góp có ý nghĩa hơn.");
+                    }
+                    if (noteContent.length > 5000) {
+                        return alert("Nội dung quá dài (Tối đa 5000 ký tự).");
+                    }
+                    
+                    this.isSaving = true;
+                    try {
+                        const res = await fetch('/api/user/contribute/save', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true' // <--- THÊM DÒNG NÀY
+                            },
+                            body: JSON.stringify({
+                                chat_id: chatId,
+                                ...this.form
+                            })
+                        });
+                        const result = await res.json();
+                        if (result.ok) {
+                            this.closeModal();
+                            this.loadNotes();
+                            if(window.Telegram?.WebApp?.HapticFeedback) 
+                                Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+                        } else {
+                            alert(result.message);
+                        }
+                    } catch (e) { alert('Lỗi kết nối'); }
+                    finally { this.isSaving = false; }
+                },
+
+                async deleteNote(id) {
+                    if(!confirm("Bạn chắc chắn muốn xóa?")) return;
+                    try {
+                        await fetch('/api/user/contribute/delete', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true' // <--- THÊM DÒNG NÀY
+                            },
+                            body: JSON.stringify({ chat_id: chatId, note_id: id })
+                        });
+                        this.loadNotes();
+                    } catch(e) { alert('Lỗi xóa'); }
+                },
+
+                statusLabel(status) {
+                    if (status === 'APPROVED') return 'Đã duyệt';
+                    if (status === 'REJECTED') return 'Từ chối';
+                    return 'Chờ duyệt';
+                },
+
+                formatDate(iso) {
+                    if(!iso) return '';
+                    const d = new Date(iso);
+                    return d.toLocaleDateString('vi-VN') + ' ' + d.toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'});
+                }
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
 

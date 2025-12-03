@@ -1168,6 +1168,9 @@ CORE_TABLES = [
     "stock_personalization"# 📝 Ghi chú từng mã cổ phiếu
 ]
 
+# ==========================================
+# STOCK PERSONALIZATION (GHI CHÚ CỔ PHIẾU)
+
 def _normalize_symbol(symbol: str | None) -> str:
     return (symbol or "").strip().upper()
 
@@ -1175,23 +1178,28 @@ def create_stock_personalization(
     symbol: str,
     note: str,
     expires_at: datetime.datetime | None = None,
+    submitted_by: int | None = None,
+    status: str = 'PENDING'  # <--- Sửa mặc định thành PENDING để an toàn
 ) -> dict:
+    """
+    Tạo ghi chú cá nhân hóa.
+    Lưu ý: status mặc định là PENDING để tránh auto-approve nếu quên truyền tham số.
+    """
     sym = _normalize_symbol(symbol)
     note_text = (note or "").strip()
-    if not sym:
-        raise ValueError("Symbol trống")
-    if not note_text:
-        raise ValueError("Ghi chú trống")
+    if not sym: raise ValueError("Symbol trống")
+    if not note_text: raise ValueError("Ghi chú trống")
 
     with get_conn() as conn:
         with conn.cursor(row_factory=rows.dict_row) as cur:
+            # QUAN TRỌNG: Câu lệnh INSERT phải có cột 'status' và 'submitted_by'
             cur.execute(
                 """
-                INSERT INTO stock_personalization (symbol, note, expires_at)
-                VALUES (%s, %s, %s)
-                RETURNING id, symbol, note, expires_at, created_at, updated_at
+                INSERT INTO stock_personalization (symbol, note, expires_at, submitted_by, status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+                RETURNING id, symbol, note, expires_at, status, admin_comment, created_at
                 """,
-                (sym, note_text, expires_at),
+                (sym, note_text, expires_at, submitted_by, status),
             )
             row = cur.fetchone()
         conn.commit()
@@ -1201,26 +1209,41 @@ def update_stock_personalization(
     note_id: int,
     note: str,
     expires_at: datetime.datetime | None = None,
+    status: str | None = None, # Nếu None -> Giữ nguyên, Nếu User sửa -> set PENDING
+    admin_comment: str | None = None
 ) -> dict | None:
     note_text = (note or "").strip()
-    if not note_id:
-        raise ValueError("Thiếu note_id")
-    if not note_text:
-        raise ValueError("Ghi chú trống")
+    if not note_id: raise ValueError("Thiếu note_id")
+    if not note_text: raise ValueError("Ghi chú trống")
+
+    # Build query động để chỉ update những trường cần thiết
+    updates = ["note = %s", "updated_at = NOW()"]
+    params = [note_text]
+
+    if expires_at is not None:
+        updates.append("expires_at = %s")
+        params.append(expires_at)
+    
+    if status is not None:
+        updates.append("status = %s")
+        params.append(status)
+        
+    if admin_comment is not None:
+        updates.append("admin_comment = %s")
+        params.append(admin_comment)
+
+    params.append(note_id)
+    
+    query = f"""
+        UPDATE stock_personalization
+        SET {", ".join(updates)}
+        WHERE id = %s
+        RETURNING id, symbol, note, expires_at, status, admin_comment
+    """
 
     with get_conn() as conn:
         with conn.cursor(row_factory=rows.dict_row) as cur:
-            cur.execute(
-                """
-                UPDATE stock_personalization
-                SET note = %s,
-                    expires_at = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING id, symbol, note, expires_at, created_at, updated_at
-                """,
-                (note_text, expires_at, note_id),
-            )
+            cur.execute(query, tuple(params))
             row = cur.fetchone()
         conn.commit()
     return row
@@ -1234,19 +1257,33 @@ def delete_stock_personalization(note_id: int) -> None:
         conn.commit()
 
 def list_stock_personalizations(include_expired: bool = False) -> list[dict]:
-    condition = "" if include_expired else "WHERE expires_at IS NULL OR expires_at >= NOW()"
-    query = (
-        "SELECT id, symbol, note, expires_at, created_at, updated_at "
-        "FROM stock_personalization "
-        + condition +
-        " ORDER BY updated_at DESC"
-    )
+    """
+    Lấy danh sách ghi chú cho Admin (Tab Data).
+    CẬP NHẬT: Chỉ lấy các bản ghi có status = 'APPROVED'.
+    """
+    # 1. Điều kiện thời gian (Hết hạn hay chưa)
+    time_condition = "(s.expires_at IS NULL OR s.expires_at >= NOW())"
+    if include_expired:
+        time_condition = "1=1" # Lấy tất cả, bỏ qua check ngày
 
+    # 2. Điều kiện trạng thái: CHỈ LẤY APPROVED
+    status_condition = "s.status = 'APPROVED'"
+
+    query = f"""
+        SELECT 
+            s.id, s.symbol, s.note, s.expires_at, s.created_at, s.updated_at, s.status, s.submitted_by,
+            COALESCE(u.full_name, u.username, 'User ' || s.submitted_by::text) as contributor_name,
+            s.submitted_by as contributor_id
+        FROM stock_personalization s
+        LEFT JOIN users u ON s.submitted_by = u.chat_id
+        WHERE {time_condition} AND {status_condition}
+        ORDER BY s.updated_at DESC
+    """
+    
     with get_conn() as conn:
         with conn.cursor(row_factory=rows.dict_row) as cur:
             cur.execute(query)
-            rows_data = cur.fetchall()
-    return rows_data
+            return cur.fetchall()
 
 def get_stock_personalization_map(
     symbols: list[str] | None,
@@ -1264,12 +1301,14 @@ def get_stock_personalization_map(
         return {}
 
     placeholders = ",".join(["%s"] * len(normalized))
-    condition = ""
+    
+    # THÊM ĐIỀU KIỆN: status = 'APPROVED'
+    condition = "AND status = 'APPROVED'" 
     if not include_expired:
-        condition = "AND (expires_at IS NULL OR expires_at >= NOW())"
+        condition += " AND (expires_at IS NULL OR expires_at >= NOW())"
 
     query = (
-        "SELECT id, symbol, note, expires_at, created_at, updated_at "
+        "SELECT id, symbol, note, expires_at, created_at, updated_at, submitted_by "
         "FROM stock_personalization "
         f"WHERE symbol IN ({placeholders}) "
         + condition +
@@ -1284,29 +1323,92 @@ def get_stock_personalization_map(
     result: dict[str, list[dict]] = {}
     for row in rows_data:
         sym = row.get("symbol")
-        if not sym:
-            continue
+        if not sym: continue
         result.setdefault(sym, []).append(row)
     return result
 
-def cleanup_expired_stock_personalizations(
-    now: datetime.datetime | None = None,
-) -> int:
+def cleanup_expired_stock_personalizations(now: datetime.datetime | None = None) -> int:
+    """
+    Xóa các note đã hết hạn:
+    1. Note có expires_at < NOW (thường là APPROVED do Admin set).
+    2. Note có status = 'REJECTED' và updated_at < NOW - 7 ngày.
+    """
     ts = now or datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=datetime.timezone.utc)
-    else:
-        ts = ts.astimezone(datetime.timezone.utc)
-
+    
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # Logic xóa gộp: (Hết hạn) HOẶC (Bị từ chối quá 7 ngày)
             cur.execute(
-                "DELETE FROM stock_personalization WHERE expires_at IS NOT NULL AND expires_at < %s",
-                (ts,),
+                """
+                DELETE FROM stock_personalization 
+                WHERE (expires_at IS NOT NULL AND expires_at < %s)
+                   OR (status = 'REJECTED' AND updated_at < %s - INTERVAL '7 days')
+                """,
+                (ts, ts),
             )
             deleted = cur.rowcount or 0
         conn.commit()
     return deleted
+
+def list_user_contributions(user_id: int, limit: int = 10, offset: int = 0) -> dict:
+    """
+    Lấy danh sách đóng góp của user (Hỗ trợ phân trang).
+    Trả về dict {'rows': [...], 'total': int}
+    """
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            # Dùng COUNT(*) OVER() để lấy tổng số dòng
+            cur.execute("""
+                SELECT 
+                    id, symbol, note, expires_at, status, admin_comment, created_at, updated_at,
+                    COUNT(*) OVER() as total_count
+                FROM stock_personalization
+                WHERE submitted_by = %s
+                ORDER BY updated_at DESC
+                LIMIT %s OFFSET %s
+            """, (user_id, limit, offset))
+            rows_data = cur.fetchall()
+            
+            # Lấy total từ dòng đầu tiên nếu có
+            total = rows_data[0]['total_count'] if rows_data else 0
+            
+            return {'rows': rows_data, 'total': total}
+        
+def list_pending_notes_for_admin(limit: int = 10, offset: int = 0) -> dict:
+    """
+    Lấy danh sách chờ duyệt cho Admin (Hỗ trợ phân trang).
+    FIX LỖI: takes 0 positional arguments but 2 were given
+    """
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute("""
+                SELECT 
+                    s.id, s.symbol, s.note, s.status, s.expires_at, s.created_at,
+                    s.submitted_by,
+                    COALESCE(u.full_name, u.username, 'User ' || s.submitted_by::text) as contributor_name,
+                    COUNT(*) OVER() as total_count
+                FROM stock_personalization s
+                LEFT JOIN users u ON s.submitted_by = u.chat_id
+                WHERE s.status = 'PENDING'
+                ORDER BY s.created_at ASC
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
+            rows_data = cur.fetchall()
+            
+            total = rows_data[0]['total_count'] if rows_data else 0
+            
+            return {'rows': rows_data, 'total': total}
+
+def get_personalization_note_by_id(note_id: int) -> dict | None:
+    """Lấy chi tiết 1 note để check quyền sở hữu và trạng thái"""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute("SELECT * FROM stock_personalization WHERE id = %s", (note_id,))
+            return cur.fetchone()
+
+# ----------------------------------------------
+# THEO DÕI THÁNG ĐÃ RESTORE CORE
+# ----------------------------------------------
 
 
 def export_core_data():
@@ -1514,9 +1616,6 @@ def import_core_data(payload: dict, mode: str = "replace"):
 
         conn.commit()
 
-# ----------------------------------------------
-# THEO DÕI THÁNG ĐÃ RESTORE CORE
-# ----------------------------------------------
 
 def _normalize_bot_config_value(value):
     """

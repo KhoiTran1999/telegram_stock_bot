@@ -27,6 +27,7 @@ from digest_template import (
     EOD_404_TEMPLATE,
     FLASH_VIEW_HTML_TEMPLATE,
     ADMIN_MOBILE_TEMPLATE,
+    CONTRIBUTE_HTML_TEMPLATE
 )
 # --- GLOBAL VARIABLES ---
 _vci_blocked_date = None
@@ -111,6 +112,9 @@ from db_utils import (
     update_stock_personalization,
     delete_stock_personalization,
     cleanup_expired_stock_personalizations,
+    list_user_contributions,
+    list_pending_notes_for_admin,
+    get_personalization_note_by_id,
 )
 import psutil
 import time
@@ -926,6 +930,21 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
+    elif data == "menu_contribute":
+        # 1. Check Pro
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        
+        if not is_pro:
+            await query.answer("⚠️ Chỉ dành cho thành viên Pro!", show_alert=True)
+            return
+
+        # 2. Tạo URL WebApp
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        web_app_url = f"{base_url}/webapp/contribute?chat_id={chat_id}"
+        
+        kb = [[InlineKeyboardButton("✍️ Mở trang Đóng Góp", web_app=WebAppInfo(url=web_app_url))]]
+        await safe_edit_message(query, "💡 **Đóng góp kiến thức**\n\nChia sẻ hiểu biết của bạn về cổ phiếu để cộng đồng cùng phát triển. Các đóng góp hay sẽ được Admin duyệt và đưa vào hệ thống AI.", InlineKeyboardMarkup(kb))
+
     elif data.startswith("btn_info_"):
         # 1. Báo cho Telegram biết đã nhận lệnh (Tắt vòng quay loading trên nút)
         await query.answer("⏳ Đang lấy dữ liệu...")
@@ -1590,6 +1609,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
             InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
+        ],
+        [
+            InlineKeyboardButton("✍️ Đóng góp", callback_data="menu_contribute")
         ]
     ]
 
@@ -4017,6 +4039,9 @@ async def api_admin_personalization_list():
                 "id": row.get("id"),
                 "symbol": row.get("symbol"),
                 "note": row.get("note"),
+                "status": row.get("status"), # Thêm status để biết
+                "contributor_name": row.get("contributor_name"), # MỚI
+                "contributor_id": row.get("contributor_id"),     # MỚI
                 "expires_at": row.get("expires_at").isoformat() if row.get("expires_at") else None,
                 "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
                 "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
@@ -4089,6 +4114,279 @@ async def api_admin_personalization_delete():
         return jsonify({"ok": True})
     except Exception as e:
         log.error(f"[ADMIN_API] Personalization delete error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/contributions/pending", methods=["GET"])
+async def api_admin_list_pending():
+    """Lấy danh sách chờ duyệt cho Admin (Phân trang)"""
+    try:
+        req_admin_id = request.args.get("admin_id")
+        page = int(request.args.get("page", 1))
+        limit = 10
+        offset = (page - 1) * limit
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        result = await asyncio.to_thread(list_pending_notes_for_admin, limit, offset)
+        
+        rows = result['rows']
+        total_records = result['total']
+        total_pages = math.ceil(total_records / limit) if limit > 0 else 1
+        
+        # Serialize
+        for r in rows:
+            for k in ['created_at', 'expires_at']:
+                if r.get(k): r[k] = r[k].isoformat()
+            if 'total_count' in r: del r['total_count']
+                
+        return jsonify({
+            "ok": True, 
+            "data": rows,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_records": total_records
+            }
+        })
+    except Exception as e:
+        log.error(f"[ADMIN_API] List Pending Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/contributions/moderate", methods=["POST"])
+async def api_admin_moderate():
+    """Admin Duyệt / Từ chối / Sửa bài đóng góp"""
+    try:
+        data = request.get_json()
+        req_admin_id = data.get("admin_id")
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        note_id = int(data.get("note_id"))
+        action = data.get("action") # 'APPROVE' hoặc 'REJECT'
+        
+        # Admin có thể sửa nội dung và hạn sử dụng ngay lúc duyệt
+        new_note = data.get("note") 
+        new_expiry = _parse_admin_datetime(data.get("expires_at"))
+        admin_comment = data.get("admin_comment", "")
+
+        status = 'APPROVED' if action == 'APPROVE' else 'REJECTED'
+        
+        # 1. Update DB
+        row = await asyncio.to_thread(
+            update_stock_personalization,
+            note_id=note_id,
+            note=new_note,
+            expires_at=new_expiry,
+            status=status,
+            admin_comment=admin_comment
+        )
+        
+        # 2. Gửi thông báo cho User (Contributor)
+        if row and row.get('submitted_by'):
+            user_id = row['submitted_by']
+            symbol = row['symbol']
+            
+            if action == 'APPROVE':
+                msg = f"✅ **Đóng góp được duyệt!**\nGhi chú của bạn về mã **{symbol}** đã được Admin thông qua và đưa vào hệ thống AI. Cảm ơn bạn! 🌟"
+            else:
+                msg = f"❌ **Đóng góp bị từ chối**\nGhi chú về mã **{symbol}** không được duyệt.\nLý do: _{admin_comment}_"
+
+            if tg_app and MAIN_LOOP:
+                asyncio.run_coroutine_threadsafe(
+                    send_md(tg_app.bot, user_id, msg),
+                    MAIN_LOOP
+                )
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Moderate Error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+# --- USER CONTRIBUTION WEBAPP ROUTES ---
+
+@flask_app.route("/webapp/contribute")
+async def view_contribute_webapp():
+    """Hiển thị giao diện WebApp cho user"""
+    # Không cần check logic phức tạp ở đây vì API sẽ check lại chat_id
+    return render_template_string(CONTRIBUTE_HTML_TEMPLATE)
+
+@flask_app.route("/api/user/contributions", methods=["GET"])
+async def api_user_contributions():
+    """Lấy danh sách đóng góp của user (Phân trang)"""
+    try:
+        chat_id_str = request.args.get("chat_id")
+        page = int(request.args.get("page", 1))
+        limit = 10 # Số lượng mỗi trang
+        offset = (page - 1) * limit
+
+        if not chat_id_str: return jsonify({"ok": False, "message": "Missing chat_id"})
+        
+        chat_id = int(chat_id_str)
+        
+        # Check quyền Pro... (giữ nguyên)
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        if not is_pro: return jsonify({"ok": False, "message": "Pro only"})
+
+        # Gọi hàm mới trả về dict {rows, total}
+        result = await asyncio.to_thread(list_user_contributions, chat_id, limit, offset)
+        
+        rows = result['rows']
+        total_records = result['total']
+        total_pages = math.ceil(total_records / limit) if limit > 0 else 1
+
+        # Format ngày tháng
+        data = []
+        for r in rows:
+            r['created_at'] = r['created_at'].isoformat() if r['created_at'] else None
+            r['updated_at'] = r['updated_at'].isoformat() if r['updated_at'] else None
+            r['expires_at'] = r['expires_at'].isoformat() if r['expires_at'] else None
+            # Xóa field total_count thừa trong từng row để JSON nhẹ hơn
+            if 'total_count' in r: del r['total_count']
+            data.append(r)
+            
+        return jsonify({
+            "ok": True, 
+            "data": data,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_records": total_records
+            }
+        })
+    except Exception as e:
+        log.error(f"List contributions error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/user/contribute/save", methods=["POST"])
+async def api_user_save_note():
+    """
+    User thêm mới hoặc sửa note.
+    CẬP NHẬT: Thêm kiểm tra mã cổ phiếu tồn tại (Validate Existence).
+    """
+    try:
+        data = request.get_json()
+        chat_id = int(data.get("chat_id"))
+        
+        # Lấy và chuẩn hóa mã
+        raw_symbol = data.get("symbol", "")
+        symbol = _normalize_symbol(raw_symbol)
+        
+        note = data.get("note", "").strip()
+        note_id = data.get("id") # Nếu có ID là sửa, không có là tạo mới
+
+        # 1. Check quyền Pro
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        if not is_pro: return jsonify({"ok": False, "message": "Tính năng chỉ dành cho gói Pro."})
+
+        # 2. Validate độ dài nội dung
+        if len(note) < 10:
+            return jsonify({"ok": False, "message": "Nội dung quá ngắn (tối thiểu 10 ký tự)."})
+        if len(note) > 1000:
+            return jsonify({"ok": False, "message": "Nội dung quá dài (tối đa 1000 ký tự)."})
+
+        # 3. Validate định dạng Mã (3 ký tự)
+        if len(symbol) != 3:
+            return jsonify({"ok": False, "message": "Mã cổ phiếu không hợp lệ (Phải đúng 3 ký tự)."})
+
+        # --- 4. KIỂM TRA MÃ TỒN TẠI (LOGIC MỚI) ---
+        # Chỉ cần kiểm tra khi TẠO MỚI (vì khi sửa thì mã đã cố định và đã được check trước đó)
+        if not note_id:
+            try:
+                # Gọi hàm fetch_data_smart có sẵn trong gateway.py
+                market_data = await fetch_data_smart([symbol])
+                
+                # Check A: Không có dữ liệu trả về -> Mã sai
+                if not market_data or symbol not in market_data:
+                    return jsonify({"ok": False, "message": f"Mã '{symbol}' không tồn tại trên sàn chứng khoán."})
+                
+                # Check B: Dữ liệu bị rỗng/giá = 0 -> Mã hủy niêm yết hoặc lỗi
+                info = market_data.get(symbol)
+                price = info.get('price')
+                if price is None or price == 0:
+                     return jsonify({"ok": False, "message": f"Mã '{symbol}' không có dữ liệu giao dịch hoặc đã hủy niêm yết."})
+                     
+            except Exception as e:
+                log.warning(f"[{INSTANCE_ID}] Validate symbol error: {e}")
+                return jsonify({"ok": False, "message": "Lỗi hệ thống khi kiểm tra mã. Vui lòng thử lại sau."})
+        # ------------------------------------------
+
+        # 5. Xử lý Lưu vào DB
+        if note_id:
+            # --- Logic Sửa (Giữ nguyên) ---
+            current_note = await asyncio.to_thread(get_personalization_note_by_id, note_id)
+            
+            if not current_note:
+                return jsonify({"ok": False, "message": "Ghi chú không tồn tại"})
+            
+            # Chỉ chính chủ mới được sửa
+            if current_note['submitted_by'] != chat_id:
+                return jsonify({"ok": False, "message": "Không có quyền sửa note này."})
+                
+            # Chỉ được sửa khi đang PENDING
+            if current_note['status'] != 'PENDING':
+                return jsonify({"ok": False, "message": "Không thể sửa khi bài đã được Duyệt hoặc Từ chối."})
+
+            # Update DB (vẫn giữ status PENDING)
+            await asyncio.to_thread(
+                update_stock_personalization, 
+                note_id=note_id, 
+                note=note
+            )
+            
+            # Log admin (Optional)
+            if tg_app and MAIN_LOOP and ADMIN_ID:
+                asyncio.run_coroutine_threadsafe(
+                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User `{chat_id}` vừa sửa ghi chú mã `{symbol}`."),
+                    MAIN_LOOP
+                )
+                
+        else:
+            # --- Logic Thêm Mới (Giữ nguyên) ---
+            await asyncio.to_thread(
+                create_stock_personalization,
+                symbol=symbol,
+                note=note,
+                submitted_by=chat_id,
+                status='PENDING'
+            )
+            
+            if tg_app and MAIN_LOOP and ADMIN_ID:
+                asyncio.run_coroutine_threadsafe(
+                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User `{chat_id}` vừa đóng góp bài mới cho `{symbol}`."),
+                    MAIN_LOOP
+                )
+
+        return jsonify({"ok": True})
+
+    except Exception as e:
+        log.error(f"Save note error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/user/contribute/delete", methods=["POST"])
+async def api_user_delete_note():
+    """User xóa note (Chỉ cho phép xóa khi PENDING)"""
+    try:
+        data = request.get_json()
+        note_id = int(data.get("note_id"))
+        chat_id = int(data.get("chat_id"))
+        
+        # --- LOGIC MỚI: KIỂM TRA TRẠNG THÁI ---
+        current_note = await asyncio.to_thread(get_personalization_note_by_id, note_id)
+        
+        if not current_note:
+            return jsonify({"ok": False, "message": "Note not found"})
+            
+        if current_note['submitted_by'] != chat_id:
+            return jsonify({"ok": False, "message": "Unauthorized"})
+            
+        if current_note['status'] != 'PENDING':
+            return jsonify({"ok": False, "message": "Không thể xóa khi đã được xử lý."})
+        # --------------------------------------
+
+        await asyncio.to_thread(delete_stock_personalization, note_id)
+        return jsonify({"ok": True})
+    except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
 
 # ==============================================

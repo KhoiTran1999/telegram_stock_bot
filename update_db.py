@@ -189,6 +189,23 @@ def create_stock_personalization_table():
                     ON stock_personalization (symbol)
                     """
                 )
+                #---------------- Thêm các cột mới cho quản lý ghi chú từ user/admin ----------------#
+                # 1. Thêm cột status (Mặc định là APPROVED cho các note cũ của Admin)
+                cur.execute("ALTER TABLE stock_personalization ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'APPROVED';")
+                
+                # 2. Thêm cột submitted_by (Lưu chat_id người gửi)
+                cur.execute("ALTER TABLE stock_personalization ADD COLUMN IF NOT EXISTS submitted_by BIGINT;")
+                
+                # 3. Thêm cột admin_comment (Lý do từ chối/ghi chú admin)
+                cur.execute("ALTER TABLE stock_personalization ADD COLUMN IF NOT EXISTS admin_comment TEXT;")
+                
+                # 4. Tạo Index cho status để Worker query nhanh
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_personalization_status ON stock_personalization (status);")
+                
+                # 5. Tạo Index cho submitted_by để User load danh sách nhanh
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_personalization_user ON stock_personalization (submitted_by);")
+
+
 
             conn.commit()
             print("✅ THÀNH CÔNG! Đã đảm bảo bảng stock_personalization tồn tại.")
