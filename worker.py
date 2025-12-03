@@ -1344,7 +1344,6 @@ async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: lis
         return payload
 
     fresh_symbols: list[str] = []
-    cached_symbols: list[str] = []
     errors: list[str] = []
     meta_by_symbol: dict[str, dict] = {}
     datasets_for_debug: dict[str, dict] = {}
@@ -1357,25 +1356,19 @@ async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: lis
         log.info(f"[{INSTANCE_ID}] [BIZ] Batch {batch_start // BIZ_AGENT_BATCH_SIZE + 1}: {batch}")
         for sym in batch:
             try:
-                cache_payload = get_biz_cache(sym)
-                if cache_payload is None:
-                    datasets = await asyncio.to_thread(_collect_finance_datasets, sym)
-                    if not datasets:
-                        raise RuntimeError("Không thu thập được dữ liệu nào")
-                    cache_payload = save_biz_cache(sym, datasets)
-                    status = "fresh"
-                    fresh_symbols.append(sym)
-                else:
-                    status = "cached"
-                    cached_symbols.append(sym)
+                datasets = await asyncio.to_thread(_collect_finance_datasets, sym)
+                if not datasets:
+                    err_msg = f"{sym}: Không thu thập được dữ liệu tài chính."
+                    errors.append(err_msg)
+                    log.warning(f"[{INSTANCE_ID}] [BIZ] {err_msg}")
+                    continue
 
-                datasets = (cache_payload or {}).get("datasets", {})
+                fresh_symbols.append(sym)
                 datasets_for_debug[sym] = datasets
                 preview = _build_finance_preview(datasets)
                 meta_by_symbol[sym] = {
-                    "redis_key": _biz_cache_key(sym),
-                    "status": status,
-                    "fetched_at": cache_payload.get("fetched_at") if cache_payload else None,
+                    "status": "fresh",
+                    "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "dataset_count": len(datasets),
                     "datasets": list(datasets.keys()),
                     "preview": preview,
@@ -1393,7 +1386,6 @@ async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: lis
         "symbols": normalized,
         "processed_symbols": list(meta_by_symbol.keys()),
         "fresh_symbols": fresh_symbols,
-        "cached_symbols": cached_symbols,
         "errors": errors,
         "entries": meta_by_symbol,
         "dataset_limit": BIZ_AGENT_MAX_DATASET_PERIODS,
@@ -1403,12 +1395,11 @@ async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: lis
 
     payload.update({
         "notes": (
-            f"Đã xử lý {len(meta_by_symbol)} mã (fresh {len(fresh_symbols)}, cache {len(cached_symbols)}). "
-            f"Giới hạn mỗi bảng {BIZ_AGENT_MAX_DATASET_PERIODS} kỳ."
+            f"Đã xử lý {len(meta_by_symbol)} mã (fresh {len(fresh_symbols)}). "
+            f"Mỗi lần chạy đều thu thập trực tiếp từ Finance-VCI, giới hạn {BIZ_AGENT_MAX_DATASET_PERIODS} kỳ/bảng."
         ),
         "raw_data": {
             "fresh_symbols": fresh_symbols,
-            "cached_symbols": cached_symbols,
             "errors": errors,
             "entries": meta_by_symbol,
             "datasets": datasets_for_debug,
@@ -1463,13 +1454,17 @@ async def handle_agent_run(payload: dict):
     if scope not in AGENT_TYPES and scope != "all":
         scope = "all"
 
-    target_agents = AGENT_TYPES if scope == "all" else (scope,)
+    target_agents: tuple[str, ...]
+    if scope == "all":
+        target_agents = AGENT_TYPES
+    else:
+        target_agents = (scope,)
 
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
     ts_iso = now.isoformat()
 
-    user_watch_symbols: list[str] | None = None
+    user_watch_symbols: list[str] = []
     if any(agent in target_agents for agent in ("biz", "tech")):
         try:
             all_watch = await asyncio.to_thread(get_all_watch)
@@ -1496,10 +1491,6 @@ async def handle_agent_run(payload: dict):
             result["notes"] = f"Lỗi thực thi: {exc}"[:200]
 
         agent_outputs[agent_type] = result
-        if agent_type != "tech":
-            save_agent_result(agent_type, result)
-        else:
-            log.info(f"[{INSTANCE_ID}] [TECH] Bỏ qua cache Redis cho agent tech.")
 
     bundle = {
         "chat_id": chat_id,
@@ -1509,26 +1500,6 @@ async def handle_agent_run(payload: dict):
         "agents": agent_outputs,
         "ai_summary": "AI summary chưa bật. Dữ liệu đang được kiểm tra thủ công.",
     }
-
-    if scope == "tech":
-        bundle_to_cache = None
-    else:
-        bundle_to_cache = bundle
-        if "tech" in (bundle_to_cache.get("agents") or {}):
-            cached_agents = {
-                agent: payload
-                for agent, payload in bundle_to_cache["agents"].items()
-                if agent != "tech"
-            }
-            bundle_to_cache = {
-                **bundle_to_cache,
-                "agents": cached_agents,
-            }
-
-    if bundle_to_cache:
-        save_agent_bundle(chat_id, bundle_to_cache)
-    else:
-        log.info(f"[{INSTANCE_ID}] [TECH] Không cache bundle Redis khi chỉ chạy agent tech.")
 
     log.info(
         f"[{INSTANCE_ID}] Agent run hoàn tất cho chat {chat_id} scope '{scope}'."
