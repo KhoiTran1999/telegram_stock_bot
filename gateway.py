@@ -106,6 +106,11 @@ from db_utils import (
     activate_trial_package,
     get_digest_from_redis,
     get_historical_valuation_from_redis,
+    list_stock_personalizations,
+    create_stock_personalization,
+    update_stock_personalization,
+    delete_stock_personalization,
+    cleanup_expired_stock_personalizations,
 )
 import psutil
 import time
@@ -276,6 +281,39 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
 REDIS_CHANNEL_INBOUND = 'worker_inbound'
 VALID_AGENT_SCOPES = {"macro", "biz", "tech", "all"}
+
+
+def _normalize_symbol(symbol: str | None) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _parse_admin_datetime(value: str | None) -> datetime.datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+
+    cleaned = text.replace("Z", "+00:00")
+    parsed = None
+    try:
+        parsed = datetime.datetime.fromisoformat(cleaned)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M"):
+            try:
+                parsed = datetime.datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+
+    if parsed is None:
+        return None
+
+    if parsed.tzinfo is None:
+        vn_tz = pytz.timezone(TIMEZONE)
+        parsed = vn_tz.localize(parsed)
+
+    return parsed.astimezone(datetime.timezone.utc)
 
 
 def _agent_result_key(agent_type: str) -> str:
@@ -3943,6 +3981,101 @@ async def api_admin_delete_range():
         return jsonify({"ok": False, "message": "Bot not ready"}), 500
 
     except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/personalization/list", methods=["GET"])
+async def api_admin_personalization_list():
+    try:
+        req_admin_id = request.args.get("admin_id")
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        include_expired = (request.args.get("include_expired", "false").lower() in ("1", "true", "yes"))
+
+        try:
+            await asyncio.to_thread(cleanup_expired_stock_personalizations)
+        except Exception as exc:
+            log.warning(f"[ADMIN_API] Cleanup personalization error: {exc}")
+
+        rows = await asyncio.to_thread(list_stock_personalizations, include_expired)
+        payload = []
+        for row in rows:
+            payload.append({
+                "id": row.get("id"),
+                "symbol": row.get("symbol"),
+                "note": row.get("note"),
+                "expires_at": row.get("expires_at").isoformat() if row.get("expires_at") else None,
+                "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+                "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+            })
+        return jsonify({"ok": True, "data": payload})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Personalization list error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/personalization/save", methods=["POST"])
+async def api_admin_personalization_save():
+    try:
+        data = request.get_json() or {}
+        req_admin_id = data.get("admin_id")
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        note_id_raw = data.get("note_id")
+        note_id = None
+        if note_id_raw is not None:
+            try:
+                note_id = int(note_id_raw)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "message": "note_id không hợp lệ"}), 400
+        symbol = _normalize_symbol(data.get("symbol"))
+        note = (data.get("note") or "").strip()
+        if not note:
+            return jsonify({"ok": False, "message": "Nội dung ghi chú trống"}), 400
+
+        expires_input = data.get("expires_at")
+        expires_dt = _parse_admin_datetime(expires_input)
+
+        if note_id:
+            row = await asyncio.to_thread(update_stock_personalization, note_id, note, expires_dt)
+            if not row:
+                return jsonify({"ok": False, "message": "Không tìm thấy note"}), 404
+        else:
+            if not symbol:
+                return jsonify({"ok": False, "message": "Symbol trống"}), 400
+            row = await asyncio.to_thread(create_stock_personalization, symbol, note, expires_dt)
+
+        payload = {
+            "id": row.get("id"),
+            "symbol": row.get("symbol"),
+            "note": row.get("note"),
+            "expires_at": row.get("expires_at").isoformat() if row.get("expires_at") else None,
+            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+            "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+        }
+        return jsonify({"ok": True, "data": payload})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Personalization save error: {e}")
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/personalization/delete", methods=["POST"])
+async def api_admin_personalization_delete():
+    try:
+        data = request.get_json() or {}
+        req_admin_id = data.get("admin_id")
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        note_id_raw = data.get("note_id")
+        try:
+            note_id = int(note_id_raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "message": "Thiếu note_id"}), 400
+
+        await asyncio.to_thread(delete_stock_personalization, note_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        log.error(f"[ADMIN_API] Personalization delete error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
 # ==============================================

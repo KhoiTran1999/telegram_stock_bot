@@ -144,9 +144,61 @@ def create_new_tables():
     except Exception as e:
         print(f"❌ Lỗi: {e}")
 
+def create_stock_personalization_table():
+    print("🚀 Đang tạo bảng stock_personalization (lưu ghi chú từng mã)...")
+    if not DATABASE_URL:
+        print("❌ Lỗi: Thiếu DATABASE_URL.")
+        return
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS stock_personalization (
+                        id         BIGSERIAL PRIMARY KEY,
+                        symbol     TEXT NOT NULL,
+                        note       TEXT NOT NULL,
+                        expires_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+
+                # Bổ sung cột còn thiếu nếu bảng đã tồn tại trước đó
+                cur.execute("ALTER TABLE stock_personalization ADD COLUMN IF NOT EXISTS id BIGSERIAL")
+                cur.execute("ALTER TABLE stock_personalization ALTER COLUMN symbol SET NOT NULL")
+                cur.execute("ALTER TABLE stock_personalization ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+                cur.execute("ALTER TABLE stock_personalization ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+                # Đảm bảo khoá chính là cột id
+                cur.execute("ALTER TABLE stock_personalization DROP CONSTRAINT IF EXISTS stock_personalization_pkey")
+                cur.execute("ALTER TABLE stock_personalization ADD CONSTRAINT stock_personalization_pkey PRIMARY KEY (id)")
+
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_stock_personalization_expiry
+                    ON stock_personalization (expires_at)
+                    """
+                )
+
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_stock_personalization_symbol
+                    ON stock_personalization (symbol)
+                    """
+                )
+
+            conn.commit()
+            print("✅ THÀNH CÔNG! Đã đảm bảo bảng stock_personalization tồn tại.")
+    except Exception as e:
+        print(f"❌ Lỗi: {e}")
+
 if __name__ == "__main__":
     migrate_admin_note()
     add_ban_column()
     migrate_trial()
     migrate_paid_users()
     create_new_tables()
+    create_stock_personalization_table()

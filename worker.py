@@ -61,6 +61,8 @@ from db_utils import (
     has_report_seen,
     mark_report_seen,
     save_bot_message,
+    get_stock_personalization_map,
+    cleanup_expired_stock_personalizations,
 )
 from report_cache import (
     make_report_cache_key,
@@ -128,44 +130,25 @@ TECH_INDICATOR_COLUMN_MAP = {
     "EMA_50": "EMA50",
     "EMA_200": "EMA200",
     "RSI_14": "RSI",
-    "MACD_12_26_9": "MACD_Line",
-    "MACDs_12_26_9": "MACD_Signal",
-    "MACDh_12_26_9": "MACD_Hist",
-    "BBU_20_2.0": "BB_Upper",
-    "BBM_20_2.0": "BB_Middle",
-    "BBL_20_2.0": "BB_Lower",
+    "MACD_12_26_9": "MACD",
+    "MACDs_12_26_9": "MACDs",
+    "MACDh_12_26_9": "MACDh",
+    "BBU_20_2.0": "BBU",
+    "BBL_20_2.0": "BBL",
 }
+TECH_ALERT_CACHE_TTL_SECONDS = 600  # Cache kết quả phân tích kỹ thuật trong 10 phút
 
-
-class VCIRateLimitError(RuntimeError):
-    """Raised when VCI blocks further requests so the caller can back off."""
-
-
-def _is_vci_rate_limit_error(exc: BaseException | None) -> bool:
-    if exc is None:
-        return False
-    if isinstance(exc, SystemExit):
-        return True
-    err_str = str(exc) or ""
-    err_lower = err_str.lower()
-    signals = (
-        "rate limit",
-        "too many request",
-        "bạn đã gửi quá nhiều request",
-        "http 429",
-    )
-    return any(token in err_lower for token in signals)
 ALERT_FUN_LINES_UP = [
-    "Tăng mạnh quá! 🚀",
-    "Xanh tím rồi! 💜",
-    "Tiền vào như nước 🌊",
+    "🚀 Bảng điện xanh rì – giữ vững tinh thần!",
+    "🌱 Dòng tiền đang ủng hộ, đừng vội rời trận.",
+    "💹 Khối ngoại gom hàng, ta cũng không thể đứng ngoài!",
 ]
 ALERT_FUN_LINES_DOWN = [
-    "Giảm rồi... 📉",
-    "Đỏ lửa 🔥",
-    "Bình tĩnh quan sát 👀",
+    "🧯 Đỏ quá thì nhấp cafe bình tĩnh đã nhé.",
+    "🛑 Giữ tiền quan trọng hơn giữ cảm xúc, hít thở sâu nào.",
+    "📉 Sóng gió tạm thời, quản trị rủi ro trước đã!",
 ]
-TECH_ALERT_CACHE_TTL_SECONDS = 180
+
 REPORT_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -200,6 +183,25 @@ REPORT_RESPONSE_SCHEMA = {
         "stocks",
     ],
 }
+
+
+class VCIRateLimitError(RuntimeError):
+    """Bọc lỗi Rate Limit của nguồn dữ liệu VCI để xử lý thống nhất."""
+
+
+def _is_vci_rate_limit_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, VCIRateLimitError):
+        return True
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429:
+        return True
+
+    message = str(exc).lower()
+    keywords = ["rate limit", "too many requests", "429", "try again later"]
+    return any(keyword in message for keyword in keywords)
 
 REPORT_SECTION_KEYWORDS = [
     (re.compile(r"(🚀 động lực chính|key\s*drivers?)", re.IGNORECASE), "*🚀 Động lực chính*"),
@@ -3576,8 +3578,7 @@ async def job_daily_digest():
                 
                 msg_text = (
                     f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
-                    f"{ai_text}\n\n"
-                    f"👉 *Nhấn nút dưới để xem chi tiết danh mục của bạn!*"
+                    f"👉 *Chúc bạn một ngày năng suất nhé!*"
                 )
 
                 push_telegram_msg(
@@ -4026,9 +4027,14 @@ async def job_maintenance():
         
         # 2. Xóa đơn hàng treo quá lâu (> 3 ngày)
         deleted_orders = await asyncio.to_thread(cleanup_old_pending_orders, 3)
+
+        # 3. Xóa ghi chú cá nhân hóa đã hết hạn
+        deleted_notes = await asyncio.to_thread(cleanup_expired_stock_personalizations)
         
-        if deleted_news > 0 or deleted_orders > 0:
-            log.info(f"[MAINTENANCE] ✅ Đã xóa: {deleted_news} news cũ, {deleted_orders} đơn hàng treo.")
+        if deleted_news > 0 or deleted_orders > 0 or deleted_notes > 0:
+            log.info(
+                f"[MAINTENANCE] ✅ Đã xóa: {deleted_news} news cũ, {deleted_orders} đơn hàng treo, {deleted_notes} ghi chú hết hạn."
+            )
         else:
             log.info("[MAINTENANCE] Hệ thống sạch sẽ, không có gì để xóa.")
             
@@ -4374,7 +4380,11 @@ async def get_financial_context_string(symbols: list[str]) -> str:
     lines.append("-" * 60)
     return "\n".join(lines)
 
-def call_chatgpt_for_report(symbols: list[str], agent_payload: dict[str, dict]) -> str:
+def call_chatgpt_for_report(
+    symbols: list[str],
+    agent_payload: dict[str, dict],
+    personalization_notes: dict[str, list[dict]] | None = None,
+) -> str:
     """Gọi Gemini tạo báo cáo dựa trên output của macro/biz/tech agents."""
     if not GEMINI_KEYS:
         raise RuntimeError("GEMINI_API_KEY chưa được cấu hình.")
@@ -4439,6 +4449,53 @@ def call_chatgpt_for_report(symbols: list[str], agent_payload: dict[str, dict]) 
     biz_block = _format_agent_block((agent_payload or {}).get("biz"))
     tech_block = _format_agent_block((agent_payload or {}).get("tech"))
 
+    def _format_personalization_block() -> str:
+        notes_map = personalization_notes or {}
+        if not notes_map:
+            return "Không có ghi chú cá nhân hoá nào cho các mã hiện tại."
+
+        lines: list[str] = []
+        vn_tz = pytz.timezone(TIMEZONE)
+
+        for sym in normalized:
+            entries = notes_map.get(sym) or []
+            if not entries:
+                continue
+
+            for idx, entry in enumerate(entries, 1):
+                note_text = (entry or {}).get("note")
+                if not note_text:
+                    continue
+
+                expiry_info = ""
+                expires_at = (entry or {}).get("expires_at")
+                expiry_dt: datetime.datetime | None = None
+                if isinstance(expires_at, datetime.datetime):
+                    expiry_dt = expires_at
+                elif isinstance(expires_at, str):
+                    try:
+                        expiry_dt = datetime.datetime.fromisoformat(expires_at)
+                    except ValueError:
+                        expiry_dt = None
+
+                if expiry_dt is not None:
+                    try:
+                        if expiry_dt.tzinfo is None:
+                            expiry_dt = expiry_dt.replace(tzinfo=datetime.timezone.utc)
+                        local = expiry_dt.astimezone(vn_tz)
+                        expiry_info = f" (Hết hạn: {local.strftime('%d/%m %H:%M')})"
+                    except Exception:
+                        expiry_info = ""
+
+                label = f"{sym} #{idx}" if len(entries) > 1 else sym
+                lines.append(f"- {label}: {note_text}{expiry_info}")
+
+        if not lines:
+            return "Không có ghi chú cá nhân hoá nào cho các mã hiện tại."
+        return "\n".join(lines)
+
+    personalization_block = _format_personalization_block()
+
     symbols_str = ", ".join(normalized)
     vn_tz = pytz.timezone(TIMEZONE)
     date_str = datetime.datetime.now(vn_tz).strftime('%d/%m/%Y')
@@ -4457,6 +4514,9 @@ DỮ LIỆU ĐẦU VÀO (SỐ LIỆU THỰC TẾ):
 
 3. CHỈ BÁO KỸ THUẬT:
 {tech_block}
+
+4. GHI CHÚ CÁ NHÂN HÓA (ƯU TIÊN TUÂN THỦ KHI PHÂN TÍCH):
+{personalization_block}
 
 YÊU CẦU ĐẦU RA (JSON FORMAT):
 {{
@@ -4480,6 +4540,7 @@ LƯU Ý:
 2. Giọng văn: Khách quan, sắc sảo, dựa trên số liệu.
 3. Tuyệt đối trung thực với số liệu đã cung cấp trong phần 'DỮ LIỆU ĐẦU VÀO (SỐ LIỆU THỰC TẾ)'.
 4. Hãy đưa ra số liệu dẫn chứng cụ thể.
+5. Nếu có ghi chú cá nhân hoá cho từng mã, hãy cân nhắc kỹ và phản ánh rõ trong phần Analysis/Action.
 
 LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
 1. Trả về đúng định dạng JSON chuẩn (RFC 8259).
@@ -4766,10 +4827,16 @@ async def process_report_for_user(
             "tech": tech_result,
         }
 
+        personalization_map = await asyncio.to_thread(
+            get_stock_personalization_map,
+            llm_symbols,
+        )
+
         json_text = await asyncio.to_thread(
             call_chatgpt_for_report,
             llm_symbols,
             agent_payload,
+            personalization_map,
         )
 
         try:

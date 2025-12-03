@@ -1164,8 +1164,149 @@ CORE_TABLES = [
     "paid_users",          # 💰 Dữ liệu Gói Pro (QUAN TRỌNG NHẤT)
     "bot_orders",          # 🧾 Lịch sử đơn hàng
     "bot_user_settings",   # ⚙️ Cài đặt VN30F1M
-    "analysis_report_seen" # 📊 Lịch sử báo cáo (tránh spam lại)
+    "analysis_report_seen",# 📊 Lịch sử báo cáo (tránh spam lại)
+    "stock_personalization"# 📝 Ghi chú từng mã cổ phiếu
 ]
+
+def _normalize_symbol(symbol: str | None) -> str:
+    return (symbol or "").strip().upper()
+
+def create_stock_personalization(
+    symbol: str,
+    note: str,
+    expires_at: datetime.datetime | None = None,
+) -> dict:
+    sym = _normalize_symbol(symbol)
+    note_text = (note or "").strip()
+    if not sym:
+        raise ValueError("Symbol trống")
+    if not note_text:
+        raise ValueError("Ghi chú trống")
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute(
+                """
+                INSERT INTO stock_personalization (symbol, note, expires_at)
+                VALUES (%s, %s, %s)
+                RETURNING id, symbol, note, expires_at, created_at, updated_at
+                """,
+                (sym, note_text, expires_at),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row
+
+def update_stock_personalization(
+    note_id: int,
+    note: str,
+    expires_at: datetime.datetime | None = None,
+) -> dict | None:
+    note_text = (note or "").strip()
+    if not note_id:
+        raise ValueError("Thiếu note_id")
+    if not note_text:
+        raise ValueError("Ghi chú trống")
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE stock_personalization
+                SET note = %s,
+                    expires_at = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, symbol, note, expires_at, created_at, updated_at
+                """,
+                (note_text, expires_at, note_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return row
+
+def delete_stock_personalization(note_id: int) -> None:
+    if not note_id:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM stock_personalization WHERE id = %s", (note_id,))
+        conn.commit()
+
+def list_stock_personalizations(include_expired: bool = False) -> list[dict]:
+    condition = "" if include_expired else "WHERE expires_at IS NULL OR expires_at >= NOW()"
+    query = (
+        "SELECT id, symbol, note, expires_at, created_at, updated_at "
+        "FROM stock_personalization "
+        + condition +
+        " ORDER BY updated_at DESC"
+    )
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute(query)
+            rows_data = cur.fetchall()
+    return rows_data
+
+def get_stock_personalization_map(
+    symbols: list[str] | None,
+    include_expired: bool = False,
+) -> dict[str, list[dict]]:
+    normalized = []
+    seen = set()
+    for sym in symbols or []:
+        cleaned = _normalize_symbol(sym)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            normalized.append(cleaned)
+
+    if not normalized:
+        return {}
+
+    placeholders = ",".join(["%s"] * len(normalized))
+    condition = ""
+    if not include_expired:
+        condition = "AND (expires_at IS NULL OR expires_at >= NOW())"
+
+    query = (
+        "SELECT id, symbol, note, expires_at, created_at, updated_at "
+        "FROM stock_personalization "
+        f"WHERE symbol IN ({placeholders}) "
+        + condition +
+        " ORDER BY symbol ASC, updated_at DESC"
+    )
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=rows.dict_row) as cur:
+            cur.execute(query, tuple(normalized))
+            rows_data = cur.fetchall()
+
+    result: dict[str, list[dict]] = {}
+    for row in rows_data:
+        sym = row.get("symbol")
+        if not sym:
+            continue
+        result.setdefault(sym, []).append(row)
+    return result
+
+def cleanup_expired_stock_personalizations(
+    now: datetime.datetime | None = None,
+) -> int:
+    ts = now or datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    else:
+        ts = ts.astimezone(datetime.timezone.utc)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM stock_personalization WHERE expires_at IS NOT NULL AND expires_at < %s",
+                (ts,),
+            )
+            deleted = cur.rowcount or 0
+        conn.commit()
+    return deleted
 
 
 def export_core_data():
@@ -1307,6 +1448,40 @@ def import_core_data(payload: dict, mode: str = "replace"):
                         row.get("symbol"), row["link"], row.get("title"), 
                         row.get("published_at"), row.get("created_at")
                     ),
+                )
+
+            stock_personalization_rows = tables.get("stock_personalization", [])
+            for row in stock_personalization_rows:
+                cur.execute(
+                    """
+                    INSERT INTO stock_personalization (id, symbol, note, expires_at, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET symbol = EXCLUDED.symbol,
+                        note = EXCLUDED.note,
+                        expires_at = EXCLUDED.expires_at,
+                        created_at = COALESCE(EXCLUDED.created_at, stock_personalization.created_at),
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("symbol"),
+                        row.get("note"),
+                        row.get("expires_at"),
+                        row.get("created_at"),
+                        row.get("updated_at"),
+                    ),
+                )
+
+            if stock_personalization_rows:
+                cur.execute(
+                    """
+                    SELECT setval(
+                        'stock_personalization_id_seq',
+                        COALESCE((SELECT MAX(id) FROM stock_personalization), 0) + 1,
+                        false
+                    )
+                    """
                 )
 
             # 10) users (Thông tin user, ban status, admin notes)

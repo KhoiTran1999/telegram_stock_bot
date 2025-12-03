@@ -915,11 +915,14 @@ REPORT_HTML_TEMPLATE = r"""
         <div class="st-analysis">{{ stock.analysis }}</div>
 
         <div>
-            {% set act = stock.action | lower %}
+            {% set act = (stock.action or '') | lower %}
             {% set badge_class = 'act-neutral' %}
-            {% if 'mua' in act or 'tăng' in act %} {% set badge_class = 'act-buy' %}
-            {% elif 'giữ' in act or 'nắm' in act %} {% set badge_class = 'act-hold' %}
-            {% elif 'bán' in act or 'hạ' in act or 'giảm' in act %} {% set badge_class = 'act-sell' %}
+            {% if 'mua' in act %}
+                {% set badge_class = 'act-buy' %}
+            {% elif 'bán' in act %}
+                {% set badge_class = 'act-sell' %}
+            {% elif 'giữ' in act or 'giu' in act or 'nắm' in act or 'nam' in act %}
+                {% set badge_class = 'act-hold' %}
             {% endif %}
             <div class="st-badge {{ badge_class }}">{{ stock.action }}</div>
         </div>
@@ -2252,7 +2255,77 @@ ADMIN_MOBILE_TEMPLATE = r"""
             </div>
 
             <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Xóa Dữ Liệu Cũ</h3>
+                <div class="mb-3">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide">Ghi chú cá nhân hóa từng mã</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">⚠️ Danh sách tự động xóa khi hết hạn.</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">🚀 Danh sách này sẽ được đưa vào prompt report cho AI phân tích</p>
+                </div>
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 mb-3">
+                    <div class="flex-1 w-full">
+                        <div class="relative">
+                            <i class="fa-solid fa-magnifying-glass text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 text-xs"></i>
+                            <input type="text" x-model="personalizationSearch" @input="personalizationPage = 1"
+                                   class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-200"
+                                   placeholder="Tìm mã (VD: HPG)" />
+                        </div>
+                    </div>
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <button @click="loadPersonalizationNotes(true)"
+                                class="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50 active:scale-95"
+                                :class="personalizationLoading ? 'opacity-60 pointer-events-none' : ''">
+                            <i class="fa-solid fa-rotate-right mr-1" :class="personalizationLoading ? 'animate-spin text-blue-600' : ''"></i>
+                            Tải lại
+                        </button>
+                        <button @click="openPersonalizationModal()" class="flex-1 px-3 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-sm active:scale-95">
+                            <i class="fa-solid fa-plus mr-1"></i> Thêm
+                        </button>
+                    </div>
+                </div>
+                <p x-show="personalizationError" class="text-xs text-red-500 font-semibold mb-2" x-text="'⚠️ ' + personalizationError" x-cloak></p>
+                <div x-show="personalizationLoading" class="text-center py-4 text-xs text-slate-400" x-cloak>
+                    <i class="fa-solid fa-circle-notch animate-spin mr-1"></i> Đang tải danh sách ghi chú...
+                </div>
+                <div x-show="!personalizationLoading && personalizationFilteredNotesList.length" class="divide-y divide-slate-100 rounded-xl border border-slate-100" x-cloak>
+                    <template x-for="item in personalizationVisibleNotes" :key="item.id || item.symbol">
+                        <div class="px-3 py-3 space-y-2 hover:bg-slate-50 transition">
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="font-mono text-sm font-bold text-blue-600" x-text="item.symbol"></div>
+                                <div class="text-[11px] text-slate-400 text-right">
+                                    <span x-text="item.expires_at ? 'Hết hạn: ' + formatDateTime(item.expires_at) : 'Không hạn'" class="block"></span>
+                                    <span x-text="item.updated_at ? 'Cập nhật: ' + formatDateTime(item.updated_at) : ''"></span>
+                                </div>
+                            </div>
+                            <div class="text-sm text-slate-600 whitespace-pre-line" x-text="item.note"></div>
+                            <div class="flex justify-between items-center pt-1 text-[11px] text-slate-400">
+                                <span x-text="item.created_at ? 'Tạo: ' + formatDateTime(item.created_at) : ''"></span>
+                                <button @click="openPersonalizationModal(item)" class="text-xs font-bold text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-lg hover:bg-slate-100 active:scale-95">
+                                    Sửa
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                <div x-show="!personalizationLoading && !personalizationFilteredNotesList.length" class="text-center text-sm text-slate-400 py-6" x-cloak>
+                    <p x-text="personalizationSearch ? 'Không tìm thấy ghi chú phù hợp.' : 'Chưa có ghi chú nào. Nhấn \"Thêm ghi chú\" để bắt đầu.'"></p>
+                </div>
+                <div x-show="!personalizationLoading && personalizationFilteredNotesList.length" class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mt-3 text-xs text-slate-500" x-cloak>
+                    <span x-text="personalizationShowingText"></span>
+                    <div class="flex items-center gap-2">
+                        <button @click="changePersonalizationPage(-1)" class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white font-semibold"
+                                :class="personalizationPage <= 1 ? 'opacity-40 pointer-events-none' : 'hover:bg-slate-50'">
+                            <i class="fa-solid fa-chevron-left text-[10px]"></i>
+                        </button>
+                        <span class="font-semibold" x-text="personalizationPage + ' / ' + personalizationTotalPages"></span>
+                        <button @click="changePersonalizationPage(1)" class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white font-semibold"
+                                :class="personalizationPage >= personalizationTotalPages ? 'opacity-40 pointer-events-none' : 'hover:bg-slate-50'">
+                            <i class="fa-solid fa-chevron-right text-[10px]"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Xóa Chat Cũ</h3>
                 <div class="space-y-3">
                     <div>
                         <label class="block text-xs font-bold text-slate-500 mb-1">Từ thời điểm</label>
@@ -2285,7 +2358,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
             <i class="fa-solid fa-bullhorn text-xl"></i>
             <span class="text-[10px] font-bold">Tin</span>
         </button>
-        <button @click="activeTab = 'data'" :class="activeTab === 'data' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+        <button @click="activeTab = 'data'; loadPersonalizationNotes()" :class="activeTab === 'data' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
             <i class="fa-solid fa-database text-xl"></i>
             <span class="text-[10px] font-bold">Data</span>
         </button>
@@ -2488,6 +2561,50 @@ ADMIN_MOBILE_TEMPLATE = r"""
         </div>
     </div>
 
+    <!-- PERSONALIZATION MODAL -->
+    <div x-show="personalizationModalOpen" x-cloak>
+        <div class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50" @click="closePersonalizationModal()"></div>
+        <div class="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 relative">
+                <button @click="closePersonalizationModal()" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-slate-200">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+                <h3 class="text-lg font-bold text-slate-800 mb-1" x-text="personalizationForm.isEditing ? 'Cập nhật ghi chú mã' : 'Thêm ghi chú mã'"></h3>
+                <p class="text-xs text-slate-400 mb-4">Nhập nội dung cần AI chú ý riêng cho từng mã. Có thể đặt ngày hết hạn.</p>
+
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">Mã cổ phiếu</label>
+                <input type="text" x-model="personalizationForm.symbol" @input="handleSymbolInput()"
+                       :readonly="personalizationForm.isEditing"
+                       class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold tracking-widest uppercase focus:ring-2 focus:ring-blue-200 mb-3"
+                       placeholder="VD: SSI" maxlength="10">
+
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">Ghi chú chuyên biệt</label>
+                <textarea x-model="personalizationForm.note" rows="4"
+                          class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 focus:ring-2 focus:ring-blue-200 mb-3"
+                          placeholder="Ví dụ: Ưu tiên theo dõi dư nợ margin, hạn chế tự doanh..."></textarea>
+
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">Ngày hết hạn (tùy chọn)</label>
+                <input type="datetime-local" x-model="personalizationForm.expires_at"
+                       class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 focus:ring-2 focus:ring-blue-200 mb-4">
+
+                <div class="flex justify-between items-center gap-3">
+                    <button x-show="personalizationForm.isEditing"
+                            @click="deletePersonalizationNote()"
+                            class="flex-1 py-2.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95"
+                            x-cloak>
+                        <i class="fa-solid fa-trash mr-1"></i> Xóa ghi chú
+                    </button>
+                    <button @click="savePersonalizationNote()"
+                            class="flex-1 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-blue-200 shadow-md active:scale-95"
+                            :class="personalizationSaving ? 'opacity-70 pointer-events-none' : ''">
+                        <i class="fa-solid fa-floppy-disk mr-1"></i>
+                        <span x-text="personalizationSaving ? 'Đang lưu...' : 'Lưu ghi chú'"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div x-show="toast.visible" x-cloak 
          class="fixed top-4 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur text-white px-4 py-2.5 rounded-full text-sm font-medium shadow-xl z-[60] flex items-center gap-2 transition-all"
          x-transition:enter="transform -translate-y-10 opacity-0"
@@ -2527,6 +2644,22 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     { value: 'info', label: 'Info' },
                     { value: 'all', label: 'All (Flush Redis)' },
                 ],
+                personalizationNotes: [],
+                personalizationLoading: false,
+                personalizationError: null,
+                personalizationLoaded: false,
+                personalizationModalOpen: false,
+                personalizationSaving: false,
+                personalizationSearch: '',
+                personalizationPage: 1,
+                personalizationPageSize: 5,
+                personalizationForm: {
+                    id: null,
+                    symbol: '',
+                    note: '',
+                    expires_at: '',
+                    isEditing: false,
+                },
 
                 userTabs: [
                     { id: 'all', label: 'Tất cả' },
@@ -2563,6 +2696,36 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         return true;
                     });
                 },
+                get personalizationFilteredNotesList() {
+                    if (!Array.isArray(this.personalizationNotes)) return [];
+                    const query = (this.personalizationSearch || '').trim().toUpperCase();
+                    if (!query) return this.personalizationNotes;
+                    return this.personalizationNotes.filter(item => {
+                        const symbol = (item.symbol || '').toUpperCase();
+                        const note = (item.note || '').toUpperCase();
+                        return symbol.includes(query) || note.includes(query);
+                    });
+                },
+                get personalizationTotalPages() {
+                    const total = this.personalizationFilteredNotesList.length;
+                    if (!total) return 1;
+                    return Math.max(1, Math.ceil(total / this.personalizationPageSize));
+                },
+                get personalizationVisibleNotes() {
+                    const total = this.personalizationFilteredNotesList.length;
+                    if (!total) return [];
+                    const page = Math.min(Math.max(1, this.personalizationPage), this.personalizationTotalPages);
+                    const start = (page - 1) * this.personalizationPageSize;
+                    return this.personalizationFilteredNotesList.slice(start, start + this.personalizationPageSize);
+                },
+                get personalizationShowingText() {
+                    const total = this.personalizationFilteredNotesList.length;
+                    if (!total) return '0 ghi chú';
+                    const page = Math.min(Math.max(1, this.personalizationPage), this.personalizationTotalPages);
+                    const start = (page - 1) * this.personalizationPageSize + 1;
+                    const end = Math.min(total, start + this.personalizationPageSize - 1);
+                    return `Hiển thị ${start}-${end} / ${total}`;
+                },
 
                 init() {
                     // Fallback: Get Admin ID from URL if template injection failed
@@ -2589,6 +2752,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
 
                     if (this.adminId) {
                         this.refreshUsers();
+                        this.loadPersonalizationNotes();
                     }
                 },
 
@@ -2786,6 +2950,129 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     }, '✅ Đã xóa dữ liệu!');
                 },
 
+                // --- PERSONALIZATION ACTIONS ---
+                async loadPersonalizationNotes(force = false) {
+                    const aid = String(this.adminId || '').trim();
+                    if (!aid) {
+                        this.personalizationError = 'Thiếu Admin ID';
+                        return;
+                    }
+                    if (this.personalizationLoading || (!force && this.personalizationLoaded)) return;
+                    this.personalizationLoading = true;
+                    this.personalizationError = null;
+                    try {
+                        const res = await fetch(`/api/admin/personalization/list?admin_id=${encodeURIComponent(aid)}&_t=${Date.now()}`, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                        });
+                        const payload = await res.json();
+                        if (!payload.ok) throw new Error(payload.message || 'Không tải được dữ liệu');
+                        this.personalizationNotes = payload.data || [];
+                        this.personalizationLoaded = true;
+                        this.personalizationPage = 1;
+                    } catch (err) {
+                        console.error('Personalization load error', err);
+                        this.personalizationError = err.message || String(err);
+                    } finally {
+                        this.personalizationLoading = false;
+                    }
+                },
+                changePersonalizationPage(delta) {
+                    const next = this.personalizationPage + delta;
+                    if (next < 1 || next > this.personalizationTotalPages) return;
+                    this.personalizationPage = next;
+                },
+                openPersonalizationModal(item = null) {
+                    this.personalizationForm.id = item ? (item.id || null) : null;
+                    this.personalizationForm.symbol = item ? (item.symbol || '') : '';
+                    this.personalizationForm.note = item ? (item.note || '') : '';
+                    this.personalizationForm.expires_at = item && item.expires_at ? this.toInputValue(item.expires_at) : '';
+                    this.personalizationForm.isEditing = !!item;
+                    this.personalizationModalOpen = true;
+                },
+                closePersonalizationModal() {
+                    this.personalizationModalOpen = false;
+                    this.personalizationSaving = false;
+                    this.personalizationForm = { id: null, symbol: '', note: '', expires_at: '', isEditing: false };
+                },
+                handleSymbolInput() {
+                    if (!this.personalizationForm.symbol) return;
+                    this.personalizationForm.symbol = this.personalizationForm.symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                },
+                async savePersonalizationNote() {
+                    const noteId = this.personalizationForm.id;
+                    const symbol = (this.personalizationForm.symbol || '').trim().toUpperCase();
+                    const note = (this.personalizationForm.note || '').trim();
+                    if (!symbol) { alert('Vui lòng nhập mã cổ phiếu.'); return; }
+                    if (!note) { alert('Ghi chú không được để trống.'); return; }
+
+                    let expiresIso = null;
+                    if (this.personalizationForm.expires_at) {
+                        try {
+                            expiresIso = new Date(this.personalizationForm.expires_at).toISOString();
+                        } catch (e) {
+                            alert('Ngày hết hạn không hợp lệ.');
+                            return;
+                        }
+                    }
+
+                    this.personalizationSaving = true;
+                    try {
+                        const payloadBody = {
+                            admin_id: this.adminId,
+                            symbol,
+                            note,
+                            expires_at: expiresIso,
+                        };
+                        if (noteId) payloadBody.note_id = noteId;
+                        const res = await fetch('/api/admin/personalization/save', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify(payloadBody)
+                        });
+                        const payload = await res.json();
+                        if (!payload.ok) throw new Error(payload.message || 'Không lưu được ghi chú');
+                        this.showToast('✅ Đã lưu ghi chú cá nhân hóa');
+                        await this.loadPersonalizationNotes(true);
+                        this.closePersonalizationModal();
+                    } catch (err) {
+                        alert('❌ Lỗi: ' + (err.message || err));
+                    } finally {
+                        this.personalizationSaving = false;
+                    }
+                },
+                async deletePersonalizationNote() {
+                    const noteId = this.personalizationForm.id;
+                    const symbol = (this.personalizationForm.symbol || '').trim().toUpperCase();
+                    if (!noteId) { alert('Thiếu note_id.'); return; }
+                    const preview = (this.personalizationForm.note || '').slice(0, 60);
+                    const previewText = preview ? `\n\n"${preview}"` : '';
+                    const confirmMsg = `Xóa ghi chú ${symbol ? 'cho mã ' + symbol : ''}?${previewText}`;
+                    if (!confirm(confirmMsg)) return;
+                    this.personalizationSaving = true;
+                    try {
+                        const res = await fetch('/api/admin/personalization/delete', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, note_id: noteId })
+                        });
+                        const payload = await res.json();
+                        if (!payload.ok) throw new Error(payload.message || 'Không xóa được ghi chú');
+                        this.showToast('🗑️ Đã xóa ghi chú');
+                        await this.loadPersonalizationNotes(true);
+                        this.closePersonalizationModal();
+                    } catch (err) {
+                        alert('❌ Lỗi: ' + (err.message || err));
+                    } finally {
+                        this.personalizationSaving = false;
+                    }
+                },
+
                 // --- USER ACTIONS (Existing) ---
                 async sendMessage() {
                     const msg = prompt(`Gửi tin nhắn cho ${this.selectedUser.name}:`);
@@ -2905,7 +3192,24 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 getStatusLabel(user) { return !user.is_pro ? 'FREE' : (user.is_expired ? 'EXPIRED' : 'PRO'); },
                 getStatusClass(user) { return !user.is_pro ? 'bg-slate-100 text-slate-500' : (user.is_expired ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'); },
                 formatDate(isoStr) { if (!isoStr) return '—'; try { return new Date(isoStr).toLocaleDateString('vi-VN'); } catch { return isoStr; } },
-                formatMoney(num) { return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(num); }
+                formatMoney(num) { return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(num); },
+                formatDateTime(isoStr) {
+                    if (!isoStr) return 'Không hạn';
+                    try {
+                        return new Date(isoStr).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
+                    } catch {
+                        return isoStr;
+                    }
+                },
+                toInputValue(isoStr) {
+                    try {
+                        const dt = new Date(isoStr);
+                        const pad = (n) => String(n).padStart(2, '0');
+                        return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+                    } catch {
+                        return '';
+                    }
+                }
             }
         }
     </script>
