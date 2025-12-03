@@ -2210,7 +2210,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Worker Control</h3>
                 <div class="text-xs text-slate-500 mb-3 bg-slate-50 p-3 rounded-lg border border-slate-100">
                     <i class="fa-solid fa-circle-info text-blue-500 mr-1"></i>
-                    Các nút bên dưới sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code>, <code>RUN_NIGHTLY_VALUATION</code> hoặc <code>RUN_DAILY_DIGEST</code> tới Worker. Chỉ dùng khi cần vì có thể đẩy nhiều thông báo tới user.
+                    Các nút bên dưới sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code>, <code>RUN_NIGHTLY_VALUATION</code>, <code>RUN_DAILY_DIGEST</code> hoặc <code>RUN_EOD_SUMMARY</code> tới Worker. Chỉ dùng khi cần vì có thể đẩy nhiều thông báo tới user.
                 </div>
                 <button @click="forceWorker()" class="w-full py-2.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-blue-100 mb-2">
                     <i class="fa-solid fa-robot mr-1.5"></i> Chạy Weekly Report
@@ -2218,8 +2218,11 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 <button @click="forceNightlyValuation()" class="w-full py-2.5 bg-purple-50 text-purple-600 border border-purple-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-purple-100 mb-2">
                     <i class="fa-solid fa-moon mr-1.5"></i> Chạy Screener Value
                 </button>
-                <button @click="forceDailyDigest()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100">
+                <button @click="forceDailyDigest()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100 mb-2">
                     <i class="fa-solid fa-sun mr-1.5"></i> Chạy Digest Sáng
+                </button>
+                <button @click="forceEodSummary()" class="w-full py-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-emerald-100">
+                    <i class="fa-solid fa-hourglass-end mr-1.5"></i> Chạy EOD Summary
                 </button>
             </div>
         </div>
@@ -2920,6 +2923,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 async forceDailyDigest() {
                     if (!confirm('⚠️ Chạy Digest Sáng sẽ gửi thông báo tới toàn bộ user. Tiếp tục?')) return;
                     this.callApi('/api/admin/worker/force', { type: 'daily_digest' }, '✅ Đã gửi lệnh chạy Digest Sáng!');
+                },
+                async forceEodSummary() {
+                    if (!confirm('⚠️ Chạy EOD sẽ gửi tổng kết cuối ngày cho toàn bộ user. Tiếp tục?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'eod_summary' }, '✅ Đã gửi lệnh chạy EOD Summary!');
                 },
 
                 // --- BROADCAST ACTIONS ---

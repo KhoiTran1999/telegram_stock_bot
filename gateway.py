@@ -3238,8 +3238,16 @@ async def view_report(cache_key):
 @flask_app.route("/eod/<eod_id>")
 def view_eod(eod_id):
     """Route hiển thị Web App Tổng kết cuối phiên (EOD)"""
-    data = get_digest_from_redis(f"eod_web:{eod_id}") # Lưu ý key prefix khác
-    
+    data = None
+
+    try:
+        r = get_redis()
+        raw = r.get(f"eod_web:{eod_id}")
+        if raw:
+            data = json.loads(raw)
+    except Exception as exc:
+        log.error(f"[{INSTANCE_ID}][VIEW_EOD] Lỗi đọc Redis: {exc}")
+
     if not data:
         return render_template_string(EOD_404_TEMPLATE), 404
 
@@ -3869,6 +3877,11 @@ async def api_admin_force_worker():
             await asyncio.to_thread(push_to_worker, payload)
             return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Daily Digest."})
         
+        elif task_type == 'eod_summary':
+            payload = {"cmd": "RUN_EOD_SUMMARY", "admin_id": ADMIN_ID}
+            await asyncio.to_thread(push_to_worker, payload)
+            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy EOD Summary."})
+
         return jsonify({"ok": False, "message": "Unknown task"}), 400
 
     except Exception as e:

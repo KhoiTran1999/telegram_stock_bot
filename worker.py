@@ -2071,6 +2071,11 @@ async def worker_inbound_loop():
                             log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Daily Digest từ {admin_id}")
                             asyncio.create_task(job_daily_digest())
 
+                        elif cmd == "RUN_EOD_SUMMARY":
+                            admin_id = payload.get('admin_id')
+                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run EOD Summary từ {admin_id}")
+                            asyncio.create_task(job_eod_summary())
+
                         elif cmd == "GEN_INFO":
                             chat_id = payload.get('chat_id')
                             symbol = payload.get('symbol')
@@ -4196,6 +4201,7 @@ VN-INDEX: {vni_data['price']} ({vni_data['change_str']})
 VN30: {v30_data['price']} ({v30_data['change_str']})
 
 Yêu cầu:
+- Vào luôn vấn đề chính. Không chào hỏi dài dòng và không cần dẫn dắt.
 - Giọng văn chuyên nghiệp, súc tích, tập trung vào xu hướng chính.
 - Không lặp lại số liệu chi tiết (vì user đã thấy rồi).
 - Nhận xét về tâm lý thị trường (Hưng phấn/Thận trọng/Hoảng loạn).
@@ -4288,7 +4294,6 @@ async def send_eod_summary_worker():
             
             msg_text = (
                 f"🇻🇳 *Tổng kết phiên {today_str}*\n"
-                f"VN-INDEX: {vni_data['price']} {vni_data['change_str']}\n"
                 f"👉 Nhấn nút để xem chi tiết."
             )
 
