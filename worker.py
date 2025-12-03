@@ -120,6 +120,7 @@ TECH_AGENT_EXPORT_LOOKBACK_DAYS = 200
 TECH_AGENT_BATCH_SIZE = 5
 TECH_AGENT_BATCH_PAUSE_SECONDS = 5
 TECH_AGENT_MAX_SYMBOLS = 30
+VCI_RATE_LIMIT_BACKOFF_SECONDS = 6
 TECH_INDICATOR_COLUMN_MAP = {
     "time": "Date",
     "close": "Close",
@@ -134,6 +135,26 @@ TECH_INDICATOR_COLUMN_MAP = {
     "BBM_20_2.0": "BB_Middle",
     "BBL_20_2.0": "BB_Lower",
 }
+
+
+class VCIRateLimitError(RuntimeError):
+    """Raised when VCI blocks further requests so the caller can back off."""
+
+
+def _is_vci_rate_limit_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, SystemExit):
+        return True
+    err_str = str(exc) or ""
+    err_lower = err_str.lower()
+    signals = (
+        "rate limit",
+        "too many request",
+        "bạn đã gửi quá nhiều request",
+        "http 429",
+    )
+    return any(token in err_lower for token in signals)
 ALERT_FUN_LINES_UP = [
     "Tăng mạnh quá! 🚀",
     "Xanh tím rồi! 💜",
@@ -179,6 +200,12 @@ REPORT_RESPONSE_SCHEMA = {
         "stocks",
     ],
 }
+
+REPORT_SECTION_KEYWORDS = [
+    (re.compile(r"(🚀 động lực chính|key\s*drivers?)", re.IGNORECASE), "*🚀 Động lực chính*"),
+    (re.compile(r"(💡 cơ hội|opportunit)", re.IGNORECASE), "*💡 Cơ hội*"),
+    (re.compile(r"(⚠️ rủi ro|risk)", re.IGNORECASE), "*⚠️ Rủi ro*"),
+]
 MACRO_NEWS_LOOKBACK_HOURS = 48
 MACRO_GSO_MONTH_LIMIT = 3
 MACRO_GSO_LOOKBACK_MONTHS = 12
@@ -638,10 +665,16 @@ def _flatten_finance_df(df: pd.DataFrame | None, limit: int = BIZ_AGENT_MAX_DATA
 
 
 def _collect_finance_datasets(symbol: str) -> dict:
-    stock = Finance(symbol=symbol, source="VCI")
+    try:
+        stock = Finance(symbol=symbol, source="VCI")
+    except BaseException as exc:
+        if _is_vci_rate_limit_error(exc):
+            raise VCIRateLimitError(f"VCI rate limit khi khởi tạo Finance cho {symbol}") from exc
+        raise RuntimeError(f"Finance init lỗi cho {symbol}: {exc}") from exc
+
     datasets = {}
     fetch_plan = [
-        ("ratio_year", lambda: stock.ratio(period="quarter", lang="vi")),
+        ("ratio_quarter", lambda: stock.ratio(period="quarter", lang="vi")),
         ("balance_sheet_quarter", lambda: stock.balance_sheet(period="quarter", lang="vi")),
         ("income_statement_quarter", lambda: stock.income_statement(period="quarter", lang="vi")),
         ("cash_flow_quarter", lambda: stock.cash_flow(period="quarter", lang="vi")),
@@ -650,7 +683,11 @@ def _collect_finance_datasets(symbol: str) -> dict:
     for name, getter in fetch_plan:
         try:
             df = getter()
-        except Exception as exc:
+        except BaseException as exc:
+            if _is_vci_rate_limit_error(exc):
+                raise VCIRateLimitError(
+                    f"VCI rate limit khi tải {name} của {symbol}"
+                ) from exc
             log.warning(f"[{INSTANCE_ID}] Finance fetch error {symbol}-{name}: {exc}")
             continue
         records = _flatten_finance_df(df)
@@ -663,7 +700,7 @@ def _collect_finance_datasets(symbol: str) -> dict:
 
 def _build_finance_preview(datasets: dict) -> dict:
     preview: dict[str, Any] = {}
-    ratio_rows = (datasets or {}).get("ratio_year") or []
+    ratio_rows = (datasets or {}).get("ratio_quarter") or []
     if ratio_rows:
         latest = ratio_rows[0]
         preview["pe"] = latest.get("pe") or latest.get("pe_ttm")
@@ -699,10 +736,19 @@ def _tech_agent_fetch_history(
     start_date: str,
     end_date: str,
 ) -> pd.DataFrame | None:
-    stock = Vnstock().stock(symbol=symbol, source="VCI")
+    try:
+        stock = Vnstock().stock(symbol=symbol, source="VCI")
+    except BaseException as exc:
+        if _is_vci_rate_limit_error(exc):
+            raise VCIRateLimitError(f"VCI rate limit khi khởi tạo stock {symbol}") from exc
+        log.warning(f"[{INSTANCE_ID}] [TECH] Lỗi khởi tạo stock {symbol}: {exc}")
+        return None
+
     try:
         df = stock.quote.history(start=start_date, end=end_date, interval="1D")
-    except Exception as exc:
+    except BaseException as exc:
+        if _is_vci_rate_limit_error(exc):
+            raise VCIRateLimitError(f"VCI rate limit khi tải lịch sử {symbol}") from exc
         log.warning(f"[{INSTANCE_ID}] [TECH] Lỗi lấy dữ liệu {symbol}: {exc}")
         return None
 
@@ -1304,6 +1350,12 @@ async def run_tech_agent(chat_id: int, request_id: str, ts_iso: str, symbols: li
                     raise RuntimeError(dataset["error"])
                 entries[sym] = dataset.get("records", [])
                 stats_by_symbol[sym] = dataset.get("stats", {})
+            except VCIRateLimitError as exc:
+                log.error(
+                    f"[{INSTANCE_ID}] [TECH] VCI rate limit khi xử lý {sym}: {exc}. Dừng agent."
+                )
+                await asyncio.sleep(VCI_RATE_LIMIT_BACKOFF_SECONDS)
+                raise
             except Exception as exc:
                 err_msg = f"{sym}: {exc}"
                 errors.append(err_msg[:200])
@@ -1567,6 +1619,12 @@ async def run_biz_agent(chat_id: int, request_id: str, ts_iso: str, symbols: lis
                     "datasets": list(datasets.keys()),
                     "preview": preview,
                 }
+            except VCIRateLimitError as exc:
+                log.error(
+                    f"[{INSTANCE_ID}] [BIZ] VCI rate limit khi xử lý {sym}: {exc}. Dừng agent."
+                )
+                await asyncio.sleep(VCI_RATE_LIMIT_BACKOFF_SECONDS)
+                raise
             except Exception as exc:
                 err_msg = f"{sym}: {exc}"
                 errors.append(err_msg[:200])
@@ -4409,7 +4467,7 @@ YÊU CẦU ĐẦU RA (JSON FORMAT):
     {{
       "symbol": "MÃ",
       "industry": "Tên ngành",
-        "analysis": "Dựa vào file BỐI CẢNH VĨ MÔ (GSO) và file DỮ LIỆU TÀI CHÍNH DOANH NGHIỆP, hãy đưa ra phân tích kĩ đâu là động lực Key Drivers (Động lực chính) cho doanh nghiệp tăng trưởng trong 3-6 tháng tới. Cơ hội và rủi ro là gì.",
+        "analysis": "Trình bày xuống dòng theo thứ tự: (1) 🚀 Động lực chính: mô tả yếu tố tăng trưởng 3-6 tháng dựa trên BỐI CẢNH VĨ MÔ và DỮ LIỆU TÀI CHÍNH; (2) 💡 Cơ hội: ghi rõ cơ hội cụ thể; (3) ⚠️ Rủi ro: nêu rõ rủi ro cần lưu ý.",
         "key_metrics": "...",
         "action": "hãy dựa vào file CHỈ BÁO KỸ THUẬT cộng với phần analysis ở trên để đưa ra quyết định mua, bán hay nắm giữ và giải thích lý do"
     }}
@@ -4426,9 +4484,8 @@ LƯU Ý:
 LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
 1. Trả về đúng định dạng JSON chuẩn (RFC 8259).
 2. KHÔNG được có dấu phẩy (,) ở phần tử cuối cùng của danh sách hoặc object (Trailing comma prohibited).
-3. Dùng gạch đầu dòng (•) để tách ý chính, dùng dấu (-) để liệt kê ý con và dấu cách dòng bằng ký tự xuống dòng (\n).
-4. Dùng dấu (*) để nhấn mạnh cho các tiêu đề đầu dòng. Ví dụ: *Động lực chính (Key Drivers):*, *Tăng trưởng doanh thu và lợi nhuận ổn định:*
-5. KHÔNG thêm bất kỳ lời dẫn hay giải thích nào ngoài khối JSON.
+3. Xuống dòng bằng ký tự \n để tách rõ ràng còn lại thì không sử dụng dấu markdown hay định dạng đặc biệt nào khác.
+4. KHÔNG thêm bất kỳ lời dẫn hay giải thích nào ngoài khối JSON.
 """
     prompt = base_prompt
     log.info(f"[{INSTANCE_ID}] Gọi Gemini (Report Multi-Agent): {symbols_str}")
@@ -4450,7 +4507,7 @@ LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
             if not raw_text:
                 raise RuntimeError("Gemini trả về rỗng hoặc None")
 
-            clean_text = escape_control_chars_in_json_strings(extract_json_from_text(raw_text))
+            clean_text = extract_json_from_text(raw_text)
             try:
                 json.loads(clean_text)
                 return clean_text
@@ -4474,6 +4531,94 @@ LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
             time.sleep(1)
 
     raise last_error if last_error else RuntimeError("Gemini không phản hồi JSON hợp lệ")
+
+
+def _clean_inline_markdown(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned = str(text).replace("\r", "\n")
+    cleaned = cleaned.replace("**", "")
+    cleaned = cleaned.replace("__", "")
+    cleaned = cleaned.replace("*", "")
+    return cleaned.strip()
+
+
+def _highlight_report_keyword(segment: str) -> str:
+    base = segment.strip().strip("*")
+    if not base:
+        return base
+    for pattern, label in REPORT_SECTION_KEYWORDS:
+        match = pattern.search(base)
+        if match:
+            remainder = base[match.end():].lstrip(" -:\u2013")
+            if remainder:
+                colon_idx = remainder.find(":")
+                if 0 <= colon_idx <= 40:
+                    remainder = remainder[colon_idx + 1 :].lstrip()
+            if not remainder:
+                return f"*{label}*"
+            return f"*{label}*: {remainder}"
+    return base
+
+
+def _normalize_report_block(text: str | None, *, use_bullet: bool = True, highlight: bool = False) -> str:
+    cleaned = _clean_inline_markdown(text)
+    if not cleaned:
+        return ""
+
+    fragments = re.split(r"[•\n]+", cleaned)
+    lines: list[str] = []
+    for fragment in fragments:
+        frag = fragment.strip(" -*•")
+        if not frag:
+            continue
+        if highlight:
+            frag = _highlight_report_keyword(frag)
+        lines.append(frag)
+
+    if not lines:
+        return ""
+
+    if use_bullet:
+        return "\n".join(f"• {line}" for line in lines)
+    return "\n\n".join(lines)
+
+
+def _normalize_report_metrics(text: str | None) -> str:
+    cleaned = _clean_inline_markdown(text)
+    if not cleaned:
+        return ""
+    parts = re.split(r"[;•\n]+", cleaned)
+    tokens = [part.strip() for part in parts if part and part.strip()]
+    if not tokens:
+        return ""
+    return " | ".join(tokens)
+
+
+def _normalize_report_payload(data: dict) -> dict:
+    if not isinstance(data, dict):
+        return data
+
+    data["general_market_comment"] = _normalize_report_block(
+        data.get("general_market_comment"), use_bullet=False, highlight=False
+    )
+    data["general_portfolio_comment"] = _normalize_report_block(
+        data.get("general_portfolio_comment"), use_bullet=False, highlight=False
+    )
+
+    stocks = data.get("stocks")
+    if isinstance(stocks, list):
+        for stock in stocks:
+            if not isinstance(stock, dict):
+                continue
+            stock["analysis"] = _normalize_report_block(
+                stock.get("analysis"), use_bullet=True, highlight=True
+            )
+            stock["key_metrics"] = _normalize_report_metrics(stock.get("key_metrics"))
+            stock["action"] = _normalize_report_block(
+                stock.get("action"), use_bullet=True, highlight=True
+            )
+    return data
 
 
 def _normalize_watch_symbols(raw_symbols: list[str] | None) -> list[str]:
@@ -4500,6 +4645,8 @@ async def _send_report_message(
         data = json.loads(json_text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Report JSON hỏng cho key {cache_key}") from exc
+
+    data = _normalize_report_payload(data)
 
     stocks = data.get("stocks") or []
     if not isinstance(stocks, list):
@@ -4624,6 +4771,12 @@ async def process_report_for_user(
             llm_symbols,
             agent_payload,
         )
+
+        try:
+            normalized_payload = _normalize_report_payload(json.loads(json_text))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Gemini trả về JSON báo cáo không hợp lệ") from exc
+        json_text = json.dumps(normalized_payload, ensure_ascii=False)
 
         save_report_to_redis(cache_key, json_text, source=source)
 
