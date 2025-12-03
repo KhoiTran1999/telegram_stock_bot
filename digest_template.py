@@ -2207,13 +2207,16 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Worker Control</h3>
                 <div class="text-xs text-slate-500 mb-3 bg-slate-50 p-3 rounded-lg border border-slate-100">
                     <i class="fa-solid fa-circle-info text-blue-500 mr-1"></i>
-                    Hành động này sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code> tới Worker để ép buộc chạy lại quy trình tạo báo cáo tuần và cập nhật dữ liệu thị trường ngay lập tức.
+                    Các nút bên dưới sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code>, <code>RUN_NIGHTLY_VALUATION</code> hoặc <code>RUN_DAILY_DIGEST</code> tới Worker. Chỉ dùng khi cần vì có thể đẩy nhiều thông báo tới user.
                 </div>
                 <button @click="forceWorker()" class="w-full py-2.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-blue-100 mb-2">
-                    <i class="fa-solid fa-robot mr-1.5"></i> Chạy Worker Ngay
+                    <i class="fa-solid fa-robot mr-1.5"></i> Chạy Weekly Report
                 </button>
-                <button @click="forceNightlyValuation()" class="w-full py-2.5 bg-purple-50 text-purple-600 border border-purple-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-purple-100">
-                    <i class="fa-solid fa-moon mr-1.5"></i> Chạy Nightly Valuation
+                <button @click="forceNightlyValuation()" class="w-full py-2.5 bg-purple-50 text-purple-600 border border-purple-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-purple-100 mb-2">
+                    <i class="fa-solid fa-moon mr-1.5"></i> Chạy Screener Value
+                </button>
+                <button @click="forceDailyDigest()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100">
+                    <i class="fa-solid fa-sun mr-1.5"></i> Chạy Digest Sáng
                 </button>
             </div>
         </div>
@@ -2749,6 +2752,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 async forceNightlyValuation() {
                     if (!confirm('Bắt buộc chạy Nightly Valuation (Tính toán định giá)?')) return;
                     this.callApi('/api/admin/worker/force', { type: 'nightly_valuation' }, '✅ Đã gửi lệnh chạy Nightly Valuation!');
+                },
+                async forceDailyDigest() {
+                    if (!confirm('⚠️ Chạy Digest Sáng sẽ gửi thông báo tới toàn bộ user. Tiếp tục?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'daily_digest' }, '✅ Đã gửi lệnh chạy Digest Sáng!');
                 },
 
                 // --- BROADCAST ACTIONS ---

@@ -1552,6 +1552,88 @@ def extract_json_from_text(text: str) -> str:
 
 _JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
 
+def _parse_ai_digest_payload(raw: Any) -> dict | None:
+    """Best-effort parse to ensure AI digest payload is a dict."""
+    if not raw:
+        return None
+
+    if isinstance(raw, dict):
+        return raw
+
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                escaped = escape_control_chars_in_json_strings(raw)
+                return json.loads(escaped)
+            except json.JSONDecodeError as exc:
+                log.warning("[DIGEST] JSON decode failed: %s", str(exc))
+                return None
+
+    return None
+
+
+def _normalize_ai_digest_payload(payload: dict | None) -> dict | None:
+    """Normalize AI digest payload to ensure required fields exist."""
+    if not isinstance(payload, dict):
+        return None
+
+    def _ensure_item_list(items: Any) -> list[dict]:
+        normalized = []
+        if isinstance(items, list):
+            iterable = items
+        elif items:
+            iterable = [items]
+        else:
+            iterable = []
+
+        for entry in iterable:
+            if isinstance(entry, dict):
+                text = str(entry.get("text") or "").strip()
+                link = str(entry.get("link") or "").strip()
+                ticker = str(entry.get("ticker") or "").strip()
+            else:
+                text = str(entry).strip()
+                link = ""
+                ticker = ""
+            if not text:
+                continue
+            normalized.append({
+                "text": text,
+                "link": link,
+                "ticker": ticker,
+            })
+        return normalized
+
+    comment = str(payload.get("comment") or "").strip()
+    try:
+        sentiment = int(payload.get("sentiment_score", 5))
+    except Exception:
+        sentiment = 5
+    sentiment = max(1, min(10, sentiment))
+
+    normalized_payload = {
+        "headline": _ensure_item_list(payload.get("headline")),
+        "macro": _ensure_item_list(payload.get("macro")),
+        "corporate": _ensure_item_list(payload.get("corporate")),
+        "comment": comment or "Thị trường khá yên ắng, chưa có thông tin mới.",
+        "sentiment_score": sentiment,
+    }
+    return normalized_payload
+
+
+def _build_empty_ai_digest(reason: str | None = None) -> dict:
+    message = reason or "Chưa có bài viết mới nào trong 24 giờ qua."
+    payload = {
+        "headline": [{"text": message, "link": ""}],
+        "macro": [],
+        "corporate": [],
+        "comment": "Thị trường tương đối bình lặng. Hãy tập trung theo dõi danh mục của bạn và các tín hiệu kỹ thuật.",
+        "sentiment_score": 5,
+    }
+    return payload
+
 def escape_control_chars_in_json_strings(text: str) -> str:
     """Escape newline/tab chars that Gemini đôi khi trả về trần trong chuỗi JSON."""
     if not text:
@@ -1758,6 +1840,11 @@ async def worker_inbound_loop():
                             admin_id = payload.get('admin_id')
                             log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
                             asyncio.create_task(job_nightly_valuation())
+
+                        elif cmd == "RUN_DAILY_DIGEST":
+                            admin_id = payload.get('admin_id')
+                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Daily Digest từ {admin_id}")
+                            asyncio.create_task(job_daily_digest())
 
                         elif cmd == "GEN_INFO":
                             chat_id = payload.get('chat_id')
@@ -2491,7 +2578,19 @@ Lưu ý: Field "link" để trống cũng được vì khó map lại chính xá
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
-        return extract_json_from_text(json_text)
+        if not json_text:
+            return None
+
+        cleaned = extract_json_from_text(json_text)
+        parsed = _parse_ai_digest_payload(cleaned)
+        if parsed is None:
+            log.warning("[DIGEST] AI summary JSON parse failed. Raw: %s", str(cleaned)[:200])
+            return None
+
+        normalized = _normalize_ai_digest_payload(parsed)
+        if not normalized:
+            log.warning("[DIGEST] AI summary missing required fields. Payload: %s", str(parsed)[:200])
+        return normalized
     except Exception as e:
         log.error(f"Summarize News Error: {e}")
         return None
@@ -2752,11 +2851,26 @@ async def get_top_mean_reversion_stocks(limit=5):
         # 1. Lấy dữ liệu từ Redis
         full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
         
-        # Nếu chưa có hoặc format cũ -> chạy lại task
+        # Nếu chưa có hoặc format cũ -> chạy lại task đồng bộ để có dữ liệu
         if not full_data or "stocks" not in full_data:
-            log.warning(f"[{INSTANCE_ID}] Redis chưa có dữ liệu Comprehensive. Đang kích hoạt tính toán...")
-            asyncio.create_task(calculate_market_comprehensive_data())
-            return []
+            lock = await _get_comprehensive_lock()
+            async with lock:
+                # Re-check after acquiring lock to avoid duplicate jobs
+                full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+                if full_data and "stocks" in full_data:
+                    log.info(f"[{INSTANCE_ID}] Dữ liệu Comprehensive đã có sau khi chờ lock.")
+                else:
+                    log.warning(f"[{INSTANCE_ID}] Redis chưa có dữ liệu Comprehensive. Đang chạy tính toán đồng bộ...")
+                    try:
+                        await calculate_market_comprehensive_data()
+                    except Exception as exc:
+                        log.error(f"[{INSTANCE_ID}] Lỗi tính toán Comprehensive tức thời: {exc}")
+                        return []
+                    full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+
+            if not full_data or "stocks" not in full_data:
+                log.error(f"[{INSTANCE_ID}] Không lấy được dữ liệu Comprehensive sau khi tính toán.")
+                return []
 
         hist_data = full_data["stocks"] # Lấy phần stocks
 
@@ -2827,6 +2941,14 @@ async def get_top_mean_reversion_stocks(limit=5):
 
 # --- NEW HELPERS FOR PERSONALIZED DIGEST ---
 AI_SEMAPHORE = asyncio.Semaphore(3)
+_comprehensive_lock: asyncio.Lock | None = None
+
+
+async def _get_comprehensive_lock() -> asyncio.Lock:
+    global _comprehensive_lock
+    if _comprehensive_lock is None:
+        _comprehensive_lock = asyncio.Lock()
+    return _comprehensive_lock
 
 def tag_news_items(items):
     for item in items:
@@ -2863,9 +2985,12 @@ async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_n
         # 3. Combine with Macro
         input_news = all_macro_news + final_spec
         
-        # 4. Call AI
-        if not input_news: return None
-        return await summarize_daily_news_with_ai(input_news)
+        # 4. Call AI hoặc fallback
+        if not input_news:
+            return _build_empty_ai_digest("Chưa có tin tức mới trong 24 giờ qua." )
+
+        result = await summarize_daily_news_with_ai(input_news)
+        return result or _build_empty_ai_digest("AI không thể tổng hợp dữ liệu. Hiển thị ghi chú mặc định.")
 
     
 async def job_daily_digest():
@@ -2953,8 +3078,8 @@ async def job_daily_digest():
         
         def _get_payload(cid):
             if cid not in digest_payloads:
-                # Lấy AI Data riêng của user
-                my_ai_data = user_ai_map.get(cid)
+                # Lấy AI Data riêng của user và đảm bảo dạng dict
+                my_ai_data = _parse_ai_digest_payload(user_ai_map.get(cid))
                 
                 digest_payloads[cid] = {
                     "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
@@ -3044,15 +3169,28 @@ async def job_daily_digest():
                 
                 # Format AI Text riêng cho từng user
                 ai_data = data.get("ai_news")
+                if ai_data and not isinstance(ai_data, dict):
+                    ai_data = _parse_ai_digest_payload(ai_data)
                 ai_text = "_Không có tin nổi bật._"
-                if ai_data:
+                if isinstance(ai_data, dict):
                     lines = []
-                    if ai_data.get('headline'):
+                    headlines = ai_data.get('headline') or []
+                    if isinstance(headlines, dict):
+                        headlines = [headlines]
+                    if headlines:
                         lines.append("⚡ *TIÊU ĐIỂM*")
-                        for i in ai_data['headline']: lines.append(f"• {i['text']}")
-                    if ai_data.get('comment'):
-                        lines.append(f"\n🧠 *AI:* {ai_data['comment']}")
-                    ai_text = "\n".join(lines)
+                        for item in headlines:
+                            if isinstance(item, dict):
+                                text = item.get('text') or ''
+                            else:
+                                text = str(item)
+                            if text:
+                                lines.append(f"• {text}")
+                    comment = ai_data.get('comment')
+                    if comment:
+                        lines.append(f"\n🧠 *AI:* {comment}")
+                    if lines:
+                        ai_text = "\n".join(lines)
                 
                 msg_text = (
                     f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
