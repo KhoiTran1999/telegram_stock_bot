@@ -2329,7 +2329,18 @@ ADMIN_MOBILE_TEMPLATE = r"""
                                 </div>
                             </div>
 
-                            <div class="text-sm text-slate-700 whitespace-pre-line pl-1" x-text="item.note"></div>
+                            <div class="pl-1" x-data="{ expanded: false }">
+                                <div class="text-sm text-slate-700 whitespace-pre-line transition-all duration-200" 
+                                     :class="expanded ? 'mb-2' : 'line-clamp-3 mb-1'" 
+                                     x-text="item.note"></div>
+                                
+                                <button x-show="item.note && item.note.length > 150" 
+                                        @click.stop="expanded = !expanded" 
+                                        class="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline mb-1 focus:outline-none flex items-center gap-1">
+                                    <span x-text="expanded ? 'Thu gọn' : 'Xem thêm...'"></span>
+                                    <i class="fa-solid" :class="expanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                                </button>
+                            </div>
 
                             <div class="flex justify-end items-center gap-2 pt-2 mt-2 border-t border-dashed border-slate-100">
                                 
