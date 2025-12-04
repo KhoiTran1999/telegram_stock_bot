@@ -4385,9 +4385,17 @@ async def api_user_save_note():
             )
             
             if tg_app and MAIN_LOOP and ADMIN_ID:
+                # [MỚI] Lấy username từ request và format tin nhắn
+                username = data.get("username")
+                user_display = f"`{chat_id}`"
+                if username:
+                    user_display += f" (@{username})" # Thêm username nếu có
+
                 type_label = "Vĩ mô" if symbol == "VN_MACRO" else ("Ngành" if len(symbol) > 3 else "Cổ phiếu")
+                
+                # Gửi thông báo kèm username
                 asyncio.run_coroutine_threadsafe(
-                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User `{chat_id}` vừa đóng góp ({type_label}): `{symbol}`."),
+                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User {user_display} vừa đóng góp ({type_label}): `{symbol}`."),
                     MAIN_LOOP
                 )
 

@@ -4442,6 +4442,11 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                     if (noteContent.length < 10) return alert("Nội dung tối thiểu 10 ký tự.");
 
                     this.isSaving = true;
+
+                    // [MỚI] Lấy username từ Telegram WebApp Data
+                    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+                    const username = tgUser?.username || ''; // Nếu không có username thì để rỗng
+
                     try {
                         const res = await fetch('/api/user/contribute/save', {
                             method: 'POST',
@@ -4452,6 +4457,7 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                             body: JSON.stringify({
                                 chat_id: chatId,
                                 id: this.form.id,
+                                username: username,
                                 symbol: finalSymbol,
                                 note: noteContent
                             })
