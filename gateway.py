@@ -2192,7 +2192,7 @@ async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if base_url.endswith("/"):
         base_url = base_url[:-1]
         
-    webapp_url = f"{base_url}/screener/value"
+    webapp_url = f"{base_url}/screener/value?chat_id={chat_id}"
 
     # 2. Tạo nút mở WebApp
     kb = [
@@ -3063,8 +3063,36 @@ def get_screener_data_for_webapp():
         return {"data": []}
 
 @flask_app.route("/screener/value")
-def view_screener_webapp():
+async def view_screener_webapp():
     """Route hiển thị Web App Screener"""
+
+    # --- 1. KIỂM TRA QUYỀN PRO ---
+    chat_id_str = request.args.get("chat_id")
+    is_pro = False
+    if chat_id_str:
+        try:
+            cid = int(chat_id_str)
+            # Gọi DB check Pro (chạy trong thread để không block)
+            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
+        except: pass
+
+    # Nếu không phải Pro -> Trả về màn hình khóa (LOCKED_FEATURE_TEMPLATE)
+    if not is_pro:
+        return render_template_string(
+            LOCKED_FEATURE_TEMPLATE,
+            icon="💎",
+            title="Bộ Lọc Giá Trị (Mean Reversion)",
+            desc=(
+                "Hệ thống tự động quét toàn thị trường để tìm kiếm các cổ phiếu "
+                "đang bị định giá thấp hơn lịch sử 5 năm (P/E, P/B).\n\n"
+                "✅ Tự động loại bỏ cổ phiếu rác.\n"
+                "✅ Xếp hạng cơ hội đầu tư thực chiến.\n"
+                "✅ Dữ liệu Realtime trong phiên.\n\n"
+                "Kết quả lọc chuyên sâu này chỉ dành cho thành viên Pro."
+            )
+        ), 403
+    # -----------------------------
+
     try:
         data_obj = get_screener_data_for_webapp()
         items = data_obj.get("data", [])
