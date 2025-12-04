@@ -2272,6 +2272,19 @@ ADMIN_MOBILE_TEMPLATE = r"""
                                    placeholder="Tìm mã (VD: HPG)" />
                         </div>
                     </div>
+                    <div class="flex bg-slate-100 p-1 rounded-lg mb-3">
+                        <button @click="dataFilter = 'active'; personalizationPage = 1" 
+                                class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all"
+                                :class="dataFilter === 'active' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'">
+                            Đang Hiệu Lực
+                        </button>
+                        <button @click="dataFilter = 'expired'; personalizationPage = 1" 
+                                class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all relative"
+                                :class="dataFilter === 'expired' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'">
+                            Lưu Trữ / Hết Hạn
+                            <span x-show="personalizationNotes.some(n => n.expires_at && new Date(n.expires_at) < new Date())" class="absolute top-1 right-2 w-1.5 h-1.5 bg-red-500 rounded-full"></span>
+                        </button>
+                    </div>
                     <div class="flex gap-2 w-full sm:w-auto">
                         <button @click="loadPersonalizationNotes(true)"
                                 class="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50 active:scale-95"
@@ -2318,11 +2331,24 @@ ADMIN_MOBILE_TEMPLATE = r"""
 
                             <div class="text-sm text-slate-700 whitespace-pre-line pl-1" x-text="item.note"></div>
 
-                            <div class="flex justify-between items-center pt-2 mt-1 border-t border-dashed border-slate-100">
-                                <span class="text-[10px] text-slate-400" x-text="item.created_at ? 'Tạo: ' + formatDateTime(item.created_at) : ''"></span>
+                            <div class="flex justify-end items-center gap-2 pt-2 mt-2 border-t border-dashed border-slate-100">
                                 
-                                <button @click="openPersonalizationModal(item)" class="text-xs font-bold text-slate-600 bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:bg-slate-100 active:scale-95 shadow-sm">
-                                    <i class="fa-solid fa-pen mr-1"></i> Sửa
+                                <span class="text-[10px] text-slate-400 mr-auto" x-text="item.created_at ? 'Tạo: ' + formatDateShort(item.created_at) : ''"></span>
+                                
+                                <template x-if="dataFilter === 'expired'">
+                                    <button @click.stop="deletePersonalizationNote(item.id)" 
+                                            class="text-xs font-bold px-3 py-1.5 rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 active:scale-95 transition flex items-center gap-1 shadow-sm">
+                                        <i class="fa-solid fa-trash"></i> Xóa
+                                    </button>
+                                </template>
+
+                                <button @click.stop="openPersonalizationModal(item)" 
+                                        class="text-xs font-bold px-3 py-1.5 rounded-lg border active:scale-95 transition flex items-center gap-1 shadow-sm"
+                                        :class="dataFilter === 'expired' ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'">
+                                    
+                                    <i class="fa-solid" :class="dataFilter === 'expired' ? 'fa-clock-rotate-left' : 'fa-pen'"></i>
+                                    
+                                    <span x-text="dataFilter === 'expired' ? 'Gia hạn / Sửa' : 'Sửa'"></span>
                                 </button>
                             </div>
                         </div>
@@ -2799,6 +2825,8 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 usersLoading: false,
                 usersError: null,
                 adminId: '{{ admin_id }}',
+                cacheClearType: 'screener',
+                dataFilter: 'active',
                 
                 // New State
                 systemStats: null,
@@ -2869,11 +2897,25 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 },
                 get personalizationFilteredNotesList() {
                     if (!Array.isArray(this.personalizationNotes)) return [];
+                    
                     const query = (this.personalizationSearch || '').trim().toUpperCase();
-                    if (!query) return this.personalizationNotes;
+                    const now = new Date();
+
                     return this.personalizationNotes.filter(item => {
+                        // 1. Lọc theo Tab (Hiệu lực / Hết hạn)
+                        const expiry = item.expires_at ? new Date(item.expires_at) : null;
+                        const isExpired = expiry && expiry < now; // Có hạn và đã qua giờ hiện tại
+
+                        if (this.dataFilter === 'active' && isExpired) return false;
+                        if (this.dataFilter === 'expired' && !isExpired) return false;
+
+                        // 2. Lọc theo Từ khóa tìm kiếm (như cũ)
+                        if (!query) return true;
+                        
                         const symbol = (item.symbol || '').toUpperCase();
                         const note = (item.note || '').toUpperCase();
+                        if (query === 'MACRO' || query === 'VIMO') return symbol === 'VN_MACRO';
+                        
                         return symbol.includes(query) || note.includes(query);
                     });
                 },
@@ -3228,7 +3270,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     this.personalizationLoading = true;
                     this.personalizationError = null;
                     try {
-                        const res = await fetch(`/api/admin/personalization/list?admin_id=${encodeURIComponent(aid)}&_t=${Date.now()}`, {
+                        const res = await fetch(`/api/admin/personalization/list?admin_id=${encodeURIComponent(aid)}&include_expired=true&_t=${Date.now()}`, {
                             headers: { 'ngrok-skip-browser-warning': 'true' }
                         });
                         const payload = await res.json();
@@ -3248,18 +3290,30 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     if (next < 1 || next > this.personalizationTotalPages) return;
                     this.personalizationPage = next;
                 },
+                // --- Thay thế toàn bộ hàm openPersonalizationModal cũ ---
                 openPersonalizationModal(item = null) {
                     if (item) {
-                        // Edit Mode: Tự động detect loại (Type)
+                        // Edit Mode: Tự động detect loại (Type) an toàn hơn
                         let type = 'STOCK';
                         let secName = '';
-                        let sym = item.symbol;
+                        let sym = (item.symbol || '').trim();
+                        const symUpper = sym.toUpperCase();
 
-                        if (sym === 'VN_MACRO') {
+                        // Lấy danh sách ngành an toàn (tránh lỗi null/undefined gây crash)
+                        const safeSectors = Array.isArray(this.sectorsList) ? this.sectorsList : [];
+
+                        if (symUpper === 'VN_MACRO') {
                             type = 'MACRO';
-                        } else if (this.sectorsList.includes(sym)) {
-                            type = 'SECTOR';
-                            secName = sym;
+                        } else {
+                            // So sánh không phân biệt hoa thường
+                            const foundSector = safeSectors.find(s => s.toUpperCase() === symUpper);
+                            
+                            if (foundSector) {
+                                type = 'SECTOR';
+                                secName = foundSector; // Lấy tên chuẩn từ danh sách (VD: Bất động sản)
+                            } else {
+                                type = 'STOCK';
+                            }
                         }
 
                         this.personalizationForm = {
@@ -3268,6 +3322,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                             symbol: sym,
                             sectorName: secName,
                             note: item.note || '',
+                            // Xử lý ngày tháng an toàn
                             expires_at: item.expires_at ? this.toInputValue(item.expires_at) : '',
                             isEditing: true
                         };
@@ -3379,14 +3434,15 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     if (symbol === 'VN_MACRO') return '🌎 VĨ MÔ';
                     return symbol;
                 },
-                async deletePersonalizationNote() {
-                    const noteId = this.personalizationForm.id;
-                    const symbol = (this.personalizationForm.symbol || '').trim().toUpperCase();
-                    if (!noteId) { alert('Thiếu note_id.'); return; }
-                    const preview = (this.personalizationForm.note || '').slice(0, 60);
-                    const previewText = preview ? `\n\n"${preview}"` : '';
-                    const confirmMsg = `Xóa ghi chú ${symbol ? 'cho mã ' + symbol : ''}?${previewText}`;
-                    if (!confirm(confirmMsg)) return;
+                // --- Sửa lại hàm deletePersonalizationNote để hỗ trợ xóa trực tiếp ---
+                async deletePersonalizationNote(directId = null) {
+                    // Ưu tiên lấy ID truyền vào (từ danh sách), nếu không có thì lấy từ Form (trong Modal)
+                    const noteId = directId || this.personalizationForm.id;
+                    
+                    if (!noteId) { alert('Không xác định được ID để xóa.'); return; }
+                    
+                    if (!confirm('⚠️ Bạn chắc chắn muốn XÓA VĨNH VIỄN ghi chú này?\nHành động không thể hoàn tác.')) return;
+                    
                     this.personalizationSaving = true;
                     try {
                         const res = await fetch('/api/admin/personalization/delete', {
@@ -3399,9 +3455,13 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         });
                         const payload = await res.json();
                         if (!payload.ok) throw new Error(payload.message || 'Không xóa được ghi chú');
-                        this.showToast('🗑️ Đã xóa ghi chú');
+                        
+                        this.showToast('🗑️ Đã xóa vĩnh viễn');
                         await this.loadPersonalizationNotes(true);
-                        this.closePersonalizationModal();
+                        
+                        // Nếu đang mở modal thì đóng lại
+                        if (this.personalizationModalOpen) this.closePersonalizationModal();
+                        
                     } catch (err) {
                         alert('❌ Lỗi: ' + (err.message || err));
                     } finally {
@@ -3878,6 +3938,9 @@ SCREENER_WEBAPP_TEMPLATE = r"""
     </div>
 
     <script>
+        // 1. Khởi tạo dữ liệu an toàn (Nếu server chưa gửi, mặc định là mảng rỗng)
+        const SECTORS_DATA = {{ sectors | safe }} || [];
+        
         Telegram.WebApp.expand();
         
         // Force Dark Mode detection
@@ -4052,19 +4115,24 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
         </div>
 
         <template x-for="note in notes" :key="note.id">
-            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative group">
+            <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative group" x-data="{ 
+         isExpired: note.expires_at && new Date(note.expires_at) < new Date(),
+         expanded: false 
+     }"
+     :class="isExpired ? 'opacity-60 bg-slate-50' : ''">
                 <div class="flex justify-between items-start mb-2">
                     <span class="font-mono font-bold text-sm px-2 py-0.5 rounded"
                           :class="getBadgeClass(note.symbol)" 
                           x-text="getDisplaySymbol(note.symbol)"></span>
                     
-                    <span class="text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wide"
+                    <span class="text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wide border"
                           :class="{
-                              'bg-yellow-100 text-yellow-700': note.status === 'PENDING',
-                              'bg-green-100 text-green-700': note.status === 'APPROVED',
-                              'bg-red-100 text-red-700': note.status === 'REJECTED'
+                              'bg-gray-200 text-gray-500 border-gray-300': isExpired, 
+                              'bg-yellow-50 text-yellow-700 border-yellow-200': !isExpired && note.status === 'PENDING',
+                              'bg-green-50 text-green-700 border-green-200': !isExpired && note.status === 'APPROVED',
+                              'bg-red-50 text-red-700 border-red-200': !isExpired && note.status === 'REJECTED'
                           }"
-                          x-text="statusLabel(note.status)"></span>
+                          x-text="isExpired ? 'Hết hạn' : statusLabel(note.status)"></span>
                 </div>
                 
                 <div x-data="{ expanded: false }">
@@ -4088,11 +4156,17 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                     <span x-text="formatDate(note.updated_at || note.created_at)"></span>
                     
                     <div class="flex gap-3">
-                        <template x-if="note.status === 'PENDING'">
+                        <template x-if="note.status === 'PENDING' && !isExpired">
                             <div class="flex gap-3">
                                 <button @click="openModal(note)" class="text-slate-500 font-bold hover:text-blue-600 transition">Sửa</button>
                                 <button @click="deleteNote(note.id)" class="text-slate-500 font-bold hover:text-red-500 transition">Xóa</button>
                             </div>
+                        </template>
+
+                        <template x-if="isExpired">
+                            <span class="text-gray-400 font-medium italic text-[10px] flex items-center gap-1">
+                                <i class="fa-solid fa-archive"></i> Đã hết hạn
+                            </span>
                         </template>
 
                         <template x-if="note.status === 'APPROVED'">

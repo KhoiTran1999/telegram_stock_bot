@@ -1347,27 +1347,26 @@ def get_stock_personalization_map(
 
 def cleanup_expired_stock_personalizations(now: datetime.datetime | None = None) -> int:
     """
-    Xóa các note đã hết hạn:
-    1. Note có expires_at < NOW (thường là APPROVED do Admin set).
-    2. Note có status = 'REJECTED' và updated_at < NOW - 7 ngày.
+    Dọn dẹp Database:
+    - [GIỮ LẠI] Các note 'APPROVED' dù đã hết hạn (để Admin quyết định gia hạn hay xóa).
+    - [XÓA] Các note 'REJECTED' (bị từ chối) đã qua 7 ngày để dọn rác.
     """
     ts = now or datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
     
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Logic xóa gộp: (Hết hạn) HOẶC (Bị từ chối quá 7 ngày)
+            # Chỉ xóa những bài bị TỪ CHỐI quá 7 ngày
             cur.execute(
                 """
                 DELETE FROM stock_personalization 
-                WHERE (expires_at IS NOT NULL AND expires_at < %s)
-                   OR (status = 'REJECTED' AND updated_at < %s - INTERVAL '7 days')
+                WHERE status = 'REJECTED' 
+                  AND updated_at < %s - INTERVAL '7 days'
                 """,
-                (ts, ts),
+                (ts,),
             )
             deleted = cur.rowcount or 0
         conn.commit()
     return deleted
-
 def list_user_contributions(user_id: int, limit: int = 10, offset: int = 0) -> dict:
     """
     Lấy danh sách đóng góp của user (Hỗ trợ phân trang).
