@@ -4832,7 +4832,7 @@ LUẬT NGHIÊM NGẶT VỀ JSON (STRICT RULE):
                 generation_config["response_schema"] = REPORT_RESPONSE_SCHEMA
 
             raw_text = call_gemini_safe(
-                model_id="gemini-2.5-flash",
+                model_id="gemini-2.5-pro",
                 contents=prompt,
                 config=generation_config,
             )
@@ -5276,7 +5276,7 @@ YÊU CẦU NỘI DUNG:
 
     try:
         raw_text = call_gemini_safe(
-            model_id="gemini-2.5-flash-lite", # Dùng Flash cho nhanh
+            model_id="gemini-2.5-flash", # Dùng Flash cho nhanh
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
