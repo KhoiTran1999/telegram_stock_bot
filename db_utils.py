@@ -2226,17 +2226,33 @@ def save_historical_valuation_to_redis(data: dict):
 def get_historical_valuation_from_redis() -> dict | None:
     """
     Lấy dữ liệu định giá lịch sử từ Redis.
+    Cơ chế Fallback: Thử hôm nay -> Thử hôm qua -> Trả về None.
     """
     try:
         r = get_redis()
         vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
-        today = datetime.datetime.now(vn_tz).strftime("%Y-%m-%d")
-        key = f"screener:history:{today}"
+        now = datetime.datetime.now(vn_tz)
         
-        raw = r.get(key)
+        # 1. Thử lấy key hôm nay
+        today = now.strftime("%Y-%m-%d")
+        key_today = f"screener:history:{today}"
+        raw = r.get(key_today)
+        
         if raw:
             return json.loads(raw)
+            
+        # 2. Nếu miss, thử lấy key hôm qua (Fallback)
+        yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        key_yesterday = f"screener:history:{yesterday}"
+        raw_old = r.get(key_yesterday)
+        
+        if raw_old:
+            # (Optional) Log nhẹ để biết đang dùng dữ liệu cũ
+            redis_debug_log(f"Dùng dữ liệu cũ ngày {yesterday}")
+            return json.loads(raw_old)
+            
         return None
+        
     except Exception as e:
         redis_debug_log(f"Lỗi đọc historical valuation: {e}")
         return None

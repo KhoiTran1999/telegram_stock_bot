@@ -2939,31 +2939,24 @@ EXCLUDED_TICKERS = {"VIC", "VRE", "VHM"}
 
 def get_screener_data_for_webapp():
     """
-    Lấy dữ liệu screener.
-    Cố gắng lấy từ cache 'global_screener_snapshot' (do Worker hoặc request trước tạo).
-    Nếu không có, tự tính toán (fallback) và cache lại 5 phút.
+    Lấy dữ liệu screener (Bản Chuẩn: Có Cache + Fix lỗi hist_data).
     """
     try:
         r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
         
-        # 1. Thử lấy từ Cache
+        # 1. Lấy từ Cache (BẬT LẠI)
         cached = r.get("global_screener_snapshot")
         if cached:
             return json.loads(cached)
 
-        # 2. Nếu không có, tính toán (Fallback)
-        # Lấy dữ liệu lịch sử
+        # 2. Lấy dữ liệu định giá lịch sử
         hist_payload = get_historical_valuation_from_redis()
-        if not hist_payload:
-            return {"data": []}
-            
-        # [FIX] Extract 'stocks' from payload
-        hist_data = hist_payload.get("stocks", {})
+        hist_data = hist_payload.get("stocks", {}) if hist_payload else {}
+        
         if not hist_data:
             return {"data": []}
 
-
-        # Lấy dữ liệu thị trường (Sync call)
+        # 3. Lấy dữ liệu thị trường
         screener_df = Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700)
         
         # Lấy thông tin ngành
@@ -2977,60 +2970,42 @@ def get_screener_data_for_webapp():
         for index, row in screener_df.iterrows():
             sym = str(row['ticker']).upper()
             if sym in EXCLUDED_TICKERS: continue
-            if sym not in hist_data: continue
+            if sym not in hist_data: continue 
             
             try:
                 pe_cur = float(row['pe'])
                 pb_cur = float(row['pb'])
-                # Giá đóng cửa (đơn vị nghìn đồng)
-                # Ưu tiên: close -> price -> price_near_realtime
+                
                 p_close = row.get('close', 0)
                 p_price = row.get('price', 0)
                 p_realtime = row.get('price_near_realtime', 0)
                 
                 current_price = 0.0
-                
                 try:
-                    if p_close and not math.isnan(float(p_close)) and float(p_close) > 0:
-                        current_price = float(p_close) * 1000
-                    elif p_price and not math.isnan(float(p_price)) and float(p_price) > 0:
-                        current_price = float(p_price) * 1000
-                    elif p_realtime and not math.isnan(float(p_realtime)) and float(p_realtime) > 0:
-                        current_price = float(p_realtime) * 1000
-                except:
-                    current_price = 0.0
+                    val = float(p_close or p_price or p_realtime or 0)
+                    if val > 0 and val < 500: val *= 1000
+                    current_price = val
+                except: current_price = 0.0
             except: continue
 
             pe_avg = hist_data[sym].get('pe_avg', 0)
             pb_avg = hist_data[sym].get('pb_avg', 0)
             
-            # Validate Data (Chặn NaN/Inf để tránh lỗi JSON trên iPhone)
             if math.isnan(pe_cur) or pe_cur <= 0: continue
             if math.isnan(pb_cur) or pb_cur <= 0: continue
             if math.isnan(pe_avg) or pe_avg <= 0: continue
             if math.isnan(pb_avg) or pb_avg <= 0: continue
 
-            # Tính Upside (Biên an toàn)
-            # Upside = (Fair - Current) / Current
-            # Fair Value ước tính theo Mean Reversion
             upside_pe = (pe_avg / pe_cur) - 1
             upside_pb = (pb_avg / pb_cur) - 1
-            
             avg_upside = (upside_pe + upside_pb) / 2
             
-            # Fair Value (Display purpose)
             fair_value = current_price * (1 + avg_upside)
-
-            # Discount logic for frontend (Negative = Undervalued/Green)
             discount_pct = -avg_upside * 100 
 
-            # Signal
-            if avg_upside >= 0.15:
-                signal = "Undervalued"
-            elif avg_upside <= -0.15:
-                signal = "Overvalued"
-            else:
-                signal = "Fair"
+            if avg_upside >= 0.15: signal = "Undervalued"
+            elif avg_upside <= -0.15: signal = "Overvalued"
+            else: signal = "Fair"
 
             sector_info = sectors_map.get(sym, "Khác")
             if isinstance(sector_info, dict):
@@ -3038,12 +3013,7 @@ def get_screener_data_for_webapp():
             else:
                 sector = sector_info if isinstance(sector_info, str) else "Khác"
             
-            # Helper sanitize final values
-            def _s(v):
-                if v is None: return 0.0
-                if isinstance(v, float):
-                    if math.isnan(v) or math.isinf(v): return 0.0
-                return v
+            def _s(v): return float(v) if v and not math.isnan(v) and not math.isinf(v) else 0.0
 
             result_data.append({
                 "symbol": str(sym),
@@ -3060,13 +3030,11 @@ def get_screener_data_for_webapp():
             
         payload = {"data": result_data}
         
-        # Cache 5 phút (Ensure NO NaN)
+        # Cache 5 phút
         try:
             json_str = json.dumps(payload, allow_nan=False)
             r.set("global_screener_snapshot", json_str, ex=300)
-        except ValueError as e:
-            log.error(f"FATAL: Generated JSON contains NaN! {e}")
-            # Fallback: Clean recursively if needed, but _s should have caught it.
+        except: pass
         
         return payload
 
@@ -3084,11 +3052,9 @@ async def view_screener_webapp():
     if chat_id_str:
         try:
             cid = int(chat_id_str)
-            # Gọi DB check Pro (chạy trong thread để không block)
             is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
         except: pass
 
-    # Nếu không phải Pro -> Trả về màn hình khóa (LOCKED_FEATURE_TEMPLATE)
     if not is_pro:
         return render_template_string(
             LOCKED_FEATURE_TEMPLATE,
@@ -3103,7 +3069,6 @@ async def view_screener_webapp():
                 "Kết quả lọc chuyên sâu này chỉ dành cho thành viên Pro."
             )
         ), 403
-    # -----------------------------
 
     try:
         data_obj = get_screener_data_for_webapp()
@@ -3123,12 +3088,17 @@ async def view_screener_webapp():
         vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
         generated_time = datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
         
+        # --- [FIX] TRUYỀN BIẾN SECTORS VÀO TEMPLATE ---
+        # CACHED_SECTORS là biến toàn cục đã có sẵn ở đầu file gateway.py
+        sectors_json = json.dumps(CACHED_SECTORS, ensure_ascii=False)
+        
         return render_template_string(
             SCREENER_WEBAPP_TEMPLATE, 
             items=items, 
             generated_time=generated_time,
             sector_chart=sector_chart,
-            sector_table=sector_table
+            sector_table=sector_table,
+            sectors=sectors_json  # <--- QUAN TRỌNG NHẤT: Fix lỗi JS
         )
     except Exception as e:
         log.error(f"View Screener Error: {e}")
