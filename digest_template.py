@@ -584,8 +584,8 @@ PROFILE_HTML_TEMPLATE = r"""
         .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; background: rgba(128,128,128,0.15); font-size: 11px; color: var(--hint-color); font-weight: 600; text-transform: uppercase; }
         .pro-badge { display: inline-flex; padding: 3px 8px; border-radius: 8px; background: linear-gradient(135deg, #FFD700, #FFA500); color: white; font-size: 10px; font-weight: 800; text-transform: uppercase; }
         
-        .symbol { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
-        .symbol-main { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; color: var(--accent); }
+        .symbol { display: flex; flex-direction: column; margin-top: 4px; }
+        .symbol-main { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; color: var(--accent); line-height: 1.2; }
         .symbol-sub { font-size: 13px; color: var(--hint-color); font-weight: 500; }
         .meta { margin-top: 4px; font-size: 11px; color: var(--hint-color); }
 
@@ -2659,23 +2659,66 @@ ADMIN_MOBILE_TEMPLATE = r"""
 
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
                     <div class="bg-slate-50 px-4 py-3 border-b border-slate-100 flex justify-between items-center">
-                        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wide">Nhật ký hoạt động (10 lệnh)</h3>
-                        <i class="fa-solid fa-list-ul text-slate-300 text-xs"></i>
+                        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wide">Nhật ký hoạt động</h3>
+                        <button @click="fetchUserLogs(logsPage)" class="text-slate-400 hover:text-blue-500 transition">
+                            <i class="fa-solid fa-rotate-right text-xs" :class="logsLoading ? 'animate-spin text-blue-500' : ''"></i>
+                        </button>
                     </div>
-                    <div class="max-h-48 overflow-y-auto">
-                        <table class="w-full text-left text-sm">
-                            <tbody class="divide-y divide-slate-50">
-                                <template x-for="log in selectedUser?.logs">
-                                    <tr class="hover:bg-slate-50 transition">
-                                        <td class="px-4 py-2.5 font-mono text-xs text-blue-600 font-medium bg-blue-50/30 w-1/3" x-text="log.command"></td>
-                                        <td class="px-4 py-2.5 text-slate-500 text-xs text-right" x-text="formatDate(log.used_at) + ' ' + new Date(log.used_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})"></td>
+                    
+                    <div class="relative min-h-[150px]">
+                        <div x-show="logsLoading" class="absolute inset-0 bg-white/80 z-10 flex items-center justify-center backdrop-blur-sm">
+                            <i class="fa-solid fa-circle-notch animate-spin text-slate-400"></i>
+                        </div>
+
+                        <div class="max-h-60 overflow-y-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-slate-50 text-[10px] text-slate-400 uppercase font-bold sticky top-0">
+                                    <tr>
+                                        <th class="px-3 py-2 w-1/4">Lệnh</th>
+                                        <th class="px-3 py-2 w-1/2">Nội dung</th>
+                                        <th class="px-3 py-2 w-1/4 text-right">Thời gian</th>
                                     </tr>
-                                </template>
-                                <template x-if="!selectedUser?.logs || selectedUser?.logs.length === 0">
-                                    <tr><td colspan="2" class="px-4 py-6 text-center text-slate-400 text-xs italic">Chưa có hoạt động nào</td></tr>
-                                </template>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody class="divide-y divide-slate-50">
+                                    <template x-for="log in userLogs" :key="log.used_at">
+                                        <tr class="hover:bg-slate-50 transition">
+                                            <td class="px-3 py-2 align-top">
+                                                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded border"
+                                                      :class="log.command === 'CMD_ASK_AI' ? 'bg-purple-50 text-purple-600 border-purple-100' : 
+                                                             (log.command === 'BUTTON_CLICK' ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-blue-50 text-blue-600 border-blue-100')"
+                                                      x-text="log.command === 'CMD_ASK_AI' ? 'AI CHAT' : (log.command === 'BUTTON_CLICK' ? 'CLICK' : log.command)">
+                                                </span>
+                                            </td>
+                                            
+                                            <td class="px-3 py-2 align-top">
+                                                <div class="text-xs text-slate-700 font-medium break-words whitespace-pre-wrap" 
+                                                     x-text="log.note || '-'"></div>
+                                            </td>
+                                            
+                                            <td class="px-3 py-2 text-[10px] text-slate-400 text-right align-top whitespace-nowrap">
+                                                <div x-text="formatDate(log.used_at)"></div>
+                                                <div x-text="new Date(log.used_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})"></div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    <template x-if="!logsLoading && userLogs.length === 0">
+                                        <tr><td colspan="3" class="px-4 py-8 text-center text-slate-400 text-xs italic">Chưa có hoạt động nào</td></tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-50 px-3 py-2 border-t border-slate-100 flex justify-between items-center" x-show="logsTotalPages > 1">
+                        <button @click="changeLogPage(-1)" :disabled="logsPage <= 1"
+                                class="px-2 py-1 rounded hover:bg-white border border-transparent hover:border-slate-200 text-slate-500 disabled:opacity-30 transition">
+                            <i class="fa-solid fa-chevron-left text-xs"></i>
+                        </button>
+                        <span class="text-[10px] font-bold text-slate-500" x-text="logsPage + ' / ' + logsTotalPages"></span>
+                        <button @click="changeLogPage(1)" :disabled="logsPage >= logsTotalPages"
+                                class="px-2 py-1 rounded hover:bg-white border border-transparent hover:border-slate-200 text-slate-500 disabled:opacity-30 transition">
+                            <i class="fa-solid fa-chevron-right text-xs"></i>
+                        </button>
                     </div>
                 </div>
 
@@ -2848,6 +2891,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 adminId: '{{ admin_id }}',
                 cacheClearType: 'screener',
                 dataFilter: 'active',
+                userLogs: [],
+                logsPage: 1,
+                logsTotalPages: 1,
+                logsLoading: false,
                 
                 // New State
                 systemStats: null,
@@ -3604,7 +3651,42 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     this.selectedUser = user; 
                     this.currentNote = user.admin_note || ''; 
                     this.isNoteDirty = false;
+                    
+                    // [MỚI] Reset và tải log trang 1
+                    this.userLogs = [];
+                    this.logsPage = 1;
+                    this.fetchUserLogs(1);
+                    
                     this.sheetOpen = true; 
+                },
+                async fetchUserLogs(page) {
+                    if (!this.selectedUser) return;
+                    this.logsLoading = true;
+                    try {
+                        // Gọi API mới mà bạn vừa viết ở gateway.py
+                        const url = `/api/admin/user/logs?admin_id=${this.adminId}&target_id=${this.selectedUser.id}&page=${page}&limit=10`;
+                        
+                        const res = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+                        const json = await res.json();
+                        
+                        if (json.ok) {
+                            this.userLogs = json.data;
+                            this.logsPage = json.pagination.current_page;
+                            this.logsTotalPages = json.pagination.total_pages;
+                        }
+                    } catch (e) {
+                        console.error("Load logs error", e);
+                    } finally {
+                        this.logsLoading = false;
+                    }
+                },
+
+                // [MỚI] Hàm chuyển trang log
+                changeLogPage(delta) {
+                    const nextPage = this.logsPage + delta;
+                    if (nextPage >= 1 && nextPage <= this.logsTotalPages) {
+                        this.fetchUserLogs(nextPage);
+                    }
                 },
                 getStatusLabel(user) { return !user.is_pro ? 'FREE' : (user.is_expired ? 'EXPIRED' : 'PRO'); },
                 getStatusClass(user) { return !user.is_pro ? 'bg-slate-100 text-slate-500' : (user.is_expired ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'); },

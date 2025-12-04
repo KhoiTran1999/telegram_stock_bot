@@ -205,10 +205,30 @@ def create_stock_personalization_table():
                 # 5. Tạo Index cho submitted_by để User load danh sách nhanh
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_personalization_user ON stock_personalization (submitted_by);")
 
+                #---------------------------------------------------------------------------------------#
 
 
             conn.commit()
             print("✅ THÀNH CÔNG! Đã đảm bảo bảng stock_personalization tồn tại.")
+    except Exception as e:
+        print(f"❌ Lỗi: {e}")
+
+def add_command_log_note_column():
+    """
+    Thêm cột 'note' vào bảng command_log để lưu nội dung chat với AI hoặc tham số lệnh.
+    """
+    print("🚀 Đang thêm cột 'note' vào bảng 'command_log'...")
+    if not DATABASE_URL:
+        print("❌ Lỗi: Thiếu DATABASE_URL.")
+        return
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                sql = "ALTER TABLE command_log ADD COLUMN IF NOT EXISTS note TEXT;"
+                cur.execute(sql)
+            conn.commit()
+            print("✅ THÀNH CÔNG! Đã thêm cột 'note' vào bảng 'command_log'.")
     except Exception as e:
         print(f"❌ Lỗi: {e}")
 
@@ -219,3 +239,4 @@ if __name__ == "__main__":
     migrate_paid_users()
     create_new_tables()
     create_stock_personalization_table()
+    add_command_log_note_column()

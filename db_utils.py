@@ -500,10 +500,11 @@ def set_bot_active(active: bool):
 # ==========================================
 # LOG COMMAND
 # ==========================================
-def log_command_usage(chat_id: int, command: str, admin_id: int | None = None):
+def log_command_usage(chat_id: int, command: str, admin_id: int | None = None, note: str | None = None):
     """
     Ghi log sử dụng lệnh.
-    Nếu admin_id được truyền vào và chat_id == admin_id -> bỏ qua (không tính vào thống kê).
+    CẬP NHẬT: Thêm tham số `note` để lưu nội dung chat hoặc tham số lệnh.
+    Nếu admin_id được truyền vào và chat_id == admin_id -> bỏ qua.
     """
     if admin_id is not None and chat_id == admin_id:
         return
@@ -511,8 +512,8 @@ def log_command_usage(chat_id: int, command: str, admin_id: int | None = None):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO command_log (chat_id, command) VALUES (%s, %s)",
-                (chat_id, command),
+                "INSERT INTO command_log (chat_id, command, note) VALUES (%s, %s, %s)",
+                (chat_id, command, note),
             )
         conn.commit()
 
@@ -553,18 +554,52 @@ def get_command_stats():
         )
     return stats
 
-def get_user_logs(chat_id: int, limit: int = 10):
-    """Lấy nhật ký lệnh gần nhất của user"""
+def get_user_logs(chat_id: int, limit: int = 10, offset: int = 0) -> dict:
+    """
+    Lấy nhật ký lệnh của user (Hỗ trợ phân trang).
+    CẬP NHẬT:
+    - Trả về thêm cột 'note'
+    - Trả về tổng số dòng để phân trang (COUNT(*) OVER)
+    - Output format: {'rows': [...], 'total': int}
+    """
     with get_conn() as conn:
         with conn.cursor(row_factory=rows.dict_row) as cur:
             cur.execute("""
-                SELECT command, used_at
+                SELECT command, note, used_at,
+                       COUNT(*) OVER() as total_count
                 FROM command_log
                 WHERE chat_id = %s
                 ORDER BY used_at DESC
-                LIMIT %s
-            """, (chat_id, limit))
-            return cur.fetchall()
+                LIMIT %s OFFSET %s
+            """, (chat_id, limit, offset))
+            data = cur.fetchall()
+            
+            # Lấy tổng số dòng từ bản ghi đầu tiên (nếu có)
+            total = data[0]['total_count'] if data else 0
+            
+            return {'rows': data, 'total': total}
+
+def cleanup_old_command_logs(days: int = 30) -> int:
+    """
+    Xóa log lệnh/chat cũ hơn `days` ngày.
+    Dùng cho job maintenance hàng ngày để giảm tải DB.
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM command_log
+                    WHERE used_at < NOW() - (%s || ' days')::INTERVAL
+                    """,
+                    (str(days),)
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        return deleted
+    except Exception as e:
+        print(f"[DB_UTILS] Lỗi dọn dẹp command_log: {e}")
+        return 0
 
 def get_user_configs(chat_id: int):
     """Lấy cài đặt cá nhân (VN30, Stock Alert, News...)"""

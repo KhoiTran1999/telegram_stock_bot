@@ -736,6 +736,12 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- 2. FALLBACK (GÕ BẬY BẠ / KHÔNG HIỂU) -> CHUYỂN SANG AI ---
     # Thay vì báo lỗi, gửi sang Worker để AI trả lời
+
+    try:
+        # user_text là biến đã có sẵn ở đầu hàm
+        await asyncio.to_thread(log_command_usage, chat_id, "CMD_ASK_AI", ADMIN_ID, note=user_text)
+    except Exception as e:
+        log.warning(f"Log AI Chat error: {e}")
     
     # Gửi tin nhắn chờ (để user biết bot đang nghĩ)
     sent_msg = await reply_md(update, "🤖 **Đang suy nghĩ...**")
@@ -758,6 +764,11 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     data = query.data
     chat_id = update.effective_chat.id
+
+    try:
+        # Chạy ngầm để không làm chậm bot
+        asyncio.create_task(asyncio.to_thread(log_command_usage, chat_id, "BUTTON_CLICK", ADMIN_ID, note=data))
+    except: pass
     
     # Kiểm tra bảo trì
     if not BOT_ACTIVE:
@@ -1759,7 +1770,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # -------------------------------------
 
     chat_id = update.effective_chat.id
-    await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID)
+    await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID, note=symbol)
 
     if not context.args:
         await reply_md(update,
@@ -1856,7 +1867,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/remove", ADMIN_ID)
+    await asyncio.to_thread(log_command_usage, chat_id, "/remove", ADMIN_ID, note=symbol)
 
     if not context.args:
         await reply_md(update,"⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
@@ -1906,7 +1917,8 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await track_user_activity(update)
-    await asyncio.to_thread(log_command_usage, chat_id, "/alert", ADMIN_ID)
+    # cleaned là mã đã làm sạch
+    await asyncio.to_thread(log_command_usage, chat_id, "/alert", ADMIN_ID, note=cleaned)
 
     if not context.args:
         await reply_md(update, "⚠️ Cách dùng: /alert <MÃ> (ví dụ: /alert HPG)")
@@ -2540,7 +2552,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol}", ADMIN_ID)
+            await asyncio.to_thread(log_command_usage, chat_id, "/info", ADMIN_ID, note=symbol)
         except Exception:
             pass
 
@@ -3464,7 +3476,10 @@ def admin_dashboard():
             
             # A. Lấy Nhật ký hoạt động (Command Logs)
             try:
-                logs = get_user_logs(uid, limit=10)
+                # [FIX] Lấy 'rows' từ kết quả trả về
+                log_result = get_user_logs(uid, limit=10)
+                logs = log_result.get('rows', [])
+                
                 # Convert datetime sang ISO string để JSON hiểu được
                 for l in logs:
                     if isinstance(l.get('used_at'), (datetime.datetime, datetime.date)):
@@ -3555,7 +3570,9 @@ def api_admin_users():
             row['orders'] = orders
 
             # 2. [MỚI] Lấy Logs hoạt động
-            logs = get_user_logs(uid, limit=10)
+            log_result = get_user_logs(uid, limit=10)
+            logs = log_result.get('rows', [])
+
             for l in logs:
                 if isinstance(l.get('used_at'), (datetime.datetime, datetime.date)):
                     l['used_at'] = l['used_at'].isoformat()
@@ -3849,6 +3866,50 @@ async def api_admin_system_status():
         log.info(f"[ADMIN_API] System Status changed to: {BOT_ACTIVE}")
         return jsonify({"ok": True, "active": BOT_ACTIVE})
     except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@flask_app.route("/api/admin/user/logs", methods=["GET"])
+def api_admin_user_logs():
+    """API lấy nhật ký lệnh của user (Phân trang & Nội dung)"""
+    try:
+        req_admin_id = request.args.get("admin_id")
+        target_id = request.args.get("target_id")
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 10))
+        offset = (page - 1) * limit
+
+        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
+            return jsonify({"ok": False, "message": "Unauthorized"}), 403
+
+        if not target_id:
+            return jsonify({"ok": False, "message": "Missing target_id"}), 400
+
+        # Gọi hàm get_user_logs từ db_utils
+        result = get_user_logs(int(target_id), limit, offset)
+        
+        # Xử lý dữ liệu trả về
+        data = []
+        # Lưu ý: result là dict {'rows': [], 'total': int}
+        rows = result.get('rows', [])
+        
+        for row in rows:
+            r = dict(row)
+            # Convert datetime sang string để JSON hiểu
+            if r.get('used_at'):
+                r['used_at'] = r['used_at'].isoformat()
+            data.append(r)
+
+        return jsonify({
+            "ok": True,
+            "data": data,
+            "pagination": {
+                "current_page": page,
+                "total_pages": math.ceil(result['total'] / limit) if limit > 0 else 1,
+                "total_records": result['total']
+            }
+        })
+    except Exception as e:
+        log.error(f"[ADMIN_API] Get Logs Error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
 @flask_app.route("/api/admin/system/broadcast", methods=["POST"])
