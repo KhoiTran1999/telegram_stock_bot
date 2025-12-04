@@ -2224,6 +2224,9 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 <button @click="forceEodSummary()" class="w-full py-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-emerald-100">
                     <i class="fa-solid fa-hourglass-end mr-1.5"></i> Chạy EOD Summary
                 </button>
+                <button @click="forceMonthlyInsight()" class="w-full py-2.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-teal-100 mt-2">
+                    <i class="fa-solid fa-magnifying-glass-chart mr-1.5"></i> Chạy Monthly Insight (CSKH)
+                </button>
             </div>
         </div>
 
@@ -3297,6 +3300,10 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 async forceEodSummary() {
                     if (!confirm('⚠️ Chạy EOD sẽ gửi tổng kết cuối ngày cho toàn bộ user. Tiếp tục?')) return;
                     this.callApi('/api/admin/worker/force', { type: 'eod_summary' }, '✅ Đã gửi lệnh chạy EOD Summary!');
+                },
+                async forceMonthlyInsight() {
+                    if (!confirm('⚠️ Chạy phân tích CSKH tháng trước?\nAI sẽ đọc log chat và tổng hợp insight gửi về cho bạn.')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'monthly_insight' }, '✅ Đã gửi lệnh chạy Monthly Insight!');
                 },
 
                 // --- BROADCAST ACTIONS ---

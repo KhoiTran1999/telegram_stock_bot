@@ -64,6 +64,7 @@ from db_utils import (
     save_bot_message,
     get_stock_personalization_map,
     cleanup_expired_stock_personalizations,
+    get_ai_questions_by_month
 )
 from report_cache import (
     make_report_cache_key,
@@ -443,6 +444,102 @@ def _get_rotated_gemini_keys() -> list[str]:
     _gemini_key_index += 1
     return rotated
 
+async def _generate_monthly_insight(questions: list[str], period_label: str) -> str:
+    """
+    Helper: Gửi danh sách câu hỏi cho Gemini để phân tích Insight.
+    """
+    # 1. Lấy mẫu nếu dữ liệu quá lớn (tránh lỗi context window)
+    # Giới hạn khoảng 500 câu hỏi mới nhất để phân tích xu hướng
+    SAMPLE_LIMIT = 500
+    total_q = len(questions)
+    
+    if total_q > SAMPLE_LIMIT:
+        input_data = "\n".join(questions[:SAMPLE_LIMIT])
+        note_limit = f"(Đã lấy mẫu {SAMPLE_LIMIT}/{total_q} câu mới nhất để phân tích)"
+    else:
+        input_data = "\n".join(questions)
+        note_limit = f"(Tổng hợp toàn bộ {total_q} câu hỏi)"
+
+    prompt = f"""
+Bạn là Chuyên gia Phân tích Trải nghiệm Khách hàng (CX Analyst) cho Bot Chứng khoán.
+Dưới đây là danh sách các câu hỏi người dùng đã gửi trong tháng {period_label}:
+
+--- DỮ LIỆU BẮT ĐẦU ---
+{input_data}
+--- DỮ LIỆU KẾT THÚC ---
+
+Nhiệm vụ của bạn:
+1. 📊 **Phân loại chủ đề:** Chia các câu hỏi thành 3-5 nhóm chính (Ví dụ: Hỏi mã cổ phiếu, Hỏi kiến thức cơ bản, Báo lỗi, Tán gẫu...). Tính tỷ lệ % ước lượng.
+2. 🔥 **Top 5 Vấn đề quan tâm:** Liệt kê 5 nội dung cụ thể được hỏi nhiều nhất (VD: Mã HPG, Cách mở tài khoản...).
+3. 💡 **Đề xuất cải thiện:** Dựa trên các câu hỏi (đặc biệt là các câu hỏi về lỗi hoặc hướng dẫn), hãy đề xuất 3 tính năng hoặc nội dung cần bổ sung cho Bot.
+4. 😊 **Cảm xúc dòng tiền:** Đánh giá sơ bộ tâm lý nhà đầu tư qua các câu hỏi (Lo lắng, Hưng phấn, hay Thận trọng?).
+
+Hãy trình bày kết quả dưới dạng báo cáo Markdown ngắn gọn, chuyên nghiệp, dùng emoji phù hợp.
+{note_limit}
+"""
+    try:
+        # Gọi Gemini (Dùng Flash cho nhanh và rẻ, context window lớn)
+        report = await asyncio.to_thread(
+            call_gemini_safe,
+            model_id="gemini-2.5-pro", 
+            contents=prompt
+        )
+        return report.strip() if report else "⚠️ AI không trả về kết quả."
+    except Exception as e:
+        log.error(f"[MONTHLY_INSIGHT] Lỗi gọi AI: {e}")
+        return f"⚠️ Lỗi khi phân tích AI: {e}"
+
+async def job_monthly_cskh_report():
+    """
+    [JOB APSCHEDULER] Chạy vào 08:00 sáng ngày 1 hàng tháng.
+    Tổng hợp câu hỏi user tháng trước và báo cáo cho Admin.
+    """
+    if not ADMIN_ID:
+        log.warning("[MONTHLY_INSIGHT] Chưa cấu hình ADMIN_ID. Bỏ qua job.")
+        return
+
+    log.info("[MONTHLY_INSIGHT] 📅 Bắt đầu tổng hợp báo cáo CSKH tháng...")
+    
+    # 1. Xác định tháng trước
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+    
+    # Lấy ngày đầu tháng hiện tại, trừ đi 1 ngày để về tháng trước
+    first_day_this_month = now.replace(day=1)
+    
+    target_month = first_day_this_month.month
+    target_year = first_day_this_month.year
+    period_label = f"{target_month}/{target_year}"
+
+    try:
+        # 2. Lấy dữ liệu từ DB
+        questions = await asyncio.to_thread(get_ai_questions_by_month, target_year, target_month)
+        
+        if not questions:
+            msg = f"📉 **BÁO CÁO CSKH THÁNG {period_label}**\n\nKhông có câu hỏi nào được ghi nhận trong tháng qua."
+            push_telegram_msg(ADMIN_ID, msg, msg_type="SYSTEM_MSG")
+            return
+
+        # 3. Gửi lời nhắn chờ (vì AI có thể chạy lâu)
+        push_telegram_msg(ADMIN_ID, f"⏳ Đang tổng hợp {len(questions)} câu hỏi tháng {period_label} để phân tích...", msg_type="SYSTEM_MSG")
+
+        # 4. Phân tích AI
+        ai_analysis = await _generate_monthly_insight(questions, period_label)
+        
+        # 5. Gửi báo cáo hoàn chỉnh
+        final_msg = (
+            f"📈 **TỔNG HỢP CSKH THÁNG {period_label}**\n\n"
+            f"{ai_analysis}\n\n"
+            f"--------------------\n"
+            f"🤖 *Báo cáo tự động bởi StockBot AI Worker*"
+        )
+        
+        push_telegram_msg(ADMIN_ID, final_msg, msg_type="SYSTEM_MSG")
+        log.info(f"[MONTHLY_INSIGHT] ✅ Đã gửi báo cáo tháng {period_label}.")
+
+    except Exception as e:
+        log.error(f"[MONTHLY_INSIGHT] ❌ Lỗi job: {e}")
+        push_telegram_msg(ADMIN_ID, f"⚠️ Lỗi tạo báo cáo tháng {period_label}: {e}", msg_type="SYSTEM_MSG")
 
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
     """Hàm gọi Gemini an toàn (Failover) với cơ chế Round Robin (Xoay vòng từng request)"""
@@ -2123,6 +2220,11 @@ async def worker_inbound_loop():
                         elif cmd == "FORCE_SCREENER":
                             admin_id = payload.get('admin_id')
                             asyncio.create_task(process_force_update_screener(admin_id))
+
+                        elif cmd == "RUN_MONTHLY_INSIGHT":
+                            admin_id = payload.get('admin_id')
+                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Monthly Insight")
+                            asyncio.create_task(job_monthly_cskh_report())
 
                         elif cmd == "CMD_AGENT_RUN":
                             asyncio.create_task(handle_agent_run(payload))
@@ -5488,6 +5590,17 @@ async def run_worker_runtime():
 
     # K. EOD Summary (15:00)
     scheduler.add_job(job_eod_summary, 'cron', day_of_week='mon-fri', hour=15, minute=0, id='eod_summary', replace_existing=True)
+
+    # L. Báo cáo CSKH AI Monthly (08:00 ngày 1 hàng tháng)
+    scheduler.add_job(
+        job_monthly_cskh_report, 
+        'cron', 
+        day=1, 
+        hour=8, 
+        minute=0, 
+        id='monthly_insight', 
+        replace_existing=True
+    )
 
     # Bắt đầu Scheduler
     scheduler.start()

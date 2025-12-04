@@ -2469,5 +2469,28 @@ def get_digest_from_redis(digest_id: str):
     except Exception as e:
         redis_debug_log(f"[DIGEST] Lỗi đọc Redis: {e}")
         return None
+# ==========================================
+
+def get_ai_questions_by_month(year: int, month: int) -> list[str]:
+    """
+    Lấy danh sách câu hỏi (note) từ command_log với lệnh CMD_ASK_AI trong tháng/năm chỉ định.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT note
+                FROM command_log
+                WHERE command = 'CMD_ASK_AI'
+                  AND note IS NOT NULL
+                  AND note != ''
+                  AND EXTRACT(YEAR FROM used_at) = %s
+                  AND EXTRACT(MONTH FROM used_at) = %s
+                ORDER BY used_at DESC
+            """, (year, month))
+            rows = cur.fetchall()
+    
+    # Trả về list các string câu hỏi
+    return [r[0] for r in rows]
+
 
 

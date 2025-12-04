@@ -4020,6 +4020,11 @@ async def api_admin_force_worker():
             await asyncio.to_thread(push_to_worker, payload)
             return jsonify({"ok": True, "message": "Đã gửi lệnh chạy EOD Summary."})
 
+        elif task_type == 'monthly_insight':
+            payload = {"cmd": "RUN_MONTHLY_INSIGHT", "admin_id": ADMIN_ID}
+            await asyncio.to_thread(push_to_worker, payload)
+            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Monthly Insight."})
+
         return jsonify({"ok": False, "message": "Unknown task"}), 400
 
     except Exception as e:
