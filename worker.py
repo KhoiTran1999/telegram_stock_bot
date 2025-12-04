@@ -406,6 +406,32 @@ for idx in sorted(_gemini_keys_map.keys()):
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k] # Lọc key rỗng
 _gemini_key_index = 0 # Biến đếm toàn cục để xoay vòng
 
+def prepare_personalization_keys(symbols: list[str]) -> list[str]:
+    """
+    Từ danh sách mã cổ phiếu (VD: ['HPG', 'VCB'])
+    -> Map ra ngành (VD: ['Tài nguyên Cơ bản', 'Ngân hàng'])
+    -> Thêm mã Vĩ mô ('VN_MACRO')
+    -> Trả về danh sách tổng hợp để query DB.
+    """
+    # 1. Load mapping ngành (Load file sectors.json)
+    # Lưu ý: Nên load 1 lần hoặc cache, ở đây load mỗi lần cho chắc chắn dữ liệu mới
+    # Nếu file lớn có thể tối ưu sau.
+    sector_map = load_symbol_sector_map() # Hàm này đã có sẵn trong worker.py
+    
+    keys = set()
+    
+    # Thêm mã cổ phiếu
+    for sym in symbols:
+        keys.add(sym)
+        # Thêm ngành tương ứng
+        sector = sector_map.get(sym)
+        if sector and sector != "Khác":
+            keys.add(sector)
+            
+    # Thêm mã Vĩ mô
+    keys.add("VN_MACRO")
+    
+    return list(keys)
 
 def _get_rotated_gemini_keys() -> list[str]:
     """Trả về danh sách key theo cơ chế xoay vòng."""
@@ -4553,46 +4579,88 @@ def call_chatgpt_for_report(
     def _format_personalization_block() -> str:
         notes_map = personalization_notes or {}
         if not notes_map:
-            return "Không có ghi chú cá nhân hoá nào cho các mã hiện tại."
+            return "Không có ghi chú cá nhân hoá nào."
 
-        lines: list[str] = []
         vn_tz = pytz.timezone(TIMEZONE)
 
+        # --- Helper Con: Xử lý hiển thị nội dung + ngày hết hạn (Code cũ của bạn) ---
+        def _format_note_entry(entry):
+            note_text = (entry or {}).get("note")
+            if not note_text:
+                return ""
+
+            expiry_info = ""
+            expires_at = (entry or {}).get("expires_at")
+            expiry_dt: datetime.datetime | None = None
+            
+            # Parse ngày tháng
+            if isinstance(expires_at, datetime.datetime):
+                expiry_dt = expires_at
+            elif isinstance(expires_at, str):
+                try:
+                    expiry_dt = datetime.datetime.fromisoformat(expires_at)
+                except ValueError:
+                    expiry_dt = None
+
+            # Format chuỗi hiển thị
+            if expiry_dt is not None:
+                try:
+                    if expiry_dt.tzinfo is None:
+                        expiry_dt = expiry_dt.replace(tzinfo=datetime.timezone.utc)
+                    local = expiry_dt.astimezone(vn_tz)
+                    expiry_info = f" (Hết hạn: {local.strftime('%d/%m %H:%M')})"
+                except Exception:
+                    expiry_info = ""
+            
+            return f"{note_text}{expiry_info}"
+        # --------------------------------------------------------------------------
+
+        lines = []
+        sector_map_local = load_symbol_sector_map() # Helper đã có trong worker
+
+        # 1. Ghi chú Vĩ mô (VN_MACRO) - Đưa lên đầu
+        macro_notes = notes_map.get("VN_MACRO") or []
+        if macro_notes:
+            lines.append("--- GÓC NHÌN VĨ MÔ (CỘNG ĐỒNG) ---")
+            for entry in macro_notes:
+                formatted_text = _format_note_entry(entry)
+                if formatted_text:
+                    lines.append(f"• {formatted_text}")
+            lines.append("")
+
+        # 2. Ghi chú Ngành & Cổ phiếu (Loop qua danh sách mã đang request)
         for sym in normalized:
-            entries = notes_map.get(sym) or []
-            if not entries:
-                continue
-
-            for idx, entry in enumerate(entries, 1):
-                note_text = (entry or {}).get("note")
-                if not note_text:
-                    continue
-
-                expiry_info = ""
-                expires_at = (entry or {}).get("expires_at")
-                expiry_dt: datetime.datetime | None = None
-                if isinstance(expires_at, datetime.datetime):
-                    expiry_dt = expires_at
-                elif isinstance(expires_at, str):
-                    try:
-                        expiry_dt = datetime.datetime.fromisoformat(expires_at)
-                    except ValueError:
-                        expiry_dt = None
-
-                if expiry_dt is not None:
-                    try:
-                        if expiry_dt.tzinfo is None:
-                            expiry_dt = expiry_dt.replace(tzinfo=datetime.timezone.utc)
-                        local = expiry_dt.astimezone(vn_tz)
-                        expiry_info = f" (Hết hạn: {local.strftime('%d/%m %H:%M')})"
-                    except Exception:
-                        expiry_info = ""
-
-                label = f"{sym} #{idx}" if len(entries) > 1 else sym
-                lines.append(f"- {label}: {note_text}{expiry_info}")
+            # Lấy note của chính cổ phiếu đó
+            s_notes = notes_map.get(sym) or []
+            
+            # Lấy note của ngành tương ứng
+            sector_name = sector_map_local.get(sym)
+            sec_notes = notes_map.get(sector_name) if sector_name else []
+            
+            if s_notes or sec_notes:
+                # Tiêu đề nhóm
+                lines.append(f"📌 MÃ: {sym} (Ngành: {sector_name or 'N/A'})")
+                
+                # A. Note ngành (Dùng helper để format)
+                if sec_notes:
+                    for entry in sec_notes:
+                        text = _format_note_entry(entry)
+                        if text: lines.append(f"   - [Ngành] {text}")
+                
+                # B. Note cổ phiếu (Dùng helper để format + index)
+                if s_notes:
+                    for idx, entry in enumerate(s_notes, 1):
+                        text = _format_note_entry(entry)
+                        if text:
+                            # Nếu có nhiều note thì đánh số, 1 note thì khỏi
+                            label = f"[Cổ phiếu #{idx}]" if len(s_notes) > 1 else "[Cổ phiếu]"
+                            lines.append(f"   - {label} {text}")
+                
+                lines.append("") # Dòng trống ngăn cách các mã
 
         if not lines:
-            return "Không có ghi chú cá nhân hoá nào cho các mã hiện tại."
+            return "Không có ghi chú phù hợp cho danh mục này."
+            
         return "\n".join(lines)
 
     personalization_block = _format_personalization_block()
@@ -4928,16 +4996,21 @@ async def process_report_for_user(
             "tech": tech_result,
         }
 
+        # 1. Chuẩn bị danh sách keys (Stock + Sector + Macro)
+        personalization_keys = prepare_personalization_keys(llm_symbols)
+        
+        # 2. Query DB với danh sách keys mở rộng
         personalization_map = await asyncio.to_thread(
             get_stock_personalization_map,
-            llm_symbols,
+            personalization_keys, # Dùng list mới này thay vì chỉ llm_symbols
         )
 
+        # 3. Gọi AI tạo báo cáo
         json_text = await asyncio.to_thread(
             call_chatgpt_for_report,
             llm_symbols,
             agent_payload,
-            personalization_map,
+            personalization_map, # Map này giờ đã chứa cả note ngành và vĩ mô
         )
 
         try:

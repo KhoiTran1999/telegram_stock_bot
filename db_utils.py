@@ -1292,7 +1292,25 @@ def get_stock_personalization_map(
     normalized = []
     seen = set()
     for sym in symbols or []:
-        cleaned = _normalize_symbol(sym)
+        if not sym: continue
+        s_trim = sym.strip()
+        
+        # Nếu là mã cổ phiếu (3 ký tự, không dấu) -> Upper
+        # Nếu là VN_MACRO -> Upper
+        # Nếu là tên ngành (có thể dài, có dấu) -> Giữ nguyên case hoặc xử lý khéo
+        
+        # Cách đơn giản nhất: Nếu len=3 và không dấu -> Upper. Còn lại giữ nguyên.
+        # Tuy nhiên, để an toàn và đồng bộ với lúc lưu (API Gateway), ta nên giữ nguyên logic logic lưu:
+        # Gateway lưu: VN_MACRO, Mã (Upper), Ngành (Nguyên bản từ sectors.json)
+        
+        # Vì vậy, ở đây ta KHÔNG NÊN gọi _normalize_symbol bừa bãi cho mọi thứ.
+        # Ta sẽ add thẳng vào list, chỉ upper nếu nó trông giống mã chứng khoán.
+        
+        if len(s_trim) == 3 and s_trim.isalnum(): 
+             cleaned = s_trim.upper()
+        else:
+             cleaned = s_trim # Giữ nguyên cho VN_MACRO và Tên Ngành
+             
         if cleaned and cleaned not in seen:
             seen.add(cleaned)
             normalized.append(cleaned)

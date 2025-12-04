@@ -286,6 +286,32 @@ REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
 REDIS_CHANNEL_INBOUND = 'worker_inbound'
 VALID_AGENT_SCOPES = {"macro", "biz", "tech", "all"}
 
+# --- HELPER: LOAD SECTORS ---
+def get_unique_sectors() -> list[str]:
+    """
+    Đọc file sectors.json và trả về danh sách các ngành duy nhất (sorted).
+    Dùng để đổ dữ liệu vào Dropdown cho WebApp.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base_dir, "sectors.json")
+        
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        sectors = set()
+        for info in data.values():
+            if isinstance(info, dict):
+                sec = info.get("sector", "")
+                if sec: sectors.add(sec)
+        
+        return sorted(list(sectors))
+    except Exception as e:
+        log.error(f"Error loading sectors.json: {e}")
+        return []
+
+# Cache danh sách ngành vào RAM khi khởi động
+CACHED_SECTORS = get_unique_sectors()
 
 def _normalize_symbol(symbol: str | None) -> str:
     return (symbol or "").strip().upper()
@@ -3472,7 +3498,8 @@ def admin_dashboard():
         ADMIN_MOBILE_TEMPLATE, 
         admin_id=ADMIN_ID,
         initial_data=users_json,
-        total_revenue=revenue_str
+        total_revenue=revenue_str,
+        sectors=json.dumps(CACHED_SECTORS, ensure_ascii=False)
     )
 
 @flask_app.route("/api/admin/users")
@@ -4207,9 +4234,16 @@ async def api_admin_moderate():
 
 @flask_app.route("/webapp/contribute")
 async def view_contribute_webapp():
-    """Hiển thị giao diện WebApp cho user"""
-    # Không cần check logic phức tạp ở đây vì API sẽ check lại chat_id
-    return render_template_string(CONTRIBUTE_HTML_TEMPLATE)
+    """Hiển thị giao diện WebApp cho user (Inject Sectors)"""
+    # Lấy danh sách ngành từ Cache, nếu rỗng thì load lại
+    sectors_list = CACHED_SECTORS
+    if not sectors_list:
+        sectors_list = get_unique_sectors()
+        
+    return render_template_string(
+        CONTRIBUTE_HTML_TEMPLATE, 
+        sectors=json.dumps(sectors_list, ensure_ascii=False)
+    )
 
 @flask_app.route("/api/user/contributions", methods=["GET"])
 async def api_user_contributions():
@@ -4262,18 +4296,26 @@ async def api_user_contributions():
 async def api_user_save_note():
     """
     User thêm mới hoặc sửa note.
-    CẬP NHẬT: Thêm kiểm tra mã cổ phiếu tồn tại (Validate Existence).
+    CẬP NHẬT: Hỗ trợ Vĩ mô (VN_MACRO) và Ngành.
     """
     try:
         data = request.get_json()
         chat_id = int(data.get("chat_id"))
         
-        # Lấy và chuẩn hóa mã
-        raw_symbol = data.get("symbol", "")
-        symbol = _normalize_symbol(raw_symbol)
+        # Lấy symbol, giữ nguyên case nếu là tên Ngành (có dấu, khoảng trắng)
+        # Nếu là mã cổ phiếu hoặc VN_MACRO thì upper case
+        raw_symbol = data.get("symbol", "").strip()
         
+        # LOGIC CHUẨN HÓA MÃ
+        if raw_symbol == "VN_MACRO":
+            symbol = "VN_MACRO"
+        elif raw_symbol in CACHED_SECTORS:
+            symbol = raw_symbol # Giữ nguyên tên ngành (VD: Bất động sản)
+        else:
+            symbol = _normalize_symbol(raw_symbol) # Upper case mã cổ phiếu (HPG)
+
         note = data.get("note", "").strip()
-        note_id = data.get("id") # Nếu có ID là sửa, không có là tạo mới
+        note_id = data.get("id")
 
         # 1. Check quyền Pro
         is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
@@ -4282,67 +4324,58 @@ async def api_user_save_note():
         # 2. Validate độ dài nội dung
         if len(note) < 10:
             return jsonify({"ok": False, "message": "Nội dung quá ngắn (tối thiểu 10 ký tự)."})
-        if len(note) > 1000:
-            return jsonify({"ok": False, "message": "Nội dung quá dài (tối đa 1000 ký tự)."})
+        if len(note) > 5000:
+            return jsonify({"ok": False, "message": "Nội dung quá dài (tối đa 5000 ký tự)."})
 
-        # 3. Validate định dạng Mã (3 ký tự)
-        if len(symbol) != 3:
-            return jsonify({"ok": False, "message": "Mã cổ phiếu không hợp lệ (Phải đúng 3 ký tự)."})
+        # --- 3. VALIDATE LOẠI ĐÓNG GÓP (LOGIC MỚI) ---
+        is_valid_type = False
+        
+        # Case A: Vĩ mô
+        if symbol == "VN_MACRO":
+            is_valid_type = True
+            
+        # Case B: Ngành (Check trong list sectors)
+        elif symbol in CACHED_SECTORS:
+            is_valid_type = True
+            
+        # Case C: Cổ phiếu (Check 3 ký tự + Tồn tại trên sàn)
+        elif len(symbol) == 3:
+            # Chỉ check tồn tại khi TẠO MỚI (để tiết kiệm request khi sửa)
+            if not note_id:
+                try:
+                    # Gọi hàm fetch_data_smart có sẵn trong gateway.py
+                    market_data = await fetch_data_smart([symbol])
+                    # Logic check cũ: có dữ liệu và giá > 0
+                    if market_data and symbol in market_data:
+                        info = market_data.get(symbol)
+                        price = info.get('price')
+                        if price is not None and price > 0:
+                            is_valid_type = True
+                        else:
+                            return jsonify({"ok": False, "message": f"Mã '{symbol}' không có dữ liệu giao dịch."})
+                    else:
+                        return jsonify({"ok": False, "message": f"Mã '{symbol}' không tồn tại trên sàn."})
+                except Exception as e:
+                    log.warning(f"Validate symbol error: {e}")
+                    return jsonify({"ok": False, "message": "Lỗi hệ thống khi kiểm tra mã."})
+            else:
+                # Nếu là sửa note cũ thì coi như valid (vì lúc tạo đã check rồi)
+                is_valid_type = True
+        
+        if not is_valid_type:
+             return jsonify({"ok": False, "message": "Mã chủ đề không hợp lệ (Phải là Mã CK, Tên Ngành hoặc VN_MACRO)."})
 
-        # --- 4. KIỂM TRA MÃ TỒN TẠI (LOGIC MỚI) ---
-        # Chỉ cần kiểm tra khi TẠO MỚI (vì khi sửa thì mã đã cố định và đã được check trước đó)
-        if not note_id:
-            try:
-                # Gọi hàm fetch_data_smart có sẵn trong gateway.py
-                market_data = await fetch_data_smart([symbol])
-                
-                # Check A: Không có dữ liệu trả về -> Mã sai
-                if not market_data or symbol not in market_data:
-                    return jsonify({"ok": False, "message": f"Mã '{symbol}' không tồn tại trên sàn chứng khoán."})
-                
-                # Check B: Dữ liệu bị rỗng/giá = 0 -> Mã hủy niêm yết hoặc lỗi
-                info = market_data.get(symbol)
-                price = info.get('price')
-                if price is None or price == 0:
-                     return jsonify({"ok": False, "message": f"Mã '{symbol}' không có dữ liệu giao dịch hoặc đã hủy niêm yết."})
-                     
-            except Exception as e:
-                log.warning(f"[{INSTANCE_ID}] Validate symbol error: {e}")
-                return jsonify({"ok": False, "message": "Lỗi hệ thống khi kiểm tra mã. Vui lòng thử lại sau."})
-        # ------------------------------------------
-
-        # 5. Xử lý Lưu vào DB
+        # 4. Xử lý Lưu vào DB
         if note_id:
-            # --- Logic Sửa (Giữ nguyên) ---
+            # --- Logic Sửa ---
             current_note = await asyncio.to_thread(get_personalization_note_by_id, note_id)
-            
-            if not current_note:
-                return jsonify({"ok": False, "message": "Ghi chú không tồn tại"})
-            
-            # Chỉ chính chủ mới được sửa
-            if current_note['submitted_by'] != chat_id:
-                return jsonify({"ok": False, "message": "Không có quyền sửa note này."})
-                
-            # Chỉ được sửa khi đang PENDING
-            if current_note['status'] != 'PENDING':
-                return jsonify({"ok": False, "message": "Không thể sửa khi bài đã được Duyệt hoặc Từ chối."})
+            if not current_note: return jsonify({"ok": False, "message": "Ghi chú không tồn tại"})
+            if current_note['submitted_by'] != chat_id: return jsonify({"ok": False, "message": "Không có quyền sửa."})
+            if current_note['status'] != 'PENDING': return jsonify({"ok": False, "message": "Chỉ sửa được khi đang Pending."})
 
-            # Update DB (vẫn giữ status PENDING)
-            await asyncio.to_thread(
-                update_stock_personalization, 
-                note_id=note_id, 
-                note=note
-            )
-            
-            # Log admin (Optional)
-            if tg_app and MAIN_LOOP and ADMIN_ID:
-                asyncio.run_coroutine_threadsafe(
-                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User `{chat_id}` vừa sửa ghi chú mã `{symbol}`."),
-                    MAIN_LOOP
-                )
-                
+            await asyncio.to_thread(update_stock_personalization, note_id=note_id, note=note)
         else:
-            # --- Logic Thêm Mới (Giữ nguyên) ---
+            # --- Logic Thêm Mới ---
             await asyncio.to_thread(
                 create_stock_personalization,
                 symbol=symbol,
@@ -4352,8 +4385,9 @@ async def api_user_save_note():
             )
             
             if tg_app and MAIN_LOOP and ADMIN_ID:
+                type_label = "Vĩ mô" if symbol == "VN_MACRO" else ("Ngành" if len(symbol) > 3 else "Cổ phiếu")
                 asyncio.run_coroutine_threadsafe(
-                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User `{chat_id}` vừa đóng góp bài mới cho `{symbol}`."),
+                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User `{chat_id}` vừa đóng góp ({type_label}): `{symbol}`."),
                     MAIN_LOOP
                 )
 

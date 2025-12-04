@@ -2294,9 +2294,11 @@ ADMIN_MOBILE_TEMPLATE = r"""
                             <div class="flex justify-between items-start gap-2">
                                 <div>
                                     <div class="flex items-center gap-2">
-                                        <span class="font-mono text-sm font-extrabold text-blue-600" x-text="item.symbol"></span>
+                                        <span :class="getBadgeClass(item.symbol)"
+                                            class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border whitespace-nowrap"
+                                            x-text="getDisplaySymbol(item.symbol)"></span>
                                         
-                                        <span class="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border"
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border whitespace-nowrap"
                                             :class="item.status === 'PENDING' ? 'bg-yellow-50 text-yellow-600 border-yellow-200' : (item.status === 'APPROVED' ? 'bg-green-50 text-green-600 border-green-200' : 'bg-red-50 text-red-600 border-red-200')" 
                                             x-text="item.status"></span>
                                     </div>
@@ -2696,19 +2698,57 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 <button @click="closePersonalizationModal()" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-slate-200">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
-                <h3 class="text-lg font-bold text-slate-800 mb-1" x-text="personalizationForm.isEditing ? 'Cập nhật ghi chú mã' : 'Thêm ghi chú mã'"></h3>
-                <p class="text-xs text-slate-400 mb-4">Nhập nội dung cần AI chú ý riêng cho từng mã. Có thể đặt ngày hết hạn.</p>
+                <h3 class="text-lg font-bold text-slate-800 mb-4" x-text="personalizationForm.isEditing ? 'Sửa Ghi Chú' : 'Thêm Ghi Chú Mới'"></h3>
 
-                <label class="block text-[11px] font-bold text-slate-500 mb-1">Mã cổ phiếu</label>
-                <input type="text" x-model="personalizationForm.symbol" @input="handleSymbolInput()"
-                       :readonly="personalizationForm.isEditing"
-                       class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold tracking-widest uppercase focus:ring-2 focus:ring-blue-200 mb-3"
-                       placeholder="VD: SSI" maxlength="10">
+                <div class="flex bg-slate-100 p-1 rounded-lg mb-4" x-show="!personalizationForm.isEditing">
+                    <button @click="setNoteType('STOCK')" class="flex-1 px-3 py-1.5 text-xs font-bold rounded-md transition-all" 
+                            :class="personalizationForm.type === 'STOCK' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'">Cổ phiếu</button>
+                    <button @click="setNoteType('SECTOR')" class="flex-1 px-3 py-1.5 text-xs font-bold rounded-md transition-all" 
+                            :class="personalizationForm.type === 'SECTOR' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'">Ngành</button>
+                    <button @click="setNoteType('MACRO')" class="flex-1 px-3 py-1.5 text-xs font-bold rounded-md transition-all" 
+                            :class="personalizationForm.type === 'MACRO' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-500'">Vĩ mô</button>
+                </div>
+                
+                <div x-show="personalizationForm.isEditing" class="mb-3">
+                    <span class="text-xs font-bold px-2 py-1 rounded border" :class="getBadgeClass(personalizationForm.symbol)" x-text="getDisplaySymbol(personalizationForm.symbol)"></span>
+                </div>
 
-                <label class="block text-[11px] font-bold text-slate-500 mb-1">Ghi chú chuyên biệt</label>
+                <div x-show="personalizationForm.type === 'STOCK'">
+                    <label class="block text-[11px] font-bold text-slate-500 mb-1">Mã cổ phiếu</label>
+                    <input type="text" x-model="personalizationForm.symbol" @input="handleSymbolInput()"
+                           :readonly="personalizationForm.isEditing"
+                           class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold tracking-widest uppercase focus:ring-2 focus:ring-blue-200 mb-3"
+                           placeholder="VD: SSI" maxlength="3">
+                </div>
+
+                <div x-show="personalizationForm.type === 'SECTOR'">
+                    <label class="block text-[11px] font-bold text-slate-500 mb-1">Chọn Ngành</label>
+                    <div class="relative mb-3">
+                        <select x-model="personalizationForm.sectorName" :disabled="personalizationForm.isEditing"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold focus:ring-2 focus:ring-purple-200 outline-none appearance-none text-slate-700">
+                            <option value="" disabled>-- Chọn ngành --</option>
+                            <template x-for="sec in sectorsList" :key="sec">
+                                <option :value="sec" x-text="sec"></option>
+                            </template>
+                        </select>
+                        <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                            <i class="fa-solid fa-chevron-down text-xs"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="personalizationForm.type === 'MACRO'" class="mb-3 bg-orange-50 border border-orange-100 rounded-lg p-3 flex items-center gap-3">
+                    <div class="bg-orange-100 p-2 rounded-full text-orange-600"><i class="fa-solid fa-globe"></i></div>
+                    <div>
+                        <div class="text-xs font-bold text-orange-800 uppercase">Ghi chú Vĩ mô</div>
+                        <div class="text-[11px] text-orange-600">Sẽ áp dụng cho toàn bộ danh mục đầu tư.</div>
+                    </div>
+                </div>
+
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">Nội dung ghi chú</label>
                 <textarea x-model="personalizationForm.note" rows="4"
-                          class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 focus:ring-2 focus:ring-blue-200 mb-3"
-                          placeholder="Ví dụ: Ưu tiên theo dõi dư nợ margin, hạn chế tự doanh..."></textarea>
+                          class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 focus:ring-2 focus:ring-blue-200 mb-3 placeholder:text-slate-300"
+                          placeholder="Nhập nội dung phân tích..."></textarea>
 
                 <label class="block text-[11px] font-bold text-slate-500 mb-1">Ngày hết hạn (tùy chọn)</label>
                 <input type="datetime-local" x-model="personalizationForm.expires_at"
@@ -2719,11 +2759,12 @@ ADMIN_MOBILE_TEMPLATE = r"""
                             @click="deletePersonalizationNote()"
                             class="flex-1 py-2.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95"
                             x-cloak>
-                        <i class="fa-solid fa-trash mr-1"></i> Xóa ghi chú
+                        <i class="fa-solid fa-trash mr-1"></i> Xóa
                     </button>
                     <button @click="savePersonalizationNote()"
-                            class="flex-1 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-blue-200 shadow-md active:scale-95"
-                            :class="personalizationSaving ? 'opacity-70 pointer-events-none' : ''">
+                            class="flex-1 py-2.5 text-white rounded-xl text-sm font-bold shadow-md active:scale-95 transition"
+                            :class="personalizationForm.type === 'MACRO' ? 'bg-orange-600 shadow-orange-200' : (personalizationForm.type === 'SECTOR' ? 'bg-purple-600 shadow-purple-200' : 'bg-blue-600 shadow-blue-200')"
+                            :disabled="personalizationSaving">
                         <i class="fa-solid fa-floppy-disk mr-1"></i>
                         <span x-text="personalizationSaving ? 'Đang lưu...' : 'Lưu ghi chú'"></span>
                     </button>
@@ -2742,6 +2783,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
     </div>
 
     <script>
+        const SECTORS_DATA = {{ sectors | safe }};
         function mobileApp() {
             return {
                 activeTab: 'users',
@@ -2782,7 +2824,9 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 personalizationPageSize: 5,
                 personalizationForm: {
                     id: null,
+                    type: 'STOCK',
                     symbol: '',
+                    sectorName: '',
                     note: '',
                     expires_at: '',
                     isEditing: false,
@@ -3205,11 +3249,40 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     this.personalizationPage = next;
                 },
                 openPersonalizationModal(item = null) {
-                    this.personalizationForm.id = item ? (item.id || null) : null;
-                    this.personalizationForm.symbol = item ? (item.symbol || '') : '';
-                    this.personalizationForm.note = item ? (item.note || '') : '';
-                    this.personalizationForm.expires_at = item && item.expires_at ? this.toInputValue(item.expires_at) : '';
-                    this.personalizationForm.isEditing = !!item;
+                    if (item) {
+                        // Edit Mode: Tự động detect loại (Type)
+                        let type = 'STOCK';
+                        let secName = '';
+                        let sym = item.symbol;
+
+                        if (sym === 'VN_MACRO') {
+                            type = 'MACRO';
+                        } else if (this.sectorsList.includes(sym)) {
+                            type = 'SECTOR';
+                            secName = sym;
+                        }
+
+                        this.personalizationForm = {
+                            id: item.id,
+                            type: type,
+                            symbol: sym,
+                            sectorName: secName,
+                            note: item.note || '',
+                            expires_at: item.expires_at ? this.toInputValue(item.expires_at) : '',
+                            isEditing: true
+                        };
+                    } else {
+                        // Add Mode
+                        this.personalizationForm = {
+                            id: null,
+                            type: 'STOCK',
+                            symbol: '',
+                            sectorName: '',
+                            note: '',
+                            expires_at: '',
+                            isEditing: false
+                        };
+                    }
                     this.personalizationModalOpen = true;
                 },
                 closePersonalizationModal() {
@@ -3222,11 +3295,21 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     this.personalizationForm.symbol = this.personalizationForm.symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
                 },
                 async savePersonalizationNote() {
-                    const noteId = this.personalizationForm.id;
-                    const symbol = (this.personalizationForm.symbol || '').trim().toUpperCase();
-                    const note = (this.personalizationForm.note || '').trim();
-                    if (!symbol) { alert('Vui lòng nhập mã cổ phiếu.'); return; }
-                    if (!note) { alert('Ghi chú không được để trống.'); return; }
+                    let finalSymbol = '';
+                    
+                    // Logic chọn symbol gửi lên server
+                    if (this.personalizationForm.type === 'MACRO') {
+                        finalSymbol = 'VN_MACRO';
+                    } else if (this.personalizationForm.type === 'SECTOR') {
+                        finalSymbol = this.personalizationForm.sectorName;
+                        if (!finalSymbol) return alert("Vui lòng chọn ngành");
+                    } else {
+                        finalSymbol = this.personalizationForm.symbol;
+                        if (!finalSymbol) return alert("Vui lòng nhập mã cổ phiếu");
+                    }
+
+                    const noteContent = (this.personalizationForm.note || '').trim();
+                    if (!noteContent) return alert("Ghi chú không được để trống.");
 
                     let expiresIso = null;
                     if (this.personalizationForm.expires_at) {
@@ -3242,11 +3325,12 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     try {
                         const payloadBody = {
                             admin_id: this.adminId,
-                            symbol,
-                            note,
+                            symbol: finalSymbol,
+                            note: noteContent,
                             expires_at: expiresIso,
                         };
-                        if (noteId) payloadBody.note_id = noteId;
+                        if (this.personalizationForm.id) payloadBody.note_id = this.personalizationForm.id;
+                        
                         const res = await fetch('/api/admin/personalization/save', {
                             method: 'POST',
                             headers: {
@@ -3257,7 +3341,8 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         });
                         const payload = await res.json();
                         if (!payload.ok) throw new Error(payload.message || 'Không lưu được ghi chú');
-                        this.showToast('✅ Đã lưu ghi chú cá nhân hóa');
+                        
+                        this.showToast('✅ Đã lưu ghi chú');
                         await this.loadPersonalizationNotes(true);
                         this.closePersonalizationModal();
                     } catch (err) {
@@ -3265,6 +3350,34 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     } finally {
                         this.personalizationSaving = false;
                     }
+                },
+                setNoteType(type) {
+                    if (this.personalizationForm.isEditing) return; // Không cho đổi loại khi đang sửa
+                    this.personalizationForm.type = type;
+                    this.personalizationForm.symbol = '';
+                    this.personalizationForm.sectorName = '';
+                },
+                getBadgeClass(symbol) {
+                    if (!symbol) return '';
+                    const s = symbol.toUpperCase(); // Chuyển hết về in hoa để so sánh
+
+                    // 1. Vĩ Mô: Nền Cam
+                    if (s === 'VN_MACRO') {
+                        return 'bg-orange-100 text-orange-800 border-orange-200';
+                    }
+                    
+                    // 2. Ngành: Nền Tím
+                    // Dùng .some() để so sánh bất chấp viết hoa/thường
+                    if (this.sectorsList.some(sec => sec.toUpperCase() === s)) {
+                        return 'bg-purple-100 text-purple-800 border-purple-200';
+                    }
+                    
+                    // 3. Cổ phiếu (Mặc định): Nền Xanh
+                    return 'bg-blue-100 text-blue-800 border-blue-200';
+                },
+                getDisplaySymbol(symbol) {
+                    if (symbol === 'VN_MACRO') return '🌎 VĨ MÔ';
+                    return symbol;
                 },
                 async deletePersonalizationNote() {
                     const noteId = this.personalizationForm.id;
@@ -3909,6 +4022,9 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #F8FAFC; }
         [x-cloak] { display: none !important; }
+        /* Custom Scrollbar cho dropdown */
+        .custom-select::-webkit-scrollbar { width: 6px; }
+        .custom-select::-webkit-scrollbar-thumb { background-color: #CBD5E1; border-radius: 4px; }
     </style>
 </head>
 <body x-data="contributeApp()" class="pb-10">
@@ -3932,13 +4048,16 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                 <i class="fa-regular fa-lightbulb"></i>
             </div>
             <h3 class="text-slate-700 font-bold">Chưa có đóng góp nào</h3>
-            <p class="text-slate-400 text-sm mt-1 px-6">Hãy chia sẻ kiến thức về các mã cổ phiếu để giúp cộng đồng đầu tư tốt hơn!</p>
+            <p class="text-slate-400 text-sm mt-1 px-6">Hãy chia sẻ kiến thức về Cổ phiếu, Ngành hoặc Vĩ mô để giúp cộng đồng đầu tư tốt hơn!</p>
         </div>
 
         <template x-for="note in notes" :key="note.id">
             <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative group">
                 <div class="flex justify-between items-start mb-2">
-                    <span class="font-mono font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-sm" x-text="note.symbol"></span>
+                    <span class="font-mono font-bold text-sm px-2 py-0.5 rounded"
+                          :class="getBadgeClass(note.symbol)" 
+                          x-text="getDisplaySymbol(note.symbol)"></span>
+                    
                     <span class="text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wide"
                           :class="{
                               'bg-yellow-100 text-yellow-700': note.status === 'PENDING',
@@ -4011,11 +4130,24 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
     </div>
 
     <div x-show="isModalOpen" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm" x-cloak>
-        <div class="bg-white w-full sm:max-w-md p-5 rounded-t-2xl sm:rounded-2xl shadow-2xl" @click.away="closeModal()">
-            <h3 class="text-lg font-bold text-slate-800 mb-4" x-text="form.id ? 'Chỉnh sửa đóng góp' : 'Đóng góp mới'"></h3>
+        <div class="bg-white w-full sm:max-w-md p-5 rounded-t-2xl sm:rounded-2xl shadow-2xl transition-all" @click.away="closeModal()">
+            
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold text-slate-800" x-text="form.id ? 'Chỉnh sửa' : 'Đóng góp mới'"></h3>
+                <div class="flex bg-slate-100 p-1 rounded-lg" x-show="!form.id">
+                    <button @click="setType('STOCK')" class="px-3 py-1 text-xs font-bold rounded-md transition-all" 
+                            :class="form.type === 'STOCK' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'">Cổ phiếu</button>
+                    <button @click="setType('SECTOR')" class="px-3 py-1 text-xs font-bold rounded-md transition-all" 
+                            :class="form.type === 'SECTOR' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'">Ngành</button>
+                    <button @click="setType('MACRO')" class="px-3 py-1 text-xs font-bold rounded-md transition-all" 
+                            :class="form.type === 'MACRO' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-500'">Vĩ mô</button>
+                </div>
+                <span x-show="form.id" class="px-2 py-1 rounded text-xs font-bold bg-slate-100 text-slate-500" x-text="getTypeLabel(form.type)"></span>
+            </div>
             
             <div class="space-y-4">
-                <div>
+                
+                <div x-show="form.type === 'STOCK'">
                     <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">Mã cổ phiếu</label>
                     <input type="text" x-model="form.symbol" 
                            :disabled="!!form.id" 
@@ -4024,27 +4156,51 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                            @input="form.symbol = form.symbol.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)"
                            class="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm font-bold uppercase focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-60 caret-blue-600">
                 </div>
+
+                <div x-show="form.type === 'SECTOR'">
+                    <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">Chọn Ngành</label>
+                    <div class="relative">
+                        <select x-model="form.sectorName" :disabled="!!form.id" 
+                                class="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm font-bold focus:ring-2 focus:ring-purple-500 outline-none appearance-none disabled:opacity-60 text-slate-700">
+                            <option value="" disabled>-- Chọn ngành --</option>
+                            <template x-for="sec in sectorsList" :key="sec">
+                                <option :value="sec" x-text="sec"></option>
+                            </template>
+                        </select>
+                        <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                            <i class="fa-solid fa-chevron-down text-xs"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="form.type === 'MACRO'" class="bg-orange-50 border border-orange-100 rounded-lg p-3 flex items-center gap-3">
+                    <div class="bg-orange-100 p-2 rounded-full text-orange-600"><i class="fa-solid fa-globe"></i></div>
+                    <div>
+                        <div class="text-xs font-bold text-orange-800 uppercase">Góc nhìn Vĩ mô</div>
+                        <div class="text-[11px] text-orange-600">Nhận định về lãi suất, tỷ giá, chính sách...</div>
+                    </div>
+                </div>
                 
                 <div>
                     <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">Nội dung</label>
-                    
-                    <textarea x-model="form.note" rows="5" maxlength="1000" 
+                    <textarea x-model="form.note" rows="6" maxlength="5000" 
                               placeholder="Chia sẻ góc nhìn, thông tin nội bộ hoặc phân tích của bạn..."
                               class="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none caret-blue-600"></textarea>
                     
                     <div class="flex justify-between mt-1">
                         <span class="text-[10px] text-red-500" x-show="form.note.length > 0 && form.note.length < 10">Tối thiểu 10 ký tự</span>
-                        <span class="text-[10px] text-slate-400 ml-auto" x-text="form.note.length + '/1000'"></span>
+                        <span class="text-[10px] text-slate-400 ml-auto" x-text="form.note.length + '/5000'"></span>
                     </div>
-                </div
+                </div>
 
                 <div class="bg-yellow-50 text-yellow-700 p-3 rounded-lg text-xs flex items-start gap-2 mb-4">
                     <div class="text-sm">⚠️ Lưu ý: Khi bài viết đã được <b class="text-green-600">Duyệt</b> hoặc <b class="text-red-400">Từ chối</b>, bạn không thể chỉnh sửa hoặc xóa nó nữa.</div>
                 </div>
 
                 <button @click="saveNote()" 
-                        class="w-full mt-4 bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 active:scale-95 transition flex justify-center items-center gap-2"
-                        :disabled="isSaving" :class="isSaving ? 'opacity-70' : ''">
+                        class="w-full mt-4 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition flex justify-center items-center gap-2"
+                        :class="getButtonClass()"
+                        :disabled="isSaving">
                     <span x-show="isSaving" class="animate-spin"><i class="fa-solid fa-circle-notch"></i></span>
                     <span x-text="isSaving ? 'Đang gửi...' : 'Gửi cho Admin'"></span>
                 </button>
@@ -4056,6 +4212,8 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
 
     <script>
         const chatId = new URLSearchParams(window.location.search).get('chat_id');
+        // Danh sách ngành được inject từ Python
+        const SECTORS_DATA = {{ sectors | safe }};
 
         function contributeApp() {
             return {
@@ -4065,7 +4223,16 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                 notes: [],
                 currentPage: 1,
                 totalPages: 1,
-                form: { id: null, symbol: '', note: '', status: '' },
+                sectorsList: SECTORS_DATA,
+                
+                form: { 
+                    id: null, 
+                    type: 'STOCK', // STOCK, SECTOR, MACRO
+                    symbol: '', 
+                    sectorName: '',
+                    note: '', 
+                    status: '' 
+                },
 
                 init() {
                     Telegram.WebApp.ready();
@@ -4073,7 +4240,49 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                     this.loadNotes();
                 },
 
-                async loadNotes(page = 1) { // Nhận tham số page
+                // Logic hiển thị Badge ở danh sách
+                getBadgeClass(symbol) {
+                    // 1. Vĩ Mô: Màu Cam
+                    if (symbol === 'VN_MACRO') {
+                        return 'bg-orange-50 text-orange-700 border-orange-200';
+                    }
+                    
+                    // 2. Ngành: Màu Tím
+                    if (this.sectorsList.includes(symbol)) {
+                        return 'bg-purple-50 text-purple-700 border-purple-200';
+                    }
+                    
+                    // 3. Cổ phiếu (Mặc định): Màu Xanh Dương
+                    return 'bg-blue-50 text-blue-700 border-blue-200';
+                },
+
+                getDisplaySymbol(symbol) {
+                    if (symbol === 'VN_MACRO') return '🌎 VĨ MÔ';
+                    return symbol;
+                },
+
+                // Logic Modal
+                setType(type) {
+                    if (this.form.id) return; // Không cho đổi type khi sửa
+                    this.form.type = type;
+                    this.form.symbol = '';
+                    this.form.sectorName = '';
+                },
+
+                getTypeLabel(type) {
+                    if (type === 'MACRO') return 'Vĩ mô';
+                    if (type === 'SECTOR') return 'Ngành';
+                    return 'Cổ phiếu';
+                },
+
+                getButtonClass() {
+                    if (this.isSaving) return 'bg-slate-400 cursor-not-allowed';
+                    if (this.form.type === 'MACRO') return 'bg-orange-600 shadow-orange-200';
+                    if (this.form.type === 'SECTOR') return 'bg-purple-600 shadow-purple-200';
+                    return 'bg-blue-600 shadow-blue-200';
+                },
+
+                async loadNotes(page = 1) {
                     this.loading = true;
                     try {
                         const res = await fetch(`/api/user/contributions?chat_id=${chatId}&page=${page}`, {
@@ -4083,7 +4292,6 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                         
                         if (payload.ok) {
                             this.notes = payload.data;
-                            // Cập nhật phân trang
                             this.currentPage = payload.pagination.current_page;
                             this.totalPages = payload.pagination.total_pages;
                         }
@@ -4094,7 +4302,7 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                 changePage(page) {
                     if (page < 1 || page > this.totalPages) return;
                     this.loadNotes(page);
-                    window.scrollTo({ top: 0, behavior: 'smooth' }); // Cuộn lên đầu
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
                 },
 
                 openModal(note = null) {
@@ -4103,9 +4311,36 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                         return;
                     }
                     if (note) {
-                        this.form = { ...note }; // Clone data
+                        // Detect Type based on symbol
+                        let type = 'STOCK';
+                        let secName = '';
+                        let sym = note.symbol;
+
+                        if (sym === 'VN_MACRO') {
+                            type = 'MACRO';
+                        } else if (this.sectorsList.includes(sym)) {
+                            type = 'SECTOR';
+                            secName = sym;
+                        }
+
+                        this.form = { 
+                            id: note.id, 
+                            type: type, 
+                            symbol: sym,
+                            sectorName: secName,
+                            note: note.note, 
+                            status: note.status 
+                        };
                     } else {
-                        this.form = { id: null, symbol: '', note: '', status: '' };
+                        // New
+                        this.form = { 
+                            id: null, 
+                            type: 'STOCK', 
+                            symbol: '', 
+                            sectorName: '',
+                            note: '', 
+                            status: '' 
+                        };
                     }
                     this.isModalOpen = true;
                 },
@@ -4115,31 +4350,36 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                 },
 
                 async saveNote() {
-                    // CẬP NHẬT LOGIC VALIDATE TẠI ĐÂY
-                    const noteContent = (this.form.note || '').trim();
-                    const symbol = (this.form.symbol || '').trim();
+                    let finalSymbol = '';
+                    
+                    // Logic chọn symbol gửi lên server
+                    if (this.form.type === 'MACRO') {
+                        finalSymbol = 'VN_MACRO';
+                    } else if (this.form.type === 'SECTOR') {
+                        finalSymbol = this.form.sectorName;
+                        if (!finalSymbol) return alert("Vui lòng chọn ngành");
+                    } else {
+                        finalSymbol = this.form.symbol;
+                        if (!finalSymbol) return alert("Vui lòng nhập mã cổ phiếu");
+                    }
 
-                    if (!symbol) return alert("Vui lòng nhập mã cổ phiếu");
+                    const noteContent = (this.form.note || '').trim();
                     if (!noteContent) return alert("Vui lòng nhập nội dung");
-                    
-                    if (noteContent.length < 10) {
-                        return alert("Nội dung quá ngắn. Vui lòng viết ít nhất 10 ký tự để đóng góp có ý nghĩa hơn.");
-                    }
-                    if (noteContent.length > 5000) {
-                        return alert("Nội dung quá dài (Tối đa 5000 ký tự).");
-                    }
-                    
+                    if (noteContent.length < 10) return alert("Nội dung tối thiểu 10 ký tự.");
+
                     this.isSaving = true;
                     try {
                         const res = await fetch('/api/user/contribute/save', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'ngrok-skip-browser-warning': 'true' // <--- THÊM DÒNG NÀY
+                                'ngrok-skip-browser-warning': 'true'
                             },
                             body: JSON.stringify({
                                 chat_id: chatId,
-                                ...this.form
+                                id: this.form.id,
+                                symbol: finalSymbol,
+                                note: noteContent
                             })
                         });
                         const result = await res.json();
@@ -4162,7 +4402,7 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'ngrok-skip-browser-warning': 'true' // <--- THÊM DÒNG NÀY
+                                'ngrok-skip-browser-warning': 'true'
                             },
                             body: JSON.stringify({ chat_id: chatId, note_id: id })
                         });
@@ -4187,5 +4427,4 @@ CONTRIBUTE_HTML_TEMPLATE = r"""
 </body>
 </html>
 """
-
 
