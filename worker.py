@@ -2798,18 +2798,18 @@ async def market_monitor_fetcher_loop():
             today_str = now.strftime('%Y-%m-%d')
             
             async def _fetch_one(symbol):
-                # 1. Giá khớp (Live 1m)
+                # 1. Giá khớp (Live 1m) - Giữ nguyên
                 q = Quote(symbol=symbol, source='VCI')
-                df = await asyncio.to_thread(q.history, start=today_str, end=today_str, interval='1m')
-                p_now = float(df.iloc[-1]['close']) if df is not None and not df.empty else None
+                df_now = await asyncio.to_thread(q.history, start=today_str, end=today_str, interval='1m')
+                p_now = float(df_now.iloc[-1]['close']) if df_now is not None and not df_now.empty else None
                 
-                # 2. Giá tham chiếu (Ref)
-                # Logic: Nếu chưa có Ref, thử tìm trong history hôm qua hoặc board
+                # 2. Giá tham chiếu (Ref) - LOGIC MỚI [FIX]
                 p_ref = None
                 state = _market_data.get(symbol)
                 
+                # Chỉ lấy lại Ref nếu trong state chưa có
                 if state and state["ref"] is None:
-                    # A. Thử lấy từ Board (Ưu tiên cho VN30F1M)
+                    # A. Thử lấy từ Board (VCI thường có ref chuẩn cho Phái sinh)
                     if symbol == "VN30F1M" and stock_trading:
                         try:
                             row = stock_trading.price_board([symbol]).iloc[0]
@@ -2817,16 +2817,45 @@ async def market_monitor_fetcher_loop():
                             if val: p_ref = float(val)
                         except: pass
                     
-                    # B. Nếu chưa có, thử lấy Close hôm qua từ History
+                    # B. Nếu chưa có, lấy từ History nhưng check ngày thông minh
                     if p_ref is None:
+                        # Dùng TCBS cho Index vì ổn định hơn VCI, các mã khác dùng VCI
+                        src = 'TCBS' if symbol in ['VNINDEX', 'VN30'] else 'VCI'
+                        q_hist = Quote(symbol=symbol, source=src)
+                        
                         start_prev = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
-                        df_daily = await asyncio.to_thread(q.history, start=start_prev, end=today_str, interval='1D')
-                        if df_daily is not None and len(df_daily) >= 2:
-                            # Lấy close của phiên trước đó (iloc[-2])
-                            p_ref = float(df_daily.iloc[-2]['close'])
-                
-                return symbol, p_now, p_ref
+                        df_daily = await asyncio.to_thread(q_hist.history, start=start_prev, end=today_str, interval='1D')
+                        
+                        if df_daily is not None and not df_daily.empty:
+                            # Chuẩn hóa cột ngày tháng
+                            if 'time' in df_daily.columns:
+                                df_daily['dt'] = pd.to_datetime(df_daily['time']).dt.date
+                            elif 'tradingDate' in df_daily.columns:
+                                df_daily['dt'] = pd.to_datetime(df_daily['tradingDate']).dt.date
+                            else:
+                                # Fallback nếu không tìm thấy cột ngày
+                                df_daily['dt'] = None
 
+                            last_row = df_daily.iloc[-1]
+                            last_close = float(last_row['close'])
+                            last_date = last_row['dt']
+                            today_date = now.date()
+                            
+                            # LOGIC QUAN TRỌNG:
+                            if last_date == today_date:
+                                # Nếu dòng cuối là hôm nay -> Ref là dòng áp chót (Hôm qua)
+                                if len(df_daily) >= 2:
+                                    p_ref = float(df_daily.iloc[-2]['close'])
+                                else:
+                                    # Trường hợp dị: Mới lên sàn hoặc dữ liệu lỗi chỉ có 1 dòng hôm nay
+                                    # Fallback tạm bằng giá open hoặc close hôm nay
+                                    p_ref = float(last_row.get('open', last_close))
+                            else:
+                                # Nếu dòng cuối KHÔNG PHẢI hôm nay (tức là dữ liệu mới nhất là hôm qua)
+                                # -> Ref chính là dòng cuối
+                                p_ref = last_close
+
+                return symbol, p_now, p_ref
             # Chạy song song tất cả monitors
             tasks = [_fetch_one(sym) for sym in MARKET_MONITORS.keys()]
             results = await asyncio.gather(*tasks)
