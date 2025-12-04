@@ -2416,21 +2416,31 @@ ADMIN_MOBILE_TEMPLATE = r"""
                             <span class="text-[10px] text-slate-400" x-text="formatDateShort(note.created_at)"></span>
                         </div>
                         
-                        <div class="p-4">
-                            <p class="text-sm text-slate-700 whitespace-pre-line mb-4" x-text="note.note"></p>
+                        <div class="p-4" x-data="{ expanded: false }">
                             
-                            <div class="grid grid-cols-2 gap-3">
+                            <p class="text-sm text-slate-700 whitespace-pre-line transition-all duration-200" 
+                               :class="expanded ? 'mb-2' : 'line-clamp-3 mb-1'" 
+                               x-text="note.note"></p>
+                            
+                            <button x-show="note.note && note.note.length > 150" 
+                                    @click="expanded = !expanded" 
+                                    class="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline mb-4 focus:outline-none flex items-center gap-1">
+                                <span x-text="expanded ? 'Thu gọn' : 'Xem thêm...'"></span>
+                                <i class="fa-solid" :class="expanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                            </button>
+                            
+                            <div class="grid grid-cols-2 gap-3 mt-2">
                                 <button @click="openModerateModal(note, 'APPROVE')" 
-                                        class="py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-bold active:scale-95 flex justify-center items-center gap-1">
+                                        class="py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-bold active:scale-95 flex justify-center items-center gap-1 hover:bg-green-100">
                                     <i class="fa-solid fa-check"></i> Duyệt & Sửa
                                 </button>
                                 <button @click="openModerateModal(note, 'REJECT')" 
-                                        class="py-2 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-bold active:scale-95 flex justify-center items-center gap-1">
+                                        class="py-2 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-bold active:scale-95 flex justify-center items-center gap-1 hover:bg-red-100">
                                     <i class="fa-solid fa-xmark"></i> Từ chối
                                 </button>
                             </div>
                         </div>
-                    </div>
+                        </div>
                 </template>
             </div>
 

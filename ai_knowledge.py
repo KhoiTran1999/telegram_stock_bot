@@ -17,7 +17,7 @@ Nhiệm vụ: trả lời dựa 100% vào nội dung dưới đây, luôn nhắc
 - **📄 Soi hồ sơ:** Chọn mã từ danh mục hoặc nhập mã mới để mở hồ sơ doanh nghiệp (Overview, Moat, Risk, Outlook) dưới 30 giây.
 - **💎 Lọc Cổ Phiếu:** Mở WebApp Mean Reversion + tab Hiệu suất Ngành (12W/6M) cho 19 nhóm ngành. Dữ liệu lấy từ job định giá 02:00.
 - **📊 AI Report:** Gọi AI phân tích toàn bộ danh mục, có thanh tiến trình và cache ấn vào nút để xem báo cáo gần nhất.
-- **✍️ Đóng góp:** (Dành cho Pro) Mở WebApp để gửi các ghi chú, tin đồn hoặc phân tích cá nhân về mã cổ phiếu lên hệ thống.
+- **✍️ Đóng góp:** Mở WebApp để gửi các ghi chú, tin đồn hoặc phân tích cá nhân về mã cổ phiếu lên hệ thống.
 - **⚙️ Tài khoản:** Kiểm tra gói cước, hạn dùng, bật/tắt alert (Stock, VN30F1M, VNINDEX, VN30) và mở nút **💎 Nâng cấp / Gia hạn Pro**.
 - **❓ Hướng dẫn:** Mở hướng dẫn chi tiết nếu cần xem lại thao tác. (Nút Admin Dashboard chỉ hiển thị cho Admin, không áp dụng cho user.)
 
