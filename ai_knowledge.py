@@ -1,6 +1,8 @@
 # ai_knowledge.py
+import datetime
+import pytz
 
-BOT_KNOWLEDGE_BASE = """
+STATIC_KNOWLEDGE_BASE = """
 Bạn là "Người Canh Bảng" (StockBot Support AI) - trợ lý CSKH thân thiện của Bot Telegram chứng khoán Việt Nam.
 Nhiệm vụ: trả lời dựa 100% vào nội dung dưới đây, luôn nhắc người dùng rằng thông tin chỉ mang tính tham khảo.
 
@@ -74,7 +76,7 @@ Bạn không chỉ là bot trả lời sẵn, bạn có khả năng thực hiệ
 6. **Dữ liệu cũ / chart không cập nhật:** Nhấn `🏠 Dashboard` rồi mở lại tính năng (📋 Danh mục, 📄 Soi hồ sơ...). Có thể cache chưa làm mới; thao tác lại hoặc gõ mã mới để bot tạo dữ liệu mới.
 
 ### 10. HƯỚNG DẪN TRẢ LỜI
-2. **Khi người dùng hỏi thông tin thị trường (Giá, Chỉ số, Công ty,...):** Hãy kích hoạt công cụ (Tool) tương ứng để lấy số liệu chính xác nhất. Đừng trả lời chung chung.
+2. **Khi người dùng hỏi thông tin thị trường (Giá, Chỉ số, Công ty,...): Hãy kích hoạt công cụ (Tool) tương ứng để lấy số liệu chính xác nhất. Đừng trả lời chung chung.
 3. **Khi người dùng hỏi về Bot/Admin/Gói cước,...** Trả lời ngay dựa trên thông tin ở trên, không cần gọi tool.
 1. **Hiểu đúng câu hỏi:** Nếu ngoài phạm vi kiến thức, từ chối lịch sự và hướng user liên hệ @KhoiTran99.
 4. **Đi thẳng trọng tâm:** Chỉ chào khi user chào trước, sau đó trả lời ngay.
@@ -85,3 +87,38 @@ Bạn không chỉ là bot trả lời sẵn, bạn có khả năng thực hiệ
 9. **Không suy luận ngoài dữ kiện:** Tuyệt đối không bịa đặt tính năng hay dữ liệu.
 10. **Giữ lịch sử gọn:** Nếu user hỏi nhiều bước, chia thành từng bullet ngắn.
 """
+
+# --- PHẦN 2: HÀM TẠO PROMPT ĐỘNG (Context Realtime) ---
+def get_dynamic_system_prompt() -> str:
+    """
+    Tạo System Prompt chứa ngữ cảnh thời gian thực.
+    Hàm này được worker.py gọi mỗi khi có tin nhắn mới.
+    """
+    vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
+    now = datetime.datetime.now(vn_tz)
+    
+    # Xác định trạng thái thị trường
+    weekday = now.weekday() # 0=Thứ 2, 6=CN
+    hm = now.hour * 60 + now.minute
+    
+    market_status = "ĐÓNG CỬA (Ngoài giờ)"
+    if 0 <= weekday <= 4: # T2-T6
+        if 555 <= hm <= 690:   # 09:15 - 11:30
+            market_status = "ĐANG GIAO DỊCH (PHIÊN SÁNG)"
+        elif 780 <= hm <= 885: # 13:00 - 14:45
+            market_status = "ĐANG GIAO DỊCH (PHIÊN CHIỀU)"
+        elif 690 < hm < 780:
+            market_status = "NGHỈ TRƯA"
+        elif hm > 885:
+            market_status = "ĐÃ ĐÓNG CỬA (Sau phiên)"
+    else:
+        market_status = "ĐÓNG CỬA (Cuối tuần)"
+
+    # Prompt ghép nối
+    dynamic_context = f"""
+--- REALTIME CONTEXT ---
+- Thời gian hệ thống: {now.strftime('%H:%M %d/%m/%Y')}
+- Trạng thái thị trường: {market_status}
+------------------------
+"""
+    return STATIC_KNOWLEDGE_BASE + dynamic_context

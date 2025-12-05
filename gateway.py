@@ -404,25 +404,73 @@ initial_active = None  # Trạng thái bot lúc khởi động (dùng trong life
 async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'GENERAL', reply_markup=None, **kwargs):
     """
     Gửi tin nhắn Markdown an toàn (async) + Ghi log msg_type.
-    [UPDATED] Hỗ trợ nhận reply_markup từ tham số.
+    [UPDATED] Tự động chia nhỏ tin nhắn dài và chỉ gắn nút vào tin cuối cùng.
     """
-    try:
-        msg = await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup, # <--- Điểm thay đổi quan trọng
-            **kwargs,
-        )
-        # 🔥 LƯU DB ASYNC (Chạy trong thread để không chặn)
-        await asyncio.to_thread(save_bot_message, chat_id, msg.message_id, msg_type)
-        return msg
-    except BadRequest as e:
-        # (Giữ nguyên phần xử lý lỗi cũ của bạn nếu muốn, hoặc dùng code mặc định này)
-        log.warning(f"[Send Error] {e}")
-        pass
-    except Exception as e:
-        log.error(f"[Telegram Send Error] chat={chat_id}: {e}")
+    from telegram.error import BadRequest
+    
+    # Giới hạn an toàn (trừ hao cho các ký tự format)
+    MAX_LEN = 4000 
+
+    async def _send_chunk(chunk_text, markup=None):
+        try:
+            msg = await bot.send_message(
+                chat_id=chat_id,
+                text=chunk_text,
+                parse_mode="Markdown",
+                reply_markup=markup,
+                **kwargs,
+            )
+            # Lưu log DB (chạy thread)
+            await asyncio.to_thread(save_bot_message, chat_id, msg.message_id, msg_type)
+            return msg
+        except BadRequest as e:
+            # Nếu lỗi Markdown, thử gửi Plain Text
+            if "can't parse entities" in str(e):
+                safe_text = escape_markdown_v2(chunk_text) # Hàm escape có sẵn trong gateway
+                return await bot.send_message(
+                    chat_id=chat_id, text=safe_text, parse_mode="Markdown", reply_markup=markup, **kwargs
+                )
+            raise e
+
+    # 1. Nếu tin nhắn ngắn, gửi bình thường
+    if len(text) <= MAX_LEN:
+        try:
+            return await _send_chunk(text, reply_markup)
+        except Exception as e:
+            log.error(f"[Send Error] {e}")
+            return None
+
+    # 2. Nếu tin nhắn dài, tiến hành chia nhỏ
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= MAX_LEN:
+            chunks.append(remaining)
+            break
+        
+        # Tìm điểm ngắt hợp lý (xuống dòng)
+        split_pos = remaining.rfind("\n\n", 0, MAX_LEN)
+        if split_pos == -1:
+            split_pos = remaining.rfind("\n", 0, MAX_LEN)
+        if split_pos == -1:
+            split_pos = MAX_LEN # Cắt cứng nếu không tìm thấy dòng
+            
+        chunks.append(remaining[:split_pos])
+        remaining = remaining[split_pos:]
+
+    # Gửi các phần
+    last_msg = None
+    for i, chunk in enumerate(chunks):
+        # Chỉ gắn nút bấm (reply_markup) vào phần cuối cùng
+        is_last = (i == len(chunks) - 1)
+        current_markup = reply_markup if is_last else None
+        
+        try:
+            last_msg = await _send_chunk(chunk, current_markup)
+        except Exception as e:
+            log.error(f"[Send Chunk Error] {e}")
+            
+    return last_msg
 
 async def send_digest_with_pin(bot, chat_id: int, text: str, reply_markup):
     """
@@ -1395,6 +1443,14 @@ async def redis_gateway_loop():
                             continue
 
                         if chat_id and text:
+                            # --- [LOGIC MỚI] KIỂM TRA ĐỘ DÀI TRƯỚC KHI EDIT ---
+                            # Nếu tin quá dài (> 4000 ký tự), Telegram không cho Edit.
+                            # Ta chủ động xóa tin cũ và gửi tin mới (để hàm send_md lo việc chia nhỏ).
+                            if edit_id and len(text) > 4000:
+                                log.info(f"[{INSTANCE_ID}][GATEWAY] Tin {edit_id} quá dài ({len(text)} chars). Xóa và Gửi mới.")
+                                await delete_message_safely(chat_id, edit_id)
+                                edit_id = None # Reset để code bên dưới chạy vào nhánh send_md
+
                             if edit_id:
                                 log.info(f"[{INSTANCE_ID}][GATEWAY] ✏️ Đang sửa tin {edit_id} cho chat {chat_id}")
                                 try:
@@ -1405,26 +1461,34 @@ async def redis_gateway_loop():
                                         parse_mode="Markdown",
                                         reply_markup=markup_data
                                     )
-                                    log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id}")
-                                    continue
+                                    # Sửa thành công -> Tiếp tục vòng lặp
+                                    continue 
 
                                 except Exception as e:
-                                    log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Edit Markdown lỗi: {e}. Thử Plain Text...")
-                                    try:
-                                        await tg_app.bot.edit_message_text(
-                                            chat_id=chat_id,
-                                            message_id=edit_id,
-                                            text=text.replace("*", "").replace("_", ""),
-                                            parse_mode=None,
-                                            reply_markup=markup_data
-                                        )
-                                        log.info(f"[{INSTANCE_ID}][GATEWAY] ✅ Đã sửa tin {edit_id} (Plain Text)")
-                                        continue
-
-                                    except Exception as e2:
-                                        log.error(f"[{INSTANCE_ID}][GATEWAY] ❌ Edit thất bại hoàn toàn (chat={chat_id}, msg={edit_id}): {e2}")
+                                    err_str = str(e)
+                                    # Nếu lỗi do quá dài (phòng trường hợp Markdown làm phình to text)
+                                    # Hoặc lỗi Parse Markdown
+                                    if "Message is too long" in err_str or "can't parse entities" in err_str:
+                                        log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Edit lỗi ({err_str}). Chuyển sang gửi mới.")
                                         await delete_message_safely(chat_id, edit_id)
+                                        # Không continue, để nó trôi xuống dòng send_md bên dưới
+                                    else:
+                                        log.warning(f"[{INSTANCE_ID}][GATEWAY] ⚠️ Edit lỗi khác: {e}. Thử Plain Text...")
+                                        try:
+                                            await tg_app.bot.edit_message_text(
+                                                chat_id=chat_id,
+                                                message_id=edit_id,
+                                                text=text.replace("*", "").replace("_", ""),
+                                                parse_mode=None,
+                                                reply_markup=markup_data
+                                            )
+                                            continue
+                                        except Exception as e2:
+                                            log.error(f"[{INSTANCE_ID}][GATEWAY] ❌ Edit thất bại. Xóa và gửi mới.")
+                                            await delete_message_safely(chat_id, edit_id)
+                                            # Không continue, để trôi xuống send_md
 
+                            # --- GỬI MỚI (Trường hợp không có edit_id hoặc Edit thất bại) ---
                             if msg_type in ["DIGEST", "EOD_SUMMARY"]:
                                 await send_digest_with_pin(tg_app.bot, chat_id, text, reply_markup=markup_data)
                             else:

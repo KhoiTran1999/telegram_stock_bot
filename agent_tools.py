@@ -3,406 +3,388 @@ import logging
 import json
 import datetime
 import asyncio
+import pandas as pd
+import numpy as np
+import inspect
+from functools import wraps
+from typing import Optional, Literal
+
 from vnstock import Quote, Finance, Company
 from manual_valuation import fetch_manual_pe_pb
 from db_utils import get_historical_valuation_from_redis
-import pandas as pd
-import numpy as np
+from profile_cache import make_profile_cache_key, get_profile_from_redis
 
 # Cấu hình Logger riêng cho Tool
 log = logging.getLogger("AgentTools")
 
+# ==============================================================================
+# 1. TOOL REGISTRY (Core Logic)
+# ==============================================================================
+
+class ToolRegistry:
+    def __init__(self):
+        self.tools = {}       # Thay thế TOOL_MAPPING cũ
+        self.schema = []      # Thay thế AGENT_TOOLS_SCHEMA cũ
+
+    def register(self, name=None):
+        """
+        Decorator để đăng ký tool. 
+        Tự động trích xuất tên, mô tả (docstring) và tham số (signature) để tạo Schema.
+        """
+        def decorator(func):
+            # 1. Tên Tool
+            tool_name = name or func.__name__
+            
+            # 2. Mô tả (Lấy dòng đầu tiên của Docstring)
+            docstring = inspect.getdoc(func) or ""
+            description = docstring.strip().split("\n")[0]
+            
+            # 3. Phân tích tham số (Signature)
+            sig = inspect.signature(func)
+            params_schema = {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+            
+            for param_name, param in sig.parameters.items():
+                # Bỏ qua tham số self/cls nếu có
+                if param_name in ('self', 'cls'):
+                    continue
+                    
+                # Mapping kiểu dữ liệu Python -> JSON Schema
+                param_type = "string"
+                if param.annotation == int:
+                    param_type = "integer"
+                elif param.annotation == float:
+                    param_type = "number"
+                elif param.annotation == bool:
+                    param_type = "boolean"
+                
+                # Xử lý Enum (Literal)
+                enum_values = None
+                if hasattr(param.annotation, "__origin__") and param.annotation.__origin__ is Literal:
+                    enum_values = list(param.annotation.__args__)
+                
+                prop_config = {
+                    "type": param_type,
+                    "description": f"Tham số {param_name}" # Có thể cải thiện nếu dùng docstring parser xịn hơn
+                }
+                if enum_values:
+                    prop_config["enum"] = enum_values
+                    
+                params_schema["properties"][param_name] = prop_config
+                
+                # Nếu không có default value -> Bắt buộc
+                if param.default == inspect.Parameter.empty:
+                    params_schema["required"].append(param_name)
+
+            # 4. Lưu vào Registry
+            self.tools[tool_name] = func
+            self.schema.append({
+                "name": tool_name,
+                "description": description,
+                "parameters": params_schema
+            })
+
+            # 5. Wrapper để bắt lỗi chung (Optional)
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    error_msg = f"Lỗi thực thi tool {tool_name}: {str(e)}"
+                    log.error(error_msg)
+                    return json.dumps({"error": error_msg}, ensure_ascii=False)
+            
+            return wrapper
+        return decorator
+
+# Khởi tạo Registry
+registry = ToolRegistry()
+
 # --- CÁC HÀM HELPER ---
 
-def _clean_df_to_json(df: pd.DataFrame, limit: int = 5) -> str:
+# ==============================================================================
+# 2. HELPER FUNCTIONS
+# ==============================================================================
+
+def _df_to_markdown(df: pd.DataFrame, limit: int = 5) -> str:
     """
-    Chuyển DataFrame sang JSON, xử lý NaN và giới hạn số kỳ.
+    Chuyển DataFrame sang Markdown Table để tiết kiệm token và AI dễ đọc hơn JSON raw.
     """
     if df is None or df.empty:
-        return json.dumps({"error": "Không có dữ liệu"})
+        return "Không có dữ liệu."
     
-    # 1. Giới hạn số lượng kỳ (mặc định lấy 5 kỳ gần nhất để không tràn Context Window của AI)
-    # vnstock thường trả về dữ liệu mới nhất ở đầu hoặc cuối, ta lấy head(limit)
-    df_limited = df.head(limit)
+    # Giới hạn số dòng
+    df_limited = df.head(limit).copy()
     
-    # 2. Xử lý NaN/Inf thành null (JSON standard)
-    df_clean = df_limited.replace([np.inf, -np.inf, np.nan], None)
+    # Xử lý NaN/Inf
+    df_limited = df_limited.replace([np.inf, -np.inf, np.nan], "-")
     
-    # 3. Convert sang list dict
+    # Format ngày tháng nếu có (ví dụ cột 'time', 'date')
+    for col in df_limited.columns:
+        if 'time' in col.lower() or 'date' in col.lower():
+            try:
+                df_limited[col] = pd.to_datetime(df_limited[col]).dt.strftime('%d/%m/%Y')
+            except: pass
+            
     try:
-        # orient='records' tạo ra list các object: [{"Nam": 2023, "Doanh thu": ...}, ...]
-        return df_clean.to_json(orient='records', force_ascii=False)
-    except Exception as e:
-        return json.dumps({"error": f"Lỗi convert JSON: {str(e)}"})
+        return df_limited.to_markdown(index=False)
+    except ImportError:
+        # Fallback nếu thiếu thư viện tabulate
+        return df_limited.to_string(index=False)
 
-# ========= 1. CÁC HÀM CÔNG CỤ (IMPLEMENTATION) ======
+# ==============================================================================
+# 3. CÁC TOOL (Định nghĩa & Đăng ký)
+# ==============================================================================
 
-async def tool_get_market_price(symbol: str) -> str:
-    """
-    Lấy giá thị trường realtime (Khớp lệnh, Tăng giảm, Khối lượng).
-    """
+@registry.register(name="get_market_price")
+async def tool_get_market_price(symbol: str):
+    """Lấy giá khớp lệnh, khối lượng và biến động hiện tại của một mã cổ phiếu (VD: HPG)."""
+    symbol = symbol.upper().strip()
     try:
-        symbol = symbol.upper().strip()
-        # Dùng VCI cho nhanh (hoặc fallback TCBS nếu cần logic phức tạp hơn)
         quote = Quote(symbol=symbol, source='VCI')
-        # Lấy 1 ngày để có data realtime
-        now = datetime.datetime.now()
-        df = await asyncio.to_thread(
-            quote.history, 
-            start=now.strftime('%Y-%m-%d'), 
-            end=now.strftime('%Y-%m-%d'), 
-            interval='1D'
-        )
+        # Lấy data nhỏ gọn nhất
+        df = await asyncio.to_thread(quote.price_board, [symbol])
         
         if df is None or df.empty:
-            return json.dumps({"error": f"Không tìm thấy dữ liệu giá cho {symbol}"})
-            
-        last = df.iloc[-1]
-        # Fix lỗi đơn vị giá x1000 nếu cần (giống logic cũ)
-        close = float(last['close'])
-        if close < 500: close *= 1000
+            return f"Không tìm thấy dữ liệu giá cho {symbol}"
         
-        # Tính % thay đổi (giả định có giá tham chiếu hoặc tự tính)
-        # Ở đây lấy đơn giản, nếu muốn chính xác cần lấy thêm ref_price
-        # Tạm thời trả về giá close và volume
+        row = df.iloc[0]
+        # Mapping các trường quan trọng từ vnstock
+        price = row.get(('match', 'match_price')) or row.get('match_price')
+        change = row.get(('match', 'match_change')) or row.get('change')
+        pct = row.get(('match', 'match_change_percent')) or row.get('change_percent')
+        vol = row.get(('match', 'match_vol')) or row.get('volume')
+        
+        # Xử lý đơn vị giá (x1000 nếu < 500) - logic cũ của bạn
+        if price and price < 500: price *= 1000
+        if change and abs(change) < 50: change *= 1000 # Giả định change cũng bị lệch
+        
         return json.dumps({
             "symbol": symbol,
-            "price": close,
-            "volume": float(last['volume']),
-            "time": str(last['time']) if 'time' in last else "N/A"
+            "price": price,
+            "change_val": change,
+            "change_pct": pct,
+            "volume": vol
         }, ensure_ascii=False)
-
     except Exception as e:
-        log.error(f"Error tool_get_market_price: {e}")
-        return json.dumps({"error": "Lỗi hệ thống khi lấy giá"})
+        return f"Lỗi dữ liệu giá: {str(e)}"
 
-async def tool_get_fundamentals(symbol: str) -> str:
-    """
-    Lấy chỉ số cơ bản P/E, P/B (Dùng module manual_valuation có sẵn).
-    """
-    try:
-        symbol = symbol.upper().strip()
-        # Gọi hàm có sẵn trong manual_valuation.py
-        manual_val = await asyncio.to_thread(fetch_manual_pe_pb, symbol)
-        
-        if manual_val:
-            return json.dumps({
-                "symbol": symbol,
-                "pe": manual_val.pe,
-                "pb": manual_val.pb,
-                "eps_ttm": manual_val.eps_ttm,
-                "book_value": manual_val.bvps,
-                "updated_at": manual_val.computed_at
-            }, ensure_ascii=False)
-        else:
-             return json.dumps({"error": "Không tính được định giá"})
-             
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+@registry.register(name="get_fundamentals")
+async def tool_get_fundamentals(symbol: str):
+    """Lấy các chỉ số định giá P/E, P/B, EPS để đánh giá đắt rẻ."""
+    symbol = symbol.upper().strip()
+    manual_val = await asyncio.to_thread(fetch_manual_pe_pb, symbol)
+    
+    if manual_val:
+        # Trả về format text dễ đọc cho AI
+        return (
+            f"**Chỉ số cơ bản {symbol}**:\n"
+            f"- P/E: {manual_val.pe:.2f}x\n"
+            f"- P/B: {manual_val.pb:.2f}x\n"
+            f"- EPS (TTM): {manual_val.eps_ttm:,.0f} VND\n"
+            f"- Book Value: {manual_val.bvps:,.0f} VND\n"
+            f"(Dữ liệu cập nhật: {manual_val.computed_at})"
+        )
+    return "Không tính được định giá (thiếu dữ liệu)."
 
+@registry.register(name="get_company_profile")
 async def tool_get_company_profile(symbol: str) -> str:
     """
-    Lấy thông tin tổng quan doanh nghiệp: Ngành nghề, mô hình kinh doanh.
+    Lấy thông tin tổng quan doanh nghiệp.
+    CHIẾN LƯỢC: Kết hợp (Merge) dữ liệu từ 2 nguồn:
+    1. Redis Cache (AI Profile): Chứa phân tích sâu (Moat, Risks, Business Model...).
+    2. API Vnstock (TCBS): Chứa thông tin hành chính chuẩn xác (Tên, Năm lập, Sàn, Website...).
     """
     try:
         symbol = symbol.upper().strip()
-        # Lấy overview từ vnstock
-        company = Company(symbol=symbol, source='TCBS') # TCBS thường có profile khá đầy đủ
-        df = await asyncio.to_thread(company.overview)
         
-        if df is None or df.empty:
-            return json.dumps({"error": f"Không tìm thấy hồ sơ {symbol}"})
+        # --- ĐỊNH NGHĨA 2 TASKS CHẠY SONG SONG ---
         
-        # Convert về dict cho gọn
-        # Các trường quan trọng: short_name, industry, established_year, employees, website, history, ...
-        # Tùy API trả về, ta lấy row đầu tiên
-        data = df.iloc[0].to_dict()
+        async def fetch_from_redis():
+            """Lấy dữ liệu phân tích từ AI Cache"""
+            try:
+                cache_key = make_profile_cache_key(symbol)
+                cached = await asyncio.to_thread(get_profile_from_redis, cache_key)
+                if cached:
+                    text_json, _, is_error, _ = cached
+                    if not is_error and text_json:
+                        return json.loads(text_json)
+            except Exception as e:
+                log.warning(f"Redis profile fetch error: {e}")
+            return {}
+
+        async def fetch_from_api():
+            """Lấy dữ liệu hành chính từ API"""
+            try:
+                company = Company(symbol=symbol, source='TCBS')
+                df = await asyncio.to_thread(company.overview)
+                if df is not None and not df.empty:
+                    data = df.iloc[0].to_dict()
+                    # Chuẩn hóa key cho dễ đọc
+                    return {
+                        "tên_đầy_đủ": data.get("short_name") or data.get("organ_name"),
+                        "ngành_nghề": data.get("industry") or data.get("icb_name2"),
+                        "loại_hình": data.get("business_type"),
+                        "năm_thành_lập": data.get("established_year"),
+                        "sàn_giao_dịch": data.get("exchange"),
+                        "số_lượng_nhân_viên": data.get("no_employees"),
+                        "website": data.get("website")
+                    }
+            except Exception as e:
+                log.warning(f"API profile fetch error: {e}")
+            return {}
+
+        # --- CHẠY SONG SONG (CONCURRENT) ---
+        # Dùng asyncio.gather để tổng thời gian = max(thời gian redis, thời gian api)
+        # thay vì cộng dồn.
+        ai_data, api_data = await asyncio.gather(fetch_from_redis(), fetch_from_api())
+
+        # --- KẾT HỢP DỮ LIỆU (MERGE) ---
+        if not ai_data and not api_data:
+            return json.dumps({"error": f"Không tìm thấy thông tin cho {symbol}"})
+
+        # Gộp 2 dict lại. Ưu tiên dữ liệu AI (nếu trùng key) hoặc API tùy bạn chọn.
+        # Ở đây ta gộp chung vì các key thường không trùng nhau.
+        # API: tên, ngành, năm...
+        # AI: overview, moat, risks...
+        combined_data = {**api_data, **ai_data}
         
-        # Lọc bớt các trường không cần thiết để tiết kiệm token cho AI
-        simplified = {
-            "tên_công_ty": data.get("short_name") or data.get("organ_name"),
-            "ngành": data.get("industry") or data.get("icb_name2"),
-            "mô_tả": data.get("business_type") or data.get("about"), # TCBS hay có trường about/business_type
-            "năm_thành_lập": data.get("established_year"),
-            "sàn": data.get("exchange")
-        }
-        return json.dumps(simplified, ensure_ascii=False)
+        # Thêm metadata để debug
+        combined_data["nguồn_dữ_liệu"] = []
+        if api_data: combined_data["nguồn_dữ_liệu"].append("API Realtime")
+        if ai_data: combined_data["nguồn_dữ_liệu"].append("AI Analysis Cache")
+        
+        return json.dumps(combined_data, ensure_ascii=False)
 
     except Exception as e:
         log.error(f"Error tool_get_company_profile: {e}")
-        return json.dumps({"error": "Lỗi lấy hồ sơ công ty"})
+        return json.dumps({"error": "Lỗi hệ thống khi lấy hồ sơ"})
 
-# --- [NEW] TOOL LẤY BÁO CÁO TÀI CHÍNH ---
-async def tool_get_financial_report(symbol: str, report_type: str, period: str = 'quarter') -> str:
-    """
-    Lấy dữ liệu báo cáo tài chính chi tiết.
-    report_type: 'income' (KQKD), 'balance' (Cân đối KT), 'cash' (Dòng tiền), 'ratio' (Chỉ số).
-    period: 'year' (Năm) hoặc 'quarter' (Quý).
-    """
-    try:
-        symbol = symbol.upper().strip()
-        
-        # Khởi tạo Finance với source='VCI' như yêu cầu
-        finance = Finance(symbol=symbol, source='VCI')
-        
-        # Chọn hàm dựa trên loại báo cáo
-        if report_type == 'income':
-            # Báo cáo kết quả kinh doanh
-            task = lambda: finance.income_statement(period=period, lang='vi')
-        elif report_type == 'balance':
-            # Bảng cân đối kế toán
-            task = lambda: finance.balance_sheet(period=period, lang='vi')
-        elif report_type == 'cash':
-            # Báo cáo lưu chuyển tiền tệ
-            task = lambda: finance.cash_flow(period=period, lang='vi')
-        elif report_type == 'ratio':
-            # Chỉ số tài chính
-            task = lambda: finance.ratio(period=period, lang='vi')
-        else:
-            return json.dumps({"error": "Loại báo cáo không hợp lệ. Chọn: income, balance, cash, ratio"})
-
-        # Chạy trong thread
-        df = await asyncio.to_thread(task)
-        
-        # Trả về JSON đã clean (lấy 5 kỳ gần nhất)
-        return _clean_df_to_json(df, limit=5)
-
-    except Exception as e:
-        log.error(f"Error tool_get_financial_report ({report_type}): {e}")
-        return json.dumps({"error": f"Lỗi lấy báo cáo {report_type}: {str(e)}"})
-
-async def tool_get_stock_events(symbol: str) -> str:
-    """Lấy lịch sự kiện: Cổ tức, phát hành thêm, họp ĐHCĐ."""
-    try:
-        symbol = symbol.upper().strip()
-        company = Company(symbol=symbol, source='TCBS')
-        
-        # Lấy lịch sự kiện
-        df = await asyncio.to_thread(company.events)
-        
-        if df is None or df.empty:
-            return json.dumps({"message": f"Không có sự kiện sắp tới cho {symbol}"})
-
-        # Chỉ lấy các cột quan trọng: LoaiSuKien, NgayGDKHQ, NoiDung
-        # Và lấy 5 sự kiện mới nhất
-        return _clean_df_to_json(df, limit=5)
-
-    except Exception as e:
-        log.error(f"Error tool_get_stock_events: {e}")
-        return json.dumps({"error": f"Lỗi lấy sự kiện: {str(e)}"})
+@registry.register(name="get_financial_report")
+async def tool_get_financial_report(
+    symbol: str, 
+    report_type: Literal['income', 'balance', 'cash', 'ratio'], 
+    period: Literal['year', 'quarter'] = 'quarter'
+):
+    """Lấy dữ liệu báo cáo tài chính chi tiết (Doanh thu, Lợi nhuận, Tài sản...)."""
+    symbol = symbol.upper().strip()
+    finance = Finance(symbol=symbol, source='VCI')
     
-async def tool_get_stock_news(symbol: str) -> str:
-    """Lấy tin tức liên quan đến mã cổ phiếu."""
-    try:
-        symbol = symbol.upper().strip()
-        company = Company(symbol=symbol, source='TCBS')
-        
-        # Lấy tin tức
-        df = await asyncio.to_thread(company.news)
-        
-        if df is None or df.empty:
-            return json.dumps({"message": f"Không tìm thấy tin tức cho {symbol}"})
-
-        # Lấy 5 tin mới nhất, chỉ lấy Tiêu đề và Ngày
-        return _clean_df_to_json(df[['title', 'publish_date']], limit=5)
-
-    except Exception as e:
-        log.error(f"Error tool_get_stock_news: {e}")
-        return json.dumps({"error": f"Lỗi lấy tin tức: {str(e)}"})
-    
-async def tool_get_industry_peers(symbol: str) -> str:
-    """
-    Tìm các mã cổ phiếu cùng ngành.
-    ƯU TIÊN: Lấy từ dữ liệu Screener trên Redis (đã lọc cổ phiếu tốt/thanh khoản cao).
-    """
-    try:
-        symbol = symbol.upper().strip()
-
-        # 1. Lấy dữ liệu Screener từ Redis (Source of Truth cho các mã tốt)
-        hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
-        
-        # Biến để lưu danh sách mã tốt
-        stocks_map = {}
-        
-        if hist_data and "stocks" in hist_data:
-            stocks_map = hist_data["stocks"]
-        
-        # 2. Xác định ngành của mã đang hỏi (Target Sector)
-        my_sector = None
-        
-        # Cách A: Tìm trong Redis trước (Nhanh & Chuẩn)
-        if symbol in stocks_map:
-            my_sector = stocks_map[symbol].get("sector")
-            
-        # Cách B: Nếu mã này KHÔNG nằm trong danh sách mã tốt (VD: mã rác, mã mới lên sàn)
-        # Ta vẫn cần biết nó thuộc ngành nào để tìm Peer xịn cho nó.
-        # -> Fallback về file sectors.json chỉ để lấy tên ngành.
-        if not my_sector:
-            import os
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            path = os.path.join(base_dir, "sectors.json")
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    sectors_file = json.load(f)
-                if symbol in sectors_file:
-                    info = sectors_file[symbol]
-                    # Xử lý trường hợp file json lưu dạng object hoặc string
-                    if isinstance(info, dict):
-                        my_sector = info.get("sector")
-                    else:
-                        my_sector = info # Trường hợp cũ
-            except Exception: 
-                pass
-            
-        if not my_sector:
-             return json.dumps({"error": f"Không xác định được ngành của mã {symbol}"})
-
-        # 3. Lọc danh sách Peer (CHỈ LẤY TỪ REDIS STOCKS_MAP)
-        # Điều này đảm bảo các mã gợi ý đều là mã đã qua lọc (thanh khoản > 50 tỷ, vốn hóa > 5000 tỷ...)
-        peers = []
-        for sym, info in stocks_map.items():
-            if sym != symbol and info.get("sector") == my_sector:
-                peers.append(sym)
-        
-        # Sắp xếp alphabet
-        peers.sort()
-
-        # 4. Trả về kết quả
-        # Nếu không tìm thấy peer nào trong Redis (ngành quá nhỏ hoặc toàn mã rác), danh sách sẽ rỗng
-        if not peers:
-            return json.dumps({
-                "symbol": symbol,
-                "sector": my_sector,
-                "message": "Không tìm thấy mã cùng ngành nào đạt tiêu chuẩn thanh khoản.",
-                "peers": []
-            }, ensure_ascii=False)
-
-        # Lấy tối đa 15 mã để AI không bị ngợp
-        return json.dumps({
-            "symbol": symbol,
-            "sector": my_sector,
-            "source": "Screener (High Quality)",
-            "peers": peers[:15],
-            "count": len(peers)
-        }, ensure_ascii=False)
-
-    except Exception as e:
-        log.error(f"Error tool_get_industry_peers: {e}")
-        return json.dumps({"error": f"Lỗi tìm mã cùng ngành: {str(e)}"})
-
-# ========= 2. ĐỊNH NGHĨA SCHEMA CHO GEMINI ======
-
-# Đây là phần quan trọng để Gemini hiểu cách gọi hàm
-AGENT_TOOLS_SCHEMA = [
-    {
-        "name": "get_market_price",
-        "description": "Lấy giá khớp lệnh, khối lượng và biến động hiện tại của một mã cổ phiếu.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Mã cổ phiếu 3 chữ cái (ví dụ: HPG, VNM)"
-                }
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_fundamentals",
-        "description": "Lấy các chỉ số định giá cơ bản (P/E, P/B, EPS) để đánh giá đắt rẻ.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Mã cổ phiếu 3 chữ cái"
-                }
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_company_profile",
-        "description": "Lấy thông tin tổng quan về công ty: tên đầy đủ, ngành nghề kinh doanh chính, năm thành lập. Dùng khi người dùng hỏi 'Công ty này làm gì?', 'Mã này thuộc ngành nào?'.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Mã cổ phiếu 3 chữ cái"
-                }
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_financial_report",
-        "description": "Lấy dữ liệu báo cáo tài chính chi tiết (Doanh thu, Lợi nhuận, Tài sản, Dòng tiền, Chỉ số tài chính). Dùng khi cần phân tích sâu về sức khỏe tài chính qua các năm/quý.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string", 
-                    "description": "Mã cổ phiếu 3 chữ cái"
-                },
-                "report_type": {
-                    "type": "string", 
-                    "enum": ["income", "balance", "cash", "ratio"],
-                    "description": "Loại báo cáo: 'income' (Kết quả kinh doanh), 'balance' (Cân đối kế toán), 'cash' (Dòng tiền), 'ratio' (Chỉ số tài chính)"
-                },
-                "period": {
-                    "type": "string",
-                    "enum": ["year", "quarter"],
-                    "description": "Kỳ báo cáo: 'year' (theo năm) hoặc 'quarter' (theo quý). Mặc định nên dùng 'quarter' để có được dữ liệu cập nhật nhất.",
-                    "default": "quarter"
-                }
-            },
-            "required": ["symbol", "report_type"]
-        }
-    },
-    {
-        "name": "get_stock_events",
-        "description": "Lấy lịch sự kiện quan trọng của công ty: Trả cổ tức (tiền/cổ phiếu), Phát hành thêm, Họp đại hội cổ đông. Dùng khi user hỏi về quyền lợi hoặc lịch chốt quyền.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string", "description": "Mã cổ phiếu 3 chữ cái"}
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_stock_news",
-        "description": "Tìm kiếm tin tức báo chí mới nhất liên quan trực tiếp đến mã cổ phiếu. Dùng để giải thích lý do tăng/giảm giá hoặc cập nhật tình hình.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string", "description": "Mã cổ phiếu 3 chữ cái"}
-            },
-            "required": ["symbol"]
-        }
-    },
-    {
-        "name": "get_industry_peers",
-        "description": "Tìm danh sách các mã cổ phiếu khác trong cùng nhóm ngành. Rất hữu ích khi cần so sánh định giá (P/E, P/B) hoặc tìm cơ hội đầu tư thay thế.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string", "description": "Mã cổ phiếu gốc để tìm mã tương tự"}
-            },
-            "required": ["symbol"]
-        }
+    # Mapping tên hàm
+    func_map = {
+        'income': finance.income_statement,
+        'balance': finance.balance_sheet,
+        'cash': finance.cash_flow,
+        'ratio': finance.ratio
     }
-]
+    
+    if report_type not in func_map:
+        return "Loại báo cáo không hợp lệ (chọn: income, balance, cash, ratio)."
+    
+    # Lấy dữ liệu
+    df = await asyncio.to_thread(func_map[report_type], period=period, lang='vi')
+    
+    # Trả về bảng Markdown (lấy 4 kỳ gần nhất)
+    return _df_to_markdown(df, limit=4)
 
-# Mapping tên hàm (str) -> Hàm thực thi (python function)
-TOOL_MAPPING = {
-    "get_market_price": tool_get_market_price,
-    "get_fundamentals": tool_get_fundamentals,
-    "get_company_profile": tool_get_company_profile,
-    "get_financial_report": tool_get_financial_report,
-    "get_stock_events": tool_get_stock_events,
-    "get_stock_news": tool_get_stock_news,
-    "get_industry_peers": tool_get_industry_peers,
-}
+@registry.register(name="get_stock_events")
+async def tool_get_stock_events(symbol: str):
+    """Lấy lịch sự kiện: Cổ tức, phát hành thêm, họp ĐHCĐ."""
+    symbol = symbol.upper().strip()
+    company = Company(symbol=symbol, source='TCBS')
+    df = await asyncio.to_thread(company.events)
+    
+    # Chỉ lấy các cột quan trọng
+    if df is not None and not df.empty:
+        cols = ['exerDate', 'type', 'price', 'ratio', 'content'] # Tên cột có thể thay đổi tùy version vnstock
+        # Lọc các cột tồn tại
+        valid_cols = [c for c in cols if c in df.columns]
+        if not valid_cols and len(df.columns) > 0:
+             # Fallback nếu tên cột khác
+             valid_cols = df.columns[:4]
+        
+        return _df_to_markdown(df[valid_cols], limit=5)
+        
+    return "Không có sự kiện sắp tới."
+
+@registry.register(name="get_stock_news")
+async def tool_get_stock_news(symbol: str):
+    """Tìm kiếm tin tức báo chí mới nhất liên quan trực tiếp đến mã cổ phiếu."""
+    symbol = symbol.upper().strip()
+    company = Company(symbol=symbol, source='TCBS')
+    df = await asyncio.to_thread(company.news)
+    
+    if df is not None and not df.empty:
+        # Lấy tiêu đề và ngày
+        df_clean = df[['title', 'publish_date']].copy() if 'title' in df.columns else df.iloc[:, :2]
+        return _df_to_markdown(df_clean, limit=5)
+        
+    return "Không tìm thấy tin tức liên quan."
+
+@registry.register(name="get_industry_peers")
+async def tool_get_industry_peers(symbol: str):
+    """Tìm danh sách các mã cổ phiếu khác trong cùng nhóm ngành (Dữ liệu từ Screener)."""
+    symbol = symbol.upper().strip()
+    
+    # 1. Lấy dữ liệu Screener từ Redis
+    hist_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+    stocks_map = hist_data.get("stocks", {}) if hist_data else {}
+    
+    # 2. Tìm ngành
+    my_sector = None
+    if symbol in stocks_map:
+        my_sector = stocks_map[symbol].get("sector")
+    
+    # Fallback nếu không có trong Redis
+    if not my_sector:
+        # Logic đọc file sectors.json (bạn có thể giữ lại hoặc import từ utils)
+        import os
+        try:
+            with open("sectors.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if symbol in data:
+                    val = data[symbol]
+                    my_sector = val.get("sector") if isinstance(val, dict) else val
+        except: pass
+            
+    if not my_sector:
+        return f"Không xác định được ngành của mã {symbol}."
+
+    # 3. Lọc Peers từ Redis (Chất lượng cao)
+    peers = []
+    for s, info in stocks_map.items():
+        if s != symbol and info.get("sector") == my_sector:
+            peers.append(s)
+    
+    peers.sort()
+    
+    if not peers:
+        return f"Ngành '{my_sector}' chưa có mã tương tự nào đạt chuẩn thanh khoản."
+        
+    # Trả về danh sách text đơn giản
+    top_peers = peers[:15]
+    return json.dumps({
+        "symbol": symbol,
+        "sector": my_sector,
+        "peers_count": len(peers),
+        "top_peers": top_peers
+    }, ensure_ascii=False)
+
+
+# ==============================================================================
+# 4. EXPORT (Cho worker.py import)
+# ==============================================================================
+
+# Schema tự động sinh ra từ decorator
+AGENT_TOOLS_SCHEMA = registry.schema
+
+# Mapping tên hàm -> function object
+TOOL_MAPPING = registry.tools
+
+if __name__ == "__main__":
+    # Test Schema Generation
+    print(json.dumps(AGENT_TOOLS_SCHEMA, indent=2, ensure_ascii=False))
+

@@ -11,6 +11,9 @@ from vnstock import Trading, Quote, Screener, Finance, Company, Vnstock
 import redis
 from dotenv import load_dotenv
 from google import genai
+from google.genai.types import Part, Content, FunctionResponse
+from agent_tools import TOOL_MAPPING, AGENT_TOOLS_SCHEMA
+from ai_knowledge import get_dynamic_system_prompt
 import uuid
 import time
 import pandas as pd
@@ -72,7 +75,7 @@ from report_cache import (
     get_report_from_redis,
     delete_report_from_redis,
 )
-from ai_knowledge import BOT_KNOWLEDGE_BASE
+from ai_knowledge import STATIC_KNOWLEDGE_BASE
 from agent_tools import TOOL_MAPPING, AGENT_TOOLS_SCHEMA
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.redis import RedisJobStore
@@ -541,31 +544,67 @@ async def job_monthly_cskh_report():
         push_telegram_msg(ADMIN_ID, f"⚠️ Lỗi tạo báo cáo tháng {period_label}: {e}", msg_type="SYSTEM_MSG")
 
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
-    """Hàm gọi Gemini an toàn (Failover) với cơ chế Round Robin (Xoay vòng từng request)"""
+    """
+    Hàm gọi Gemini an toàn (Failover) + Retry 429.
+    Tự động xoay vòng Key và chờ nếu tất cả đều bận.
+    """
     global _gemini_key_index
     last_error = None
     
-    # [UPDATED] Cơ chế Round Robin: Chia bài đều lần lượt cho từng Key
-    # Đảm bảo Key A vừa dùng xong sẽ không bị gọi lại ngay ở request tiếp theo (trừ khi chỉ có 1 key).
-    rotated_keys = _get_rotated_gemini_keys()
-
-    for api_key in rotated_keys:
-        try:
-            client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(
-                model=model_id, contents=contents, config=config
-            )
-            text = getattr(resp, "text", "").strip()
-            
-            if return_usage:
-                usage = getattr(resp, "usage_metadata", None)
-                return text, usage
+    # CẤU HÌNH RETRY
+    MAX_RETRIES_GLOBAL = 3  # Số vòng thử lại tối đa nếu toàn bộ Key đều lỗi
+    BASE_SLEEP_SEC = 5      # Thời gian chờ cơ bản (giây)
+    
+    for attempt in range(MAX_RETRIES_GLOBAL):
+        # Lấy danh sách key đã xoay vòng để ưu tiên key mới
+        rotated_keys = _get_rotated_gemini_keys()
+        
+        # Thử từng key trong danh sách
+        for api_key in rotated_keys:
+            # --- [THÊM ĐOẠN NÀY ĐỂ TRACK KEY] ---
+            key_suffix = api_key[-5:] if api_key else "NONE"
+            log.info(f"[{INSTANCE_ID}] 🔑 Đang thử gọi AI với Key đuôi: ...{key_suffix}")
+            # ------------------------------------
+            try:
+                client = genai.Client(api_key=api_key)
+                resp = client.models.generate_content(
+                    model=model_id, contents=contents, config=config
+                )
                 
-            return text
-        except Exception as e:
-            last_error = e
-            continue
-    log.error(f"All Gemini keys failed: {last_error}")
+                # Lấy kết quả thành công
+                text = getattr(resp, "text", "").strip()
+
+                log.info(f"[{INSTANCE_ID}] ✅ Gọi AI thành công với Key ...{key_suffix}")
+                
+                if return_usage:
+                    usage = getattr(resp, "usage_metadata", None)
+                    return text, usage
+                    
+                return text
+
+            except Exception as e:
+                err_str = str(e)
+                key_suffix = api_key[-5:] if api_key else "N/A"
+                
+                # Xử lý riêng lỗi 429 (Rate Limit / Quota)
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} bị 429 (Hết quota). Đang đổi key...")
+                    last_error = e
+                    continue # Chuyển ngay sang key tiếp theo
+                
+                # Các lỗi khác (400, 403, 500...)
+                log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} lỗi: {e}")
+                last_error = e
+                continue
+        
+        # Nếu chạy hết vòng for (tất cả key đều lỗi) -> Nghỉ một chút rồi thử lại (Backoff)
+        if attempt < MAX_RETRIES_GLOBAL - 1:
+            sleep_time = BASE_SLEEP_SEC * (attempt + 1) # Tăng dần: 5s, 10s...
+            log.warning(f"[{INSTANCE_ID}] ⏳ Tất cả Keys đều bận. Nghỉ {sleep_time}s rồi thử lại (Vòng {attempt+1}/{MAX_RETRIES_GLOBAL})...")
+            time.sleep(sleep_time)
+    
+    # Nếu đã thử hết cách mà vẫn lỗi
+    log.error(f"❌ GỌI GEMINI THẤT BẠI TOÀN TẬP. Lỗi cuối: {last_error}")
     return (None, None) if return_usage else None
 
 # --- CÁC HÀM HELPER ---
@@ -695,163 +734,239 @@ def write_temp_json_file(filename: str, payload: dict | list | None) -> str | No
         return None
 
 
+# Định nghĩa Model ID (Bạn có thể thay đổi tên model thực tế tại đây)
+MODEL_BRAIN = "gemini-2.5-pro"      # Dùng cho bước đầu và cuối (2.5-pro nếu đã có access)
+MODEL_WORKER = "gemini-2.0-flash-lite" # Dùng cho các bước tool (2.0-flash-lite nếu đã có access)
+
 async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     """
-    Agent Loop: ReAct (Reason + Act)
-    Tích hợp: Status Update, Hard Limit, Redis Memory, Token Tracking & Force Answer.
+    Agent Loop tối ưu: Pro -> Lite (Loop) -> Pro.
+    [UPDATED] Tích hợp cơ chế Retry & Xoay vòng Key + Tracking Log.
     """
-    log.info(f"[{INSTANCE_ID}] 🤖 Agent Start: {chat_id} - '{user_query}'")
+    log.info(f"[{INSTANCE_ID}] 🤖 Hybrid Agent Start: {chat_id}")
     
-    # --- CẤU HÌNH & BIẾN ĐẾM ---
-    MAX_STEPS = 10
-    MEMORY_KEY = f"agent:memory:{chat_id}"
-    MEMORY_LIMIT = 10 
-    
-    total_requests = 0
-    total_input_tokens = 0
-    total_output_tokens = 0
-    
-    # 1. Lấy Lịch sử Chat
-    history_context = ""
-    if r_client:
-        items = r_client.lrange(MEMORY_KEY, 0, -1)
-        if items:
-            history_context = "\n".join([item for item in items])
+    # --- KHỞI TẠO BIẾN THỐNG KÊ ---
+    stats = {
+        "requests": 0,
+        "input_tokens": 0,
+        "output_tokens": 0
+    }
 
-    # 2. System Prompt (Giữ nguyên)
-    system_prompt = f"""
-Bạn là StockBot Agent - Trợ lý đầu tư thông minh.
-    
---- KIẾN THỨC CỐT LÕI (Ưu tiên số 1) ---
-{BOT_KNOWLEDGE_BASE}
+    def update_stats(response):
+        if response and response.usage_metadata:
+            stats["requests"] += 1
+            stats["input_tokens"] += response.usage_metadata.prompt_token_count
+            stats["output_tokens"] += response.usage_metadata.candidates_token_count
 
---- CÔNG CỤ (Ưu tiên số 2) ---
-Sử dụng các tool sau để lấy dữ liệu thực tế:
-{json.dumps(AGENT_TOOLS_SCHEMA, ensure_ascii=False)}
-
---- QUY TRÌNH SUY LUẬN ---
-1. Ưu tiên trả lời ngay nếu có trong kiến thức cốt lõi.
-2. Gọi tool nếu cần dữ liệu realtime (Giá, P/E, Hồ sơ).
-
---- ĐỊNH DẠNG OUTPUT (BẮT BUỘC JSON) ---
-Trả về duy nhất 1 block JSON:
-
-TRƯỜNG HỢP 1: CẦN GỌI TOOL
-{{
-  "action": "call_tool",
-  "tool_name": "ten_tool",
-  "tool_args": {{ "arg1": "value1" }},
-  "thought": "Viết 1 câu cực ngắn (dưới 10 từ) mô tả hành động cho người dùng."
-}}
-
-TRƯỜNG HỢP 2: TRẢ LỜI USER (KẾT THÚC)
-{{
-  "action": "final_answer",
-  "content": "Câu trả lời hoàn chỉnh (Markdown)..."
-}}
-"""
-    
-    current_context = f"{system_prompt}\n\nLỊCH SỬ CHAT:\n{history_context}\n\nUser: {user_query}\n"
-
-    # --- 3. EXECUTION LOOP ---
-    final_response = "Xin lỗi, hệ thống đang bận. Vui lòng thử lại sau." # Fallback message
-    
-    for step in range(MAX_STEPS):
-        # --- [NEW] FORCE FINAL ANSWER Ở BƯỚC CUỐI ---
-        if step == MAX_STEPS - 1:
-            log.warning(f"[{INSTANCE_ID}] Agent: Đã đến bước cuối ({step}). Ép trả lời.")
-            current_context += (
-                "\nSystem ALERT: Đây là bước suy luận cuối cùng cho phép. "
-                "Bạn BẮT BUỘC phải tổng hợp tất cả thông tin đã có để trả lời user (final_answer) NGAY LẬP TỨC. "
-                "KHÔNG được gọi thêm tool nào nữa."
-            )
-        # ---------------------------------------------
-
-        try:
-            # A. Gọi Gemini
-            json_response, usage = await asyncio.to_thread(
-                call_gemini_safe,
-                model_id="gemini-2.5-flash", 
-                contents=current_context,
-                config={'response_mime_type': 'application/json'},
-                return_usage=True 
-            )
+    # --- [HÀM HELPER QUAN TRỌNG] GỌI GEMINI CÓ RETRY & LOG ---
+    async def safe_generate_content(model_id, contents, config):
+        last_error = None
+        MAX_RETRIES = 3
+        
+        for attempt in range(MAX_RETRIES):
+            # Lấy danh sách key xoay vòng
+            rotated_keys = _get_rotated_gemini_keys()
             
-            total_requests += 1
-            if usage:
-                total_input_tokens += usage.prompt_token_count
-                total_output_tokens += usage.candidates_token_count
-            
-            if not json_response:
-                break
-
-            # B. Parse JSON
-            try:
-                plan = json.loads(extract_json_from_text(json_response))
-            except json.JSONDecodeError:
-                current_context += f"\nSystem: Output lỗi JSON. Thử lại.\n"
-                continue
-
-            action = plan.get("action")
-            
-            # C. Xử lý hành động
-            if action == "final_answer":
-                final_response = plan.get("content", "")
-                break 
-            
-            elif action == "call_tool":
-                # [NEW] Chặn gọi tool ở bước cuối nếu AI vẫn "cố chấp"
-                if step == MAX_STEPS - 1:
-                    final_response = f"Tôi đã tìm được một số thông tin nhưng chưa đầy đủ. Dựa trên dữ liệu hiện có: {plan.get('thought', '')}"
-                    break
-
-                tool_name = plan.get("tool_name")
-                tool_args = plan.get("tool_args", {})
-                thought = plan.get("thought", "Đang xử lý...")
+            for api_key in rotated_keys:
+                key_suffix = api_key[-5:] if api_key else "NONE"
+                log.info(f"[{INSTANCE_ID}] 🔑 Agent đang thử Key ...{key_suffix}")  # <--- LOG TRACKING
                 
-                # Status Update
-                status_text = f"🤖 {thought}" 
-                push_telegram_msg(chat_id, status_text, edit_id=loading_msg_id)
-                
-                # Gọi Tool
-                if tool_name in TOOL_MAPPING:
-                    tool_func = TOOL_MAPPING[tool_name]
-                    try:
-                        tool_result = await tool_func(**tool_args)
-                    except Exception as e:
-                        tool_result = json.dumps({"error": str(e)})
+                try:
+                    # Tạo client mới cho mỗi key (QUAN TRỌNG: Client không cố định)
+                    client = genai.Client(api_key=api_key)
                     
-                    current_context += f"\nAssistant (Thought): {thought}\nAssistant (Call Tool): {tool_name}({tool_args})\nSystem (Tool Output): {tool_result}\n"
-                else:
-                    current_context += f"\nSystem: Không tìm thấy tool tên '{tool_name}'.\n"
-            
-            else:
-                current_context += f"\nSystem: Action '{action}' không hợp lệ.\n"
+                    # Gọi API (chạy trong thread để không block)
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model_id,
+                        contents=contents,
+                        config=config
+                    )
+                    
+                    # Nếu chạy đến đây là thành công
+                    log.info(f"[{INSTANCE_ID}] ✅ Agent gọi thành công với Key ...{key_suffix}") 
+                    return response
 
+                except Exception as e:
+                    err_str = str(e)
+                    # Xử lý lỗi 429 hoặc Hết tài nguyên
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                        log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} bị 429. Đổi key...")
+                        last_error = e
+                        continue # Thử key tiếp theo ngay lập tức
+                    else:
+                        log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} lỗi khác: {e}")
+                        last_error = e
+                        continue
+            
+            # Nếu hết danh sách key mà vẫn lỗi -> Chờ rồi thử lại vòng sau
+            if attempt < MAX_RETRIES - 1:
+                wait_time = 5 * (attempt + 1)
+                log.warning(f"[{INSTANCE_ID}] ⏳ Agent: Tất cả keys bận. Chờ {wait_time}s...")
+                await asyncio.sleep(wait_time)
+
+        raise last_error or RuntimeError("All Gemini keys failed in Agent.")
+
+    # 1. Setup Context
+    sys_instruction = get_dynamic_system_prompt() #
+    chat_history = [
+        Content(role="user", parts=[Part(text=user_query)])
+    ]
+    
+    run_config = {
+        "tools": [{"function_declarations": AGENT_TOOLS_SCHEMA}], #
+        "system_instruction": sys_instruction,
+        "temperature": 0.5 
+    }
+
+    # ==========================================================================
+    # BƯỚC 1: LẬP KẾ HOẠCH (BRAIN - PRO)
+    # ==========================================================================
+    try:
+        # Thay thế client.models.generate_content bằng hàm safe_generate_content
+        response = await safe_generate_content(
+            model_id=MODEL_BRAIN, #
+            contents=chat_history,
+            config=run_config
+        )
+        update_stats(response)
+        
+        ai_content = response.candidates[0].content
+        chat_history.append(ai_content)
+        
+        # Kiểm tra Function Call
+        has_tool_call = False
+        for part in ai_content.parts:
+            if part.function_call:
+                has_tool_call = True
+                break
+        
+        if not has_tool_call:
+            text_resp = "".join([p.text or "" for p in ai_content.parts])
+            footer = f"\n\n`⚙️ Stats: {stats['requests']} reqs | In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
+            push_telegram_msg(chat_id, text_resp + footer, edit_id=loading_msg_id) #
+            return
+            
+        text_preview = next((p.text for p in ai_content.parts if p.text), None)
+        if text_preview:
+            push_telegram_msg(chat_id, f"🤖 {text_preview}", edit_id=loading_msg_id) #
+
+    except Exception as e:
+        log.error(f"Step 1 Error: {e}")
+        push_telegram_msg(chat_id, "⚠️ Lỗi khởi động AI (Hết quota hoặc lỗi mạng).", edit_id=loading_msg_id) #
+        return
+
+    # ==========================================================================
+    # BƯỚC 2: THỰC THI (WORKER - LITE)
+    # ==========================================================================
+    MAX_LOOPS = 6
+    
+    for i in range(MAX_LOOPS):
+        last_msg = chat_history[-1]
+        
+        current_calls = []
+        for part in last_msg.parts:
+            if part.function_call:
+                current_calls.append(part.function_call)
+        
+        if not current_calls:
+            break
+            
+        # Mapping tên tiếng Việt
+        friendly_names = []
+        for fc in current_calls:
+            name = fc.name
+            if name == "get_market_price": friendly_names.append("Giá thị trường")
+            elif name == "get_fundamentals": friendly_names.append("Định giá P/E P/B")
+            elif name == "get_company_profile": friendly_names.append("Hồ sơ công ty")
+            elif name == "get_financial_report": friendly_names.append("Báo cáo tài chính")
+            elif name == "get_stock_events": friendly_names.append("Lịch sự kiện")
+            elif name == "get_stock_news": friendly_names.append("Tin tức")
+            elif name == "get_industry_peers": friendly_names.append("So sánh ngành")
+            else: friendly_names.append(name)
+
+        tool_display_str = ", ".join(set(friendly_names))
+        push_telegram_msg(chat_id, f"🔍 Đang tra cứu: {tool_display_str}...", edit_id=loading_msg_id) #
+        
+        # Thực thi Tools
+        response_parts = []
+        for fc in current_calls:
+            tool_name = fc.name
+            tool_args = fc.args
+            
+            tool_result = "Error: Tool not found"
+            if tool_name in TOOL_MAPPING: #
+                try:
+                    args_dict = {k: v for k, v in tool_args.items()}
+                    tool_result = await TOOL_MAPPING[tool_name](**args_dict) #
+                except Exception as e:
+                    tool_result = f"Error executing tool: {str(e)}"
+            
+            response_parts.append(
+                Part(function_response=FunctionResponse(
+                    name=tool_name,
+                    response={"result": tool_result} 
+                ))
+            )
+        
+        chat_history.append(Content(role="user", parts=response_parts))
+        
+        # Gửi lại cho Model Worker (Lite) -> Dùng hàm Safe
+        try:
+            response = await safe_generate_content(
+                model_id=MODEL_WORKER, #
+                contents=chat_history,
+                config=run_config
+            )
+            update_stats(response)
+            chat_history.append(response.candidates[0].content)
         except Exception as e:
-            log.error(f"[{INSTANCE_ID}] Agent Loop Error step {step}: {e}")
+            log.error(f"Agent Loop Error ({i}): {e}")
             break
 
-    # --- 4. KẾT THÚC ---
-    stats_footer = (
-        f"\n\n`⚙️ Specs: {total_requests} steps | "
-        f"In: {total_input_tokens} | Out: {total_output_tokens}`"
-    )
-    final_msg_with_stats = final_response + stats_footer
-
-    kb = default_ai_reply_markup()
-    push_telegram_msg(
-        chat_id=chat_id,
-        text=final_msg_with_stats,
-        reply_markup=kb,
-        edit_id=loading_msg_id
-    )
+    # ==========================================================================
+    # BƯỚC 3: TỔNG HỢP (BRAIN - PRO)
+    # ==========================================================================
     
-    if r_client:
-        r_client.rpush(MEMORY_KEY, f"User: {user_query}")
-        r_client.rpush(MEMORY_KEY, f"Bot: {final_response}")
-        r_client.ltrim(MEMORY_KEY, -MEMORY_LIMIT, -1)
-        r_client.expire(MEMORY_KEY, 3600)
+    last_msg = chat_history[-1]
+    has_pending_call = any(p.function_call for p in last_msg.parts)
+
+    if has_pending_call:
+        chat_history.pop()
+        final_prompt = "Đã hết lượt gọi công cụ. Hãy tổng hợp thông tin đã có để trả lời."
+    else:
+        final_prompt = "Dựa trên dữ liệu đã thu thập, hãy viết câu trả lời cuối cùng thật chi tiết."
+
+    chat_history.append(Content(role="user", parts=[Part(text=final_prompt)]))
+
+    final_config = {
+        "system_instruction": sys_instruction,
+        "temperature": 0.7
+    }
+
+    try:
+        # Dùng hàm Safe cho bước cuối
+        response = await safe_generate_content(
+            model_id=MODEL_BRAIN,  #
+            contents=chat_history,
+            config=final_config
+        )
+        update_stats(response)
+        
+        final_answer = response.candidates[0].content.parts[0].text
+        
+        stats_footer = (
+            f"\n\n`⚙️ Specs: {stats['requests']} steps | "
+            f"In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
+        )
+        final_msg_with_stats = final_answer + stats_footer
+        
+        kb = default_ai_reply_markup() #
+        push_telegram_msg(chat_id, final_msg_with_stats, reply_markup=kb, edit_id=loading_msg_id) #
+        
+    except Exception as e:
+        log.error(f"Agent Final Step Error: {e}")
+        push_telegram_msg(chat_id, "⚠️ Lỗi tổng hợp câu trả lời (Hết quota).", edit_id=loading_msg_id) #
 
 def _get_cached_tech_summary(symbol: str) -> str | None:
     entry = _tech_alert_summary_cache.get(symbol)
@@ -2241,7 +2356,7 @@ async def process_ask_ai(chat_id, question, loading_msg_id=None):
                 history_context = "\n".join(items)
 
         # 2. Tạo Prompt (System + History + User)
-        full_prompt = f"""{BOT_KNOWLEDGE_BASE}
+        full_prompt = f"""{STATIC_KNOWLEDGE_BASE}
 
 ---
 LỊCH SỬ HỘI THOẠI (Context):
