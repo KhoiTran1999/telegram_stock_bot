@@ -2255,6 +2255,135 @@ async def worker_inbound_loop():
                     pass
 
 
+# ===== Worker Profile Crawler Loop (ZSET Mode)======
+async def profile_crawler_loop():
+    """
+    [WORKER] Loop chuyên dụng để Crawl Profile (Info).
+    - Khung giờ: 00:00 - 05:00 sáng.
+    - Tốc độ: 1 mã / 60 giây.
+    - TTL: 30 ngày.
+    """
+    log.info(f"[{INSTANCE_ID}] 🌙 Bắt đầu Profile Crawler Loop (ZSET Mode)...")
+    
+    # Cấu hình
+    CRAWL_START_HOUR = 0
+    CRAWL_END_HOUR = 5
+    TTL_DAYS = 30
+    SLEEP_INTERVAL = 60 # 60 giây nghỉ giữa các lần gọi
+
+    while True:
+        try:
+            # 1. Kiểm tra khung giờ hoạt động
+            vn_tz = pytz.timezone(TIMEZONE)
+            now = datetime.datetime.now(vn_tz)
+            
+            if not (CRAWL_START_HOUR <= now.hour < CRAWL_END_HOUR):
+                # Nếu ngoài khung giờ, ngủ dài (ví dụ 5 phút check lại 1 lần)
+                # log.info("[CRAWLER] Ngoài khung giờ hoạt động. Ngủ 5 phút...")
+                await asyncio.sleep(300) 
+                continue
+
+            # 2. Lấy Redis Client
+            r = ensure_redis_client()
+            if not r:
+                await asyncio.sleep(10)
+                continue
+
+            # 3. Lấy 1 mã có Score thấp nhất (Cũ nhất)
+            # ZRANGE profile_crawl_queue 0 0 WITHSCORES
+            items = r.zrange("profile_crawl_queue", 0, 0, withscores=True)
+            
+            if not items:
+                log.warning("[CRAWLER] Queue rỗng. Chạy sync lại...")
+                sync_sectors_to_redis()
+                await asyncio.sleep(10)
+                continue
+
+            symbol, last_score = items[0]
+            
+            # 4. Kiểm tra TTL
+            # Score là timestamp. Nếu Score = 0 nghĩa là chưa crawl bao giờ.
+            last_update = datetime.datetime.fromtimestamp(last_score, vn_tz)
+            age = now - last_update
+            
+            # Nếu dữ liệu vẫn còn mới (< 30 ngày) -> Không cần làm gì cả
+            # Vì đây là mã cũ nhất rồi, nên nếu nó mới thì cả danh sách đều mới.
+            if last_score > 0 and age.days < TTL_DAYS:
+                log.info(f"[CRAWLER] Mã cũ nhất ({symbol}) mới cập nhật {age.days} ngày trước. Tạm dừng Loop.")
+                await asyncio.sleep(300) # Ngủ 5 phút rồi check lại
+                continue
+
+            # 5. THỰC HIỆN CRAWL (Nếu hết hạn hoặc chưa có)
+            log.info(f"[{INSTANCE_ID}] [CRAWLER] ⏳ Đang xử lý: {symbol} (Last update: {last_score})")
+            
+            # Gọi hàm logic có sẵn (Refactor nhẹ từ process_profile_for_user hoặc gọi lại logic đó)
+            # Ở đây mình giả lập gọi hàm sinh nội dung và lưu cache
+            try:
+                # A. Gọi AI (Đã có xoay vòng key)
+                json_text = await asyncio.to_thread(call_gemini_for_profile, symbol)
+                
+                # B. Lưu Cache Redis (cho WebApp xem)
+                from profile_cache import make_profile_cache_key, save_profile_to_redis
+                cache_key = make_profile_cache_key(symbol)
+                save_profile_to_redis(cache_key, json_text, source="auto_crawler")
+                
+                # C. Cập nhật Score trong ZSET = NOW (Timestamp hiện tại)
+                new_score = now.timestamp()
+                r.zadd("profile_crawl_queue", {symbol: new_score})
+                
+                log.info(f"[{INSTANCE_ID}] [CRAWLER] ✅ Hoàn tất {symbol}. Ngủ {SLEEP_INTERVAL}s...")
+
+            except Exception as e:
+                log.error(f"[{INSTANCE_ID}] [CRAWLER] ❌ Lỗi xử lý {symbol}: {e}")
+                # Nếu lỗi, tạm thời set Score = NOW để đẩy xuống cuối hàng đợi,
+                # tránh việc loop bị kẹt mãi ở mã lỗi này.
+                # Có thể trừ đi vài ngày để nó được ưu tiên thử lại sớm hơn nếu muốn.
+                fallback_score = now.timestamp() 
+                r.zadd("profile_crawl_queue", {symbol: fallback_score})
+
+            # 6. RATE LIMIT: Nghỉ đúng 60s theo yêu cầu
+            await asyncio.sleep(SLEEP_INTERVAL)
+
+        except Exception as e:
+            log.error(f"[{INSTANCE_ID}] [CRAWLER] Lỗi Loop: {e}")
+            await asyncio.sleep(60) # Lỗi hệ thống thì nghỉ 1 phút
+
+def sync_sectors_to_redis():
+    """
+    Đọc sectors.json và đồng bộ vào Redis ZSET (profile_crawl_queue).
+    - Mã mới: Thêm vào với Score = 0 (Ưu tiên làm ngay).
+    - Mã cũ: Giữ nguyên Score (Để bảo toàn lịch sử crawl).
+    """
+    try:
+        # 1. Load sectors.json
+        sector_map = load_symbol_sector_map() # Hàm này đã có trong worker.py
+        if not sector_map:
+            log.warning(f"[{INSTANCE_ID}] [SYNC] sectors.json rỗng hoặc lỗi.")
+            return
+
+        r = ensure_redis_client()
+        if not r: return
+
+        pipeline = r.pipeline()
+        count_new = 0
+        
+        # 2. Thêm vào ZSET với chế độ NX (Only if Not Exist)
+        for symbol in sector_map.keys():
+            # ZADD key nx=True score=0 member=symbol
+            # nx=True nghĩa là chỉ thêm nếu chưa có, nếu có rồi thì không sửa Score
+            pipeline.zadd("profile_crawl_queue", {symbol: 0}, nx=True)
+            count_new += 1
+            
+        results = pipeline.execute()
+        added = sum(1 for res in results if res) # Đếm số mã thực sự được thêm mới
+        
+        log.info(f"[{INSTANCE_ID}] [SYNC] Đã đồng bộ {len(sector_map)} mã vào Queue. Thêm mới: {added} mã.")
+
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] [SYNC] Lỗi đồng bộ sectors: {e}")
+
+
+
 # ==============================================
 # TIN TỨC (RSS)
 # ==============================================
@@ -5304,6 +5433,21 @@ async def process_profile_for_user(chat_id, symbol, loading_msg_id=None):
         # 2. Lưu Cache
         save_profile_to_redis(cache_key, json_text, source="on_demand")
 
+        # --- [MỚI] 3. Cập nhật Queue Crawler ---
+        # Để báo cho Crawler biết mã này vừa mới được làm xong, không cần làm lại nữa.
+        try:
+            r = ensure_redis_client()
+            if r:
+                vn_tz = pytz.timezone(TIMEZONE)
+                now_ts = datetime.datetime.now(vn_tz).timestamp()
+                
+                # Cập nhật Score = NOW
+                r.zadd("profile_crawl_queue", {sym: now_ts})
+                # log.info(f"[{INSTANCE_ID}] Đã update ZSET cho {sym} từ yêu cầu user.")
+        except Exception as e:
+            log.error(f"Lỗi update ZSET on-demand {sym}: {e}")
+        # ---------------------------------------
+
         # 3. Tạo Web App Link
         web_url = f"{BASE_URL}/info/{sym}?chat_id={chat_id}"
         
@@ -5606,6 +5750,12 @@ async def run_worker_runtime():
     scheduler.start()
     log.info("✅ APScheduler đã kích hoạt các tác vụ định kỳ.")
     
+    # 1. Chạy Sync 1 lần lúc khởi động
+    try:
+        await asyncio.to_thread(sync_sectors_to_redis)
+    except Exception as e:
+        log.error(f"Sync Sector Error: {e}")
+
     # Chạy song song các loop chính
     try:
         await asyncio.gather(
@@ -5616,6 +5766,7 @@ async def run_worker_runtime():
             market_monitor_alert_loop(),
             #-------------------------
             worker_inbound_loop(),
+            profile_crawler_loop(),
         )
     except asyncio.CancelledError:
         log.info(f"[{INSTANCE_ID}] Worker runtime cancelled. Shutting down gracefully...")
