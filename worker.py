@@ -73,9 +73,8 @@ from report_cache import (
     delete_report_from_redis,
 )
 from ai_knowledge import BOT_KNOWLEDGE_BASE
+from agent_tools import TOOL_MAPPING, AGENT_TOOLS_SCHEMA
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.redis import RedisJobStore
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -695,6 +694,164 @@ def write_temp_json_file(filename: str, payload: dict | list | None) -> str | No
         log.error(f"Write temp JSON error ({filename}): {exc}")
         return None
 
+
+async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
+    """
+    Agent Loop: ReAct (Reason + Act)
+    Tích hợp: Status Update, Hard Limit, Redis Memory, Token Tracking & Force Answer.
+    """
+    log.info(f"[{INSTANCE_ID}] 🤖 Agent Start: {chat_id} - '{user_query}'")
+    
+    # --- CẤU HÌNH & BIẾN ĐẾM ---
+    MAX_STEPS = 10
+    MEMORY_KEY = f"agent:memory:{chat_id}"
+    MEMORY_LIMIT = 10 
+    
+    total_requests = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+    
+    # 1. Lấy Lịch sử Chat
+    history_context = ""
+    if r_client:
+        items = r_client.lrange(MEMORY_KEY, 0, -1)
+        if items:
+            history_context = "\n".join([item for item in items])
+
+    # 2. System Prompt (Giữ nguyên)
+    system_prompt = f"""
+Bạn là StockBot Agent - Trợ lý đầu tư thông minh.
+    
+--- KIẾN THỨC CỐT LÕI (Ưu tiên số 1) ---
+{BOT_KNOWLEDGE_BASE}
+
+--- CÔNG CỤ (Ưu tiên số 2) ---
+Sử dụng các tool sau để lấy dữ liệu thực tế:
+{json.dumps(AGENT_TOOLS_SCHEMA, ensure_ascii=False)}
+
+--- QUY TRÌNH SUY LUẬN ---
+1. Ưu tiên trả lời ngay nếu có trong kiến thức cốt lõi.
+2. Gọi tool nếu cần dữ liệu realtime (Giá, P/E, Hồ sơ).
+
+--- ĐỊNH DẠNG OUTPUT (BẮT BUỘC JSON) ---
+Trả về duy nhất 1 block JSON:
+
+TRƯỜNG HỢP 1: CẦN GỌI TOOL
+{{
+  "action": "call_tool",
+  "tool_name": "ten_tool",
+  "tool_args": {{ "arg1": "value1" }},
+  "thought": "Viết 1 câu cực ngắn (dưới 10 từ) mô tả hành động cho người dùng."
+}}
+
+TRƯỜNG HỢP 2: TRẢ LỜI USER (KẾT THÚC)
+{{
+  "action": "final_answer",
+  "content": "Câu trả lời hoàn chỉnh (Markdown)..."
+}}
+"""
+    
+    current_context = f"{system_prompt}\n\nLỊCH SỬ CHAT:\n{history_context}\n\nUser: {user_query}\n"
+
+    # --- 3. EXECUTION LOOP ---
+    final_response = "Xin lỗi, hệ thống đang bận. Vui lòng thử lại sau." # Fallback message
+    
+    for step in range(MAX_STEPS):
+        # --- [NEW] FORCE FINAL ANSWER Ở BƯỚC CUỐI ---
+        if step == MAX_STEPS - 1:
+            log.warning(f"[{INSTANCE_ID}] Agent: Đã đến bước cuối ({step}). Ép trả lời.")
+            current_context += (
+                "\nSystem ALERT: Đây là bước suy luận cuối cùng cho phép. "
+                "Bạn BẮT BUỘC phải tổng hợp tất cả thông tin đã có để trả lời user (final_answer) NGAY LẬP TỨC. "
+                "KHÔNG được gọi thêm tool nào nữa."
+            )
+        # ---------------------------------------------
+
+        try:
+            # A. Gọi Gemini
+            json_response, usage = await asyncio.to_thread(
+                call_gemini_safe,
+                model_id="gemini-2.5-flash", 
+                contents=current_context,
+                config={'response_mime_type': 'application/json'},
+                return_usage=True 
+            )
+            
+            total_requests += 1
+            if usage:
+                total_input_tokens += usage.prompt_token_count
+                total_output_tokens += usage.candidates_token_count
+            
+            if not json_response:
+                break
+
+            # B. Parse JSON
+            try:
+                plan = json.loads(extract_json_from_text(json_response))
+            except json.JSONDecodeError:
+                current_context += f"\nSystem: Output lỗi JSON. Thử lại.\n"
+                continue
+
+            action = plan.get("action")
+            
+            # C. Xử lý hành động
+            if action == "final_answer":
+                final_response = plan.get("content", "")
+                break 
+            
+            elif action == "call_tool":
+                # [NEW] Chặn gọi tool ở bước cuối nếu AI vẫn "cố chấp"
+                if step == MAX_STEPS - 1:
+                    final_response = f"Tôi đã tìm được một số thông tin nhưng chưa đầy đủ. Dựa trên dữ liệu hiện có: {plan.get('thought', '')}"
+                    break
+
+                tool_name = plan.get("tool_name")
+                tool_args = plan.get("tool_args", {})
+                thought = plan.get("thought", "Đang xử lý...")
+                
+                # Status Update
+                status_text = f"🤖 {thought}" 
+                push_telegram_msg(chat_id, status_text, edit_id=loading_msg_id)
+                
+                # Gọi Tool
+                if tool_name in TOOL_MAPPING:
+                    tool_func = TOOL_MAPPING[tool_name]
+                    try:
+                        tool_result = await tool_func(**tool_args)
+                    except Exception as e:
+                        tool_result = json.dumps({"error": str(e)})
+                    
+                    current_context += f"\nAssistant (Thought): {thought}\nAssistant (Call Tool): {tool_name}({tool_args})\nSystem (Tool Output): {tool_result}\n"
+                else:
+                    current_context += f"\nSystem: Không tìm thấy tool tên '{tool_name}'.\n"
+            
+            else:
+                current_context += f"\nSystem: Action '{action}' không hợp lệ.\n"
+
+        except Exception as e:
+            log.error(f"[{INSTANCE_ID}] Agent Loop Error step {step}: {e}")
+            break
+
+    # --- 4. KẾT THÚC ---
+    stats_footer = (
+        f"\n\n`⚙️ Specs: {total_requests} steps | "
+        f"In: {total_input_tokens} | Out: {total_output_tokens}`"
+    )
+    final_msg_with_stats = final_response + stats_footer
+
+    kb = default_ai_reply_markup()
+    push_telegram_msg(
+        chat_id=chat_id,
+        text=final_msg_with_stats,
+        reply_markup=kb,
+        edit_id=loading_msg_id
+    )
+    
+    if r_client:
+        r_client.rpush(MEMORY_KEY, f"User: {user_query}")
+        r_client.rpush(MEMORY_KEY, f"Bot: {final_response}")
+        r_client.ltrim(MEMORY_KEY, -MEMORY_LIMIT, -1)
+        r_client.expire(MEMORY_KEY, 3600)
 
 def _get_cached_tech_summary(symbol: str) -> str | None:
     entry = _tech_alert_summary_cache.get(symbol)
@@ -2139,6 +2296,7 @@ Bot:"""
             edit_id=loading_msg_id,
             reply_markup=default_ai_reply_markup(),
         )
+
 async def worker_inbound_loop():
     """[WORKER] Lắng nghe lệnh từ Gateway (ví dụ: User gõ /report)."""
     global r_client
@@ -2236,7 +2394,8 @@ async def worker_inbound_loop():
                             chat_id = payload.get('chat_id')
                             question = payload.get('question')
                             loading_id = payload.get('loading_msg_id')
-                            asyncio.create_task(process_ask_ai(chat_id, question, loading_id))
+                            # Chuyển sang dùng Agent Autonomous
+                            asyncio.create_task(run_autonomous_agent(chat_id, question, loading_id))
 
                     except Exception as e:
                         log.error(f"Inbound Error: {e}")
