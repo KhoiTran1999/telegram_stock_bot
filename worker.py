@@ -3481,13 +3481,14 @@ async def summarize_daily_news_with_ai(news_list):
 
     # Chuẩn bị prompt
     news_text = ""
-    for i, item in enumerate(news_list[:40]): # Limit 40 tin để không quá dài
-        news_text += f"- [{item['source']}] {item['title']}\n"
+    for i, item in enumerate(news_list[:200]): 
+        # [FIX] Kèm Link vào dòng tin để AI có thể trích xuất lại
+        news_text += f"- ID_{i}: [{item['source']}] {item['title']} || Link: {item['link']}\n"
 
     prompt = f"""
 Bạn là trợ lý tài chính thông minh. Hãy đọc danh sách tin tức chứng khoán Việt Nam dưới đây và thực hiện 2 nhiệm vụ:
 
-1. **TIÊU ĐIỂM**: Chọn ra 3-5 tin quan trọng nhất, có tác động lớn đến thị trường hoặc các mã cổ phiếu lớn. Viết lại ngắn gọn (dưới 15 từ/tin).
+1. **TIÊU ĐIỂM**: Chọn ra 10 tin vĩ mô và 10 tin doanh nghiệp quan trọng nhất, có tác động lớn đến thị trường hoặc các mã cổ phiếu lớn. Viết lại ngắn gọn (dưới 15 từ/tin).
 2. **NHẬN ĐỊNH**: Viết một đoạn bình luận ngắn (dưới 50 từ) tổng hợp tâm lý thị trường dựa trên các tin này (Tích cực/Tiêu cực/Thận trọng...).
 
 DANH SÁCH TIN:
@@ -3981,7 +3982,7 @@ async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_n
         
         # 2. Fill up (Limit total spec news to 60)
         final_spec = my_spec[:]
-        needed = 60 - len(final_spec)
+        needed = 200 - len(final_spec)
         if needed > 0:
             final_spec.extend(other_spec[:needed])
             
