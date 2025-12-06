@@ -769,7 +769,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             
             for api_key in rotated_keys:
                 key_suffix = api_key[-5:] if api_key else "NONE"
-                log.info(f"[{INSTANCE_ID}] 🔑 Agent đang thử Key ...{key_suffix}")  # <--- LOG TRACKING
+                log.info(f"[{INSTANCE_ID}] 🔑 Agent đang thử Model: {model_id} | Key ...{key_suffix}")
                 
                 try:
                     # Tạo client mới cho mỗi key (QUAN TRỌNG: Client không cố định)
@@ -883,6 +883,9 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             elif name == "get_stock_events": friendly_names.append("Lịch sự kiện")
             elif name == "get_stock_news": friendly_names.append("Tin tức")
             elif name == "get_industry_peers": friendly_names.append("So sánh ngành")
+            elif name == "get_macro_data": friendly_names.append("Dữ liệu vĩ mô")
+            elif name == "get_technical_indicators": friendly_names.append("Phân tích kỹ thuật")
+            elif name == "get_market_index": friendly_names.append("Chỉ số thị trường Vninex, vn30")
             else: friendly_names.append(name)
 
         tool_display_str = ", ".join(set(friendly_names))
@@ -2339,78 +2342,6 @@ def next_session_start(now):
         return at(next_d, 9, 15)
         
     return now + datetime.timedelta(seconds=60)
-
-async def process_ask_ai(chat_id, question, loading_msg_id=None):
-    """Xử lý câu hỏi CSKH bằng Gemini Flash Lite với bộ nhớ hội thoại."""
-    log.info(f"[{INSTANCE_ID}] 🤖 AI CSKH: {chat_id} - '{question}'")
-
-    try:
-        kb = default_ai_reply_markup()
-
-        # 1. Lấy lịch sử từ Redis (Context Memory)
-        history_key = f"ai_history:{chat_id}"
-        history_context = ""
-        if r_client:
-            items = r_client.lrange(history_key, -10, -1)
-            if items:
-                history_context = "\n".join(items)
-
-        # 2. Tạo Prompt (System + History + User)
-        full_prompt = f"""{STATIC_KNOWLEDGE_BASE}
-
----
-LỊCH SỬ HỘI THOẠI (Context):
-{history_context}
-
-User: {question}
-Bot:"""
-
-        # 3. Gọi Gemini
-        answer, usage = await asyncio.to_thread(
-            call_gemini_safe,
-            model_id="gemini-2.5-flash-lite",
-            contents=full_prompt,
-            return_usage=True,
-        )
-
-        if not answer:
-            answer = "😅 Xin lỗi, hiện tại mình đang bị quá tải. Bạn vui lòng thử lại sau nhé."
-
-        # [LOG ADMIN]
-        if usage and (chat_id == ADMIN_ID):
-            try:
-                in_tok = usage.prompt_token_count
-                out_tok = usage.candidates_token_count
-                total = usage.total_token_count
-                answer += f"\n\n`[DEBUG] In: {in_tok} | Out: {out_tok} | Total: {total}`"
-            except Exception:
-                pass
-
-        # 4. Lưu hội thoại mới vào Redis (để AI nhớ cho lần sau)
-        if r_client:
-            r_client.rpush(history_key, f"User: {question}")
-            clean_answer = answer.split("\n\n`[DEBUG]")[0]
-            history_text = remove_markdown(clean_answer)
-            r_client.rpush(history_key, f"Bot: {history_text}")
-            r_client.ltrim(history_key, -20, -1)
-            r_client.expire(history_key, 86400)
-
-        # 5. Gửi kết quả về Gateway
-        push_telegram_msg(
-            chat_id=chat_id,
-            text=answer,
-            reply_markup=kb,
-            edit_id=loading_msg_id,
-        )
-
-    except Exception as e:
-        log.error(f"AI CSKH Error: {e}")
-        push_telegram_msg(
-            chat_id=chat_id,
-            text="⚠️ Lỗi hệ thống AI. Vui lòng thử lại sau.",
-            edit_id=loading_msg_id,
-            reply_markup=default_ai_reply_markup(),
-        )
 
 async def worker_inbound_loop():
     """[WORKER] Lắng nghe lệnh từ Gateway (ví dụ: User gõ /report)."""
