@@ -1017,7 +1017,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     # GIAI ĐOẠN 3: MANAGER TRẢ LỜI (BRAIN - PRO)
     # ==========================================================================
     try:
-        push_telegram_msg(chat_id, "💡 **Manager:** Đang soạn câu trả lời cuối cùng...", edit_id=loading_msg_id)
+        push_telegram_msg(chat_id, "💡 *Người Canh Bảng 🧑‍💻:* Đang soạn câu trả lời cuối cùng...", edit_id=loading_msg_id)
         
         final_system_prompt = get_dynamic_system_prompt()
         
