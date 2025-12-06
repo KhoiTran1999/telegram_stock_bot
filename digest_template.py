@@ -2271,8 +2271,8 @@ ADMIN_MOBILE_TEMPLATE = r"""
                         <div class="relative">
                             <i class="fa-solid fa-magnifying-glass text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 text-xs"></i>
                             <input type="text" x-model="personalizationSearch" @input="personalizationPage = 1"
-                                   class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-200"
-                                   placeholder="Tìm mã (VD: HPG)" />
+                                class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-200"
+                                placeholder="Tìm mã, ngành, user, ngày (VD: 15/10)..." />
                         </div>
                     </div>
                     <div class="flex bg-slate-100 p-1 rounded-lg mb-3">
@@ -2967,27 +2967,51 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     });
                 },
                 get personalizationFilteredNotesList() {
+                    // 1. Kiểm tra dữ liệu đầu vào
                     if (!Array.isArray(this.personalizationNotes)) return [];
                     
-                    const query = (this.personalizationSearch || '').trim().toUpperCase();
+                    // 2. Chuẩn bị từ khóa tìm kiếm (bỏ khoảng trắng thừa, chuyển thường)
+                    const rawQuery = (this.personalizationSearch || '').trim();
+                    const query = rawQuery.toLowerCase();
                     const now = new Date();
 
+                    // 3. Thực hiện lọc
                     return this.personalizationNotes.filter(item => {
-                        // 1. Lọc theo Tab (Hiệu lực / Hết hạn)
+                        // --- A. LỌC THEO TRẠNG THÁI (Active / Expired) - Giữ nguyên logic cũ ---
                         const expiry = item.expires_at ? new Date(item.expires_at) : null;
-                        const isExpired = expiry && expiry < now; // Có hạn và đã qua giờ hiện tại
+                        const isExpired = expiry && expiry < now;
 
                         if (this.dataFilter === 'active' && isExpired) return false;
                         if (this.dataFilter === 'expired' && !isExpired) return false;
 
-                        // 2. Lọc theo Từ khóa tìm kiếm (như cũ)
-                        if (!query) return true;
+                        // --- B. LỌC THEO TỪ KHÓA (SMART SEARCH) ---
+                        if (!query) return true; // Không nhập gì thì lấy hết
+
+                        // B1. Tìm theo Mã / Vĩ mô / Ngành
+                        const symbol = (item.symbol || '').toLowerCase();
+                        if (symbol.includes(query)) return true;
                         
-                        const symbol = (item.symbol || '').toUpperCase();
-                        const note = (item.note || '').toUpperCase();
-                        if (query === 'MACRO' || query === 'VIMO') return symbol === 'VN_MACRO';
+                        // Hỗ trợ tìm 'macro' hoặc 'vi mo' đều ra VN_MACRO
+                        if (symbol === 'vn_macro' && ('vĩ mô'.includes(query) || 'macro'.includes(query))) return true;
+
+                        // B2. Tìm theo Nội dung ghi chú
+                        const note = (item.note || '').toLowerCase();
+                        if (note.includes(query)) return true;
+
+                        // B3. Tìm theo Người đóng góp (Tên hoặc ID)
+                        const contributor = (item.contributor_name || '').toLowerCase();
+                        const contributorId = String(item.contributor_id || '');
+                        if (contributor.includes(query) || contributorId.includes(query)) return true;
+
+                        // B4. Tìm theo Ngày tháng (Tạo hoặc Hết hạn)
+                        // Sử dụng hàm formatDateShort có sẵn để chuyển ISO sang dạng "DD/MM HH:MM"
+                        const createdStr = this.formatDateShort(item.created_at).toLowerCase(); 
+                        const updatedStr = this.formatDateShort(item.updated_at).toLowerCase();
                         
-                        return symbol.includes(query) || note.includes(query);
+                        // Cho phép tìm theo ngày (VD: "20/10")
+                        if (createdStr.includes(query) || updatedStr.includes(query)) return true;
+
+                        return false; // Không khớp tiêu chí nào
                     });
                 },
                 get personalizationTotalPages() {
