@@ -756,6 +756,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     Hierarchical Agent Architecture (Manager-Worker Pattern).
     - Manager (Brain): gemini-2.5-pro -> Lập kế hoạch & Trả lời cuối cùng.
     - Worker (Doer): gemini-2.0-flash-lite -> Thực thi Tools & Tổng hợp dữ liệu thô.
+    - Có cơ chế Fast-Track (Trả lời nhanh).
     """
     log.info(f"[{INSTANCE_ID}] 🤖 Hierarchical Agent Start: {chat_id}")
     
@@ -767,6 +768,15 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             stats["requests"] += 1
             stats["input_tokens"] += response.usage_metadata.prompt_token_count
             stats["output_tokens"] += response.usage_metadata.candidates_token_count
+
+    # Hàm helper để tạo footer thống kê (Chỉ Admin mới thấy)
+    def get_admin_stats_footer():
+        if chat_id == ADMIN_ID:
+            return (
+                f"\n\n`⚙️ Specs: {stats['requests']} calls | "
+                f"In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
+            )
+        return ""
 
     # --- HELPER: GỌI GEMINI AN TOÀN (RETRY & ROTATE KEY & LOGGING) ---
     async def safe_generate_content(model_id, contents, config=None):
@@ -833,22 +843,36 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         
         # Prompt cho Manager: Chỉ giao việc, không làm
         manager_prompt = f"""
-        Bạn là Manager Agent thông minh.
+        Bạn là Manager Agent thông minh của Bot Chứng khoán.
         User Query: "{user_query}"
 
+        DƯỚI ĐÂY LÀ KIẾN THỨC NỀN TẢNG CỦA BẠN (FAQ/Help):
+        {STATIC_KNOWLEDGE_BASE}
+
+        DANH SÁCH CÔNG CỤ (TOOLS) CÓ THỂ DÙNG (Chỉ dùng khi cần dữ liệu realtime):
         {tool_menu}
         
+        NHIỆM VỤ: Phân tích yêu cầu và chọn 1 trong 2 hành động:
+
+        TRƯỜNG HỢP 1: TRẢ LỜI NGAY (Fast Track)
+        Nếu câu hỏi là:
+        - Chào hỏi xã giao (Hello, Hi...).
+        - Hỏi về tính năng bot, cách dùng lệnh (/add, /start...), giá gói cước.
+        - Các câu hỏi nằm trong KIẾN THỨC NỀN TẢNG ở trên.
+        - Câu hỏi không liên quan đến dữ liệu chứng khoán/vĩ mô cụ thể.
+        => Hãy trả lời trực tiếp.
+        => OUTPUT FORMAT: Bắt đầu bằng từ khóa "ANSWER:" theo sau là câu trả lời.
+        Lưu ý: Câu trả lời phải ngắn gọn, súc tích, đúng trọng tâm.
+        
+        TRƯỜNG HỢP 2: GỌI WORKER (Data Fetch)
         Nhiệm vụ: Phân tích yêu cầu và chỉ đạo nhân viên Worker (Researcher) lấy dữ liệu cụ thể.
         Hãy viết một "Lệnh làm việc" (Instruction) rõ ràng, chi tiết:
         - Cần lấy mã cổ phiếu nào? Chỉ số nào (P/E, giá, chart...)?
         - Cần tin tức gì? Vĩ mô hay doanh nghiệp?
         - Cần báo cáo tài chính hay hồ sơ công ty?
-        
-        OUTPUT CHỈ LÀ NỘI DUNG LỆNH, KHÔNG GIẢI THÍCH THÊM.
+        => OUTPUT FORMAT: Bắt đầu bằng từ khóa "ACTION:" theo sau là lệnh chi tiết.
         Ví dụ: "Hãy lấy giá hiện tại, P/E trung bình ngành và tin tức mới nhất của HPG."
         """
-        
-        push_telegram_msg(chat_id, "👨‍💼 **Manager:** Đang phân tích yêu cầu & giao việc...", edit_id=loading_msg_id)
         
         resp_manager = await safe_generate_content(
             model_id=MODEL_BRAIN, # gemini-2.5-pro
@@ -856,10 +880,23 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             config={"system_instruction": sys_instruction}
         )
         update_stats(resp_manager)
-        worker_instruction = resp_manager.candidates[0].content.parts[0].text.strip()
+        manager_output = resp_manager.candidates[0].content.parts[0].text.strip()
         
-        log.info(f"[{INSTANCE_ID}] 📝 Instruction: {worker_instruction}")
-        push_telegram_msg(chat_id, f"📋 **Nhiệm vụ:** {worker_instruction}\n🔍 **Worker:** Đang thực thi...", edit_id=loading_msg_id)
+        log.info(f"[{INSTANCE_ID}] 📝 Instruction: {manager_output}")
+        # --- [SỬA ĐỔI] LOGIC RẼ NHÁNH ---
+        
+        # NHÁNH 1: TRẢ LỜI NGAY (FAST TRACK)
+        if manager_output.startswith("ANSWER:") or "ACTION:" not in manager_output:
+            final_answer = manager_output.replace("ANSWER:", "").strip()
+            
+            # Gửi ngay lập tức và KẾT THÚC
+            kb = default_ai_reply_markup()
+            push_telegram_msg(chat_id, final_answer + get_admin_stats_footer(), reply_markup=kb, edit_id=loading_msg_id)
+            return  # <--- THOÁT HÀM NGAY TẠI ĐÂY
+
+        # NHÁNH 2: CẦN DỮ LIỆU -> TIẾP TỤC GỌI WORKER
+        worker_instruction = manager_output.replace("ACTION:", "").strip()
+        push_telegram_msg(chat_id, f"🔍 **Người Canh Bảng 🧑‍💻 đang tra cứu dữ liệu...**", edit_id=loading_msg_id)
 
     except Exception as e:
         log.error(f"Manager Error: {e}")
@@ -881,7 +918,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         "temperature": 0.3 # Giữ nhiệt độ thấp để gọi tool chính xác
     }
 
-    MAX_LOOPS = 6
+    MAX_LOOPS = 10  # Giới hạn số vòng lặp của Worker
     refined_data = "Không thu thập được dữ liệu."
     
     for i in range(MAX_LOOPS):
@@ -909,7 +946,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
                 
             # Log cho user biết đang gọi tool gì (UX)
             tool_names = ", ".join([fc.name.replace("get_", "").replace("_", " ").title() for fc in current_calls])
-            push_telegram_msg(chat_id, f"🛠 **Worker:** Đang tra cứu {tool_names}...", edit_id=loading_msg_id)
+            push_telegram_msg(chat_id, f"🛠 **Người Canh Bảng 🧑‍💻:** Đang tra cứu {tool_names}...", edit_id=loading_msg_id)
             
             # 2.2 Thực thi Tool
             response_parts = []
@@ -944,7 +981,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     # GIAI ĐOẠN 2.5: WORKER TỔNG HỢP (SYNTHESIS)
     # ==========================================================================
     try:
-        push_telegram_msg(chat_id, "📝 **Worker:** Đang tổng hợp & làm sạch dữ liệu...", edit_id=loading_msg_id)
+        push_telegram_msg(chat_id, "📝 **Người Canh Bảng 🧑‍💻:** Đang tổng hợp & làm sạch dữ liệu...", edit_id=loading_msg_id)
         
         # Yêu cầu Worker tóm tắt lại toàn bộ quá trình tìm kiếm
         synthesis_prompt = f"""
@@ -1008,16 +1045,9 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         
         final_answer = resp_final.candidates[0].content.parts[0].text
         
-        # --- [STATS] CẬP NHẬT FOOTER ---
-        stats_footer = (
-            f"\n\n`⚙️ Specs: {stats['requests']} calls | "
-            f"In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
-        )
-        # -------------------------------
-        
         # Gửi kết quả cuối cùng
         kb = default_ai_reply_markup()
-        push_telegram_msg(chat_id, final_answer + stats_footer, reply_markup=kb, edit_id=loading_msg_id)
+        push_telegram_msg(chat_id, final_answer + get_admin_stats_footer(), reply_markup=kb, edit_id=loading_msg_id)
 
     except Exception as e:
         log.error(f"Final Answer Error: {e}")
