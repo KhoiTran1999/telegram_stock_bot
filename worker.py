@@ -733,6 +733,19 @@ def write_temp_json_file(filename: str, payload: dict | list | None) -> str | No
         log.error(f"Write temp JSON error ({filename}): {exc}")
         return None
 
+def get_tool_descriptions_for_brain():
+    """
+    Tạo danh sách mô tả ngắn gọn các công cụ cho Brain (Manager).
+    Chỉ lấy Tên và Mô tả, bỏ qua chi tiết tham số kỹ thuật.
+    """
+    lines = ["Dưới đây là danh sách các CÔNG CỤ (Tools) mà Worker có thể sử dụng:"]
+    for tool in AGENT_TOOLS_SCHEMA:
+        name = tool.get("name")
+        desc = tool.get("description", "")
+        # Format: - tool_name: mô tả chức năng
+        lines.append(f"- {name}: {desc}")
+    
+    return "\n".join(lines)
 
 # Định nghĩa Model ID (Bạn có thể thay đổi tên model thực tế tại đây)
 MODEL_BRAIN = "gemini-2.5-pro"      # Dùng cho bước đầu và cuối (2.5-pro nếu đã có access)
@@ -740,17 +753,14 @@ MODEL_WORKER = "gemini-2.0-flash-lite" # Dùng cho các bước tool (2.0-flash-
 
 async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     """
-    Agent Loop tối ưu: Pro -> Lite (Loop) -> Pro.
-    [UPDATED] Tích hợp cơ chế Retry & Xoay vòng Key + Tracking Log.
+    Hierarchical Agent Architecture (Manager-Worker Pattern).
+    - Manager (Brain): gemini-2.5-pro -> Lập kế hoạch & Trả lời cuối cùng.
+    - Worker (Doer): gemini-2.0-flash-lite -> Thực thi Tools & Tổng hợp dữ liệu thô.
     """
-    log.info(f"[{INSTANCE_ID}] 🤖 Hybrid Agent Start: {chat_id}")
+    log.info(f"[{INSTANCE_ID}] 🤖 Hierarchical Agent Start: {chat_id}")
     
-    # --- KHỞI TẠO BIẾN THỐNG KÊ ---
-    stats = {
-        "requests": 0,
-        "input_tokens": 0,
-        "output_tokens": 0
-    }
+    # Khởi tạo thống kê Token
+    stats = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
 
     def update_stats(response):
         if response and response.usage_metadata:
@@ -758,21 +768,23 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             stats["input_tokens"] += response.usage_metadata.prompt_token_count
             stats["output_tokens"] += response.usage_metadata.candidates_token_count
 
-    # --- [HÀM HELPER QUAN TRỌNG] GỌI GEMINI CÓ RETRY & LOG ---
-    async def safe_generate_content(model_id, contents, config):
+    # --- HELPER: GỌI GEMINI AN TOÀN (RETRY & ROTATE KEY & LOGGING) ---
+    async def safe_generate_content(model_id, contents, config=None):
         last_error = None
         MAX_RETRIES = 3
         
         for attempt in range(MAX_RETRIES):
             # Lấy danh sách key xoay vòng
-            rotated_keys = _get_rotated_gemini_keys()
+            rotated_keys = _get_rotated_gemini_keys() # Hàm có sẵn trong worker.py
             
             for api_key in rotated_keys:
+                # --- [LOGGING] Mới thêm vào ---
                 key_suffix = api_key[-5:] if api_key else "NONE"
                 log.info(f"[{INSTANCE_ID}] 🔑 Agent đang thử Model: {model_id} | Key ...{key_suffix}")
+                # -----------------------------
                 
                 try:
-                    # Tạo client mới cho mỗi key (QUAN TRỌNG: Client không cố định)
+                    # Tạo client mới cho mỗi key
                     client = genai.Client(api_key=api_key)
                     
                     # Gọi API (chạy trong thread để không block)
@@ -783,8 +795,10 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
                         config=config
                     )
                     
-                    # Nếu chạy đến đây là thành công
-                    log.info(f"[{INSTANCE_ID}] ✅ Agent gọi thành công với Key ...{key_suffix}") 
+                    # --- [LOGGING] Thành công ---
+                    log.info(f"[{INSTANCE_ID}] ✅ Agent gọi thành công với Key ...{key_suffix}")
+                    # ----------------------------
+                    
                     return response
 
                 except Exception as e:
@@ -807,169 +821,207 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
 
         raise last_error or RuntimeError("All Gemini keys failed in Agent.")
 
-    # 1. Setup Context
-    sys_instruction = get_dynamic_system_prompt() #
-    chat_history = [
-        Content(role="user", parts=[Part(text=user_query)])
-    ]
-    
-    run_config = {
-        "tools": [{"function_declarations": AGENT_TOOLS_SCHEMA}], #
-        "system_instruction": sys_instruction,
-        "temperature": 0.5 
-    }
-
     # ==========================================================================
-    # BƯỚC 1: LẬP KẾ HOẠCH (BRAIN - PRO)
+    # GIAI ĐOẠN 1: MANAGER LẬP KẾ HOẠCH (BRAIN - PRO)
     # ==========================================================================
     try:
-        # Thay thế client.models.generate_content bằng hàm safe_generate_content
-        response = await safe_generate_content(
-            model_id=MODEL_BRAIN, #
-            contents=chat_history,
-            config=run_config
+        # Context thời gian thực
+        sys_instruction = get_dynamic_system_prompt()
+
+        # Lấy danh sách tool dạng tóm tắt
+        tool_menu = get_tool_descriptions_for_brain()
+        
+        # Prompt cho Manager: Chỉ giao việc, không làm
+        manager_prompt = f"""
+        Bạn là Manager Agent thông minh.
+        User Query: "{user_query}"
+
+        {tool_menu}
+        
+        Nhiệm vụ: Phân tích yêu cầu và chỉ đạo nhân viên Worker (Researcher) lấy dữ liệu cụ thể.
+        Hãy viết một "Lệnh làm việc" (Instruction) rõ ràng, chi tiết:
+        - Cần lấy mã cổ phiếu nào? Chỉ số nào (P/E, giá, chart...)?
+        - Cần tin tức gì? Vĩ mô hay doanh nghiệp?
+        - Cần báo cáo tài chính hay hồ sơ công ty?
+        
+        OUTPUT CHỈ LÀ NỘI DUNG LỆNH, KHÔNG GIẢI THÍCH THÊM.
+        Ví dụ: "Hãy lấy giá hiện tại, P/E trung bình ngành và tin tức mới nhất của HPG."
+        """
+        
+        push_telegram_msg(chat_id, "👨‍💼 **Manager:** Đang phân tích yêu cầu & giao việc...", edit_id=loading_msg_id)
+        
+        resp_manager = await safe_generate_content(
+            model_id=MODEL_BRAIN, # gemini-2.5-pro
+            contents=manager_prompt,
+            config={"system_instruction": sys_instruction}
         )
-        update_stats(response)
+        update_stats(resp_manager)
+        worker_instruction = resp_manager.candidates[0].content.parts[0].text.strip()
         
-        ai_content = response.candidates[0].content
-        chat_history.append(ai_content)
-        
-        # Kiểm tra Function Call
-        has_tool_call = False
-        for part in ai_content.parts:
-            if part.function_call:
-                has_tool_call = True
-                break
-        
-        if not has_tool_call:
-            text_resp = "".join([p.text or "" for p in ai_content.parts])
-            footer = f"\n\n`⚙️ Stats: {stats['requests']} reqs | In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
-            push_telegram_msg(chat_id, text_resp + footer, edit_id=loading_msg_id) #
-            return
-            
-        text_preview = next((p.text for p in ai_content.parts if p.text), None)
-        if text_preview:
-            push_telegram_msg(chat_id, f"🤖 {text_preview}", edit_id=loading_msg_id) #
+        log.info(f"[{INSTANCE_ID}] 📝 Instruction: {worker_instruction}")
+        push_telegram_msg(chat_id, f"📋 **Nhiệm vụ:** {worker_instruction}\n🔍 **Worker:** Đang thực thi...", edit_id=loading_msg_id)
 
     except Exception as e:
-        log.error(f"Step 1 Error: {e}")
-        push_telegram_msg(chat_id, "⚠️ Lỗi khởi động AI (Hết quota hoặc lỗi mạng).", edit_id=loading_msg_id) #
+        log.error(f"Manager Error: {e}")
+        push_telegram_msg(chat_id, "⚠️ Lỗi khi lập kế hoạch.", edit_id=loading_msg_id)
         return
 
     # ==========================================================================
-    # BƯỚC 2: THỰC THI (WORKER - LITE)
-    # ==========================================================================
-    MAX_LOOPS = 6
-    
-    for i in range(MAX_LOOPS):
-        last_msg = chat_history[-1]
-        
-        current_calls = []
-        for part in last_msg.parts:
-            if part.function_call:
-                current_calls.append(part.function_call)
-        
-        if not current_calls:
-            break
-            
-        # Mapping tên tiếng Việt
-        friendly_names = []
-        for fc in current_calls:
-            name = fc.name
-            if name == "get_market_price": friendly_names.append("Giá thị trường")
-            elif name == "get_fundamentals": friendly_names.append("Định giá P/E P/B")
-            elif name == "get_company_profile": friendly_names.append("Hồ sơ công ty")
-            elif name == "get_financial_report": friendly_names.append("Báo cáo tài chính")
-            elif name == "get_stock_events": friendly_names.append("Lịch sự kiện")
-            elif name == "get_stock_news": friendly_names.append("Tin tức")
-            elif name == "get_industry_peers": friendly_names.append("So sánh ngành")
-            elif name == "get_macro_data": friendly_names.append("Dữ liệu vĩ mô")
-            elif name == "get_technical_indicators": friendly_names.append("Phân tích kỹ thuật")
-            elif name == "get_market_index": friendly_names.append("Chỉ số thị trường Vninex, vn30")
-            else: friendly_names.append(name)
-
-        tool_display_str = ", ".join(set(friendly_names))
-        push_telegram_msg(chat_id, f"🔍 Đang tra cứu: {tool_display_str}...", edit_id=loading_msg_id) #
-        
-        # Thực thi Tools
-        response_parts = []
-        for fc in current_calls:
-            tool_name = fc.name
-            tool_args = fc.args
-            
-            tool_result = "Error: Tool not found"
-            if tool_name in TOOL_MAPPING: #
-                try:
-                    args_dict = {k: v for k, v in tool_args.items()}
-                    tool_result = await TOOL_MAPPING[tool_name](**args_dict) #
-                except Exception as e:
-                    tool_result = f"Error executing tool: {str(e)}"
-            
-            response_parts.append(
-                Part(function_response=FunctionResponse(
-                    name=tool_name,
-                    response={"result": tool_result} 
-                ))
-            )
-        
-        chat_history.append(Content(role="user", parts=response_parts))
-        
-        # Gửi lại cho Model Worker (Lite) -> Dùng hàm Safe
-        try:
-            response = await safe_generate_content(
-                model_id=MODEL_WORKER, #
-                contents=chat_history,
-                config=run_config
-            )
-            update_stats(response)
-            chat_history.append(response.candidates[0].content)
-        except Exception as e:
-            log.error(f"Agent Loop Error ({i}): {e}")
-            break
-
-    # ==========================================================================
-    # BƯỚC 3: TỔNG HỢP (BRAIN - PRO)
+    # GIAI ĐOẠN 2: WORKER THỰC THI & TỔNG HỢP (DOER - LITE)
     # ==========================================================================
     
-    last_msg = chat_history[-1]
-    has_pending_call = any(p.function_call for p in last_msg.parts)
-
-    if has_pending_call:
-        chat_history.pop()
-        final_prompt = "Đã hết lượt gọi công cụ. Hãy tổng hợp thông tin đã có để trả lời."
-    else:
-        final_prompt = "Dựa trên dữ liệu đã thu thập, hãy viết câu trả lời cuối cùng thật chi tiết."
-
-    chat_history.append(Content(role="user", parts=[Part(text=final_prompt)]))
-
-    final_config = {
-        "system_instruction": sys_instruction,
-        "temperature": 0.7
+    # Worker có context riêng, không lẫn với Manager
+    worker_history = [
+        Content(role="user", parts=[Part(text=f"NHIỆM VỤ CỦA BẠN: {worker_instruction}\nHãy sử dụng các công cụ được cung cấp để thu thập dữ liệu chính xác.")])
+    ]
+    
+    worker_config = {
+        "tools": [{"function_declarations": AGENT_TOOLS_SCHEMA}], # Import từ agent_tools.py
+        "system_instruction": "Bạn là Worker (Researcher) chăm chỉ. Nhiệm vụ: Gọi tool lấy dữ liệu thô, sau đó tổng hợp lại ngắn gọn, loại bỏ rác.",
+        "temperature": 0.3 # Giữ nhiệt độ thấp để gọi tool chính xác
     }
 
+    MAX_LOOPS = 6
+    refined_data = "Không thu thập được dữ liệu."
+    
+    for i in range(MAX_LOOPS):
+        try:
+            # 2.1 Worker suy nghĩ & gọi tool
+            response = await safe_generate_content(
+                model_id=MODEL_WORKER, # gemini-2.0-flash-lite
+                contents=worker_history,
+                config=worker_config
+            )
+            update_stats(response)
+            
+            ai_content = response.candidates[0].content
+            worker_history.append(ai_content)
+            
+            # Check function call
+            current_calls = []
+            for part in ai_content.parts:
+                if part.function_call:
+                    current_calls.append(part.function_call)
+            
+            # Nếu không gọi tool nữa -> Chuyển sang bước tổng hợp
+            if not current_calls:
+                break
+                
+            # Log cho user biết đang gọi tool gì (UX)
+            tool_names = ", ".join([fc.name.replace("get_", "").replace("_", " ").title() for fc in current_calls])
+            push_telegram_msg(chat_id, f"🛠 **Worker:** Đang tra cứu {tool_names}...", edit_id=loading_msg_id)
+            
+            # 2.2 Thực thi Tool
+            response_parts = []
+            for fc in current_calls:
+                tool_name = fc.name
+                tool_args = fc.args
+                
+                tool_result = "Error: Tool not found"
+                if tool_name in TOOL_MAPPING: # Import từ agent_tools.py
+                    try:
+                        args_dict = {k: v for k, v in tool_args.items()}
+                        # Gọi tool async
+                        tool_result = await TOOL_MAPPING[tool_name](**args_dict)
+                    except Exception as e:
+                        tool_result = f"Tool Error: {str(e)}"
+                
+                response_parts.append(
+                    Part(function_response=FunctionResponse(
+                        name=tool_name,
+                        response={"result": tool_result} 
+                    ))
+                )
+            
+            # Đưa kết quả Tool (Raw JSON) vào lịch sử của Worker
+            worker_history.append(Content(role="user", parts=response_parts))
+            
+        except Exception as e:
+            log.error(f"Worker Loop Error ({i}): {e}")
+            break
+
+    # ==========================================================================
+    # GIAI ĐOẠN 2.5: WORKER TỔNG HỢP (SYNTHESIS)
+    # ==========================================================================
     try:
-        # Dùng hàm Safe cho bước cuối
-        response = await safe_generate_content(
-            model_id=MODEL_BRAIN,  #
-            contents=chat_history,
-            config=final_config
+        push_telegram_msg(chat_id, "📝 **Worker:** Đang tổng hợp & làm sạch dữ liệu...", edit_id=loading_msg_id)
+        
+        # Yêu cầu Worker tóm tắt lại toàn bộ quá trình tìm kiếm
+        synthesis_prompt = f"""
+        Bạn đã hoàn thành việc thu thập dữ liệu.
+        Dựa trên NHIỆM VỤ BAN ĐẦU: "{worker_instruction}" và các DỮ LIỆU THÔ (JSON) ở trên.
+        
+        Hãy viết một bản "BÁO CÁO TỔNG HỢP" ngắn gọn, súc tích gửi cho Manager.
+        - Chỉ giữ lại thông tin quan trọng trả lời đúng câu hỏi.
+        - Loại bỏ các trường null, thông tin rác hoặc JSON dài dòng.
+        - Trình bày dạng bullet points hoặc đoạn văn ngắn.
+        """
+        
+        worker_history.append(Content(role="user", parts=[Part(text=synthesis_prompt)]))
+        
+        # Tắt tool ở bước này để Worker tập trung viết text
+        synthesis_config = {"temperature": 0.5}
+        
+        resp_syn = await safe_generate_content(
+            model_id=MODEL_WORKER, # Vẫn là Flash Lite (Rẻ)
+            contents=worker_history,
+            config=synthesis_config
         )
-        update_stats(response)
+        update_stats(resp_syn)
         
-        final_answer = response.candidates[0].content.parts[0].text
+        refined_data = resp_syn.candidates[0].content.parts[0].text
+        log.info(f"[{INSTANCE_ID}] 🧹 Refined Data Length: {len(refined_data)}")
+
+    except Exception as e:
+        log.error(f"Synthesis Error: {e}")
+        refined_data = "Lỗi khi tổng hợp dữ liệu. Manager hãy tự xem xét nếu có thể."
+
+    # ==========================================================================
+    # GIAI ĐOẠN 3: MANAGER TRẢ LỜI (BRAIN - PRO)
+    # ==========================================================================
+    try:
+        push_telegram_msg(chat_id, "💡 **Manager:** Đang soạn câu trả lời cuối cùng...", edit_id=loading_msg_id)
         
+        final_system_prompt = get_dynamic_system_prompt()
+        
+        # Context mới hoàn toàn cho Manager (sạch sẽ, không chứa raw json)
+        manager_final_prompt = f"""
+        User Query: "{user_query}"
+        
+        Dưới đây là BÁO CÁO DỮ LIỆU đã được chuyên viên nghiên cứu (Worker) tổng hợp:
+        --- BẮT ĐẦU BÁO CÁO ---
+        {refined_data}
+        --- KẾT THÚC BÁO CÁO ---
+        
+        Dựa vào báo cáo trên và kiến thức của bạn:
+        1. Trả lời trực tiếp câu hỏi của User.
+        2. Đưa ra nhận định, lời khuyên (nếu phù hợp).
+        3. Giọng văn chuyên nghiệp, thân thiện.
+        """
+        
+        resp_final = await safe_generate_content(
+            model_id=MODEL_BRAIN, # gemini-2.5-pro
+            contents=manager_final_prompt,
+            config={"system_instruction": final_system_prompt, "temperature": 0.7}
+        )
+        update_stats(resp_final)
+        
+        final_answer = resp_final.candidates[0].content.parts[0].text
+        
+        # --- [STATS] CẬP NHẬT FOOTER ---
         stats_footer = (
-            f"\n\n`⚙️ Specs: {stats['requests']} steps | "
+            f"\n\n`⚙️ Specs: {stats['requests']} calls | "
             f"In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
         )
-        final_msg_with_stats = final_answer + stats_footer
+        # -------------------------------
         
-        kb = default_ai_reply_markup() #
-        push_telegram_msg(chat_id, final_msg_with_stats, reply_markup=kb, edit_id=loading_msg_id) #
-        
+        # Gửi kết quả cuối cùng
+        kb = default_ai_reply_markup()
+        push_telegram_msg(chat_id, final_answer + stats_footer, reply_markup=kb, edit_id=loading_msg_id)
+
     except Exception as e:
-        log.error(f"Agent Final Step Error: {e}")
-        push_telegram_msg(chat_id, "⚠️ Lỗi tổng hợp câu trả lời (Hết quota).", edit_id=loading_msg_id) #
+        log.error(f"Final Answer Error: {e}")
+        push_telegram_msg(chat_id, "⚠️ Lỗi khi tạo câu trả lời cuối cùng.", edit_id=loading_msg_id)
 
 def _get_cached_tech_summary(symbol: str) -> str | None:
     entry = _tech_alert_summary_cache.get(symbol)
