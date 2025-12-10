@@ -1,3 +1,4 @@
+
 DIGEST_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -10,7 +11,6 @@ DIGEST_HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
-            /* --- Biến Theme Chung (Light Mode Mặc định) --- */
             --bg-color: var(--tg-theme-bg-color, #f2f2f7);
             --text-color: var(--tg-theme-text-color, #000);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
@@ -24,201 +24,60 @@ DIGEST_HTML_TEMPLATE = """
             --danger-bg: rgba(255, 59, 48, 0.15);  --danger-text: #ff3b30;
             --info-bg-light: rgba(0,122,255,0.05); 
             
-            /* --- Màu Định giá (Rankings) - Light Mode --- */
             --metric-bg: #f9fafb; 
-            
-            /* Rank 1 (Gold) */
-            --r1-bg: linear-gradient(160deg, #ffffff 40%, #fffbeb 100%); 
-            --r1-border: #fbbf24; 
-            --r1-shadow: rgba(245, 158, 11, 0.25);
-            
-            /* Rank 2 (Silver) */
-            --r2-bg: linear-gradient(160deg, #ffffff 40%, #f3f4f6 100%); 
-            --r2-border: #9ca3af; 
-            --r2-shadow: rgba(156, 163, 175, 0.2);
-            
-            /* Rank 3 (Bronze) */
-            --r3-bg: linear-gradient(160deg, #ffffff 40%, #fff7ed 100%); 
-            --r3-border: #fdba74; 
-            --r3-shadow: rgba(234, 88, 12, 0.15);
-
-            /* Rank 4+ */
-            --rank-other-bg: #e5e7eb;
-            --rank-other-text: #374151;
         }
         
-        /* --- Dark Mode Overrides --- */
         @media (prefers-color-scheme: dark) {
             :root {
                 --border-color: rgba(255,255,255,0.15);
-                --info-bg-light: rgba(10, 132, 255, 0.15); 
-
-                --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
-                --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
-                --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
-
-                /* Nền ô chỉ số sáng hơn nền card một chút để tạo độ nổi */
                 --metric-bg: #2c2c2e; 
-
-                /* Rank 1 (Gold Dark) */
-                --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
-                --r1-border: #fbbf24; --r1-shadow: rgba(251, 191, 36, 0.1); 
-
-                /* Rank 2 (Silver Dark) */
-                --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
-                --r2-border: #9ca3af; --r2-shadow: rgba(255,255,255,0.05);
-
-                /* Rank 3 (Bronze Dark) */
-                --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
-                --r3-border: #fb923c; --r3-shadow: rgba(251, 146, 60, 0.1);
-
-                /* Rank 4+ (Dark) */
-                --rank-other-bg: rgba(255,255,255,0.1);
-                --rank-other-text: #d1d5db;
             }
         }
         
-        :root[data-theme="dark"] {
-            --border-color: rgba(255,255,255,0.15);
-            --info-bg-light: rgba(10, 132, 255, 0.15); 
-
-            --success-text: #6ee7b7; --success-bg: rgba(16, 185, 129, 0.2);
-            --warning-text: #fcd34d; --warning-bg: rgba(250, 204, 21, 0.2);
-            --danger-text: #f87171;  --danger-bg: rgba(248, 113, 113, 0.2);
-
-            /* Nền ô chỉ số sáng hơn nền card một chút để tạo độ nổi */
-            --metric-bg: #2c2c2e; 
-
-            /* Rank 1 (Gold Dark) */
-            --r1-bg: linear-gradient(135deg, #42330b 0%, #1c1c1e 100%);
-            --r1-border: #fbbf24; --r1-shadow: rgba(251, 191, 36, 0.1); 
-
-            /* Rank 2 (Silver Dark) */
-            --r2-bg: linear-gradient(135deg, #374151 0%, #1c1c1e 100%);
-            --r2-border: #9ca3af; --r2-shadow: rgba(255,255,255,0.05);
-
-            /* Rank 3 (Bronze Dark) */
-            --r3-bg: linear-gradient(135deg, #431407 0%, #1c1c1e 100%);
-            --r3-border: #fb923c; --r3-shadow: rgba(251, 146, 60, 0.1);
-
-            /* Rank 4+ (Dark) */
-            --rank-other-bg: rgba(255,255,255,0.1);
-            --rank-other-text: #d1d5db;
-        }
-
         body { 
             font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
-            margin: 0; padding: 20px 16px 40px 16px; font-size: 14px; line-height: 1.5;
-            visibility: hidden; opacity: 0; transition: opacity 0.3s ease-in-out;
+            margin: 0; padding: 20px 16px 60px 16px; font-size: 14px; line-height: 1.5;
             -webkit-font-smoothing: antialiased;
         }
-        body.loaded { visibility: visible; opacity: 1; }
 
-        /* HEADER Styles */
+        /* HEADER */
         .header { text-align: center; margin-bottom: 32px; }
         .date-badge { display: inline-flex; align-items: center; gap: 6px; background-color: var(--card-bg); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--hint-color); box-shadow: 0 2px 6px rgba(0,0,0,0.03); margin-bottom: 12px; }
         .header-title { font-size: 32px; font-weight: 800; margin: 0; background: linear-gradient(135deg, #007aff 0%, #af52de 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .pro-badge { background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%); color: white; font-size: 11px; font-weight: 800; padding: 4px 8px; border-radius: 8px; display: inline-flex; transform: translateY(-2px); }
         
-        /* CARD Styles */
+        /* CARD */
         .section-card { background-color: var(--card-bg); border-radius: 16px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; }
         .card-header { padding: 16px 16px 10px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-color); }
         .card-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(0,122,255,0.1); color: #007aff; }
         .card-title { font-size: 17px; font-weight: 700; }
 
-        /* BADGES */
-        .st-badge { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
-        .st-badge.act-buy { background: var(--success-bg); color: var(--success-text); }
-        .st-badge.act-sell { background: var(--danger-bg); color: var(--danger-text); }
-        .st-badge.act-hold { background: var(--warning-bg); color: var(--warning-text); }
-        
-        /* AI INSIGHT */
-        .ai-hot-topic { background: var(--info-bg-light); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
-        .ai-hot-title { font-weight:700; color:var(--accent-color); margin-bottom:8px; font-size:12px; text-transform: uppercase; }
-        .ai-hot-text a { text-decoration:none; color:inherit; }
-        .ai-hot-text a:hover { text-decoration: underline; }
-        
-        .ai-macro-title { font-weight:700; color:var(--hint-color); margin:16px 0 8px 0; font-size:12px; text-transform: uppercase; }
-        .ai-macro-text a { text-decoration:none; color:inherit; } 
-        
-        .ai-corp-header { font-weight:800; color:var(--hint-color); margin-bottom:12px; font-size:13px; text-transform: uppercase; border-bottom: 2px solid var(--border-color); padding-bottom: 6px; display:flex; align-items:center; gap:6px; }
-        .ai-comment-box { margin-top: 16px; font-style: italic; color: var(--hint-color); font-size: 13px; border-top: 1px solid var(--border-color); padding-top: 12px; background:var(--bg-color); padding:12px; border-radius:8px; }
-        .ai-corp-item { padding: 10px 0; border-bottom: 1px solid var(--border-color); display: flex; align-items: flex-start; gap: 10px; }
-        .ai-corp-item:last-child { border-bottom: none; }
-        .ai-corp-ticker { background-color: rgba(0,122,255,0.1); color: #007aff; font-weight: 700; font-size: 11px; padding: 2px 6px; border: 1px solid rgba(0,122,255,0.2); }
-        
-        /* LIST ITEMS */
-        .list-item { padding: 14px 16px; border-bottom: 1px solid var(--border-color); display: block; text-decoration: none; color: inherit; cursor: pointer; }
+        /* LIST ITEM */
+        .list-item { padding: 14px 16px; border-bottom: 1px solid var(--border-color); display: block; text-decoration: none; color: inherit; }
         .list-item:active { background-color: rgba(0,0,0,0.05); }
         .list-item:last-child { border-bottom: none; }
+        .item-title { font-size: 14px; font-weight: 500; line-height: 1.4; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .item-meta { font-size: 11px; color: var(--hint-color); display: flex; justify-content: space-between; }
         
-        .item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-        .badge { background: var(--metric-bg); font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; }
-        .item-title { font-size: 15px; font-weight: 500; line-height: 1.4; }
-        .item-meta { font-size: 12px; color: var(--hint-color); margin-top: 4px; }
+        /* AI BOX */
+        .ai-box { padding: 16px; }
+        .ai-hot-topic { background: var(--info-bg-light); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+        .ai-hot-title { font-weight:700; color:var(--accent-color); margin-bottom:8px; font-size:12px; text-transform: uppercase; }
+        .ai-link { text-decoration: none; color: inherit; display: block; margin-bottom: 6px; }
+        
+        /* SHOW MORE */
         .hidden-item { display: none; }
-        .action-area { padding: 10px; text-align: center; border-top: 1px solid var(--border-color); }
-        .btn-toggle { background: none; border: none; color: var(--accent-color); font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 12px; display: inline-flex; align-items: center; gap: 4px; }
+        .action-area { padding: 12px; text-align: center; border-top: 1px solid var(--border-color); }
+        .btn-toggle { background: var(--bg-color); border: none; color: var(--accent-color); font-size: 13px; font-weight: 700; cursor: pointer; padding: 8px 16px; border-radius: 20px; display: inline-flex; align-items: center; gap: 4px; }
+        .btn-toggle:active { opacity: 0.7; }
         
-        /* LOCKED CONTENT */
-        .list-item.locked { position: relative; background: repeating-linear-gradient(45deg, var(--card-bg), var(--card-bg) 10px, var(--bg-color) 10px, var(--bg-color) 20px); cursor: default; }
-        .blur-content { filter: blur(4px); opacity: 0.6; user-select: none; pointer-events: none; }
-        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.6); z-index: 2; }
-        @media (prefers-color-scheme: dark) { .lock-overlay { background: rgba(0, 0, 0, 0.7); } }
-        .lock-btn { background: var(--text-color); color: var(--bg-color); border: none; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 4px; }
-
-        /* --- SCREENER CARD (Fix Darkmode & Layout) --- */
-        .screener-card {
-            border-radius: 16px; padding: 16px; margin-bottom: 12px; position: relative;
-            background: var(--card-bg);
-            border: 1px solid var(--border-color);
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-        }
-        
-        /* Rank 1 */
-        .card-rank-1 { background: var(--r1-bg); border: 1px solid var(--r1-border); box-shadow: 0 4px 15px var(--r1-shadow); z-index: 2; }
-        .card-rank-1 .rank-badge { background: linear-gradient(135deg, #FFD700, #F59E0B); box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4); border: 2px solid var(--card-bg); color: #fff;}
-        .card-rank-1::before { content: '👑'; position: absolute; top: -12px; left: 8px; font-size: 20px; transform: rotate(-15deg); z-index: 3; filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1)); }
-        
-        /* Rank 2 */
-        .card-rank-2 { background: var(--r2-bg); border: 1px solid var(--r2-border); box-shadow: 0 4px 15px var(--r2-shadow); }
-        .card-rank-2 .rank-badge { background: linear-gradient(135deg, #E5E7EB, #9CA3AF); box-shadow: 0 4px 10px rgba(156, 163, 175, 0.3); border: 2px solid var(--card-bg); color: var(--text-color); }
-        
-        /* Rank 3 */
-        .card-rank-3 { background: var(--r3-bg); border: 1px solid var(--r3-border); box-shadow: 0 4px 15px var(--r3-shadow); }
-        .card-rank-3 .rank-badge { background: linear-gradient(135deg, #fdba74, #c2410c); box-shadow: 0 4px 10px rgba(194, 65, 12, 0.3); border: 2px solid var(--card-bg); color: #fff;}
-        
-        /* Rank 4+ (Fix số hiển thị) */
-        .rank-other { 
-            background: var(--rank-other-bg); 
-            color: var(--rank-other-text); 
-            font-size: 13px; border-radius: 8px; width: 26px; height: 26px; 
-            font-family: 'Manrope', sans-serif; font-weight: 800; 
-            display: flex; align-items: center; justify-content: center;
-        }
-        
-        .screener-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--border-color); opacity: 0.9; }
-        .symbol-wrap { display: flex; align-items: center; gap: 10px; }
-        .rank-badge { display: flex; align-items: center; justify-content: center; border-radius: 8px; font-family: 'Oswald', sans-serif; font-weight: 700; width: 28px; height: 28px; font-size: 14px;}
-        .symbol-name { font-size: 18px; font-weight: 800; color: var(--text-color); letter-spacing: -0.5px; }
-        .signal-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; }
-        .sig-cheap { background: var(--success-bg); color: var(--success-text); }
-        .sig-expensive { background: var(--danger-bg); color: var(--danger-text); }
-        .sig-fair { background: var(--warning-bg); color: var(--warning-text); }
-
-        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--border-color); }
-        .m-label { font-size: 10px; font-weight: 700; color: var(--hint-color); text-transform: uppercase; margin-bottom: 2px; opacity: 0.8; }
-        .m-row { display: flex; justify-content: space-between; align-items: baseline; }
-        .m-curr { font-size: 15px; font-weight: 800; color: var(--text-color); }
-        .m-avg { font-size: 11px; color: var(--hint-color); font-weight: 500; }
-        .m-diff { font-size: 11px; font-weight: 700; margin-top: 2px; display: flex; align-items: center; gap: 3px; }
-        .diff-good { color: var(--success-text); } .diff-bad { color: var(--danger-text); }
-
-        /* PREMIUM & FOOTER */
+        /* PREMIUM */
         .premium-card { background: linear-gradient(135deg, var(--accent-color) 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
         .premium-btn { display: block; width: 100%; padding: 15px; background-color: var(--card-bg); color: var(--accent-color); border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
-        .btn-close-simple { padding: 12px 40px; background: var(--text-color); color: var(--bg-color); border: none; border-radius: 12px; font-weight: 600; cursor: pointer; }
+        
+        /* VALUE STOCKS */
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 16px; }
+        .metric-box { background: var(--metric-bg); padding: 10px; border-radius: 12px; border: 1px solid var(--border-color); }
     </style>
 </head>
 <body>
@@ -233,126 +92,97 @@ DIGEST_HTML_TEMPLATE = """
         <div class="card-header">
             <div class="card-icon">🧠</div>
             <div class="card-title">AI Market Briefing</div>
-            {% if data.ai_news.sentiment_score >= 7 %}
-                <span class="st-badge act-buy" style="margin-left:auto">Tích cực 🟢</span>
-            {% elif data.ai_news.sentiment_score <= 4 %}
-                <span class="st-badge act-sell" style="margin-left:auto">Tiêu cực 🔴</span>
-            {% else %}
-                <span class="st-badge act-hold" style="margin-left:auto">Thận trọng 🟡</span>
-            {% endif %}
         </div>
-        
-        <div style="padding: 16px;">
+        <div class="ai-box">
             <div class="ai-hot-topic">
                 <div class="ai-hot-title">⚡ Tiêu điểm nóng</div>
                 {% for item in data.ai_news.headline %}
-                <div style="margin-bottom:8px; font-size:14px; font-weight:600; line-height:1.4;" class="ai-hot-text">
-                    <a href="{{ item.link }}">
-                        • {{ item.text }} <span style="color:var(--accent-color); font-size:12px;">↗</span>
-                    </a>
-                </div>
+                <a href="{{ item.link }}" class="ai-link">• {{ item.text }}</a>
                 {% endfor %}
             </div>
-
-            {% if data.ai_news.macro %}
-            <div class="ai-macro-title">🌊 Vĩ mô & Chính sách</div>
-            {% for item in data.ai_news.macro %}
-            <div style="margin-bottom:6px; font-size:13px;" class="ai-macro-text">
-                <a href="{{ item.link }}">• {{ item.text }}</a>
-            </div>
-            {% endfor %}
-            {% endif %}
-
-            {% if data.ai_news.corporate %}
-            <div style="margin-top: 20px;">
-                <div class="ai-corp-header">
-                    <span>🏢</span> TIN DOANH NGHIỆP
-                </div>
-                
-                <div class="list-container">
-                    {% for item in data.ai_news.corporate %}
-                    <div class="ai-corp-item" onclick="viewNews('{{ item.link }}')">
-                        <div style="margin-top: 4px; min-width: 6px; height: 6px; background-color: var(--accent-color); border-radius: 50%;"></div>
-                        
-                        <div style="flex: 1;">
-                            <div style="font-size:14px; line-height: 1.5; color: var(--text-color);">
-                                {% if item.ticker %}
-                                    <span class="ai-corp-ticker">{{ item.ticker }}</span>
-                                {% endif %}
-                                {{ item.text }}
-                            </div>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-
-            <div class="ai-comment-box">
+            <div style="font-style: italic; color: var(--hint-color); font-size: 13px;">
                 "{{ data.ai_news.comment }}"
             </div>
         </div>
     </div>
     {% endif %}
 
-    {% if data.bctc %}
-    <div class="section-card" id="bctc-card">
-        <div class="card-header"><div class="card-icon" style="color:#34c759; background:rgba(52,199,89,0.1)">📊</div><div class="card-title">Báo Cáo Tài Chính</div></div>
-        <div class="list-container">
-            {% for item in data.bctc %}
-                <div class="{% if loop.index > 3 %}hidden-item{% endif %}">
-                    {% if item.is_locked %}
-                    <div class="list-item locked">
-                        <div class="blur-content">
-                            <div class="item-header"><span class="badge">{{ item.symbol }}</span> <b>Q{{ item.quarter }}/{{ item.year }}</b></div>
-                            <div class="item-meta">Lợi nhuận tăng trưởng đột biến...</div>
-                        </div>
-                        <div class="lock-overlay"><button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Nâng cấp để xem</button></div>
-                    </div>
-                    {% else %}
-                    <div class="list-item">
-                        <div class="item-header"><span class="badge">{{ item.symbol }}</span> <b>Q{{ item.quarter }}/{{ item.year }}</b></div>
-                        <div class="item-meta">🕒 Công bố lúc {{ item.time }}</div>
-                    </div>
-                    {% endif %}
+    {% if data.raw_macro %}
+    <div class="section-card" id="card-macro">
+        <div class="card-header">
+            <div class="card-icon" style="color:#d48806; background:rgba(255, 204, 0, 0.15)">🌏</div>
+            <div class="card-title">Tin Vĩ Mô & Chính Sách</div>
+        </div>
+        <div class="list-container" id="list-macro">
+            {% for item in data.raw_macro %}
+            <a href="{{ item.link }}" class="list-item {% if loop.index > 5 %}hidden-item{% endif %}" onclick="Telegram.WebApp.openLink(this.href); return false;">
+                <div class="item-title">{{ item.title }}</div>
+                <div class="item-meta">
+                    <span>{{ item.source }}</span>
+                    <span>{{ item.time }}</span>
                 </div>
+            </a>
             {% endfor %}
         </div>
-        {% if data.bctc|length > 3 %}
+        {% if data.raw_macro|length > 5 %}
         <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('bctc-card', this, {{ data.bctc|length }}, 3)">Xem thêm {{ data.bctc|length - 3 }} mục ↓</button>
+            <button class="btn-toggle" id="btn-macro" onclick="showMore('list-macro', 'btn-macro', 10)">
+                Xem thêm ↓
+            </button>
         </div>
         {% endif %}
     </div>
     {% endif %}
 
-    {% if data.reports %}
-    <div class="section-card" id="reports-card">
-        <div class="card-header"><div class="card-icon" style="color:#007aff; background:rgba(0,122,255,0.1)">📑</div><div class="card-title">Góc Nhìn Chuyên Gia</div></div>
-        <div class="list-container">
-            {% for item in data.reports %}
-                <div class="{% if loop.index > 3 %}hidden-item{% endif %}">
-                    {% if item.is_locked %}
-                    <div class="list-item locked">
-                         <div class="blur-content">
-                            <div class="item-header"><span class="badge">{{ item.symbol }}</span></div>
-                            <div class="item-title">{{ item.title }}</div>
-                        </div>
-                        <div class="lock-overlay"><button class="lock-btn" onclick="Telegram.WebApp.close()">🔒 Mở khóa {{ item.symbol }}</button></div>
-                    </div>
-                    {% else %}
-                    <div class="list-item" onclick="viewNews('{{ item.link }}')">
-                        <div class="item-header"><span class="badge">{{ item.symbol }}</span></div>
-                        <div class="item-title">{{ item.title }}</div>
-                        {% if item.time %}<div class="item-meta">🕒 {{ item.time }}</div>{% endif %}
-                    </div>
-                    {% endif %}
+    {% if data.raw_spec %}
+    <div class="section-card" id="card-spec">
+        <div class="card-header">
+            <div class="card-icon" style="color:#34c759; background:rgba(52, 199, 89, 0.15)">🏢</div>
+            <div class="card-title">Tin Thị Trường & Doanh Nghiệp</div>
+        </div>
+        <div class="list-container" id="list-spec">
+            {% for item in data.raw_spec %}
+            <a href="{{ item.link }}" class="list-item {% if loop.index > 5 %}hidden-item{% endif %}" onclick="Telegram.WebApp.openLink(this.href); return false;">
+                <div class="item-title">{{ item.title }}</div>
+                <div class="item-meta">
+                    <span>{{ item.source }}</span>
+                    <span>{{ item.time }}</span>
                 </div>
+            </a>
             {% endfor %}
         </div>
-        {% if data.reports|length > 3 %}
+        {% if data.raw_spec|length > 5 %}
         <div class="action-area">
-            <button class="btn-toggle" onclick="toggleSection('reports-card', this, {{ data.reports|length }}, 3)">Xem thêm {{ data.reports|length - 3 }} báo cáo ↓</button>
+            <button class="btn-toggle" id="btn-spec" onclick="showMore('list-spec', 'btn-spec', 10)">
+                Xem thêm ↓
+            </button>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if data.bctc %}
+    <div class="section-card" id="card-bctc">
+        <div class="card-header">
+            <div class="card-icon" style="color:#ff3b30; background:rgba(255, 59, 48, 0.15)">📊</div>
+            <div class="card-title">Báo Cáo Tài Chính Mới</div>
+        </div>
+        <div class="list-container" id="list-bctc">
+            {% for item in data.bctc %}
+            <div class="list-item {% if loop.index > 3 %}hidden-item{% endif %}">
+                {% if item.is_locked %}
+                <div style="filter:blur(4px); user-select:none;">{{ item.symbol }} - LNST tăng trưởng mạnh...</div>
+                <div style="font-size:11px; color:var(--accent-color); text-align:center; font-weight:700; margin-top:-15px;">🔒 Nâng cấp Pro để xem</div>
+                {% else %}
+                <div style="font-weight:700;">{{ item.symbol }} <span style="font-weight:400; font-size:13px;">- Quý {{ item.quarter }}/{{ item.year }}</span></div>
+                <div class="item-meta">Công bố lúc {{ item.time }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% if data.bctc|length > 3 %}
+        <div class="action-area">
+            <button class="btn-toggle" id="btn-bctc" onclick="showMore('list-bctc', 'btn-bctc', 10)">Xem thêm ↓</button>
         </div>
         {% endif %}
     </div>
@@ -362,38 +192,23 @@ DIGEST_HTML_TEMPLATE = """
     <div class="section-card">
         <div class="card-header">
             <div class="card-icon">💎</div>
-            <div class="card-title">Top Định Giá Rẻ (Mean Reversion)</div>
+            <div class="card-title">Gợi ý đầu tư (Mean Reversion)</div>
         </div>
-        
-        <div style="padding: 0 16px 16px 16px;">
-            {% for item in data.value_stocks %}
-            <div class="screener-card {% if loop.index == 1 %}card-rank-1{% elif loop.index == 2 %}card-rank-2{% elif loop.index == 3 %}card-rank-3{% endif %}">
-                <div class="screener-card-header">
-                    <div class="symbol-wrap">
-                        <div class="rank-badge {% if loop.index > 3 %}rank-other{% endif %}">{{ loop.index }}</div>
-                        <div class="symbol-name">{{ item.symbol }}</div>
-                    </div>
-                    <div class="signal-badge {{ item.signal_class }}">{{ item.signal_text }}</div>
+        <div class="list-container">
+             {% for item in data.value_stocks %}
+             <div style="padding:12px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <div style="font-weight:800; font-size:16px;">{{ item.symbol }}</div>
+                    <div class="item-meta">{{ item.signal_text }}</div>
                 </div>
-                <div class="metrics-grid">
-                    <div class="metric-box">
-                        <div class="m-label">P/E Ratio</div>
-                        <div class="m-row"><span class="m-curr">{{ item.pe_cur }}x</span><span class="m-avg">TB: {{ item.pe_avg }}</span></div>
-                        <div class="m-diff {{ item.pe_class }}">{{ item.pe_diff_str }}</div>
-                    </div>
-                    <div class="metric-box">
-                        <div class="m-label">P/B Ratio</div>
-                        <div class="m-row"><span class="m-curr">{{ item.pb_cur }}x</span><span class="m-avg">TB: {{ item.pb_avg }}</span></div>
-                        <div class="m-diff {{ item.pb_class }}">{{ item.pb_diff_str }}</div>
-                    </div>
+                <div style="text-align:right;">
+                    <div style="font-weight:700; font-size:13px; color:var(--success-text)">{{ item.pe_cur }}x</div>
+                    <div class="item-meta">P/E (TB: {{ item.pe_avg }})</div>
                 </div>
-            </div>
-            {% endfor %}
+             </div>
+             {% endfor %}
         </div>
-        
-        <div style="padding: 12px; font-size: 11px; color: var(--hint-color); text-align: center; background: var(--bg-color); border-bottom-left-radius: 20px; border-bottom-right-radius: 20px; opacity: 0.8;">
-            *Xếp hạng dựa trên trung bình độ lệch P/E & P/B so với lịch sử 5 năm.
-        </div>
+        <div style="padding:12px; text-align:center; font-size:12px; color:var(--hint-color);">*Dành riêng cho Pro Member</div>
     </div>
     {% endif %}
 
@@ -401,71 +216,61 @@ DIGEST_HTML_TEMPLATE = """
     <div class="premium-card">
         <div style="font-size:18px; font-weight:800; margin-bottom:10px;">Mở khóa toàn bộ sức mạnh 🚀</div>
         <div style="font-size:13px; opacity:0.9; margin-bottom:20px;">
-            • Xem chi tiết BCTC ngay khi công bố<br>
+            • Xem danh sách BCTC ngay khi công bố<br>
             • Đọc báo cáo phân tích chuyên sâu<br>
             • Sử dụng Bộ lọc Value Realtime
         </div>
         <button class="premium-btn" onclick="Telegram.WebApp.close()">🔥 Gõ /upgrade ngay</button>
     </div>
     {% else %}
-    <div style="text-align:center; margin-top:30px;">
-        <button class="btn-close-simple" onclick="Telegram.WebApp.close()">Đóng</button>
+    <div style="height: 40px;"></div>
+    <div style="text-align:center;">
+        <button onclick="Telegram.WebApp.close()" style="background:var(--text-color); color:var(--bg-color); border:none; padding:10px 30px; border-radius:20px; font-weight:600; cursor:pointer;">Đóng</button>
     </div>
     {% endif %}
 
     <script>
+        Telegram.WebApp.ready();
         Telegram.WebApp.expand();
-        
-        // Force Dark Mode detection
-        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
-        Telegram.WebApp.onEvent('themeChanged', function() {
-            document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
-        });
 
-        window.addEventListener('load', function() {
-            document.body.classList.add('loaded');
-            Telegram.WebApp.ready();
-        });
+        // Hàm JS để hiện thêm item (Client-side Lazy Load)
+        function showMore(containerId, btnId, step) {
+            const container = document.getElementById(containerId);
+            const hiddenItems = container.querySelectorAll('.hidden-item');
+            const btn = document.getElementById(btnId);
 
-        function viewNews(url) {
-            Telegram.WebApp.openLink(url);
-        }
+            if (hiddenItems.length === 0) {
+                if(btn) btn.style.display = 'none';
+                return;
+            }
 
-        function toggleSection(cardId, btn, total, limit) {
-            const card = document.getElementById(cardId);
-            const hiddenItems = card.querySelectorAll('.hidden-item');
-            const isExpanded = btn.getAttribute('data-expanded') === 'true';
-            const hiddenCount = total - limit;
-            let unit = 'mục';
-            if (cardId.includes('stocks')) unit = 'mã';
-            else if (cardId.includes('specialized') || cardId.includes('macro')) unit = 'tin';
-            else if (cardId.includes('reports')) unit = 'báo cáo';
+            let count = 0;
+            hiddenItems.forEach(item => {
+                if (count < step) {
+                    item.classList.remove('hidden-item');
+                    // Add animation effect
+                    item.style.opacity = '0';
+                    item.style.display = 'block';
+                    setTimeout(() => { item.style.opacity = '1'; item.style.transition = 'opacity 0.5s'; }, 50);
+                    count++;
+                }
+            });
 
-            if (!isExpanded) {
-                hiddenItems.forEach(item => {
-                    if (item.tagName === 'TR') item.style.display = 'table-row';
-                    else item.style.display = 'block';
-                    item.style.animation = 'fadeIn 0.3s ease';
-                });
-                btn.innerHTML = 'Thu gọn ↑';
-                btn.setAttribute('data-expanded', 'true');
-            } else {
-                hiddenItems.forEach(item => { item.style.display = 'none'; });
-                btn.innerHTML = `Xem thêm ${hiddenCount} ${unit} ↓`;
-                btn.setAttribute('data-expanded', 'false');
-                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            // Nếu sau khi hiện mà hết item ẩn thì ẩn nút luôn
+            if (container.querySelectorAll('.hidden-item').length === 0) {
+                if(btn) {
+                    btn.innerHTML = "Đã hiển thị hết";
+                    btn.style.opacity = "0.5";
+                    btn.style.pointerEvents = "none";
+                    setTimeout(() => { btn.style.display = 'none'; }, 2000);
+                }
             }
         }
-
-        const style = document.createElement('style');
-        style.innerHTML = `
-            @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
-        `;
-        document.head.appendChild(style);
     </script>
 </body>
 </html>
 """
+# (Các template khác giữ nguyên...)
 
 DIGEST_404_TEMPLATE = r"""
 <!DOCTYPE html>
