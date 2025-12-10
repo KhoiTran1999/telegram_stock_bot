@@ -3932,13 +3932,11 @@ async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_n
         result = await summarize_daily_news_with_ai(input_news)
         return result or _build_empty_ai_digest("AI không thể tổng hợp dữ liệu. Hiển thị ghi chú mặc định.")
 
-
-# worker.py
-
+    
 async def job_daily_digest():
     """
     [JOB APSCHEDULER] Gửi bản tin sáng (Digest) lúc 07:00.
-    Cập nhật: Truyền thêm danh sách tin tức thô (Raw News) xuống WebApp.
+    Không còn while True, không còn sleep.
     """
     # 1. Kiểm tra trạng thái Bot
     if not get_bot_active():
@@ -3952,6 +3950,7 @@ async def job_daily_digest():
 
     try:
         # 2. Thu thập dữ liệu (Song song)
+        # Lưu ý: Nightly Loop (02:00) đã tính toán Screener và lưu Redis rồi.
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         since_utc = now_utc - datetime.timedelta(hours=24)
 
@@ -3973,40 +3972,16 @@ async def job_daily_digest():
             get_top_mean_reversion_stocks(limit=5),
         )
 
-        # 3. Chuẩn bị dữ liệu tin tức (Format lại thời gian để hiển thị đẹp)
-        def _format_news(rows, source_label):
-            res = []
-            for r in rows:
-                # r = (title, link, published, created_at) - theo db_utils.py
-                title = r[0]
-                link = r[1]
-                pub_time = r[2]
-                
-                time_str = ""
-                if pub_time:
-                    # Convert về giờ VN
-                    if pub_time.tzinfo is None:
-                        pub_time = pub_time.replace(tzinfo=datetime.timezone.utc)
-                    time_str = pub_time.astimezone(vn_tz).strftime("%H:%M %d/%m")
-                
-                res.append({
-                    "title": title,
-                    "link": link,
-                    "time": time_str,
-                    "source": source_label
-                })
-            return res
-
-        # Lấy tối đa 50 tin mỗi loại để tránh payload quá nặng
-        macro_news_list = _format_news(macro_rows[:50], "Vĩ mô")
-        spec_news_list = _format_news(spec_rows[:80], "Thị trường") # Lấy nhiều hơn cho chuyên ngành
+        # 3. Chuẩn bị dữ liệu tin tức
+        macro_news_list = [{"title": r[0], "link": r[1], "source": "Vĩ mô"} for r in macro_rows]
+        spec_news_list = [{"title": r[0], "link": r[1], "source": "DN"} for r in spec_rows]
         
-        # Tagging (Gắn mã CP vào tin specialized để highlight nếu cần)
+        # Tagging
         spec_news_list = tag_news_items(spec_news_list)
 
-        # 4. Chạy AI cho từng User (Giữ nguyên logic cũ)
+        # 4. Chạy AI cho từng User (Parallel)
         user_ai_tasks = []
-        user_ids_map = [] 
+        user_ids_map = [] # Keep track of order
         
         for chat_key, user_block in all_watch.items():
             try: chat_id = int(chat_key)
@@ -4014,106 +3989,168 @@ async def job_daily_digest():
             
             watchlist = user_block.get("list", [])
             user_ids_map.append(chat_id)
-            # AI summary input vẫn giữ nguyên
             user_ai_tasks.append(generate_user_ai_digest(chat_id, watchlist, spec_news_list, macro_news_list))
             
+        # Run gather
         ai_results = await asyncio.gather(*user_ai_tasks)
         user_ai_map = dict(zip(user_ids_map, ai_results))
 
-        # 5. Mapping dữ liệu (Giữ nguyên)
+        # 5. Chuẩn bị dữ liệu Mapping
         bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
+        
+        # Group Reports theo mã
         reports_by_sym = {}
-        for (s, title, link, pub, created) in report_rows:
+        for (s, title, link, pub, created) in report_rows: # Lưu ý unpack đúng số lượng cột từ DB trả về
             reports_by_sym.setdefault(str(s).upper(), []).append((title, link, pub))
         
+        # Map User -> Watchlist
         watch_to_chats = {}
         for chat_key, user_block in all_watch.items():
-            try: chat_id = int(chat_key)
-            except: continue
+            try: 
+                chat_id = int(chat_key)
+            except: 
+                continue
             for sym in user_block.get("list", []) or []:
                 watch_to_chats.setdefault(str(sym).upper().strip(), []).append(chat_id)
 
-        # 6. Khởi tạo Payload (CẬP NHẬT: Thêm raw_macro và raw_spec)
+        # 6. Khởi tạo Payload cho từng User
         digest_payloads = {}
         
         def _get_payload(cid):
             if cid not in digest_payloads:
+                # Lấy AI Data riêng của user và đảm bảo dạng dict
                 my_ai_data = _parse_ai_digest_payload(user_ai_map.get(cid))
                 
                 digest_payloads[cid] = {
                     "is_pro": (cid in pro_chat_ids or cid == ADMIN_ID),
-                    "ai_news": my_ai_data,
-                    "value_stocks": [],
-                    "bctc": [],
-                    "reports": [],
-                    # --- Dữ liệu mới thêm vào ---
-                    "raw_macro": macro_news_list, 
-                    "raw_spec": spec_news_list
-                    # ----------------------------
+                    "ai_news": my_ai_data, 
+                    "value_stocks": [], 
+                    "bctc": [], 
+                    "reports": []
                 }
             return digest_payloads[cid]
 
+        # Đảm bảo mọi user có watchlist đều nhận được tin (dù chỉ là tin AI)
         if all_watch:
             for chat_key in all_watch.keys():
-                try: _get_payload(int(chat_key))
+                try:
+                    _get_payload(int(chat_key))
                 except: continue
 
-        # 7. Fill BCTC, Reports, Value Stocks (Giữ nguyên logic cũ)
+        # 7. Fill dữ liệu chi tiết vào Payload
+        
+        # A. Value Stocks (Chỉ cho Pro)
         if top_value_stocks:
             for cid in digest_payloads.keys():
                 pl = digest_payloads[cid]
-                if pl["is_pro"]: pl["value_stocks"] = top_value_stocks
+                if pl["is_pro"]: 
+                    pl["value_stocks"] = top_value_stocks
 
+        # B. BCTC
         if bctc_rows:
             for sym, (y, q, t) in bctc_by_sym.items():
                 t_str = t.astimezone(vn_tz).strftime("%H:%M %d/%m")
                 for cid in watch_to_chats.get(sym, []):
                     pl = _get_payload(cid)
                     is_locked = not pl["is_pro"]
+                    # Tránh add trùng
                     if not any(x['symbol'] == sym for x in pl["bctc"]):
                         pl["bctc"].append({
                             "symbol": sym, "year": y, "quarter": q, 
                             "time": t_str, "is_locked": is_locked
                         })
 
+        # C. Analysis Reports (ĐÃ BỔ SUNG PHẦN THIẾU)
         if report_rows:
             for sym, r_list in reports_by_sym.items():
                 for cid in watch_to_chats.get(sym, []):
                     pl = _get_payload(cid)
+                    
+                    # Lấy tin mới nhất để hiển thị thời gian nếu bị lock
                     last_pub = r_list[0][2]
                     t_str = last_pub.astimezone(vn_tz).strftime("%H:%M %d/%m") if last_pub else ""
                     
                     if pl["is_pro"]:
+                        # Pro: Xem hết các báo cáo
                         for (title, link, pub) in r_list:
                             ts = pub.astimezone(vn_tz).strftime("%H:%M %d/%m") if pub else ""
+                            # Tránh trùng link
                             if not any(x['link'] == link for x in pl["reports"]):
-                                pl["reports"].append({"symbol": sym, "title": title, "link": link, "time": ts, "is_locked": False})
+                                pl["reports"].append({
+                                    "symbol": sym, "title": title, "link": link, 
+                                    "time": ts, "is_locked": False
+                                })
                     else:
+                        # Free: Chỉ hiện 1 dòng bị lock
                         if not any(x['symbol'] == sym for x in pl["reports"]):
-                            pl["reports"].append({"symbol": sym, "title": "Báo cáo phân tích (Pro)", "link": "#", "time": t_str, "is_locked": True})
+                            pl["reports"].append({
+                                "symbol": sym, "title": "Báo cáo phân tích (Pro)", 
+                                "link": "#", "time": t_str, "is_locked": True
+                            })
 
-        # 8. Gửi tin nhắn
+        # 8. Gửi tin nhắn (Push Redis)
+        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
         count = 0
+        
         for chat_id, data in digest_payloads.items():
             try:
                 digest_id = uuid.uuid4().hex
+                
+                # Lưu Web App Data vào Redis (TTL 24h)
                 r_client.set(f"digest_web:{digest_id}", json.dumps(data), ex=86400)
                 
                 web_url = f"{BASE_URL}/digest/{digest_id}"
+                
                 kb = {
                     "inline_keyboard": [[
                         {"text": "📰 Xem Chi Tiết (Web App) 🚀", "web_app": {"url": web_url}}
                     ]]
                 }
-                msg_text = (f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n"
-                            f"👉 *Chúc bạn một ngày năng suất nhé!*")
+                
+                # Format AI Text riêng cho từng user
+                ai_data = data.get("ai_news")
+                if ai_data and not isinstance(ai_data, dict):
+                    ai_data = _parse_ai_digest_payload(ai_data)
+                ai_text = "_Không có tin nổi bật._"
+                if isinstance(ai_data, dict):
+                    lines = []
+                    headlines = ai_data.get('headline') or []
+                    if isinstance(headlines, dict):
+                        headlines = [headlines]
+                    if headlines:
+                        lines.append("⚡ *TIÊU ĐIỂM*")
+                        for item in headlines:
+                            if isinstance(item, dict):
+                                text = item.get('text') or ''
+                            else:
+                                text = str(item)
+                            if text:
+                                lines.append(f"• {text}")
+                    comment = ai_data.get('comment')
+                    if comment:
+                        lines.append(f"\n🧠 *AI:* {comment}")
+                    if lines:
+                        ai_text = "\n".join(lines)
+                
+                msg_text = (
+                    f"🌅 *BẢN TIN SÁNG {now_local.strftime('%d/%m')}* 🤖\n\n"
+                    f"👉 *Chúc bạn một ngày năng suất nhé!*"
+                )
 
-                push_telegram_msg(chat_id=chat_id, text=msg_text, reply_markup=kb, msg_type="DIGEST")
+                push_telegram_msg(
+                    chat_id=chat_id,
+                    text=msg_text,
+                    reply_markup=kb,
+                    msg_type="DIGEST" 
+                )
                 count += 1
-                if count % 20 == 0: await asyncio.sleep(0.5)
+                
+                # Rate limit nhẹ khi push redis (để Gateway không bị ngộp)
+                if count % 20 == 0:
+                    await asyncio.sleep(0.5)
 
             except Exception as e:
-                log.warning(f"[DIGEST] Lỗi gửi {chat_id}: {e}")
+                log.warning(f"[DIGEST] Lỗi tạo msg cho {chat_id}: {e}")
         
         log.info(f"[DIGEST] ✅ Đã đẩy {count} bản tin sang Gateway.")
 
