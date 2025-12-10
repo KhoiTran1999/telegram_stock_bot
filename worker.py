@@ -749,7 +749,7 @@ def get_tool_descriptions_for_brain():
 
 # Định nghĩa Model ID (Bạn có thể thay đổi tên model thực tế tại đây)
 MODEL_BRAIN = "gemini-2.5-flash"      # Dùng cho bước đầu và cuối (2.5-pro nếu đã có access)
-MODEL_WORKER = "gemini-2.0-flash-lite" # Dùng cho các bước tool (2.0-flash-lite nếu đã có access)
+MODEL_WORKER = "gemini-2.5-flash-lite" # Dùng cho các bước tool (2.0-flash-lite nếu đã có access)
 
 async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     """
