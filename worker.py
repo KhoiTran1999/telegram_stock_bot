@@ -3424,8 +3424,10 @@ async def summarize_daily_news_with_ai(news_list):
     prompt = f"""
 Bạn là trợ lý tài chính thông minh. Hãy đọc danh sách tin tức chứng khoán Việt Nam dưới đây và thực hiện 2 nhiệm vụ:
 
-1. **TIÊU ĐIỂM**: Chọn ra 10 tin vĩ mô và 10 tin doanh nghiệp quan trọng nhất, có tác động lớn đến thị trường hoặc các mã cổ phiếu lớn. Viết lại ngắn gọn (dưới 15 từ/tin).
-2. **NHẬN ĐỊNH**: Viết một đoạn bình luận ngắn (dưới 50 từ) tổng hợp tâm lý thị trường dựa trên các tin này (Tích cực/Tiêu cực/Thận trọng...).
+1. **TIÊU ĐIỂM**: Chọn ra 10 tin quan trọng nhất, có tác động lớn đến thị trường hoặc các mã cổ phiếu lớn. Viết lại sao cho user dễ hiểu.
+2. **MACRO**: Chọn 10 tin liên quan đến chính sách, kinh tế vĩ mô làm **MACRO** (Tin Vĩ mô). Lưu ý không chọn trùng với mục 1 và 3.
+3. **CORPORATE**: Chọn 10 tin có ảnh hưởng quan trọng đến tăng trưởng doanh nghiệp làm **CORPORATE** (Tin Doanh nghiệp).  Lưu ý không chọn trùng với mục 1 và 2.
+4. **NHẬN ĐỊNH**: Viết một đoạn bình luận ngắn (dưới 50 từ) tổng hợp tâm lý thị trường dựa trên các tin này (Tích cực/Tiêu cực/Thận trọng...).
 
 DANH SÁCH TIN:
 {news_text}
@@ -3433,8 +3435,13 @@ DANH SÁCH TIN:
 YÊU CẦU OUTPUT (JSON Thuần):
 {{
   "headline": [
-    {{"text": "Nội dung tin 1...", "link": ""}}, 
-    {{"text": "Nội dung tin 2...", "link": ""}}
+    {{"text": "Tóm tắt tin...", "link": "link gốc", "ticker": "Mã CK (nếu có)"}}
+  ],
+  "macro": [
+    {{"text": "Tóm tắt tin vĩ mô...", "link": "link gốc"}}
+  ],
+  "corporate": [
+    {{"text": "Tóm tắt tin DN...", "link": "link gốc", "ticker": "Mã CK"}}
   ],
   "comment": "Nhận định thị trường..."
 }}
