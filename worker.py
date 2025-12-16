@@ -2515,9 +2515,6 @@ async def worker_inbound_loop():
                         elif cmd == "CMD_AGENT_RUN":
                             asyncio.create_task(handle_agent_run(payload))
 
-                        elif cmd == "CMD_MANUAL_ALERT":
-                            asyncio.create_task(handle_manual_alert(payload))
-
                         elif cmd == "CMD_ASK_AI":
                             chat_id = payload.get('chat_id')
                             question = payload.get('question')
@@ -2973,81 +2970,6 @@ async def _dispatch_symbol_tech_followup(chat_id: int, symbol_contexts: list[dic
     )
 
 
-async def handle_manual_alert(payload: dict):
-    chat_id = payload.get("chat_id")
-    symbols = payload.get("symbols") or []
-
-    if not chat_id:
-        log.warning("CMD_MANUAL_ALERT thiếu chat_id")
-        return
-
-    normalized: list[str] = []
-    for sym in symbols:
-        cleaned = str(sym or "").strip().upper()
-        if not cleaned:
-            continue
-        if cleaned not in normalized:
-            normalized.append(cleaned)
-
-    if not normalized:
-        push_telegram_msg(chat_id, "⚠️ Vui lòng cung cấp mã hợp lệ (VD: /alert HPG).", msg_type="STOCK_ALERT")
-        return
-
-    try:
-        data = await fetch_data_smart(normalized)
-    except Exception as exc:
-        log.error(f"[{INSTANCE_ID}] Manual alert fetch error: {exc}")
-        push_telegram_msg(chat_id, "⚠️ Không lấy được dữ liệu giá. Vui lòng thử lại sau.", msg_type="STOCK_ALERT")
-        return
-
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    messages: list[str] = []
-    buttons = {"inline_keyboard": []}
-    tech_followups: list[dict[str, Any]] = []
-
-    for sym in normalized:
-        quote = (data or {}).get(sym)
-        if not quote:
-            continue
-
-        try:
-            price = float(quote.get("price"))
-            pct = float(quote.get("pct"))
-        except (TypeError, ValueError):
-            continue
-
-        icon = "🟢" if pct >= 0 else "🔴"
-        fun_line = random.choice(ALERT_FUN_LINES_UP if pct >= 0 else ALERT_FUN_LINES_DOWN)
-        msg = (
-            f"{icon} *{sym} {'tăng' if pct >= 0 else 'giảm'} {pct:+.2f}%*\n"
-            f"Giá: {price:,.0f}\n_{fun_line}_"
-        )
-        messages.append(msg)
-
-        chart_url = f"{BASE_URL}/chart/{sym}"
-        buttons["inline_keyboard"].append([
-            {"text": f"📊 Soi Chart {sym}", "web_app": {"url": chart_url}}
-        ])
-
-        tech_followups.append({"symbol": sym, "price": price, "pct": pct})
-
-    if not messages:
-        push_telegram_msg(chat_id, "⚠️ Không tìm thấy dữ liệu hợp lệ cho các mã vừa nhập.", msg_type="STOCK_ALERT")
-        return
-
-    body = "\n".join(messages)
-    push_telegram_msg(
-        chat_id=chat_id,
-        text=body,
-        reply_markup=buttons if buttons["inline_keyboard"] else None,
-        msg_type="STOCK_ALERT",
-    )
-
-    if tech_followups:
-        asyncio.create_task(_dispatch_symbol_tech_followup(chat_id, tech_followups))
-
-
 async def alert_loop():
     global ALERT_STATE, _stock_alert_disabled_cache
     vn_tz = pytz.timezone(TIMEZONE)
@@ -3126,12 +3048,6 @@ async def alert_loop():
                         # Cập nhật state
                         personal_state[sym_u] = { "last_pct": float(pct), "last_alert_at": now.isoformat() }
 
-                        tech_followups.append({
-                            "symbol": sym_u,
-                            "price": price,
-                            "pct": pct,
-                        })
-
                 # Bắn tin sang Redis nếu có biến động
                 if messages:
                     header = f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
@@ -3145,9 +3061,6 @@ async def alert_loop():
                         msg_type="STOCK_ALERT"
                     )
                     log.info(f"🔔 Pushed alert for {chat_id}")
-
-                    if tech_followups:
-                        asyncio.create_task(_dispatch_symbol_tech_followup(chat_id, tech_followups))
 
         except Exception as e:
             log.error(f"Alert Loop Error: {e}")
