@@ -764,10 +764,11 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     stats = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
 
     def update_stats(response):
-        if response and response.usage_metadata:
+        # Sử dụng getattr và or 0 để an toàn khi giá trị là None
+        if response and getattr(response, "usage_metadata", None):
             stats["requests"] += 1
-            stats["input_tokens"] += response.usage_metadata.prompt_token_count
-            stats["output_tokens"] += response.usage_metadata.candidates_token_count
+            stats["input_tokens"] += (response.usage_metadata.prompt_token_count or 0)
+            stats["output_tokens"] += (response.usage_metadata.candidates_token_count or 0)
 
     # Hàm helper để tạo footer thống kê (Chỉ Admin mới thấy)
     def get_admin_stats_footer():

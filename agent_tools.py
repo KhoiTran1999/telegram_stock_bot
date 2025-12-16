@@ -11,7 +11,7 @@ import glob
 from functools import wraps
 from typing import Optional, Literal
 
-from vnstock import Quote, Finance, Company, Vnstock
+from vnstock import Quote, Finance, Company, Vnstock, Trading
 from manual_valuation import fetch_manual_pe_pb
 from db_utils import get_historical_valuation_from_redis
 from profile_cache import make_profile_cache_key, get_profile_from_redis
@@ -197,37 +197,65 @@ def _parse_gso_custom_csv(file_path: str, keywords: list[str]) -> str:
 # ==============================================================================
 
 @registry.register(name="get_market_price")
-async def tool_get_market_price(symbol: str):
-    """Lấy giá khớp lệnh, khối lượng và biến động hiện tại của một mã cổ phiếu (VD: HPG)."""
-    symbol = symbol.upper().strip()
+def tool_get_market_price(symbol: str):
+    """
+    Lấy thông tin giá, % thay đổi, tổng khối lượng và tổng giá trị giao dịch.
+    Sử dụng vnstock.Trading.price_board
+    """
+    symbol = symbol.upper()
     try:
-        quote = Quote(symbol=symbol, source='VCI')
-        # Lấy data nhỏ gọn nhất
-        df = await asyncio.to_thread(quote.price_board, [symbol])
-        
+        # 1. Khởi tạo Trading & Gọi API
+        # Dùng chính symbol để init class, tránh phụ thuộc mã cứng khác
+        trading = Trading(symbol=symbol)
+        df = trading.price_board(symbols_list=[symbol])
+
+        # 2. Kiểm tra dữ liệu rỗng
         if df is None or df.empty:
-            return f"Không tìm thấy dữ liệu giá cho {symbol}"
-        
+            print(f"⚠️ Không có dữ liệu cho mã {symbol}")
+            return None
+
+        # 3. Lấy dòng dữ liệu đầu tiên
         row = df.iloc[0]
-        # Mapping các trường quan trọng từ vnstock
-        price = row.get(('match', 'match_price')) or row.get('match_price')
-        change = row.get(('match', 'match_change')) or row.get('change')
-        pct = row.get(('match', 'match_change_percent')) or row.get('change_percent')
-        vol = row.get(('match', 'match_vol')) or row.get('volume')
+
+        # 4. Trích xuất dữ liệu (Xử lý Key dạng Tuple)
         
-        # Xử lý đơn vị giá (x1000 nếu < 500) - logic cũ của bạn
-        if price and price < 500: price *= 1000
-        if change and abs(change) < 50: change *= 1000 # Giả định change cũng bị lệch
-        
-        return json.dumps({
+        # --- A. GIÁ (Price) ---
+        # Lấy giá khớp lệnh hiện tại.
+        price = row.get(('match', 'match_price'), 0)
+        ref_price = row.get(('match', 'reference_price'), 0)
+
+        # Fallback: Nếu giá khớp = 0 (đầu phiên chưa khớp), dùng giá tham chiếu để hiển thị
+        if price == 0:
+            price = ref_price
+
+        # --- B. % THAY ĐỔI (Change Percent) ---
+        change_pct = 0.0
+        if ref_price > 0:
+            change_pct = ((price - ref_price) / ref_price) * 100
+
+        # --- C. KHỐI LƯỢNG (Volume) ---
+        # Key: ('match', 'accumulated_volume')
+        vol = row.get(('match', 'accumulated_volume'), 0)
+
+        # --- D. GIÁ TRỊ (Value) ---
+        # Key: ('match', 'accumulated_value'). Đơn vị API trả về thường là Triệu đồng.
+        val_raw = row.get(('match', 'accumulated_value'), 0)
+        val = val_raw * 1_000_000 # Nhân 1 triệu để về đơn vị Đồng (VND)
+
+        # 5. Trả về kết quả Clean
+        result = {
             "symbol": symbol,
-            "price": price,
-            "change_val": change,
-            "change_pct": pct,
-            "volume": vol
-        }, ensure_ascii=False)
+            "price": int(price),
+            "change_percent": round(change_pct, 2),
+            "accumulated_volume": int(vol),
+            "accumulated_value": int(val)
+        }
+
+        return result
+
     except Exception as e:
-        return f"Lỗi dữ liệu giá: {str(e)}"
+        print(f"❌ Lỗi tool_get_market_price({symbol}): {e}")
+        return None
 
 @registry.register(name="get_fundamentals")
 async def tool_get_fundamentals(symbol: str):
