@@ -18,6 +18,7 @@ import uuid
 import time
 import pandas as pd
 import numpy as np
+import inspect
 
 # pandas-ta (custom build) still expects numpy.NaN to exist; numpy>=2 drops it.
 # Create the alias before importing pandas_ta so the package can import cleanly.
@@ -747,6 +748,24 @@ def get_tool_descriptions_for_brain():
     
     return "\n".join(lines)
 
+def clean_data_robust(data):
+    """
+    Làm sạch dữ liệu triệt để bằng cách encode/decode JSON.
+    Biến đổi mọi kiểu dữ liệu lạ (numpy, pandas timestamp...) thành string hoặc chuẩn Python.
+    """
+    def default_converter(o):
+        # Nếu gặp kiểu lạ (numpy int/float, datetime...), chuyển hết thành string
+        return str(o)
+        
+    try:
+        # 1. Chuyển sang chuỗi JSON (ép kiểu lạ thành string)
+        json_str = json.dumps(data, default=default_converter, ensure_ascii=False)
+        # 2. Chuyển ngược lại thành Dict/List chuẩn
+        return json.loads(json_str)
+    except Exception:
+        # Fallback nếu quá lỗi thì trả về string
+        return str(data)
+
 # Định nghĩa Model ID (Bạn có thể thay đổi tên model thực tế tại đây)
 MODEL_BRAIN = "gemini-2.5-flash"      # Dùng cho bước đầu và cuối (2.5-pro nếu đã có access)
 MODEL_WORKER = "gemini-2.5-flash-lite" # Dùng cho các bước tool (2.0-flash-lite nếu đã có access)
@@ -782,7 +801,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     # --- HELPER: GỌI GEMINI AN TOÀN (RETRY & ROTATE KEY & LOGGING) ---
     async def safe_generate_content(model_id, contents, config=None):
         last_error = None
-        MAX_RETRIES = 3
+        MAX_RETRIES = 5  # Số vòng thử lại tối đa nếu toàn bộ Key đều lỗi
         
         for attempt in range(MAX_RETRIES):
             # Lấy danh sách key xoay vòng
@@ -826,7 +845,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             
             # Nếu hết danh sách key mà vẫn lỗi -> Chờ rồi thử lại vòng sau
             if attempt < MAX_RETRIES - 1:
-                wait_time = 5 * (attempt + 1)
+                wait_time = 30 * (attempt + 1)
                 log.warning(f"[{INSTANCE_ID}] ⏳ Agent: Tất cả keys bận. Chờ {wait_time}s...")
                 await asyncio.sleep(wait_time)
 
@@ -937,9 +956,12 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             
             # Check function call
             current_calls = []
-            for part in ai_content.parts:
-                if part.function_call:
-                    current_calls.append(part.function_call)
+
+            # --- [FIX 1] Kiểm tra parts tồn tại trước khi lặp ---
+            if ai_content and ai_content.parts:
+                for part in ai_content.parts:
+                    if part.function_call:
+                        current_calls.append(part.function_call)
             
             # Nếu không gọi tool nữa -> Chuyển sang bước tổng hợp
             if not current_calls:
@@ -956,12 +978,25 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
                 tool_args = fc.args
                 
                 tool_result = "Error: Tool not found"
-                if tool_name in TOOL_MAPPING: # Import từ agent_tools.py
+                if tool_name in TOOL_MAPPING: 
                     try:
                         args_dict = {k: v for k, v in tool_args.items()}
-                        # Gọi tool async
-                        tool_result = await TOOL_MAPPING[tool_name](**args_dict)
+                        func = TOOL_MAPPING[tool_name]
+                        
+                        # [FIX 3] Kiểm tra tool là Async hay Sync để gọi đúng cách
+                        if inspect.iscoroutinefunction(func):
+                            raw_result = await func(**args_dict)
+                        else:
+                            raw_result = func(**args_dict)
+                        
+                        # Làm sạch dữ liệu
+                        tool_result = clean_data_robust(raw_result)
+                        
+                        # Log kết quả sạch
+                        log.info(f"[{INSTANCE_ID}] 🔍 TOOL RESULT (Cleaned): {json.dumps(tool_result, ensure_ascii=False)}")
+
                     except Exception as e:
+                        log.error(f"[{INSTANCE_ID}] ❌ Lỗi khi xử lý Tool {tool_name}: {e}")
                         tool_result = f"Tool Error: {str(e)}"
                 
                 response_parts.append(
@@ -1008,7 +1043,6 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         update_stats(resp_syn)
         
         refined_data = resp_syn.candidates[0].content.parts[0].text
-        log.info(f"[{INSTANCE_ID}] 🧹 Refined Data Length: {len(refined_data)}")
 
     except Exception as e:
         log.error(f"Synthesis Error: {e}")
@@ -1036,7 +1070,6 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         2. Đưa ra nhận định, lời khuyên (nếu phù hợp).
         3. Giọng văn chuyên nghiệp, thân thiện.
         """
-        
         resp_final = await safe_generate_content(
             model_id=MODEL_BRAIN, # gemini-2.5-pro
             contents=manager_final_prompt,

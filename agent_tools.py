@@ -250,7 +250,6 @@ def tool_get_market_price(symbol: str):
             "accumulated_volume": int(vol),
             "accumulated_value": int(val)
         }
-
         return result
 
     except Exception as e:
