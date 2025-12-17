@@ -219,6 +219,47 @@ DIGEST_HTML_TEMPLATE = """
         .premium-card { background: linear-gradient(135deg, var(--accent-color) 0%, #af52de 100%); border-radius: 24px; padding: 24px; color: white; text-align: center; margin-top: 32px; }
         .premium-btn { display: block; width: 100%; padding: 15px; background-color: var(--card-bg); color: var(--accent-color); border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
         .btn-close-simple { padding: 12px 40px; background: var(--text-color); color: var(--bg-color); border: none; border-radius: 12px; font-weight: 600; cursor: pointer; }
+    
+        /* --- [MỚI] CSS CHO NAVIGATION CARDS --- */
+        .nav-label { 
+            margin: 24px 0 12px 0; 
+            font-size: 13px; 
+            font-weight: 700; 
+            color: var(--hint-color); 
+            text-transform: uppercase; 
+        }
+
+        .nav-card {
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between;
+            background: var(--card-bg); 
+            padding: 16px; 
+            border-radius: 16px;
+            margin-bottom: 12px; 
+            cursor: pointer; 
+            text-decoration: none; 
+            color: inherit;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04); 
+            border: 1px solid var(--border-color);
+            transition: transform 0.1s;
+        }
+        .nav-card:active { transform: scale(0.98); }
+        
+        .nav-icon { 
+            width: 40px; height: 40px; 
+            border-radius: 10px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-size: 20px; 
+            margin-right: 12px; 
+        }
+        
+        .nav-content { flex: 1; }
+        .nav-title { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+        .nav-desc { font-size: 12px; color: var(--hint-color); }
+        .nav-arrow { color: var(--hint-color); font-size: 14px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -254,46 +295,33 @@ DIGEST_HTML_TEMPLATE = """
                 {% endfor %}
             </div>
 
-            {% if data.ai_news.macro %}
-            <div class="ai-macro-title">🌊 Vĩ mô & Chính sách</div>
-            {% for item in data.ai_news.macro %}
-            <div style="margin-bottom:6px; font-size:13px;" class="ai-macro-text">
-                <a href="{{ item.link }}">• {{ item.text }}</a>
-            </div>
-            {% endfor %}
-            {% endif %}
-
-            {% if data.ai_news.corporate %}
-            <div style="margin-top: 20px;">
-                <div class="ai-corp-header">
-                    <span>🏢</span> TIN DOANH NGHIỆP
-                </div>
-                
-                <div class="list-container">
-                    {% for item in data.ai_news.corporate %}
-                    <div class="ai-corp-item" onclick="viewNews('{{ item.link }}')">
-                        <div style="margin-top: 4px; min-width: 6px; height: 6px; background-color: var(--accent-color); border-radius: 50%;"></div>
-                        
-                        <div style="flex: 1;">
-                            <div style="font-size:14px; line-height: 1.5; color: var(--text-color);">
-                                {% if item.ticker %}
-                                    <span class="ai-corp-ticker">{{ item.ticker }}</span>
-                                {% endif %}
-                                {{ item.text }}
-                            </div>
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-
+            
             <div class="ai-comment-box">
                 "{{ data.ai_news.comment }}"
             </div>
         </div>
     </div>
     {% endif %}
+
+    <div class="nav-label">Bảng tin chi tiết</div>
+
+    <a href="/digest/{{ digest_id }}/macro" class="nav-card">
+        <div class="nav-icon" style="background: rgba(255, 149, 0, 0.1); color: #ff9500;">🌍</div>
+        <div class="nav-content">
+            <div class="nav-title">Vĩ mô & Quốc tế</div>
+            <div class="nav-desc">Cập nhật tin tức kinh tế thế giới & Việt Nam</div>
+        </div>
+        <div class="nav-arrow">❯</div>
+    </a>
+
+    <a href="/digest/{{ digest_id }}/specialized" class="nav-card">
+        <div class="nav-icon" style="background: rgba(0, 122, 255, 0.1); color: #007aff;">🏢</div>
+        <div class="nav-content">
+            <div class="nav-title">Doanh nghiệp & Ngành</div>
+            <div class="nav-desc">Tin tức cổ phiếu, dự án, cổ tức, KQKD...</div>
+        </div>
+        <div class="nav-arrow">❯</div>
+    </a>
 
     {% if data.bctc %}
     <div class="section-card" id="bctc-card">
@@ -462,6 +490,106 @@ DIGEST_HTML_TEMPLATE = """
             @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
         `;
         document.head.appendChild(style);
+    </script>
+</body>
+</html>
+"""
+
+NEWS_GRID_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>News Feed</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #f2f2f7);
+            --text-color: var(--tg-theme-text-color, #000);
+            --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
+            --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --border-color: rgba(0,0,0,0.05);
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { --border-color: rgba(255,255,255,0.1); }
+        }
+        body { 
+            font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
+            margin: 0; padding: 16px;
+        }
+        
+        .header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+        .back-btn { background: var(--card-bg); border: none; width: 36px; height: 36px; border-radius: 10px; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-color); box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-decoration: none; }
+        .page-title { font-size: 20px; font-weight: 800; }
+
+        /* GRID LAYOUT */
+        .news-grid { 
+            display: grid; 
+            grid-template-columns: repeat(2, 1fr); /* 2 Cột */
+            gap: 12px; 
+        }
+        
+        .news-card {
+            background: var(--card-bg); border-radius: 12px; overflow: hidden;
+            display: flex; flex-direction: column; text-decoration: none; color: inherit;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.03); transition: transform 0.1s;
+            height: 100%; 
+        }
+        .news-card:active { transform: scale(0.98); }
+        
+        /* IMAGE STYLES */
+        .card-thumb { 
+            width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #eee; 
+            border-bottom: 1px solid var(--border-color);
+        }
+        .card-content { padding: 10px; flex: 1; display: flex; flex-direction: column; }
+        
+        .card-title { 
+            font-size: 13px; font-weight: 600; line-height: 1.4; 
+            margin-bottom: 6px; 
+            display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+        }
+        
+        .card-meta { margin-top: auto; font-size: 10px; color: var(--hint-color); display: flex; justify-content: space-between; }
+        .source-tag { font-weight: 600; text-transform: uppercase; opacity: 0.8; }
+
+        .no-img { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #e0e0e0, #f5f5f5); color: #ccc; font-size: 24px; }
+        .empty-state { grid-column: span 2; text-align: center; padding: 40px; color: var(--hint-color); font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/digest/{{ digest_id }}" class="back-btn">←</a>
+        <div class="page-title">{{ page_title }}</div>
+    </div>
+
+    <div class="news-grid">
+        {% for item in news_list %}
+        <a href="{{ item.link }}" target="_blank" class="news-card">
+            {% if item.image %}
+                <img src="{{ item.image }}" class="card-thumb" loading="lazy" onerror="this.style.display='none'">
+            {% else %}
+                <div class="card-thumb no-img">📰</div>
+            {% endif %}
+            
+            <div class="card-content">
+                <div class="card-title">{{ item.title }}</div>
+                <div class="card-meta">
+                    <span class="source-tag">{{ item.source }}</span>
+                </div>
+            </div>
+        </a>
+        {% else %}
+        <div class="empty-state">Không có tin tức nào trong mục này.</div>
+        {% endfor %}
+    </div>
+
+    <script>
+        Telegram.WebApp.ready();
+        Telegram.WebApp.expand();
+        document.documentElement.setAttribute('data-theme', Telegram.WebApp.colorScheme);
     </script>
 </body>
 </html>

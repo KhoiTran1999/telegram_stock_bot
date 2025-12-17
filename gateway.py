@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 from digest_template import (
     DIGEST_HTML_TEMPLATE,
+    NEWS_GRID_TEMPLATE,
     DIGEST_404_TEMPLATE,
     PROFILE_HTML_TEMPLATE,
     PROFILE_404_TEMPLATE,
@@ -2996,6 +2997,43 @@ def view_digest(digest_id):
     
     # Render trang chính
     return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
+
+# --- [MỚI] Route xem tin Vĩ mô (Grid View) ---
+@flask_app.route("/digest/<digest_id>/macro")
+def view_digest_macro(digest_id):
+    data = get_digest_from_redis(digest_id)
+    
+    # Nếu không tìm thấy data (hết hạn hoặc ID sai) -> 404
+    if not data:
+        return render_template_string(DIGEST_404_TEMPLATE), 404
+    
+    # Lấy danh sách tin từ key 'macro_feed' (đã lưu ở worker.py)
+    news_list = data.get("macro_feed", [])
+    
+    return render_template_string(
+        NEWS_GRID_TEMPLATE, 
+        digest_id=digest_id,
+        page_title="Vĩ mô & Quốc tế",
+        news_list=news_list
+    )
+
+# --- [MỚI] Route xem tin Doanh nghiệp (Grid View) ---
+@flask_app.route("/digest/<digest_id>/specialized")
+def view_digest_specialized(digest_id):
+    data = get_digest_from_redis(digest_id)
+    
+    if not data:
+        return render_template_string(DIGEST_404_TEMPLATE), 404
+    
+    # Lấy danh sách tin từ key 'spec_feed'
+    news_list = data.get("spec_feed", [])
+    
+    return render_template_string(
+        NEWS_GRID_TEMPLATE, 
+        digest_id=digest_id,
+        page_title="Doanh nghiệp & Ngành",
+        news_list=news_list
+    )
 
 # --- HELPER CHO SCREENER WEBAPP ---
 # Các mã cần loại khỏi Screener (yêu cầu business)
