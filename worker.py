@@ -3184,19 +3184,20 @@ async def _market_process_tick(symbol: str, price: float):
 
 async def market_monitor_fetcher_loop():
     """
-    Loop lấy giá chung cho VN30F1M, VNINDEX, VN30.
-    Chạy chu kỳ 5s (nhanh nhất). Các mã 10s sẽ được check time nếu cần, 
-    nhưng để đơn giản và responsive, ta fetch tất cả mỗi 5s.
+    [WORKER] Loop lấy giá VN30F1M, VNINDEX, VN30 sử dụng hoàn toàn nguồn VCI.
+    - p_now: Lấy từ nến 1 phút mới nhất (interval='1m').
+    - p_ref: Lấy từ nến ngày của phiên giao dịch trước đó (interval='1D').
     """
     global _market_data
     vn_tz = pytz.timezone(TIMEZONE)
-    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Market Monitor Fetcher (Unified)...")
+    log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Market Monitor Fetcher (VCI Optimized)...")
 
     while True:
         now = datetime.datetime.now(vn_tz)
         
         if not get_bot_active():
-            await asyncio.sleep(30); continue
+            await asyncio.sleep(30)
+            continue
         
         if not in_session_vietnam():
             next_start = next_session_start(now)
@@ -3207,65 +3208,42 @@ async def market_monitor_fetcher_loop():
             today_str = now.strftime('%Y-%m-%d')
             
             async def _fetch_one(symbol):
-                # 1. Giá khớp (Live 1m) - Giữ nguyên
-                q = Quote(symbol=symbol, source='VCI')
-                df_now = await asyncio.to_thread(q.history, start=today_str, end=today_str, interval='1m')
-                p_now = float(df_now.iloc[-1]['close']) if df_now is not None and not df_now.empty else None
-                
-                # 2. Giá tham chiếu (Ref) - LOGIC MỚI [FIX]
+                p_now = None
                 p_ref = None
-                state = _market_data.get(symbol)
                 
-                # Chỉ lấy lại Ref nếu trong state chưa có
-                if state and state["ref"] is None:
-                    # A. Thử lấy từ Board (VCI thường có ref chuẩn cho Phái sinh)
-                    if symbol == "VN30F1M" and stock_trading:
-                        try:
-                            row = stock_trading.price_board([symbol]).iloc[0]
-                            val = row.get(('listing', 'ref_price')) or row.get('ref_price')
-                            if val: p_ref = float(val)
-                        except: pass
+                try:
+                    # Khởi tạo Quote với nguồn VCI
+                    quote = Quote(symbol=symbol, source='VCI')
                     
-                    # B. Nếu chưa có, lấy từ History nhưng check ngày thông minh
-                    if p_ref is None:
-                        # Dùng TCBS cho Index vì ổn định hơn VCI, các mã khác dùng VCI
-                        src = 'TCBS' if symbol in ['VNINDEX', 'VN30'] else 'VCI'
-                        q_hist = Quote(symbol=symbol, source=src)
+                    # 1. LẤY GIÁ HIỆN TẠI (p_now) - Dùng nến 1 phút
+                    # VNINDEX/VN30 thường không có giá trong price_board nên dùng cách này là chuẩn nhất
+                    df_1m = await asyncio.to_thread(quote.history, start=today_str, end=today_str, interval='1m')
+                    if df_1m is not None and not df_1m.empty:
+                        p_now = float(df_1m.iloc[-1]['close'])
+                    
+                    # 2. LẤY GIÁ THAM CHIẾU (p_ref) - Dùng nến ngày phiên trước
+                    state = _market_data.get(symbol)
+                    # Chỉ lấy lại Ref nếu trong state chưa có hoặc sang ngày mới
+                    if state and (state["ref"] is None or state["date"] != now.date()):
+                        # Lấy lịch sử 7 ngày để chắc chắn cover được ngày nghỉ/lễ
+                        start_hist = (now - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
+                        df_day = await asyncio.to_thread(quote.history, start=start_hist, end=today_str, interval='1D')
                         
-                        start_prev = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
-                        df_daily = await asyncio.to_thread(q_hist.history, start=start_prev, end=today_str, interval='1D')
-                        
-                        if df_daily is not None and not df_daily.empty:
-                            # Chuẩn hóa cột ngày tháng
-                            if 'time' in df_daily.columns:
-                                df_daily['dt'] = pd.to_datetime(df_daily['time']).dt.date
-                            elif 'tradingDate' in df_daily.columns:
-                                df_daily['dt'] = pd.to_datetime(df_daily['tradingDate']).dt.date
+                        if df_day is not None and len(df_day) >= 2:
+                            # Nếu dòng cuối cùng là nến ngày hôm nay, p_ref là dòng liền trước (hôm qua)
+                            last_date_in_df = str(df_day.iloc[-1]['time']).split()[0]
+                            if last_date_in_df == today_str:
+                                p_ref = float(df_day.iloc[-2]['close'])
                             else:
-                                # Fallback nếu không tìm thấy cột ngày
-                                df_daily['dt'] = None
-
-                            last_row = df_daily.iloc[-1]
-                            last_close = float(last_row['close'])
-                            last_date = last_row['dt']
-                            today_date = now.date()
-                            
-                            # LOGIC QUAN TRỌNG:
-                            if last_date == today_date:
-                                # Nếu dòng cuối là hôm nay -> Ref là dòng áp chót (Hôm qua)
-                                if len(df_daily) >= 2:
-                                    p_ref = float(df_daily.iloc[-2]['close'])
-                                else:
-                                    # Trường hợp dị: Mới lên sàn hoặc dữ liệu lỗi chỉ có 1 dòng hôm nay
-                                    # Fallback tạm bằng giá open hoặc close hôm nay
-                                    p_ref = float(last_row.get('open', last_close))
-                            else:
-                                # Nếu dòng cuối KHÔNG PHẢI hôm nay (tức là dữ liệu mới nhất là hôm qua)
-                                # -> Ref chính là dòng cuối
-                                p_ref = last_close
-
+                                # Nếu hôm nay chưa có nến ngày, p_ref là dòng cuối cùng (hôm qua)
+                                p_ref = float(df_day.iloc[-1]['close'])
+                                
+                except Exception as e:
+                    log.warning(f"[{INSTANCE_ID}] Lỗi fetch {symbol} từ VCI: {e}")
+                
                 return symbol, p_now, p_ref
-            # Chạy song song tất cả monitors
+
+            # Chạy song song cho tất cả các chỉ số (VN30F1M, VNINDEX, VN30)
             tasks = [_fetch_one(sym) for sym in MARKET_MONITORS.keys()]
             results = await asyncio.gather(*tasks)
 
@@ -3276,16 +3254,18 @@ async def market_monitor_fetcher_loop():
                 if p_now:
                     state["price"] = p_now
                     
-                    if state["ref"] is None and p_ref:
+                    if p_ref:
                         state["ref"] = p_ref
-                        # Init anchor bằng Ref nếu chưa có
-                        if state["anchor"] is None: state["anchor"] = p_ref
+                        # Khởi tạo anchor bằng Ref nếu đây là lần đầu chạy trong ngày
+                        if state["anchor"] is None: 
+                            state["anchor"] = p_ref
+                            log.info(f"[{sym}] Set anchor initial: {p_ref}")
 
         except Exception as e:
             log.error(f"Market Fetch Error: {e}")
 
-        await asyncio.sleep(5) # Chu kỳ chung 5s
-
+        # Chu kỳ fetch 10 giây để đảm bảo không bị VCI chặn IP (Rate limit)
+        await asyncio.sleep(10)
 async def market_monitor_alert_loop():
     """
     Loop kiểm tra và bắn tin cảnh báo chung.
