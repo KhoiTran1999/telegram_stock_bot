@@ -2502,10 +2502,10 @@ async def worker_inbound_loop():
                             log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Weekly từ {admin_id}")
                             asyncio.create_task(execute_weekly_batch(requester_id=admin_id))
 
-                        elif cmd == "RUN_NIGHTLY_VALUATION":
-                            admin_id = payload.get('admin_id')
-                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
-                            asyncio.create_task(job_nightly_valuation())
+                        # elif cmd == "RUN_NIGHTLY_VALUATION":
+                        #     admin_id = payload.get('admin_id')
+                        #     log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Nightly Valuation từ {admin_id}")
+                        #     asyncio.create_task(job_nightly_valuation())
 
                         elif cmd == "RUN_DAILY_DIGEST":
                             admin_id = payload.get('admin_id')
@@ -2534,9 +2534,9 @@ async def worker_inbound_loop():
                             loading_id = payload.get('loading_msg_id')
                             asyncio.create_task(process_screener_view(chat_id, loading_id))
 
-                        elif cmd == "FORCE_SCREENER":
-                            admin_id = payload.get('admin_id')
-                            asyncio.create_task(process_force_update_screener(admin_id))
+                        # elif cmd == "FORCE_SCREENER":
+                        #     admin_id = payload.get('admin_id')
+                        #     asyncio.create_task(process_force_update_screener(admin_id))
 
                         elif cmd == "RUN_MONTHLY_INSIGHT":
                             admin_id = payload.get('admin_id')
@@ -3456,396 +3456,396 @@ def _extract_price_from_screener_row(row: pd.Series) -> float | None:
     return None
 
 
-async def calculate_market_comprehensive_data():
-    """
-    TÁC VỤ NẶNG (Nightly):
-    1. Tính P/E, P/B trung bình 5 năm (Mean Reversion).
-    2. Tính hiệu suất giá (12 tuần, 6 tháng).
-    3. Tổng hợp chỉ số ngành (Sector Performance).
-    4. Lưu tất cả vào Redis để WebApp/Bot dùng chung.
-    """
-    log.info(f"[{INSTANCE_ID}] 🏗️ Bắt đầu Job tổng hợp dữ liệu thị trường (Valuation + Performance)...")
+# async def calculate_market_comprehensive_data():
+#     """
+#     TÁC VỤ NẶNG (Nightly):
+#     1. Tính P/E, P/B trung bình 5 năm (Mean Reversion).
+#     2. Tính hiệu suất giá (12 tuần, 6 tháng).
+#     3. Tổng hợp chỉ số ngành (Sector Performance).
+#     4. Lưu tất cả vào Redis để WebApp/Bot dùng chung.
+#     """
+#     log.info(f"[{INSTANCE_ID}] 🏗️ Bắt đầu Job tổng hợp dữ liệu thị trường (Valuation + Performance)...")
     
-    try:
-        # 1. Chuẩn bị dữ liệu đầu vào
-        sector_map = await asyncio.to_thread(load_symbol_sector_map)
+#     try:
+#         # 1. Chuẩn bị dữ liệu đầu vào
+#         sector_map = await asyncio.to_thread(load_symbol_sector_map)
         
-        # Lấy danh sách mã từ Screener (Lọc thanh khoản & Vốn hóa)
-        screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
+#         # Lấy danh sách mã từ Screener (Lọc thanh khoản & Vốn hóa)
+#         screener = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
         
-        MIN_MARKET_CAP = 5000 
-        MIN_TRADING_VAL = 50 # [UPDATED] Tăng điều kiện thanh khoản lên 50 tỷ
-        screener['market_cap'] = pd.to_numeric(screener['market_cap'], errors='coerce').fillna(0)
-        liq_col = 'total_trading_value' if 'total_trading_value' in screener.columns else 'avg_trading_value_20d'
-        screener[liq_col] = pd.to_numeric(screener[liq_col], errors='coerce').fillna(0)
+#         MIN_MARKET_CAP = 5000 
+#         MIN_TRADING_VAL = 50 # [UPDATED] Tăng điều kiện thanh khoản lên 50 tỷ
+#         screener['market_cap'] = pd.to_numeric(screener['market_cap'], errors='coerce').fillna(0)
+#         liq_col = 'total_trading_value' if 'total_trading_value' in screener.columns else 'avg_trading_value_20d'
+#         screener[liq_col] = pd.to_numeric(screener[liq_col], errors='coerce').fillna(0)
 
-        valid_df = screener[
-            (screener['market_cap'] >= MIN_MARKET_CAP) & 
-            (screener[liq_col] >= MIN_TRADING_VAL)
-        ]
-        valid_tickers = valid_df['ticker'].tolist()
-        log.info(f"[{INSTANCE_ID}] Danh sách cần xử lý: {len(valid_tickers)} mã.")
+#         valid_df = screener[
+#             (screener['market_cap'] >= MIN_MARKET_CAP) & 
+#             (screener[liq_col] >= MIN_TRADING_VAL)
+#         ]
+#         valid_tickers = valid_df['ticker'].tolist()
+#         log.info(f"[{INSTANCE_ID}] Danh sách cần xử lý: {len(valid_tickers)} mã.")
 
-        price_hints: dict[str, float] = {}
-        for _, row in valid_df.iterrows():
-            sym = str(row['ticker']).strip().upper()
-            hint = _extract_price_from_screener_row(row)
-            if sym and hint:
-                price_hints[sym] = hint
+#         price_hints: dict[str, float] = {}
+#         for _, row in valid_df.iterrows():
+#             sym = str(row['ticker']).strip().upper()
+#             hint = _extract_price_from_screener_row(row)
+#             if sym and hint:
+#                 price_hints[sym] = hint
 
-        # Cấu trúc dữ liệu lưu Redis
-        # {
-        #    "stocks": { "HPG": { "pe_avg":..., "change_6m":..., "sector":... }, ... },
-        #    "sectors": { "Thép": { "change_6m":..., "count":... }, ... },
-        #    "updated_at": "..."
-        # }
-        stocks_data = {}
-        sector_accumulators = {} # { "Thép": {"sum_12w": 0, "sum_6m": 0, "count": 0} }
+#         # Cấu trúc dữ liệu lưu Redis
+#         # {
+#         #    "stocks": { "HPG": { "pe_avg":..., "change_6m":..., "sector":... }, ... },
+#         #    "sectors": { "Thép": { "change_6m":..., "count":... }, ... },
+#         #    "updated_at": "..."
+#         # }
+#         stocks_data = {}
+#         sector_accumulators = {} # { "Thép": {"sum_12w": 0, "sum_6m": 0, "count": 0} }
 
-        consecutive_errors = 0
-        manual_alerts: list[str] = []
+#         consecutive_errors = 0
+#         manual_alerts: list[str] = []
         
-        # 2. Loop xử lý từng mã (Batching)
-        BATCH_SIZE = 5
-        BATCH_SLEEP = 60
+#         # 2. Loop xử lý từng mã (Batching)
+#         BATCH_SIZE = 5
+#         BATCH_SLEEP = 60
 
-        for i, sym in enumerate(valid_tickers):
-            # Log progress
-            log.info(f"[{INSTANCE_ID}] Processing {i+1}/{len(valid_tickers)}: {sym}")
+#         for i, sym in enumerate(valid_tickers):
+#             # Log progress
+#             log.info(f"[{INSTANCE_ID}] Processing {i+1}/{len(valid_tickers)}: {sym}")
 
-            # Rate Limit (Batching)
-            if i > 0 and i % BATCH_SIZE == 0:
-                log.info(f"[{INSTANCE_ID}] 💤 Đã xong batch {BATCH_SIZE} mã. Nghỉ {BATCH_SLEEP}s để hồi API...")
-                await asyncio.sleep(BATCH_SLEEP)
+#             # Rate Limit (Batching)
+#             if i > 0 and i % BATCH_SIZE == 0:
+#                 log.info(f"[{INSTANCE_ID}] 💤 Đã xong batch {BATCH_SIZE} mã. Nghỉ {BATCH_SLEEP}s để hồi API...")
+#                 await asyncio.sleep(BATCH_SLEEP)
 
-            if consecutive_errors > 5:
-                log.warning(f"[{INSTANCE_ID}] ⚠️ Bị chặn liên tục. Ngủ 120s...")
-                await asyncio.sleep(120)
-                consecutive_errors = 0
+#             if consecutive_errors > 5:
+#                 log.warning(f"[{INSTANCE_ID}] ⚠️ Bị chặn liên tục. Ngủ 120s...")
+#                 await asyncio.sleep(120)
+#                 consecutive_errors = 0
 
-            try:
-                # --- A. Fetch Dữ liệu (Chạy song song Ratio & History) ---
-                async def _fetch_ratio():
-                    return await asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi'))
+#             try:
+#                 # --- A. Fetch Dữ liệu (Chạy song song Ratio & History) ---
+#                 async def _fetch_ratio():
+#                     return await asyncio.to_thread(lambda: Finance(symbol=sym, source='VCI').ratio(period='year', lang='vi'))
                 
-                async def _fetch_history():
-                    # Lấy 190 ngày để đảm bảo đủ 6 tháng (khoảng 180 ngày)
-                    end_d = datetime.datetime.now()
-                    start_d = end_d - datetime.timedelta(days=190)
-                    q = Quote(symbol=sym, source='VCI')
-                    return await asyncio.to_thread(q.history, start=start_d.strftime('%Y-%m-%d'), end=end_d.strftime('%Y-%m-%d'), interval='1D')
+#                 async def _fetch_history():
+#                     # Lấy 190 ngày để đảm bảo đủ 6 tháng (khoảng 180 ngày)
+#                     end_d = datetime.datetime.now()
+#                     start_d = end_d - datetime.timedelta(days=190)
+#                     q = Quote(symbol=sym, source='VCI')
+#                     return await asyncio.to_thread(q.history, start=start_d.strftime('%Y-%m-%d'), end=end_d.strftime('%Y-%m-%d'), interval='1D')
 
-                # Chạy song song 2 request để tiết kiệm thời gian
-                fin_df, hist_df = await asyncio.gather(_fetch_ratio(), _fetch_history())
+#                 # Chạy song song 2 request để tiết kiệm thời gian
+#                 fin_df, hist_df = await asyncio.gather(_fetch_ratio(), _fetch_history())
                 
-                # --- B. Xử lý Valuation (P/E, P/B Avg) ---
-                val_stats = {}
-                if fin_df is not None and not fin_df.empty:
-                    fin_df = _clean_vnstock_columns(fin_df)
-                    df_5y = fin_df.head(5)
-                    pe_s = pd.to_numeric(df_5y.get('pe', []), errors='coerce')
-                    pb_s = pd.to_numeric(df_5y.get('pb', []), errors='coerce')
-                    pe_s = pe_s[pe_s > 0]
-                    pb_s = pb_s[pb_s > 0]
+#                 # --- B. Xử lý Valuation (P/E, P/B Avg) ---
+#                 val_stats = {}
+#                 if fin_df is not None and not fin_df.empty:
+#                     fin_df = _clean_vnstock_columns(fin_df)
+#                     df_5y = fin_df.head(5)
+#                     pe_s = pd.to_numeric(df_5y.get('pe', []), errors='coerce')
+#                     pb_s = pd.to_numeric(df_5y.get('pb', []), errors='coerce')
+#                     pe_s = pe_s[pe_s > 0]
+#                     pb_s = pb_s[pb_s > 0]
                     
-                    if len(pe_s) >= 3: val_stats['pe_avg'] = pe_s.mean()
-                    if len(pb_s) >= 3: val_stats['pb_avg'] = pb_s.mean()
+#                     if len(pe_s) >= 3: val_stats['pe_avg'] = pe_s.mean()
+#                     if len(pb_s) >= 3: val_stats['pb_avg'] = pb_s.mean()
 
-                # --- C. Xử lý Performance (12W, 6M) ---
-                perf_stats = {}
-                if hist_df is not None and not hist_df.empty:
-                    # Chuẩn hóa cột
-                    hist_df.columns = hist_df.columns.str.lower().str.strip()
-                    if 'time' in hist_df.columns: hist_df['time'] = pd.to_datetime(hist_df['time'])
-                    hist_df = hist_df.sort_values('time')
+#                 # --- C. Xử lý Performance (12W, 6M) ---
+#                 perf_stats = {}
+#                 if hist_df is not None and not hist_df.empty:
+#                     # Chuẩn hóa cột
+#                     hist_df.columns = hist_df.columns.str.lower().str.strip()
+#                     if 'time' in hist_df.columns: hist_df['time'] = pd.to_datetime(hist_df['time'])
+#                     hist_df = hist_df.sort_values('time')
                     
-                    closes = pd.to_numeric(hist_df['close'], errors='coerce')
-                    dates = hist_df['time'].tolist()
+#                     closes = pd.to_numeric(hist_df['close'], errors='coerce')
+#                     dates = hist_df['time'].tolist()
                     
-                    if len(closes) > 0:
-                        price_now = closes.iloc[-1]
-                        date_now = dates[-1]
+#                     if len(closes) > 0:
+#                         price_now = closes.iloc[-1]
+#                         date_now = dates[-1]
                         
-                        # Hàm tìm giá tại thời điểm T - days
-                        def _get_change(days_back):
-                            target_date = date_now - datetime.timedelta(days=days_back)
-                            # Tìm ngày gần nhất trong quá khứ (<= target_date)
-                            # Vì list đã sort, ta tìm ngược từ dưới lên
-                            idx = -1
-                            for k in range(len(dates)-1, -1, -1):
-                                if dates[k] <= target_date:
-                                    idx = k
-                                    break
+#                         # Hàm tìm giá tại thời điểm T - days
+#                         def _get_change(days_back):
+#                             target_date = date_now - datetime.timedelta(days=days_back)
+#                             # Tìm ngày gần nhất trong quá khứ (<= target_date)
+#                             # Vì list đã sort, ta tìm ngược từ dưới lên
+#                             idx = -1
+#                             for k in range(len(dates)-1, -1, -1):
+#                                 if dates[k] <= target_date:
+#                                     idx = k
+#                                     break
                             
-                            if idx != -1 and closes.iloc[idx] > 0:
-                                p_old = closes.iloc[idx]
-                                return ((price_now - p_old) / p_old) * 100
-                            return None
+#                             if idx != -1 and closes.iloc[idx] > 0:
+#                                 p_old = closes.iloc[idx]
+#                                 return ((price_now - p_old) / p_old) * 100
+#                             return None
 
-                        perf_stats['change_12w'] = _get_change(84)  # 12 tuần ~ 84 ngày
-                        perf_stats['change_6m'] = _get_change(180) # 6 tháng ~ 180 ngày
+#                         perf_stats['change_12w'] = _get_change(84)  # 12 tuần ~ 84 ngày
+#                         perf_stats['change_6m'] = _get_change(180) # 6 tháng ~ 180 ngày
 
-                manual_payload: dict[str, Any] = {}
-                try:
-                    manual_result = await asyncio.to_thread(
-                        fetch_manual_pe_pb,
-                        sym,
-                        use_cache=True,
-                        price=price_hints.get(sym),
-                    )
-                except Exception as exc:
-                    log.warning(f"[{INSTANCE_ID}] Manual valuation fatal for {sym}: {exc}")
-                    manual_result = None
-                if manual_result:
-                    manual_fields = {
-                        "pe_manual": manual_result.pe,
-                        "pb_manual": manual_result.pb,
-                        "manual_price": manual_result.price,
-                        "manual_eps_ttm": manual_result.eps_ttm,
-                        "manual_bvps": manual_result.bvps,
-                        "manual_updated_at": manual_result.computed_at,
-                    }
-                    for key, value in manual_fields.items():
-                        if value is not None:
-                            manual_payload[key] = value
-                    if manual_result.error:
-                        manual_payload["manual_error"] = manual_result.error
-                    if manual_result.needs_admin_alert and manual_result.error:
-                        manual_alerts.append(f"{sym}: {manual_result.error}")
+#                 manual_payload: dict[str, Any] = {}
+#                 try:
+#                     manual_result = await asyncio.to_thread(
+#                         fetch_manual_pe_pb,
+#                         sym,
+#                         use_cache=True,
+#                         price=price_hints.get(sym),
+#                     )
+#                 except Exception as exc:
+#                     log.warning(f"[{INSTANCE_ID}] Manual valuation fatal for {sym}: {exc}")
+#                     manual_result = None
+#                 if manual_result:
+#                     manual_fields = {
+#                         "pe_manual": manual_result.pe,
+#                         "pb_manual": manual_result.pb,
+#                         "manual_price": manual_result.price,
+#                         "manual_eps_ttm": manual_result.eps_ttm,
+#                         "manual_bvps": manual_result.bvps,
+#                         "manual_updated_at": manual_result.computed_at,
+#                     }
+#                     for key, value in manual_fields.items():
+#                         if value is not None:
+#                             manual_payload[key] = value
+#                     if manual_result.error:
+#                         manual_payload["manual_error"] = manual_result.error
+#                     if manual_result.needs_admin_alert and manual_result.error:
+#                         manual_alerts.append(f"{sym}: {manual_result.error}")
 
-                # --- D. Tổng hợp ---
-                if val_stats or perf_stats or manual_payload:
-                    sector_name = sector_map.get(sym, "Khác")
+#                 # --- D. Tổng hợp ---
+#                 if val_stats or perf_stats or manual_payload:
+#                     sector_name = sector_map.get(sym, "Khác")
                     
-                    item_data = {
-                        "sector": sector_name,
-                        **val_stats,
-                        **perf_stats,
-                        **manual_payload,
-                    }
-                    stocks_data[sym] = item_data
+#                     item_data = {
+#                         "sector": sector_name,
+#                         **val_stats,
+#                         **perf_stats,
+#                         **manual_payload,
+#                     }
+#                     stocks_data[sym] = item_data
                     
-                    # Cộng dồn cho Sector (Chỉ tính nếu có dữ liệu)
-                    if sector_name != "Khác":
-                        if sector_name not in sector_accumulators:
-                            sector_accumulators[sector_name] = {"sum_12w": 0.0, "cnt_12w": 0, "sum_6m": 0.0, "cnt_6m": 0}
+#                     # Cộng dồn cho Sector (Chỉ tính nếu có dữ liệu)
+#                     if sector_name != "Khác":
+#                         if sector_name not in sector_accumulators:
+#                             sector_accumulators[sector_name] = {"sum_12w": 0.0, "cnt_12w": 0, "sum_6m": 0.0, "cnt_6m": 0}
                         
-                        acc = sector_accumulators[sector_name]
+#                         acc = sector_accumulators[sector_name]
                         
-                        if perf_stats.get('change_12w') is not None:
-                            acc['sum_12w'] += perf_stats['change_12w']
-                            acc['cnt_12w'] += 1
+#                         if perf_stats.get('change_12w') is not None:
+#                             acc['sum_12w'] += perf_stats['change_12w']
+#                             acc['cnt_12w'] += 1
                             
-                        if perf_stats.get('change_6m') is not None:
-                            acc['sum_6m'] += perf_stats['change_6m']
-                            acc['cnt_6m'] += 1
+#                         if perf_stats.get('change_6m') is not None:
+#                             acc['sum_6m'] += perf_stats['change_6m']
+#                             acc['cnt_6m'] += 1
 
-                    consecutive_errors = 0
+#                     consecutive_errors = 0
                 
-                # Delay nhẹ
-                await asyncio.sleep(2.0)
+#                 # Delay nhẹ
+#                 await asyncio.sleep(2.0)
 
-            except BaseException as e:
-                # [FIX] Check cancellation first
-                if isinstance(e, asyncio.CancelledError):
-                    raise e
+#             except BaseException as e:
+#                 # [FIX] Check cancellation first
+#                 if isinstance(e, asyncio.CancelledError):
+#                     raise e
 
-                # Bắt cả SystemExit do vnstock raise khi bị Rate Limit
-                consecutive_errors += 1
-                err_str = str(e)
+#                 # Bắt cả SystemExit do vnstock raise khi bị Rate Limit
+#                 consecutive_errors += 1
+#                 err_str = str(e)
                 
-                # Check SystemExit explicitly
-                is_system_exit = isinstance(e, SystemExit) or type(e).__name__ == 'SystemExit'
+#                 # Check SystemExit explicitly
+#                 is_system_exit = isinstance(e, SystemExit) or type(e).__name__ == 'SystemExit'
                 
-                if "Rate limit exceeded" in err_str or is_system_exit:
-                    log.warning(f"[{INSTANCE_ID}] ⚠️ Rate Limit Hit ({sym}) - {type(e).__name__}. Ngủ 60s...")
-                    await asyncio.sleep(60.0)
-                else:
-                    log.warning(f"Lỗi xử lý {sym}: {type(e).__name__} - {e}")
-                    await asyncio.sleep(2.0)
+#                 if "Rate limit exceeded" in err_str or is_system_exit:
+#                     log.warning(f"[{INSTANCE_ID}] ⚠️ Rate Limit Hit ({sym}) - {type(e).__name__}. Ngủ 60s...")
+#                     await asyncio.sleep(60.0)
+#                 else:
+#                     log.warning(f"Lỗi xử lý {sym}: {type(e).__name__} - {e}")
+#                     await asyncio.sleep(2.0)
 
-        # 3. Tính chỉ số ngành (Trung bình cộng)
-        sectors_final = {}
-        for sec_name, acc in sector_accumulators.items():
-            avg_12w = (acc['sum_12w'] / acc['cnt_12w']) if acc['cnt_12w'] > 0 else None
-            avg_6m = (acc['sum_6m'] / acc['cnt_6m']) if acc['cnt_6m'] > 0 else None
+#         # 3. Tính chỉ số ngành (Trung bình cộng)
+#         sectors_final = {}
+#         for sec_name, acc in sector_accumulators.items():
+#             avg_12w = (acc['sum_12w'] / acc['cnt_12w']) if acc['cnt_12w'] > 0 else None
+#             avg_6m = (acc['sum_6m'] / acc['cnt_6m']) if acc['cnt_6m'] > 0 else None
             
-            sectors_final[sec_name] = {
-                "change_12w": avg_12w,
-                "change_6m": avg_6m,
-                "count": max(acc['cnt_12w'], acc['cnt_6m'])
-            }
+#             sectors_final[sec_name] = {
+#                 "change_12w": avg_12w,
+#                 "change_6m": avg_6m,
+#                 "count": max(acc['cnt_12w'], acc['cnt_6m'])
+#             }
 
-        # --- [NEW] Thêm VNINDEX vào danh sách Sector ---
-        try:
-            log.info(f"[{INSTANCE_ID}] Đang lấy dữ liệu VNINDEX...")
-            end_d = datetime.datetime.now()
-            start_d = end_d - datetime.timedelta(days=190)
+#         # --- [NEW] Thêm VNINDEX vào danh sách Sector ---
+#         try:
+#             log.info(f"[{INSTANCE_ID}] Đang lấy dữ liệu VNINDEX...")
+#             end_d = datetime.datetime.now()
+#             start_d = end_d - datetime.timedelta(days=190)
             
-            # Hàm lấy history VNINDEX
-            def _get_vnindex_hist():
-                q = Quote(symbol='VNINDEX', source='VCI')
-                return q.history(start=start_d.strftime('%Y-%m-%d'), end=end_d.strftime('%Y-%m-%d'), interval='1D')
+#             # Hàm lấy history VNINDEX
+#             def _get_vnindex_hist():
+#                 q = Quote(symbol='VNINDEX', source='VCI')
+#                 return q.history(start=start_d.strftime('%Y-%m-%d'), end=end_d.strftime('%Y-%m-%d'), interval='1D')
 
-            vnindex_df = await asyncio.to_thread(_get_vnindex_hist)
+#             vnindex_df = await asyncio.to_thread(_get_vnindex_hist)
             
-            if vnindex_df is not None and not vnindex_df.empty:
-                vnindex_df.columns = vnindex_df.columns.str.lower().str.strip()
-                if 'time' in vnindex_df.columns: vnindex_df['time'] = pd.to_datetime(vnindex_df['time'])
-                vnindex_df = vnindex_df.sort_values('time')
+#             if vnindex_df is not None and not vnindex_df.empty:
+#                 vnindex_df.columns = vnindex_df.columns.str.lower().str.strip()
+#                 if 'time' in vnindex_df.columns: vnindex_df['time'] = pd.to_datetime(vnindex_df['time'])
+#                 vnindex_df = vnindex_df.sort_values('time')
                 
-                closes = pd.to_numeric(vnindex_df['close'], errors='coerce')
-                dates = vnindex_df['time'].tolist()
+#                 closes = pd.to_numeric(vnindex_df['close'], errors='coerce')
+#                 dates = vnindex_df['time'].tolist()
                 
-                if len(closes) > 0:
-                    price_now = closes.iloc[-1]
-                    date_now = dates[-1]
+#                 if len(closes) > 0:
+#                     price_now = closes.iloc[-1]
+#                     date_now = dates[-1]
                     
-                    def _get_change_idx(days_back):
-                        target_date = date_now - datetime.timedelta(days=days_back)
-                        idx = -1
-                        for k in range(len(dates)-1, -1, -1):
-                            if dates[k] <= target_date:
-                                idx = k
-                                break
-                        if idx != -1 and closes.iloc[idx] > 0:
-                            p_old = closes.iloc[idx]
-                            return ((price_now - p_old) / p_old) * 100
-                        return None
+#                     def _get_change_idx(days_back):
+#                         target_date = date_now - datetime.timedelta(days=days_back)
+#                         idx = -1
+#                         for k in range(len(dates)-1, -1, -1):
+#                             if dates[k] <= target_date:
+#                                 idx = k
+#                                 break
+#                         if idx != -1 and closes.iloc[idx] > 0:
+#                             p_old = closes.iloc[idx]
+#                             return ((price_now - p_old) / p_old) * 100
+#                         return None
 
-                    vn_12w = _get_change_idx(84)
-                    vn_6m = _get_change_idx(180)
+#                     vn_12w = _get_change_idx(84)
+#                     vn_6m = _get_change_idx(180)
                     
-                    sectors_final['VNINDEX'] = {
-                        "change_12w": vn_12w,
-                        "change_6m": vn_6m,
-                        "count": 1
-                    }
-                    log.info(f"[{INSTANCE_ID}] ✅ Đã thêm VNINDEX: 12W={vn_12w:.1f}%, 6M={vn_6m:.1f}%")
-        except Exception as e:
-            log.warning(f"[{INSTANCE_ID}] ⚠️ Lỗi lấy VNINDEX: {e}")
+#                     sectors_final['VNINDEX'] = {
+#                         "change_12w": vn_12w,
+#                         "change_6m": vn_6m,
+#                         "count": 1
+#                     }
+#                     log.info(f"[{INSTANCE_ID}] ✅ Đã thêm VNINDEX: 12W={vn_12w:.1f}%, 6M={vn_6m:.1f}%")
+#         except Exception as e:
+#             log.warning(f"[{INSTANCE_ID}] ⚠️ Lỗi lấy VNINDEX: {e}")
 
-        # 4. Lưu Redis
-        final_payload = {
-            "updated_at": datetime.datetime.now().isoformat(),
-            "stocks": stocks_data,
-            "sectors": sectors_final
-        }
+#         # 4. Lưu Redis
+#         final_payload = {
+#             "updated_at": datetime.datetime.now().isoformat(),
+#             "stocks": stocks_data,
+#             "sectors": sectors_final
+#         }
         
-        await asyncio.to_thread(save_historical_valuation_to_redis, final_payload)
-        log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất Comprehensive Data. Đã lưu {len(stocks_data)} mã và {len(sectors_final)} ngành.")
+#         await asyncio.to_thread(save_historical_valuation_to_redis, final_payload)
+#         log.info(f"[{INSTANCE_ID}] ✅ Hoàn tất Comprehensive Data. Đã lưu {len(stocks_data)} mã và {len(sectors_final)} ngành.")
 
-        if manual_alerts and ADMIN_ID:
-            deduped = list(dict.fromkeys(manual_alerts))
-            preview = "\n".join(deduped[:10])
-            remainder = ""
-            if len(deduped) > 10:
-                remainder = f"\n... và {len(deduped) - 10} mã khác."
-            push_telegram_msg(
-                ADMIN_ID,
-                "⚠️ Manual PE/PB thiếu dữ liệu:\n" + preview + remainder,
-                msg_type="SYSTEM_MSG",
-            )
+#         if manual_alerts and ADMIN_ID:
+#             deduped = list(dict.fromkeys(manual_alerts))
+#             preview = "\n".join(deduped[:10])
+#             remainder = ""
+#             if len(deduped) > 10:
+#                 remainder = f"\n... và {len(deduped) - 10} mã khác."
+#             push_telegram_msg(
+#                 ADMIN_ID,
+#                 "⚠️ Manual PE/PB thiếu dữ liệu:\n" + preview + remainder,
+#                 msg_type="SYSTEM_MSG",
+#             )
 
-    except BaseException as e:
-        if isinstance(e, asyncio.CancelledError):
-            raise e
-        log.error(f"[{INSTANCE_ID}] ❌ LỖI NGHIÊM TRỌNG (Comprehensive Task): {type(e).__name__} - {e}")
-        await asyncio.sleep(60)
+#     except BaseException as e:
+#         if isinstance(e, asyncio.CancelledError):
+#             raise e
+#         log.error(f"[{INSTANCE_ID}] ❌ LỖI NGHIÊM TRỌNG (Comprehensive Task): {type(e).__name__} - {e}")
+#         await asyncio.sleep(60)
 
-async def get_top_mean_reversion_stocks(limit=5):
-    """
-    Lấy Top cổ phiếu rẻ nhất (Mean Reversion) từ Redis (Cấu trúc mới).
-    """
-    try:
-        # 1. Lấy dữ liệu từ Redis
-        full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+# async def get_top_mean_reversion_stocks(limit=5):
+#     """
+#     Lấy Top cổ phiếu rẻ nhất (Mean Reversion) từ Redis (Cấu trúc mới).
+#     """
+#     try:
+#         # 1. Lấy dữ liệu từ Redis
+#         full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
         
-        # Nếu chưa có hoặc format cũ -> chạy lại task đồng bộ để có dữ liệu
-        if not full_data or "stocks" not in full_data:
-            lock = await _get_comprehensive_lock()
-            async with lock:
-                # Re-check after acquiring lock to avoid duplicate jobs
-                full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
-                if full_data and "stocks" in full_data:
-                    log.info(f"[{INSTANCE_ID}] Dữ liệu Comprehensive đã có sau khi chờ lock.")
-                else:
-                    log.warning(f"[{INSTANCE_ID}] Redis chưa có dữ liệu Comprehensive. Đang chạy tính toán đồng bộ...")
-                    try:
-                        await calculate_market_comprehensive_data()
-                    except Exception as exc:
-                        log.error(f"[{INSTANCE_ID}] Lỗi tính toán Comprehensive tức thời: {exc}")
-                        return []
-                    full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+#         # Nếu chưa có hoặc format cũ -> chạy lại task đồng bộ để có dữ liệu
+#         if not full_data or "stocks" not in full_data:
+#             lock = await _get_comprehensive_lock()
+#             async with lock:
+#                 # Re-check after acquiring lock to avoid duplicate jobs
+#                 full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
+#                 if full_data and "stocks" in full_data:
+#                     log.info(f"[{INSTANCE_ID}] Dữ liệu Comprehensive đã có sau khi chờ lock.")
+#                 else:
+#                     log.warning(f"[{INSTANCE_ID}] Redis chưa có dữ liệu Comprehensive. Đang chạy tính toán đồng bộ...")
+#                     try:
+#                         await calculate_market_comprehensive_data()
+#                     except Exception as exc:
+#                         log.error(f"[{INSTANCE_ID}] Lỗi tính toán Comprehensive tức thời: {exc}")
+#                         return []
+#                     full_data = await asyncio.to_thread(get_historical_valuation_from_redis)
 
-            if not full_data or "stocks" not in full_data:
-                log.error(f"[{INSTANCE_ID}] Không lấy được dữ liệu Comprehensive sau khi tính toán.")
-                return []
+#             if not full_data or "stocks" not in full_data:
+#                 log.error(f"[{INSTANCE_ID}] Không lấy được dữ liệu Comprehensive sau khi tính toán.")
+#                 return []
 
-        hist_data = full_data["stocks"] # Lấy phần stocks
+#         hist_data = full_data["stocks"] # Lấy phần stocks
 
-        processed_items = []
+#         processed_items = []
         
-        for sym, stock_info in hist_data.items():
-            pe_avg = stock_info.get('pe_avg')
-            pb_avg = stock_info.get('pb_avg')
-            if not pe_avg or not pb_avg:
-                continue
+#         for sym, stock_info in hist_data.items():
+#             pe_avg = stock_info.get('pe_avg')
+#             pb_avg = stock_info.get('pb_avg')
+#             if not pe_avg or not pb_avg:
+#                 continue
 
-            pe_cur = stock_info.get('pe_manual')
-            pb_cur = stock_info.get('pb_manual')
-            if pe_cur is None or pb_cur is None:
-                manual = await asyncio.to_thread(fetch_manual_pe_pb, sym)
-                pe_cur = manual.pe
-                pb_cur = manual.pb
-                if manual.needs_admin_alert and manual.error:
-                    log.warning(f"[{INSTANCE_ID}] Manual valuation missing for {sym}: {manual.error}")
+#             pe_cur = stock_info.get('pe_manual')
+#             pb_cur = stock_info.get('pb_manual')
+#             if pe_cur is None or pb_cur is None:
+#                 manual = await asyncio.to_thread(fetch_manual_pe_pb, sym)
+#                 pe_cur = manual.pe
+#                 pb_cur = manual.pb
+#                 if manual.needs_admin_alert and manual.error:
+#                     log.warning(f"[{INSTANCE_ID}] Manual valuation missing for {sym}: {manual.error}")
 
-            if not pe_cur or not pb_cur:
-                continue
-            if pe_cur <= 0 or pb_cur <= 0:
-                continue
-            if pe_avg <= 0 or pb_avg <= 0:
-                continue
+#             if not pe_cur or not pb_cur:
+#                 continue
+#             if pe_cur <= 0 or pb_cur <= 0:
+#                 continue
+#             if pe_avg <= 0 or pb_avg <= 0:
+#                 continue
 
-            # --- TÍNH TOÁN LOGIC ---
-            pe_discount = (pe_cur - pe_avg) / pe_avg
-            pb_discount = (pb_cur - pb_avg) / pb_avg
-            avg_discount = (pe_discount + pb_discount) / 2
+#             # --- TÍNH TOÁN LOGIC ---
+#             pe_discount = (pe_cur - pe_avg) / pe_avg
+#             pb_discount = (pb_cur - pb_avg) / pb_avg
+#             avg_discount = (pe_discount + pb_discount) / 2
             
-            # Helper định dạng UI
-            def get_ui_meta(discount):
-                pct_val = abs(discount) * 100
-                if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
-                elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
-                else: 
-                    sign = "▲" if discount > 0 else "▼"
-                    return "", f"{sign} {pct_val:.1f}%"
+#             # Helper định dạng UI
+#             def get_ui_meta(discount):
+#                 pct_val = abs(discount) * 100
+#                 if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
+#                 elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
+#                 else: 
+#                     sign = "▲" if discount > 0 else "▼"
+#                     return "", f"{sign} {pct_val:.1f}%"
 
-            pe_class, pe_diff_str = get_ui_meta(pe_discount)
-            pb_class, pb_diff_str = get_ui_meta(pb_discount)
+#             pe_class, pe_diff_str = get_ui_meta(pe_discount)
+#             pb_class, pb_diff_str = get_ui_meta(pb_discount)
             
-            if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
-            elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
-            else: signal_class, signal_text = "sig-fair", "Hợp lý"
+#             if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
+#             elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
+#             else: signal_class, signal_text = "sig-fair", "Hợp lý"
             
-            processed_items.append({
-                "symbol": sym,
-                "avg_discount_raw": avg_discount,
-                "pe_cur": f"{pe_cur:.1f}", "pe_avg": f"{pe_avg:.1f}",
-                "pe_class": pe_class, "pe_diff_str": pe_diff_str,
-                "pb_cur": f"{pb_cur:.1f}", "pb_avg": f"{pb_avg:.1f}",
-                "pb_class": pb_class, "pb_diff_str": pb_diff_str,
-                "signal_class": signal_class, "signal_text": signal_text
-            })
+#             processed_items.append({
+#                 "symbol": sym,
+#                 "avg_discount_raw": avg_discount,
+#                 "pe_cur": f"{pe_cur:.1f}", "pe_avg": f"{pe_avg:.1f}",
+#                 "pe_class": pe_class, "pe_diff_str": pe_diff_str,
+#                 "pb_cur": f"{pb_cur:.1f}", "pb_avg": f"{pb_avg:.1f}",
+#                 "pb_class": pb_class, "pb_diff_str": pb_diff_str,
+#                 "signal_class": signal_class, "signal_text": signal_text
+#             })
 
-        # 3. Sắp xếp (Rẻ nhất lên đầu)
-        processed_items.sort(key=lambda x: x['avg_discount_raw'])
-        return processed_items[:limit]
+#         # 3. Sắp xếp (Rẻ nhất lên đầu)
+#         processed_items.sort(key=lambda x: x['avg_discount_raw'])
+#         return processed_items[:limit]
 
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] Lỗi get_top_mean_reversion_stocks: {e}")
-        return []
+#     except Exception as e:
+#         log.error(f"[{INSTANCE_ID}] Lỗi get_top_mean_reversion_stocks: {e}")
+#         return []
 
 # --- NEW HELPERS FOR PERSONALIZED DIGEST ---
 AI_SEMAPHORE = asyncio.Semaphore(3)
@@ -3932,7 +3932,7 @@ async def job_daily_digest():
             asyncio.to_thread(get_recent_news_seen, "SPECIALIZED", since_utc),
             asyncio.to_thread(get_all_watch),
             asyncio.to_thread(get_all_pro_chat_ids),
-            get_top_mean_reversion_stocks(limit=5),
+            # get_top_mean_reversion_stocks(limit=5),
         )
 
         # 2. Xử lý dữ liệu Tin tức (Phục hồi Metadata từ Redis)
@@ -4279,25 +4279,25 @@ async def job_scan_analysis_reports():
 
 #-------------------------------------------
 
-async def job_nightly_valuation():
-    """
-    [JOB APSCHEDULER] Tính toán định giá Mean Reversion (Chạy lúc 02:00).
-    """
-    log.info("[NIGHTLY] 🌙 Job tính toán định giá lịch sử bắt đầu...")
+# async def job_nightly_valuation():
+#     """
+#     [JOB APSCHEDULER] Tính toán định giá Mean Reversion (Chạy lúc 02:00).
+#     """
+#     log.info("[NIGHTLY] 🌙 Job tính toán định giá lịch sử bắt đầu...")
 
-    if not get_bot_active():
-        log.info("[NIGHTLY] Bot đang TẮT. Bỏ qua job.")
-        return
+#     if not get_bot_active():
+#         log.info("[NIGHTLY] Bot đang TẮT. Bỏ qua job.")
+#         return
 
-    try:
-        # Gọi task tính toán nặng (đã có sẵn trong worker.py)
-        # Task này đã bao gồm logic try/except và rate limit bên trong
-        await calculate_market_comprehensive_data()
+#     try:
+#         # Gọi task tính toán nặng (đã có sẵn trong worker.py)
+#         # Task này đã bao gồm logic try/except và rate limit bên trong
+#         await calculate_market_comprehensive_data()
         
-        log.info("[NIGHTLY] ✅ Job tính toán hoàn tất.")
+#         log.info("[NIGHTLY] ✅ Job tính toán hoàn tất.")
         
-    except Exception as e:
-        log.error(f"[NIGHTLY] ❌ Lỗi Job: {e}")
+#     except Exception as e:
+#         log.error(f"[NIGHTLY] ❌ Lỗi Job: {e}")
 
 #-------------------------------------------
 async def job_restore_reminder():
@@ -5637,150 +5637,159 @@ async def process_profile_for_user(chat_id, symbol, loading_msg_id=None):
 # =====================================================
 # SCREENER VALUE
 # =====================================================
-
 async def process_screener_view(chat_id, loading_msg_id=None):
-    """
-    [WORKER] Xử lý lệnh /screener_value:
-    1. Lấy History Data (Redis).
-    2. Lấy Current Data (API).
-    3. Tính toán & Tạo Web App.
-    """
-    try:
-        # 1. Lấy dữ liệu lịch sử (Mean Reversion + Sector)
-        full_data = get_historical_valuation_from_redis()
-        
-        if not full_data:
-            push_telegram_msg(
-                chat_id=chat_id,
-                text="⚠️ Dữ liệu định giá lịch sử chưa sẵn sàng. Vui lòng thử lại sau hoặc báo Admin.",
-                msg_type="ERROR",
-                edit_id=loading_msg_id
-            )
-            return
+    # Thêm thông báo tạm tắt ngay đầu hàm
+    push_telegram_msg(
+        chat_id=chat_id,
+        text="⚠️ Tính năng lọc cổ phiếu tạm thời bảo trì do nguồn dữ liệu lỗi. Vui lòng thử lại sau.",
+        msg_type="ERROR",
+        edit_id=loading_msg_id
+    )
+    return # Thoát hàm luôn
 
-        # Handle new format vs old format
-        if "stocks" in full_data:
-            hist_stocks = full_data["stocks"]
-            hist_sectors = full_data.get("sectors", {})
-        else:
-            hist_stocks = full_data
-            hist_sectors = {}
-
-        # 2. Lấy dữ liệu thị trường hiện tại (Screener)
-        # Chạy trong thread để không block
-        screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
+# async def process_screener_view(chat_id, loading_msg_id=None):
+#     """
+#     [WORKER] Xử lý lệnh /screener_value:
+#     1. Lấy History Data (Redis).
+#     2. Lấy Current Data (API).
+#     3. Tính toán & Tạo Web App.
+#     """
+#     try:
+#         # 1. Lấy dữ liệu lịch sử (Mean Reversion + Sector)
+#         full_data = get_historical_valuation_from_redis()
         
-        # 3. Tính toán so sánh (Logic Mean Reversion)
-        processed_items = []
-        for index, row in screener_df.iterrows():
-            sym = row['ticker']
-            if sym not in hist_stocks: continue
+#         if not full_data:
+#             push_telegram_msg(
+#                 chat_id=chat_id,
+#                 text="⚠️ Dữ liệu định giá lịch sử chưa sẵn sàng. Vui lòng thử lại sau hoặc báo Admin.",
+#                 msg_type="ERROR",
+#                 edit_id=loading_msg_id
+#             )
+#             return
+
+#         # Handle new format vs old format
+#         if "stocks" in full_data:
+#             hist_stocks = full_data["stocks"]
+#             hist_sectors = full_data.get("sectors", {})
+#         else:
+#             hist_stocks = full_data
+#             hist_sectors = {}
+
+#         # 2. Lấy dữ liệu thị trường hiện tại (Screener)
+#         # Chạy trong thread để không block
+#         screener_df = await asyncio.to_thread(lambda: Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700))
+        
+#         # 3. Tính toán so sánh (Logic Mean Reversion)
+#         processed_items = []
+#         for index, row in screener_df.iterrows():
+#             sym = row['ticker']
+#             if sym not in hist_stocks: continue
             
-            try:
-                pe_cur = float(row['pe'])
-                pb_cur = float(row['pb'])
-            except: continue
+#             try:
+#                 pe_cur = float(row['pe'])
+#                 pb_cur = float(row['pb'])
+#             except: continue
 
-            stock_info = hist_stocks[sym]
-            # Check keys
-            if 'pe_avg' not in stock_info or 'pb_avg' not in stock_info: continue
+#             stock_info = hist_stocks[sym]
+#             # Check keys
+#             if 'pe_avg' not in stock_info or 'pb_avg' not in stock_info: continue
 
-            pe_avg = stock_info['pe_avg']
-            pb_avg = stock_info['pb_avg']
+#             pe_avg = stock_info['pe_avg']
+#             pb_avg = stock_info['pb_avg']
             
-            if pe_cur <= 0 or pb_cur <= 0: continue
-            if pe_avg <= 0 or pb_avg <= 0: continue
+#             if pe_cur <= 0 or pb_cur <= 0: continue
+#             if pe_avg <= 0 or pb_avg <= 0: continue
 
-            # Tính % Discount
-            pe_discount = (pe_cur - pe_avg) / pe_avg
-            pb_discount = (pb_cur - pb_avg) / pb_avg
-            avg_discount = (pe_discount + pb_discount) / 2
+#             # Tính % Discount
+#             pe_discount = (pe_cur - pe_avg) / pe_avg
+#             pb_discount = (pb_cur - pb_avg) / pb_avg
+#             avg_discount = (pe_discount + pb_discount) / 2
             
-            # Helper UI (Copy lại logic cũ để tạo class màu sắc)
-            def get_ui_meta(discount):
-                pct_val = abs(discount) * 100
-                if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
-                elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
-                else: return "", f"{'▲' if discount>0 else '▼'} {pct_val:.1f}%"
+#             # Helper UI (Copy lại logic cũ để tạo class màu sắc)
+#             def get_ui_meta(discount):
+#                 pct_val = abs(discount) * 100
+#                 if discount < -0.1: return "diff-good", f"▼ {pct_val:.1f}%"
+#                 elif discount > 0.1: return "diff-bad", f"▲ {pct_val:.1f}%"
+#                 else: return "", f"{'▲' if discount>0 else '▼'} {pct_val:.1f}%"
 
-            pe_class, pe_diff_str = get_ui_meta(pe_discount)
-            pb_class, pb_diff_str = get_ui_meta(pb_discount)
+#             pe_class, pe_diff_str = get_ui_meta(pe_discount)
+#             pb_class, pb_diff_str = get_ui_meta(pb_discount)
             
-            if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
-            elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
-            else: signal_class, signal_text = "sig-fair", "Hợp lý"
+#             if avg_discount < -0.1: signal_class, signal_text = "sig-cheap", "Định giá Rẻ"
+#             elif avg_discount > 0.1: signal_class, signal_text = "sig-expensive", "Đắt"
+#             else: signal_class, signal_text = "sig-fair", "Hợp lý"
 
-            processed_items.append({
-                'symbol': sym,
-                'pe_cur': pe_cur, 'pe_avg': pe_avg,
-                'pe_class': pe_class, 'pe_diff_str': pe_diff_str,
-                'pb_cur': pb_cur, 'pb_avg': pb_avg,
-                'pb_class': pb_class, 'pb_diff_str': pb_diff_str,
-                'signal_class': signal_class, 'signal_text': signal_text,
-                'avg_discount': avg_discount
-            })
+#             processed_items.append({
+#                 'symbol': sym,
+#                 'pe_cur': pe_cur, 'pe_avg': pe_avg,
+#                 'pe_class': pe_class, 'pe_diff_str': pe_diff_str,
+#                 'pb_cur': pb_cur, 'pb_avg': pb_avg,
+#                 'pb_class': pb_class, 'pb_diff_str': pb_diff_str,
+#                 'signal_class': signal_class, 'signal_text': signal_text,
+#                 'avg_discount': avg_discount
+#             })
 
-        # 4. Sắp xếp & Lưu Cache Web App
-        processed_items.sort(key=lambda x: x['avg_discount'])
-        top_items = processed_items[:50] # Top 50 mã rẻ nhất
+#         # 4. Sắp xếp & Lưu Cache Web App
+#         processed_items.sort(key=lambda x: x['avg_discount'])
+#         top_items = processed_items[:50] # Top 50 mã rẻ nhất
 
-        # [NEW] Vẽ Chart Sector
-        sector_chart_html = ""
-        if hist_sectors:
-            sector_chart_html = await asyncio.to_thread(draw_sector_performance_chart, hist_sectors, '12w')
+#         # [NEW] Vẽ Chart Sector
+#         sector_chart_html = ""
+#         if hist_sectors:
+#             sector_chart_html = await asyncio.to_thread(draw_sector_performance_chart, hist_sectors, '12w')
 
-        digest_id = uuid.uuid4().hex
-        vn_tz = pytz.timezone(TIMEZONE)
-        payload = {
-            "items": top_items,
-            "sector_chart": sector_chart_html,
-            "generated_time": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
-        }
+#         digest_id = uuid.uuid4().hex
+#         vn_tz = pytz.timezone(TIMEZONE)
+#         payload = {
+#             "items": top_items,
+#             "sector_chart": sector_chart_html,
+#             "generated_time": datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
+#         }
         
-        # Lưu vào Redis cho Web App đọc (TTL 1 giờ)
-        r_client.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600)
+#         # Lưu vào Redis cho Web App đọc (TTL 1 giờ)
+#         r_client.set(f"digest_web:screener_val:{digest_id}", json.dumps(payload), ex=3600)
 
-        # 5. Gửi kết quả về Gateway (Nút dọc)
-        web_url = f"{BASE_URL}/screener_result/{digest_id}?chat_id={chat_id}"
+#         # 5. Gửi kết quả về Gateway (Nút dọc)
+#         web_url = f"{BASE_URL}/screener_result/{digest_id}?chat_id={chat_id}"
         
-        kb = {
-            "inline_keyboard": [
-                [{"text": "🚀 Xem Bảng Xếp Hạng", "web_app": {"url": web_url}}],
-                [{"text": "❌ Đóng", "callback_data": "close_msg"}]
-            ]
-        }
+#         kb = {
+#             "inline_keyboard": [
+#                 [{"text": "🚀 Xem Bảng Xếp Hạng", "web_app": {"url": web_url}}],
+#                 [{"text": "❌ Đóng", "callback_data": "close_msg"}]
+#             ]
+#         }
 
-        push_telegram_msg(
-            chat_id=chat_id,
-            text=f"💎 **Định Giá Cổ Phiếu (Mean Reversion)**\n\n✅ Đã lọc được {len(processed_items)} mã tiềm năng.\n👉 Nhấn nút để xem chi tiết.",
-            reply_markup=kb,
-            msg_type="SCREENER_RESULT",
-            edit_id=loading_msg_id # <--- Sửa tin nhắn Loading
-        )
+#         push_telegram_msg(
+#             chat_id=chat_id,
+#             text=f"💎 **Định Giá Cổ Phiếu (Mean Reversion)**\n\n✅ Đã lọc được {len(processed_items)} mã tiềm năng.\n👉 Nhấn nút để xem chi tiết.",
+#             reply_markup=kb,
+#             msg_type="SCREENER_RESULT",
+#             edit_id=loading_msg_id # <--- Sửa tin nhắn Loading
+#         )
         
-        log.info(f"[{INSTANCE_ID}] Screener calculated for {chat_id}")
+#         log.info(f"[{INSTANCE_ID}] Screener calculated for {chat_id}")
 
-    except Exception as e:
-        log.error(f"Screener Error: {e}")
-        push_telegram_msg(chat_id, "⚠️ Lỗi hệ thống khi lọc cổ phiếu.", msg_type="ERROR", edit_id=loading_msg_id)
+#     except Exception as e:
+#         log.error(f"Screener Error: {e}")
+#         push_telegram_msg(chat_id, "⚠️ Lỗi hệ thống khi lọc cổ phiếu.", msg_type="ERROR", edit_id=loading_msg_id)
 
-async def process_force_update_screener(admin_id):
-    """
-    [WORKER] Chạy lại tính toán lịch sử (Task nặng).
-    """
-    log.info(f"[{INSTANCE_ID}] Admin {admin_id} requested FORCE UPDATE SCREENER.")
-    push_telegram_msg(admin_id, "⏳ Worker đang tính toán lại dữ liệu định giá (mất khoảng 5-10 phút)...", msg_type="SYSTEM_MSG")
+# async def process_force_update_screener(admin_id):
+#     """
+#     [WORKER] Chạy lại tính toán lịch sử (Task nặng).
+#     """
+#     log.info(f"[{INSTANCE_ID}] Admin {admin_id} requested FORCE UPDATE SCREENER.")
+#     push_telegram_msg(admin_id, "⏳ Worker đang tính toán lại dữ liệu định giá (mất khoảng 5-10 phút)...", msg_type="SYSTEM_MSG")
     
-    try:
-        start = time.time()
-        await calculate_market_comprehensive_data() # Đã cập nhật sang hàm Comprehensive
-        duration = time.time() - start
+#     try:
+#         start = time.time()
+#         await calculate_market_comprehensive_data() # Đã cập nhật sang hàm Comprehensive
+#         duration = time.time() - start
         
-        push_telegram_msg(admin_id, f"✅ **Hoàn tất cập nhật Screener!**\n⏱ Thời gian: {duration/60:.1f} phút.", msg_type="SYSTEM_MSG")
+#         push_telegram_msg(admin_id, f"✅ **Hoàn tất cập nhật Screener!**\n⏱ Thời gian: {duration/60:.1f} phút.", msg_type="SYSTEM_MSG")
         
-    except Exception as e:
-        log.error(f"Force Update Error: {e}")
-        push_telegram_msg(admin_id, f"❌ Lỗi cập nhật: {e}", msg_type="ERROR")
+#     except Exception as e:
+#         log.error(f"Force Update Error: {e}")
+#         push_telegram_msg(admin_id, f"❌ Lỗi cập nhật: {e}", msg_type="ERROR")
 
 def job_listener(event):
     """
@@ -5862,7 +5871,7 @@ async def run_worker_runtime():
     scheduler.add_job(job_weekly_report, 'cron', day_of_week='sun', hour=9, minute=0, id='report_weekly', replace_existing=True)
 
     # C. Định giá Đêm (02:00)
-    scheduler.add_job(job_nightly_valuation, 'cron', hour=2, minute=0, id='valuation_nightly', replace_existing=True)
+    # scheduler.add_job(job_nightly_valuation, 'cron', hour=2, minute=0, id='valuation_nightly', replace_existing=True)
 
     # D. Quét Tin tức (06:00, 18:00)
     scheduler.add_job(job_scan_news, 'cron', hour='6,18', args=["MACRO"], id='news_macro', replace_existing=True)
