@@ -68,7 +68,8 @@ from db_utils import (
     save_bot_message,
     get_stock_personalization_map,
     cleanup_expired_stock_personalizations,
-    get_ai_questions_by_month
+    get_ai_questions_by_month,
+    get_recent_news_seen_by_limit
 )
 from report_cache import (
     make_report_cache_key,
@@ -3383,31 +3384,48 @@ async def summarize_daily_news_with_ai(news_list):
         news_text += f"- ID_{i}: [{item['source']}] {item['title']} || Link: {item['link']}\n"
 
     prompt = f"""
-Bạn là trợ lý tài chính thông minh. Hãy đọc danh sách tin tức chứng khoán Việt Nam dưới đây và thực hiện 2 nhiệm vụ:
+Bạn là một chuyên gia phân tích thị trường chứng khoán (Market Analyst) lão luyện.
+Nhiệm vụ: Đọc danh sách 100 tin tức mới nhất dưới đây và tổng hợp bản tin sáng (Daily Digest) cho nhà đầu tư.
 
-1. **TIÊU ĐIỂM**: Chọn ra 10 tin quan trọng nhất, có tác động lớn đến thị trường hoặc các mã cổ phiếu lớn. Viết lại sao cho user dễ hiểu.
-2. **MACRO**: Chọn 10 tin liên quan đến chính sách, kinh tế vĩ mô làm **MACRO** (Tin Vĩ mô). Lưu ý không chọn trùng với mục 1 và 3.
-3. **CORPORATE**: Chọn 10 tin có ảnh hưởng quan trọng đến tăng trưởng doanh nghiệp làm **CORPORATE** (Tin Doanh nghiệp).  Lưu ý không chọn trùng với mục 1 và 2.
-4. **NHẬN ĐỊNH**: Viết một đoạn bình luận ngắn (dưới 50 từ) tổng hợp tâm lý thị trường dựa trên các tin này (Tích cực/Tiêu cực/Thận trọng...).
-
-DANH SÁCH TIN:
+--- DỮ LIỆU ĐẦU VÀO ---
 {news_text}
+--- KẾT THÚC DỮ LIỆU ---
 
-YÊU CẦU OUTPUT (JSON Thuần):
+HÃY THỰC HIỆN CÁC BƯỚC SAU:
+
+1. **CHẤM ĐIỂM CẢM XÚC (Sentiment Score)**:
+   - Đánh giá tâm lý thị trường chung dựa trên các tin tức này trên thang điểm 1-10.
+   - 1: Rất tiêu cực (Hoảng loạn/Tin xấu dồn dập).
+   - 5: Trung tính (Đi ngang/Tin tốt xấu đan xen).
+   - 10: Rất tích cực (Hưng phấn/Nhiều tin hỗ trợ mạnh).
+
+2. **CHỌN TIÊU ĐIỂM (Headline)**:
+   - Chọn ra đúng **5-7 tin quan trọng nhất** có tác động mạnh đến VnIndex hoặc các nhóm ngành lớn.
+   - Viết lại tiêu đề ngắn gọn, súc tích, hấp dẫn (giật tít chuyên nghiệp).
+   - BẮT BUỘC: Phải trích xuất chính xác đường Link gốc đi kèm tin đó từ dữ liệu đầu vào.
+
+3. **NHẬN ĐỊNH (Comment)**:
+   - Viết một đoạn bình luận ngắn (tối đa 3 câu) tổng kết bức tranh toàn cảnh.
+   - Giọng văn: Khách quan, chuyên nghiệp, đưa ra lời khuyên hành động nhẹ nhàng (Thận trọng/Quan sát/Giải ngân...).
+
+YÊU CẦU OUTPUT (JSON CHUẨN RFC 8259):
+Chỉ trả về duy nhất một khối JSON, không có Markdown, không có lời dẫn.
 {{
+  "sentiment_score": 7,
   "headline": [
-    {{"text": "Tóm tắt tin...", "link": "link gốc", "ticker": "Mã CK (nếu có)"}}
+    {{
+      "text": "Tiêu đề đã viết lại cho hấp dẫn...",
+      "link": "https://link-goc-chinh-xac-tu-input...",
+      "ticker": "HPG" 
+    }}
   ],
-  "macro": [
-    {{"text": "Tóm tắt tin vĩ mô...", "link": "link gốc"}}
-  ],
-  "corporate": [
-    {{"text": "Tóm tắt tin DN...", "link": "link gốc", "ticker": "Mã CK"}}
-  ],
-  "comment": "Nhận định thị trường..."
+  "comment": "Thị trường đang chịu áp lực điều chỉnh..."
 }}
-Lưu ý: Field "link" để trống cũng được vì khó map lại chính xác, hoặc nếu bạn tự tin thì điền link gốc.
+Lưu ý: 
+- Field "ticker": Nếu tin nhắc đến mã cổ phiếu cụ thể, hãy điền mã đó (VD: VCB, FPT). Nếu là tin vĩ mô chung, để trống "".
+- Field "link": Phải khớp chính xác với Link trong dữ liệu đầu vào, không được bịa ra.
 """
+
     try:
         # Gọi Gemini (Dùng Flash cho nhanh và rẻ)
         json_text = await asyncio.to_thread(
@@ -3872,8 +3890,12 @@ def tag_news_items(items):
     return items
 
 async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_news):
-    async with AI_SEMAPHORE:
-        # 1. Filter Specialized News
+    """
+    Tạo nội dung AI cho user.
+    [FIX] Thêm Timeout và Try/Except để đảm bảo luôn trả về kết quả (dù là fallback).
+    """
+    try:
+        # 1. Filter News (Logic cũ)
         my_spec = []
         other_spec = []
         w_set = set(str(s).upper() for s in watchlist)
@@ -3884,21 +3906,33 @@ async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_n
             else:
                 other_spec.append(item)
         
-        # 2. Fill up (Limit total spec news to 60)
         final_spec = my_spec[:]
         needed = 200 - len(final_spec)
         if needed > 0:
             final_spec.extend(other_spec[:needed])
             
-        # 3. Combine with Macro
         input_news = all_macro_news + final_spec
         
-        # 4. Call AI hoặc fallback
         if not input_news:
-            return _build_empty_ai_digest("Chưa có tin tức mới trong 24 giờ qua." )
+            return _build_empty_ai_digest("Chưa có tin tức mới trong 24 giờ qua.")
 
-        result = await summarize_daily_news_with_ai(input_news)
-        return result or _build_empty_ai_digest("AI không thể tổng hợp dữ liệu. Hiển thị ghi chú mặc định.")
+        # 2. Gọi AI với Timeout & Semaphore
+        async with AI_SEMAPHORE:
+            try:
+                # Đặt timeout 40s. Nếu AI treo quá lâu -> Hủy và dùng Fallback
+                result = await asyncio.wait_for(
+                    summarize_daily_news_with_ai(input_news), 
+                    timeout=40.0
+                )
+                return result or _build_empty_ai_digest("AI không thể tổng hợp dữ liệu.")
+            except asyncio.TimeoutError:
+                log.warning(f"[DIGEST] ⚠️ Chat {chat_id}: AI Timeout (40s). Dùng fallback.")
+                return _build_empty_ai_digest("Hệ thống AI đang bận. Mời bạn xem tin tức chi tiết bên dưới.")
+                
+    except Exception as e:
+        log.error(f"[DIGEST] ❌ Chat {chat_id}: Lỗi tạo AI Digest: {e}")
+        # Luôn trả về fallback để không làm sập luồng gửi tin
+        return _build_empty_ai_digest("Tạm thời không thể tạo tóm tắt AI.")
 
 async def job_daily_digest():
     """
@@ -3924,7 +3958,7 @@ async def job_daily_digest():
             spec_rows,  # List of (title, link, pub)
             all_watch,
             pro_chat_ids,
-            top_value_stocks,
+            # top_value_stocks,
         ) = await asyncio.gather(
             asyncio.to_thread(get_recent_bctc_notified, since_utc),
             asyncio.to_thread(get_recent_analysis_reports, since_utc),
@@ -3934,6 +3968,9 @@ async def job_daily_digest():
             asyncio.to_thread(get_all_pro_chat_ids),
             # get_top_mean_reversion_stocks(limit=5),
         )
+
+        # Gán thủ công giá trị rỗng để code phía dưới không bị lỗi
+        top_value_stocks = []
 
         # 2. Xử lý dữ liệu Tin tức (Phục hồi Metadata từ Redis)
         import hashlib
@@ -3984,12 +4021,31 @@ async def job_daily_digest():
             # Hiện tại giữ nguyên, nó trả về {headline, macro, corporate}
             user_ai_tasks.append(generate_user_ai_digest(chat_id, watchlist, full_spec_news, full_macro_news))
             
-        ai_results = await asyncio.gather(*user_ai_tasks)
-        user_ai_map = dict(zip(user_ids_map, ai_results))
+        # [FIX] return_exceptions=True để 1 user lỗi không ảnh hưởng user khác
+        ai_results = await asyncio.gather(*user_ai_tasks, return_exceptions=True)
+
+        # --- [THÊM ĐOẠN NÀY] ---
+        # Chuyển đổi tags từ set -> list để tránh lỗi JSON không serialize được set
+        for item in full_spec_news:
+            if isinstance(item.get('tags'), set):
+                item['tags'] = list(item['tags'])
+        # -----------------------
+
+        user_ai_map = {}
+
+        for cid, res in zip(user_ids_map, ai_results):
+            if isinstance(res, Exception):
+                log.error(f"[DIGEST] Lỗi AI Task user {cid}: {res}")
+                # Nếu lỗi, gán fallback
+                user_ai_map[cid] = _build_empty_ai_digest("Lỗi xử lý AI.")
+            else:
+                user_ai_map[cid] = res
 
         # 4. Build Payload
         # ... (Code xử lý BCTC, Report, Value Stocks giữ nguyên) ...
         
+        digest_payloads = {}
+
         # Helper group BCTC & Report (Copy từ code cũ)
         bctc_by_sym = {str(sym).upper(): (y, q, t) for (sym, y, q, t) in bctc_rows}
         reports_by_sym = {}
@@ -4016,14 +4072,15 @@ async def job_daily_digest():
                 "date_str": now_local.strftime('%d/%m/%Y'),
                 
                 # 1. Phần HOT (AI Tóm tắt)
-                "hot_news": ai_data.get('headline', []) if ai_data else [],
-                "ai_comment": ai_data.get('comment', "") if ai_data else "",
-                "sentiment_score": ai_data.get('sentiment_score', 5) if ai_data else 5,
+                "ai_news": {
+                    "headline": ai_data.get('headline', []) if ai_data else [],
+                    "comment": ai_data.get('comment', "") if ai_data else "",
+                    "sentiment_score": ai_data.get('sentiment_score', 5) if ai_data else 5,
+                },
                 
                 # 2. Phần Feed (Raw List có ảnh)
-                # Chỉ lấy 20 tin mới nhất để hiển thị cho gọn
-                "macro_feed": full_macro_news[:30], 
-                "spec_feed": full_spec_news[:40],   
+                "macro_feed": full_macro_news, 
+                "spec_feed": full_spec_news,
                 
                 # 3. Các phần khác
                 "value_stocks": top_value_stocks if is_pro else [],

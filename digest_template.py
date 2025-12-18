@@ -495,6 +495,8 @@ DIGEST_HTML_TEMPLATE = """
 </html>
 """
 
+# digest_template.py
+
 NEWS_GRID_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="vi">
@@ -510,6 +512,7 @@ NEWS_GRID_TEMPLATE = """
             --text-color: var(--tg-theme-text-color, #000);
             --card-bg: var(--tg-theme-secondary-bg-color, #ffffff);
             --hint-color: var(--tg-theme-hint-color, #8e8e93);
+            --accent-color: var(--tg-theme-button-color, #007aff);
             --border-color: rgba(0,0,0,0.05);
         }
         @media (prefers-color-scheme: dark) {
@@ -517,7 +520,7 @@ NEWS_GRID_TEMPLATE = """
         }
         body { 
             font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-color); 
-            margin: 0; padding: 16px;
+            margin: 0; padding: 16px; padding-bottom: 40px;
         }
         
         .header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
@@ -527,7 +530,7 @@ NEWS_GRID_TEMPLATE = """
         /* GRID LAYOUT */
         .news-grid { 
             display: grid; 
-            grid-template-columns: repeat(2, 1fr); /* 2 Cột */
+            grid-template-columns: repeat(2, 1fr);
             gap: 12px; 
         }
         
@@ -539,7 +542,6 @@ NEWS_GRID_TEMPLATE = """
         }
         .news-card:active { transform: scale(0.98); }
         
-        /* IMAGE STYLES */
         .card-thumb { 
             width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #eee; 
             border-bottom: 1px solid var(--border-color);
@@ -557,6 +559,18 @@ NEWS_GRID_TEMPLATE = """
 
         .no-img { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #e0e0e0, #f5f5f5); color: #ccc; font-size: 24px; }
         .empty-state { grid-column: span 2; text-align: center; padding: 40px; color: var(--hint-color); font-size: 14px; }
+
+        /* PAGINATION STYLES */
+        .pagination { display: flex; justify-content: center; align-items: center; gap: 15px; margin-top: 30px; }
+        .page-btn {
+            background: var(--card-bg); color: var(--text-color);
+            border: 1px solid var(--border-color);
+            padding: 8px 16px; border-radius: 8px;
+            text-decoration: none; font-size: 14px; font-weight: 600;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .page-btn.disabled { opacity: 0.5; pointer-events: none; box-shadow: none; }
+        .page-info { font-size: 13px; color: var(--hint-color); font-weight: 500; }
     </style>
 </head>
 <body>
@@ -585,6 +599,22 @@ NEWS_GRID_TEMPLATE = """
         <div class="empty-state">Không có tin tức nào trong mục này.</div>
         {% endfor %}
     </div>
+
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        <a href="/digest/{{ digest_id }}/{{ section }}?page={{ current_page - 1 }}" 
+           class="page-btn {% if current_page <= 1 %}disabled{% endif %}">
+           ← Trước
+        </a>
+        
+        <span class="page-info">Trang {{ current_page }} / {{ total_pages }}</span>
+        
+        <a href="/digest/{{ digest_id }}/{{ section }}?page={{ current_page + 1 }}" 
+           class="page-btn {% if current_page >= total_pages %}disabled{% endif %}">
+           Sau →
+        </a>
+    </div>
+    {% endif %}
 
     <script>
         Telegram.WebApp.ready();

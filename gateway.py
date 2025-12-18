@@ -2984,55 +2984,71 @@ def sepay_webhook():
 # --- FLASK ROUTE CHO WEB APP ---
 @flask_app.route("/digest/<digest_id>")
 def view_digest(digest_id):
-    """Route hiển thị Web App Digest"""
     data = get_digest_from_redis(digest_id)
-    
-    # Nếu không tìm thấy data (hết hạn hoặc ID sai) -> Render trang 404 đẹp
     if not data:
-        return render_template_string(DIGEST_404_TEMPLATE), 404
-    
-    # Lấy ngày giờ hiện tại (VN Timezone) để hiển thị trên Header
-    vn_tz = datetime.timezone(datetime.timedelta(hours=7))
-    date_str = datetime.datetime.now(vn_tz).strftime("Ngày %d/%m/%Y")
-    
-    # Render trang chính
-    return render_template_string(DIGEST_HTML_TEMPLATE, data=data, date_str=date_str)
+        return render_template_string(DIGEST_404_TEMPLATE)
+        
+    return render_template_string(
+        DIGEST_HTML_TEMPLATE, 
+        data=data, 
+        digest_id=digest_id  # <--- BẮT BUỘC PHẢI CÓ DÒNG NÀY
+    )
+
+# Hàm helper xử lý phân trang
+def paginate_list(data_list, page, per_page=20):
+    total_items = len(data_list)
+    total_pages = (total_items + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    end = start + per_page
+    items = data_list[start:end]
+    return items, total_pages
 
 # --- [MỚI] Route xem tin Vĩ mô (Grid View) ---
+# --- Route Tin Vĩ mô ---
 @flask_app.route("/digest/<digest_id>/macro")
 def view_digest_macro(digest_id):
     data = get_digest_from_redis(digest_id)
-    
-    # Nếu không tìm thấy data (hết hạn hoặc ID sai) -> 404
     if not data:
         return render_template_string(DIGEST_404_TEMPLATE), 404
     
-    # Lấy danh sách tin từ key 'macro_feed' (đã lưu ở worker.py)
-    news_list = data.get("macro_feed", [])
+    # Lấy page từ URL (mặc định là 1)
+    page = request.args.get('page', 1, type=int)
+    
+    # Lấy toàn bộ list
+    full_list = data.get("macro_feed", [])
+    
+    # Phân trang
+    news_list, total_pages = paginate_list(full_list, page)
     
     return render_template_string(
         NEWS_GRID_TEMPLATE, 
         digest_id=digest_id,
         page_title="Vĩ mô & Quốc tế",
-        news_list=news_list
+        news_list=news_list,
+        current_page=page,      # Truyền thêm biến này
+        total_pages=total_pages, # Truyền thêm biến này
+        section="macro"         # Để tạo link phân trang đúng
     )
 
-# --- [MỚI] Route xem tin Doanh nghiệp (Grid View) ---
+# --- Route Tin Doanh nghiệp ---
 @flask_app.route("/digest/<digest_id>/specialized")
 def view_digest_specialized(digest_id):
     data = get_digest_from_redis(digest_id)
-    
     if not data:
         return render_template_string(DIGEST_404_TEMPLATE), 404
     
-    # Lấy danh sách tin từ key 'spec_feed'
-    news_list = data.get("spec_feed", [])
+    page = request.args.get('page', 1, type=int)
+    full_list = data.get("spec_feed", [])
+    news_list, total_pages = paginate_list(full_list, page)
     
     return render_template_string(
         NEWS_GRID_TEMPLATE, 
         digest_id=digest_id,
         page_title="Doanh nghiệp & Ngành",
-        news_list=news_list
+        news_list=news_list,
+        current_page=page,
+        total_pages=total_pages,
+        section="specialized"
     )
 
 # --- HELPER CHO SCREENER WEBAPP ---

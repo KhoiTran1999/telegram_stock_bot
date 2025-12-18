@@ -1034,6 +1034,27 @@ def set_news_pref(
     except Exception:
         pass
 
+def get_recent_news_seen_by_limit(feed_type, limit=100):
+    """
+    Lấy danh sách tin tức đã seen theo số lượng limit (dùng để test).
+    Thay vì lọc theo thời gian, hàm này lấy N bài mới nhất.
+    """
+    ft = (feed_type or "").upper()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT title, link, published, created_at
+                FROM news_seen
+                WHERE feed_type = %s
+                ORDER BY published DESC NULLS LAST, created_at DESC
+                LIMIT %s
+                """,
+                (ft, limit),
+            )
+            rows = cur.fetchall()
+    return rows
+
 def is_news_enabled_for_chat(chat_id: int, feed_type: str) -> bool:
     """Kiểm tra user có bật nhận loại tin feed_type hay không."""
     pref = get_news_pref(chat_id)
