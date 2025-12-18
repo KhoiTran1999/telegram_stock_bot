@@ -303,7 +303,7 @@ async def tool_get_company_profile(symbol: str) -> str:
         async def fetch_from_api():
             """Lấy dữ liệu hành chính từ API"""
             try:
-                company = Company(symbol=symbol, source='TCBS')
+                company = Company(symbol=symbol, source='VCI')
                 df = await asyncio.to_thread(company.overview)
                 if df is not None and not df.empty:
                     data = df.iloc[0].to_dict()
@@ -452,7 +452,7 @@ async def tool_get_market_index(index_name: Literal['VNINDEX', 'VN30'] = 'VNINDE
     """
     index_name = index_name.upper()
     try:
-        quote = Quote(symbol=index_name, source='TCBS') # TCBS ổn định hơn cho Index
+        quote = Quote(symbol=index_name, source='VCI') # VCI ổn định hơn cho Index
         df = await asyncio.to_thread(quote.history, start=(datetime.date.today() - datetime.timedelta(days=3)).strftime('%Y-%m-%d'), end=datetime.date.today().strftime('%Y-%m-%d'), interval='1D')
         
         if df is None or df.empty:
@@ -569,7 +569,7 @@ async def tool_get_macro_data(topic: Literal['gdp', 'cpi', 'industry', 'trade', 
 async def tool_get_stock_events(symbol: str):
     """Lấy lịch sự kiện: Cổ tức, phát hành thêm, họp ĐHCĐ."""
     symbol = symbol.upper().strip()
-    company = Company(symbol=symbol, source='TCBS')
+    company = Company(symbol=symbol, source='VCI')
     df = await asyncio.to_thread(company.events)
     
     # Chỉ lấy các cột quan trọng
@@ -589,7 +589,7 @@ async def tool_get_stock_events(symbol: str):
 async def tool_get_stock_news(symbol: str):
     """Tìm kiếm tin tức báo chí mới nhất liên quan trực tiếp đến mã cổ phiếu."""
     symbol = symbol.upper().strip()
-    company = Company(symbol=symbol, source='TCBS')
+    company = Company(symbol=symbol, source='VCI')
     df = await asyncio.to_thread(company.news)
     
     if df is not None and not df.empty:
