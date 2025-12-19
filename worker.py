@@ -4117,7 +4117,7 @@ async def job_daily_digest():
 
         # 5. Gửi tin nhắn
         count = 0
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
+        base_url = BASE_URL
         
         for chat_id, data in digest_payloads.items():
             try:

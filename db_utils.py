@@ -2497,15 +2497,19 @@ def save_digest_to_redis(digest_id: str, data: dict):
     except Exception as e:
         redis_debug_log(f"[DIGEST] Lỗi lưu Redis: {e}")
 
-def get_digest_from_redis(digest_id: str):
-    """Đọc digest data từ Redis"""
+def get_digest_from_redis(digest_id):
     try:
-        r = get_redis()
-        raw = r.get(f"digest_web:{digest_id}")
-        return json.loads(raw) if raw else None
+        r = get_redis() # Hoặc hàm lấy redis của bạn
+        
+        # --- [KIỂM TRA DÒNG NÀY] ---
+        # Phải là "digest_web:" để khớp với worker.py
+        raw = r.get(f"digest_web:{digest_id}") 
+        
+        if raw:
+            return json.loads(raw)
     except Exception as e:
-        redis_debug_log(f"[DIGEST] Lỗi đọc Redis: {e}")
-        return None
+        print(f"Redis error: {e}")
+    return None
 # ==========================================
 
 def get_ai_questions_by_month(year: int, month: int) -> list[str]:
