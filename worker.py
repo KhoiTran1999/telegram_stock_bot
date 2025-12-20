@@ -3934,6 +3934,17 @@ async def generate_user_ai_digest(chat_id, watchlist, all_spec_news, all_macro_n
         # Luôn trả về fallback để không làm sập luồng gửi tin
         return _build_empty_ai_digest("Tạm thời không thể tạo tóm tắt AI.")
 
+def sort_news_by_watchlist(news_list, watchlist):
+    """Sắp xếp tin tức: Ưu tiên tin có mã trong watchlist lên đầu."""
+    if not watchlist: return news_list
+    w_set = set(str(s).upper() for s in watchlist)
+    priority, others = [], []
+    for item in news_list:
+        tags = set(item.get('tags', []))
+        if not tags.isdisjoint(w_set): priority.append(item)
+        else: others.append(item)
+    return priority + others
+
 async def job_daily_digest():
     """
     [JOB APSCHEDULER] Gửi bản tin sáng (Digest) lúc 07:00.
@@ -3998,48 +4009,24 @@ async def job_daily_digest():
                 enriched.append(item)
             return enriched
 
-        # Danh sách đầy đủ cho Web App
-        full_macro_news = _enrich_news_data(macro_rows)
-        full_spec_news = _enrich_news_data(spec_rows)
+        # 2. Xử lý Metadata tin tức và Gắn Tag
+        full_macro_news = tag_news_items(_enrich_news_data(macro_rows))
+        full_spec_news = tag_news_items(_enrich_news_data(spec_rows))
         
-        # Tagging cho Specialized news (để AI filter cho HOT section)
-        full_spec_news = tag_news_items(full_spec_news)
-
-        # 3. Chuẩn bị AI Task (Chỉ dùng AI để tóm tắt phần HOT - Tiêu điểm)
-        # Chúng ta vẫn đưa hết input vào để AI chọn ra Top 5-10 tin HOT nhất
-        # Nhưng phần Macro/Spec chi tiết sẽ do Web App hiển thị raw.
-        user_ai_tasks = []
-        user_ids_map = []
-        
-        for chat_key, user_block in all_watch.items():
-            try: chat_id = int(chat_key)
-            except: continue
-            
-            watchlist = user_block.get("list", [])
-            user_ids_map.append(chat_id)
-            # Hàm generate_user_ai_digest cần được sửa nhẹ bên dưới để output JSON phù hợp
-            # Hiện tại giữ nguyên, nó trả về {headline, macro, corporate}
-            user_ai_tasks.append(generate_user_ai_digest(chat_id, watchlist, full_spec_news, full_macro_news))
-            
-        # [FIX] return_exceptions=True để 1 user lỗi không ảnh hưởng user khác
-        ai_results = await asyncio.gather(*user_ai_tasks, return_exceptions=True)
-
-        # --- [THÊM ĐOẠN NÀY] ---
-        # Chuyển đổi tags từ set -> list để tránh lỗi JSON không serialize được set
-        for item in full_spec_news:
+        # Chuyển tags từ set sang list để tránh lỗi JSON serialize sau này
+        for item in (full_macro_news + full_spec_news):
             if isinstance(item.get('tags'), set):
                 item['tags'] = list(item['tags'])
-        # -----------------------
 
-        user_ai_map = {}
-
-        for cid, res in zip(user_ids_map, ai_results):
-            if isinstance(res, Exception):
-                log.error(f"[DIGEST] Lỗi AI Task user {cid}: {res}")
-                # Nếu lỗi, gán fallback
-                user_ai_map[cid] = _build_empty_ai_digest("Lỗi xử lý AI.")
-            else:
-                user_ai_map[cid] = res
+        # 3. GỌI AI DUY NHẤT 1 LẦN CHO "TIÊU ĐIỂM NÓNG" CHUNG
+        all_combined_news = full_macro_news + full_spec_news
+        global_ai_data = None
+        if all_combined_news:
+            log.info(f"[DIGEST] Đang gọi AI tổng hợp {len(all_combined_news)} tin tức chung...")
+            global_ai_data = await summarize_daily_news_with_ai(all_combined_news)
+        
+        if not global_ai_data:
+            global_ai_data = _build_empty_ai_digest("Thị trường hiện chưa có biến động nổi bật.")
 
         # 4. Build Payload
         # ... (Code xử lý BCTC, Report, Value Stocks giữ nguyên) ...
@@ -4060,33 +4047,31 @@ async def job_daily_digest():
 
         digest_payloads = {}
         
-        for chat_id, ai_res in user_ai_map.items():
-            is_pro = (chat_id in pro_chat_ids or chat_id == ADMIN_ID)
-            
-            # Parse AI Data
-            ai_data = _parse_ai_digest_payload(ai_res)
-            
-            # --- CẤU TRÚC PAYLOAD MỚI CHO WEB APP ---
-            digest_payloads[chat_id] = {
-                "is_pro": is_pro,
-                "date_str": now_local.strftime('%d/%m/%Y'),
+        for chat_key, user_block in all_watch.items():
+            try:
+                chat_id = int(chat_key)
+                watchlist = user_block.get("list", [])
+                is_pro = (chat_id in pro_chat_ids or chat_id == ADMIN_ID)
                 
-                # 1. Phần HOT (AI Tóm tắt)
-                "ai_news": {
-                    "headline": ai_data.get('headline', []) if ai_data else [],
-                    "comment": ai_data.get('comment', "") if ai_data else "",
-                    "sentiment_score": ai_data.get('sentiment_score', 5) if ai_data else 5,
-                },
-                
-                # 2. Phần Feed (Raw List có ảnh)
-                "macro_feed": full_macro_news, 
-                "spec_feed": full_spec_news,
-                
-                # 3. Các phần khác
-                "value_stocks": top_value_stocks if is_pro else [],
-                "bctc": [], 
-                "reports": []
-            }
+                # Sắp xếp tin theo từng user
+                sorted_macro = sort_news_by_watchlist(full_macro_news, watchlist)
+                sorted_spec = sort_news_by_watchlist(full_spec_news, watchlist)
+
+                digest_payloads[chat_id] = {
+                    "is_pro": is_pro,
+                    "date_str": now_local.strftime('%d/%m/%Y'),
+                    "ai_news": {
+                        "headline": global_ai_data.get('headline', []),
+                        "comment": global_ai_data.get('comment', ""),
+                        "sentiment_score": global_ai_data.get('sentiment_score', 5),
+                    },
+                    "macro_feed": sorted_macro, 
+                    "spec_feed": sorted_spec,
+                    "value_stocks": top_value_stocks if is_pro else [],
+                    "bctc": [], 
+                    "reports": []
+                }
+            except: continue
 
         # Fill BCTC & Reports (Logic cũ giữ nguyên)
         if bctc_rows:
