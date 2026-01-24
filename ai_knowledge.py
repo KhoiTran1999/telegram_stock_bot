@@ -117,7 +117,7 @@ def get_dynamic_system_prompt() -> str:
     # Prompt ghép nối
     dynamic_context = f"""
 --- REALTIME CONTEXT ---
-- Thời gian hệ thống: {now.strftime('%H:%M %d/%m/%Y')}
+- Thời gian hệ thống: {now.strftime('%H:%M:%S %A, %d/%m/%Y')} (GMT+7)
 - Trạng thái thị trường: {market_status}
 ------------------------
 """

@@ -357,8 +357,10 @@ def _agent_bundle_key(chat_id: int) -> str:
 def push_to_worker(payload):
     """Gửi lệnh sang Worker"""
     try:
+        log.info(f"Preparing to push to worker: {payload.get('cmd')}")
         r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
         r.publish(REDIS_CHANNEL_INBOUND, json.dumps(payload))
+        log.info(f"Successfully pushed to {REDIS_CHANNEL_INBOUND}")
     except Exception as e:
         log.error(f"Push Worker Error: {e}")
 
@@ -788,7 +790,8 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # user_text là biến đã có sẵn ở đầu hàm
-        await asyncio.to_thread(log_command_usage, chat_id, "CMD_ASK_AI", ADMIN_ID, note=user_text)
+        # [FIX] Đổi ADMIN_ID -> None để Admin cũng được lưu log chat (phục vụ bộ nhớ context)
+        await asyncio.to_thread(log_command_usage, chat_id, "CMD_ASK_AI", None, note=user_text)
     except Exception as e:
         log.warning(f"Log AI Chat error: {e}")
     

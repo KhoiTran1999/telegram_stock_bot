@@ -69,7 +69,8 @@ from db_utils import (
     get_stock_personalization_map,
     cleanup_expired_stock_personalizations,
     get_ai_questions_by_month,
-    get_recent_news_seen_by_limit
+    get_recent_news_seen_by_limit,
+    get_user_logs
 )
 from report_cache import (
     make_report_cache_key,
@@ -863,9 +864,44 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         tool_menu = get_tool_descriptions_for_brain()
         
         # Prompt cho Manager: Chỉ giao việc, không làm
+        
+        # [NEW] Lấy lịch sử chat gần đây (3 tin nhắn gần nhất)
+        history_context = ""
+        try:
+            # Lấy 3 log gần nhất. Note: get_user_logs trả về DESC (mới nhất trước)
+            # Ta cần lấy cả message hiện tại cũng không sao, AI sẽ tự hiểu.
+            # Tuy nhiên, nếu message hiện tại chưa kịp log xuống DB thì user_query sẽ là mới nhất.
+            logs_data = get_user_logs(chat_id, limit=5)
+            rows = logs_data.get('rows', [])
+            
+            # Đảo ngược lại để đúng thứ tự thời gian: Cũ -> Mới
+            rows.reverse()
+            
+            history_msgs = []
+            for r in rows:
+                if r.get('note'):
+                    history_msgs.append(f"- User: {r.get('note')}")
+            
+            if history_msgs:
+                history_str = "\n".join(history_msgs)
+                history_context = f"\nLỊCH SỬ CHAT GẦN ĐÂY:\n{history_str}\n"
+            
+            log.info(f"[{INSTANCE_ID}] 📜 Loaded History ({len(history_msgs)} items): {history_msgs}")  # <--- DEBUG LOG
+
+        except Exception as e:
+            log.warning(f"Failed to load chat history: {e}")
+
         manager_prompt = f"""
         Bạn là Manager Agent thông minh của Bot Chứng khoán.
-        User Query: "{user_query}"
+        {history_context}
+        User Query (Hiện tại): "{user_query}"
+
+        ⚠️ [QUAN TRỌNG - BỘ NHỚ CONTEXT]:
+        Nếu câu hỏi của User không có chủ ngữ hoặc thiếu Mã Cổ Phiếu (ví dụ: "giá sao rồi?", "lợi nhuận thế nào?", "vẽ biểu đồ đi", "con này ổn không?"), bạn BẮT BUỘC phải tìm lại trong "LỊCH SỬ CHAT GẦN ĐÂY" để xác định mã cổ phiếu gần nhất mà user đang đề cập.
+        > Ví dụ:
+        > - History: "Xem giúp HPG"
+        > - Current: "Giá bao nhiêu?"
+        > -> Hiểu là: "Giá HPG bao nhiêu?" -> ACTION: "Lấy giá HPG..."
 
         DƯỚI ĐÂY LÀ KIẾN THỨC NỀN TẢNG CỦA BẠN (FAQ/Help):
         {STATIC_KNOWLEDGE_BASE}
@@ -901,6 +937,12 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             config={"system_instruction": sys_instruction}
         )
         update_stats(resp_manager)
+        
+        if not resp_manager or not getattr(resp_manager, "candidates", None):
+            log.error(f"[{INSTANCE_ID}] ⚠️ Gemini trả về response không có candidates: {resp_manager}")
+            push_telegram_msg(chat_id, "⚠️ AI không phản hồi (có thể do bộ lọc an toàn). Vui lòng hỏi lại.", edit_id=loading_msg_id)
+            return
+
         manager_output = resp_manager.candidates[0].content.parts[0].text.strip()
         
         log.info(f"[{INSTANCE_ID}] 📝 Instruction: {manager_output}")
@@ -935,8 +977,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     
     worker_config = {
         "tools": [{"function_declarations": AGENT_TOOLS_SCHEMA}], # Import từ agent_tools.py
-        "system_instruction": "Bạn là Worker (Researcher) chăm chỉ. Nhiệm vụ: Gọi tool lấy dữ liệu thô, sau đó tổng hợp lại ngắn gọn, loại bỏ rác.",
-        "temperature": 0.3 # Giữ nhiệt độ thấp để gọi tool chính xác
+        "system_instruction": sys_instruction + "\n\nVAI TRÒ CỦA BẠN: Bạn là Worker (Researcher) chăm chỉ. Nhiệm vụ: Gọi tool lấy dữ liệu thô."
     }
 
     MAX_LOOPS = 10  # Giới hạn số vòng lặp của Worker
@@ -1023,15 +1064,19 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         Dựa trên NHIỆM VỤ BAN ĐẦU: "{worker_instruction}" và các DỮ LIỆU THÔ (JSON) ở trên.
         
         Hãy viết một bản "BÁO CÁO TỔNG HỢP" ngắn gọn, súc tích gửi cho Manager.
-        - Chỉ giữ lại thông tin quan trọng trả lời đúng câu hỏi.
-        - Loại bỏ các trường null, thông tin rác hoặc JSON dài dòng.
-        - Trình bày dạng bullet points hoặc đoạn văn ngắn.
+        
+        QUY TẮC BẮT BUỘC:
+        1. TRUNG THỰC TUYỆT ĐỐI: Chỉ báo cáo dựa trên dữ liệu tool trả về. 
+           - Nếu tool chỉ trả về Quý 3, bạn PHẢI nói rõ là "Chỉ có dữ liệu Quý 3", KHÔNG ĐƯỢC tự bịa là đã có Quý 4.
+           - Nếu không tìm thấy thông tin, hãy báo là "Không tìm thấy".
+        2. Loại bỏ các trường null, thông tin rác.
+        3. Trình bày dạng bullet points.
         """
         
         worker_history.append(Content(role="user", parts=[Part(text=synthesis_prompt)]))
         
         # Tắt tool ở bước này để Worker tập trung viết text
-        synthesis_config = {"temperature": 0.5}
+        synthesis_config = {"temperature": 0.2} # Giảm nhiệt độ để tăng tính chính xác (factual)
         
         resp_syn = await safe_generate_content(
             model_id=MODEL_WORKER, # Vẫn là Flash Lite (Rẻ)
@@ -1065,16 +1110,23 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         
         Dựa vào báo cáo trên và kiến thức của bạn:
         1. Trả lời trực tiếp câu hỏi của User.
-        2. Đưa ra nhận định, lời khuyên (nếu phù hợp).
+           - QUAN TRỌNG: Nếu Báo cáo chỉ có Quý 3, bạn PHẢI trả lời là "Hiện chỉ có dữ liệu đến Quý 3". TUYỆT ĐỐI KHÔNG được bịa số liệu Quý 4.
+           - Nếu thông tin trong báo cáo là "Không tìm thấy", hãy trả lời trung thực và khuyên user kiểm tra lại sau.
+        2. Đưa ra nhận định, lời khuyên (nếu phù hợp và CÓ dữ liệu chứng minh).
         3. Giọng văn chuyên nghiệp, thân thiện.
         """
         resp_final = await safe_generate_content(
             model_id=MODEL_BRAIN, # gemini-2.5-pro
             contents=manager_final_prompt,
-            config={"system_instruction": final_system_prompt, "temperature": 0.7}
+            config={"system_instruction": final_system_prompt, "temperature": 0.5} # Giảm nhiệt độ
         )
         update_stats(resp_final)
         
+        if not resp_final or not getattr(resp_final, "candidates", None):
+            log.error(f"[{INSTANCE_ID}] ⚠️ Gemini Final Answer trả về không có candidates: {resp_final}")
+            push_telegram_msg(chat_id, "⚠️ AI không thể tổng hợp câu trả lời cuối cùng. Vui lòng thử lại.", edit_id=loading_msg_id)
+            return
+
         final_answer = resp_final.candidates[0].content.parts[0].text
         
         # Gửi kết quả cuối cùng
@@ -2483,6 +2535,7 @@ async def worker_inbound_loop():
 
                 if message:
                     try:
+                        log.info(f"[{INSTANCE_ID}] 📥 Redis Message Received: {message}")
                         payload = json.loads(message['data'])
                         cmd = payload.get('cmd')
 
@@ -4393,6 +4446,14 @@ def infer_latest_quarter_from_df(df: pd.DataFrame) -> tuple[int, int] | None:
     """
     if df is None or df.empty:
         return None
+
+    # [FIX] Handle Vietnamese columns map
+    rename_map = {}
+    if "Năm" in df.columns: rename_map["Năm"] = "year"
+    if "Kỳ" in df.columns: rename_map["Kỳ"] = "quarter"
+    
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
     if "year" not in df.columns or "quarter" not in df.columns:
         log.warning(f"[BCTC] DF không có cột 'year' / 'quarter'. Columns = {list(df.columns)}")

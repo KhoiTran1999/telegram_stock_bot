@@ -133,7 +133,8 @@ def _df_to_markdown(df: pd.DataFrame, limit: int = 5) -> str:
     
     # Format ngày tháng nếu có (ví dụ cột 'time', 'date')
     for col in df_limited.columns:
-        if 'time' in col.lower() or 'date' in col.lower():
+        col_str = str(col).lower()
+        if 'time' in col_str or 'date' in col_str:
             try:
                 df_limited[col] = pd.to_datetime(df_limited[col]).dt.strftime('%d/%m/%Y')
             except: pass
@@ -505,7 +506,26 @@ async def tool_get_financial_report(
     # Lấy dữ liệu
     df = await asyncio.to_thread(func_map[report_type], period=period, lang='vi')
     
+    # [FIX] Sort Descending to ensure latest data
+    if df is not None and not df.empty:
+        # Standardize columns temporarily for sorting
+        sort_cols = []
+        if 'year' in df.columns and 'quarter' in df.columns:
+             sort_cols = ['year', 'quarter']
+        elif 'Năm' in df.columns and 'Kỳ' in df.columns:
+             sort_cols = ['Năm', 'Kỳ']
+        
+        if sort_cols:
+             try:
+                # Force numeric for correct sorting
+                for col in sort_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                df = df.sort_values(by=sort_cols, ascending=[False, False])
+             except: pass
+
     # Trả về bảng Markdown (lấy 4 kỳ gần nhất)
+    # [FIX] Re-format date-like columns is handled in _df_to_markdown, but we want to ensure year/quarter look clean.
     return _df_to_markdown(df, limit=4)
 
 @registry.register(name="get_macro_data")
