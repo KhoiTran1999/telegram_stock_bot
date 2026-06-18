@@ -240,7 +240,16 @@ def add_command_log_note_column():
     except Exception as e:
         print(f"❌ Lỗi: {e}")
 
+from db_utils import init_db
+
 if __name__ == "__main__":
+    print("🚀 Đang khởi tạo Database core tables...")
+    try:
+        init_db()
+        print("✅ Khởi tạo Database core tables thành công.")
+    except Exception as e:
+        print(f"❌ Lỗi khởi tạo DB: {e}")
+
     migrate_admin_note()
     add_ban_column()
     migrate_trial()
