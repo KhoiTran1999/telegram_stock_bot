@@ -114,6 +114,11 @@ os.makedirs(GSO_DATA_DIR, exist_ok=True)
 
 # Cấu hình Redis Output
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+if REDIS_URL.startswith("redis://") and "?" not in REDIS_URL and "localhost" not in REDIS_URL and "127.0.0.1" not in REDIS_URL:
+    # We need to make sure we parse REDIS URL to rediss to fix Render/Aiven redis error
+    REDIS_URL = "rediss://" + REDIS_URL[8:]
+
 REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
 REDIS_CHANNEL_INBOUND = 'worker_inbound'
 AGENT_TYPES = ("macro", "biz", "tech")
@@ -347,7 +352,10 @@ log = logging.getLogger("Worker")
 
 # Kết nối Redis (Dùng chung)
 try:
-    r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    kwargs = {"decode_responses": True}
+    if REDIS_URL.startswith("rediss://"):
+        kwargs["ssl_cert_reqs"] = "none"
+    r_client = redis.Redis.from_url(REDIS_URL, **kwargs)
     log.info(f"[{INSTANCE_ID}] ✅ Kết nối Redis thành công.")
 except Exception as e:
     log.error(f"[{INSTANCE_ID}] ❌ Lỗi kết nối Redis: {e}")
@@ -358,7 +366,10 @@ def _reconnect_redis_client() -> redis.Redis | None:
     """Thử tạo lại Redis client dùng chung."""
     global r_client
     try:
-        r_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        kwargs = {"decode_responses": True}
+        if REDIS_URL.startswith("rediss://"):
+            kwargs["ssl_cert_reqs"] = "none"
+        r_client = redis.Redis.from_url(REDIS_URL, **kwargs)
         r_client.ping()
         log.info(f"[{INSTANCE_ID}] 🔁 Redis client đã được kết nối lại thành công.")
         return r_client
@@ -5924,30 +5935,27 @@ async def run_worker_runtime():
     # --- 1. CẤU HÌNH REDIS JOB STORE ---
     # Parse URL Redis từ biến môi trường để lấy host, port, password
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    # 2. Tạo biến chứa tham số kết nối mặc định
-    connection_kwargs = {}
 
-    # 3. KIỂM TRA THÔNG MINH:
-    # Chỉ thêm cấu hình bỏ qua SSL nếu URL bắt đầu bằng "rediss://" (Secure Redis)
+    # Fix: Sửa lỗi DNS bằng cách đảm bảo rediss://
+    if redis_url.startswith("redis://") and "?" not in redis_url and "localhost" not in redis_url and "127.0.0.1" not in redis_url:
+        redis_url = "rediss://" + redis_url[8:]
+
+    connection_kwargs = {"decode_responses": True}
     if redis_url.startswith("rediss://"):
-        connection_kwargs['ssl_cert_reqs'] = None
+        connection_kwargs["ssl_cert_reqs"] = "none"
 
-    # 4. Tạo Pool với tham số động
-    # Nếu ở Local: connection_kwargs rỗng -> Không lỗi
-    # Nếu ở Cloud: connection_kwargs có ssl_cert_reqs -> Fix lỗi Connection Closed
     pool = redis.ConnectionPool.from_url(
         redis_url,
-        **connection_kwargs 
+        **connection_kwargs
     )
 
-    # 5. Khởi tạo JobStore
     jobstores = {
         'default': RedisJobStore(
-            jobs_key='stockbot_jobs',
-            run_times_key='stockbot_running',
+            jobs_key='apscheduler.jobs',
+            run_times_key='apscheduler.run_times',
             connection_pool=pool
         )
-}
+    }
     # --- 2. CẤU HÌNH MẶC ĐỊNH (DEFAULTS) ---
     job_defaults = {
         'coalesce': True,             # Nếu lỡ nhiều lần, chỉ chạy bù 1 lần cuối
