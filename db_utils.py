@@ -9,12 +9,7 @@ from psycopg import rows
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 load_dotenv()
-from news_seen_cache import (
-    has_news_seen_redis,
-    mark_news_seen_redis,
-    get_news_seen_count_redis,
-    canonicalize_link,
-)
+
 from redis_client import get_redis
 import hashlib
 import uuid
