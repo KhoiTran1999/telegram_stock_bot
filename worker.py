@@ -53,23 +53,6 @@ from db_utils import (
     get_vn30_enabled_map,
     get_recent_bctc_notified,
     get_recent_analysis_reports,
-    get_recent_news_seen,
-    get_historical_valuation_from_redis,
-    save_historical_valuation_to_redis,
-    get_bot_active,
-    has_news_seen,
-    mark_news_seen,
-    cleanup_old_news_seen,
-    cleanup_old_pending_orders,
-    has_bctc_notified,
-    mark_bctc_notified,
-    has_report_seen,
-    mark_report_seen,
-    save_bot_message,
-    get_stock_personalization_map,
-    cleanup_expired_stock_personalizations,
-    get_ai_questions_by_month,
-    get_recent_news_seen_by_limit,
     get_user_logs
 )
 from report_cache import (
@@ -2670,69 +2653,6 @@ def sync_sectors_to_redis():
 # ==============================================
 # TIN TỨC (RSS)
 # ==============================================
-NEWS_FEED_TYPE_SPECIALIZED = "SPECIALIZED"
-NEWS_FEED_TYPE_MACRO = "MACRO"
-
-# 1. Tin chuyên ngành (Quét từ khóa)
-RSS_FEEDS_SPECIALIZED = {
-    "CHUNG_KHOAN": [
-        "https://vneconomy.vn/chung-khoan.rss",
-        "https://vneconomy.vn/tai-chinh.rss",
-        "https://vneconomy.vn/kinh-te-so.rss",
-        "https://vneconomy.vn/dau-tu.rss",
-        "https://vietstock.vn/830/chung-khoan/co-phieu.rss",
-        "https://vietstock.vn/739/chung-khoan/giao-dich-noi-bo.rss",
-        "https://vietstock.vn/3358/chung-khoan/etf-va-cac-quy.rss",
-        "https://vietstock.vn/145/chung-khoan/y-kien-chuyen-gia.rss",
-        "https://vietstock.vn/582/nhan-dinh-phan-tich/phan-tich-co-ban.rss",
-        "https://vneconomy.vn/tin-moi.rss",
-        "https://vneconomy.vn/tieu-diem.rss",
-    ],
-    "DOANH_NGHIEP": [
-        "https://vneconomy.vn/nhip-cau-doanh-nghiep.rss",
-        "https://vneconomy.vn/thi-truong.rss",
-        "https://vneconomy.vn/tieu-dung.rss",
-        "https://vneconomy.vn/dan-sinh.rss",
-        "https://vneconomy.vn/kinh-te-xanh.rss",
-        "https://vneconomy.vn/cong-nghe-startup.rss",
-        "https://vietstock.vn/737/doanh-nghiep/hoat-dong-kinh-doanh.rss",
-        "https://vietstock.vn/738/doanh-nghiep/co-tuc.rss",
-        "https://vietstock.vn/764/doanh-nghiep/tang-von-m-a.rss",
-        "https://vietstock.vn/746/doanh-nghiep/ipo-co-phan-hoa.rss",
-
-    ],
-    "BAT_DONG_SAN": [
-        "https://vneconomy.vn/dau-tu-ha-tang.rss",
-        "https://vneconomy.vn/dia-oc.rss",
-        "https://vietstock.vn/4220//bat-dong-san/thi-truong-nha-dat.rss",
-        "https://vietstock.vn/4222/bat-dong-san/du-an.rss",
-        "https://vietstock.vn/4266/bat-dong-san/bao-hiem-va-thue-nha-dat.rss",
-
-    ],
-}
-
-# 2. Tin vĩ mô (Broadcast cho tất cả)
-RSS_FEEDS_MACRO = [
-    "https://vneconomy.vn/tin-moi.rss",
-    "https://vneconomy.vn/tieu-diem.rss",
-    "https://vietstock.vn/143/chung-khoan/chinh-sach.rss",
-    "https://vietstock.vn/16312/tai-chinh/tai-san-so.rss",
-    "https://vietstock.vn/761/kinh-te/vi-mo.rss",
-]
-
-# Chu kỳ quét RSS (giây)
-NEWS_SPECIALIZED_INTERVAL_SECONDS = 30 * 60   # 30 phút
-NEWS_MACRO_INTERVAL_SECONDS = 60 * 60        # 60 phút
-
-# Số bài tối đa gửi cho mỗi user / mỗi vòng quét tin
-NEWS_MAX_ARTICLES_PER_CHAT = 3          # tin chuyên ngành
-NEWS_MACRO_MAX_ARTICLES_PER_RUN = 3     # tin vĩ mô (broadcast)
-
-# Số bài RSS tối đa xử lý mỗi vòng (sau khi gộp & sort theo published)
-NEWS_MAX_RSS_ENTRIES_PER_RUN = 80
-
-# Thời gian tối đa coi bài báo là "tươi" (theo pubDate)
-MAX_NEWS_AGE_DAYS = 14  # chỉ gửi bài trong 14 ngày gần nhất
 
 #===============================================
 def load_company_keywords_from_json(path: str = "sectors.json") -> dict[str, list[str]]:
@@ -2780,34 +2700,6 @@ def load_company_keywords_from_json(path: str = "sectors.json") -> dict[str, lis
 # Map symbol -> list keyword (mã + tên doanh nghiệp)
 COMPANY_KEYWORDS = load_company_keywords_from_json("sectors.json")
 
-def is_fresh_news(
-    pub_dt: datetime.datetime | None,
-    now: datetime.datetime | None = None,
-) -> bool:
-    """
-    Trả về True nếu bài đủ "tươi" theo ngưỡng MAX_NEWS_AGE_DAYS.
-
-    - Nếu pub_dt = None -> cho qua (coi là tươi, vì không có thông tin ngày).
-    - Nếu pubDt cũ hơn MAX_NEWS_AGE_DAYS ngày -> False.
-    """
-    if pub_dt is None:
-        return True
-
-    vn_tz = pytz.timezone(TIMEZONE)
-
-    # Bổ sung timezone nếu thiếu
-    if pub_dt.tzinfo is None:
-        pub_dt = vn_tz.localize(pub_dt)
-
-    if now is None:
-        now = datetime.datetime.now(vn_tz)
-    else:
-        # nếu now không có tz thì cũng gắn VN TZ
-        if now.tzinfo is None:
-            now = vn_tz.localize(now)
-
-    age = now - pub_dt
-    return age.days <= MAX_NEWS_AGE_DAYS
 
 # --- [NEW] Helper trích xuất ảnh từ RSS ---
 def extract_image_from_rss_entry(entry) -> str | None:

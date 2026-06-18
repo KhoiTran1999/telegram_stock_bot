@@ -15,7 +15,6 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 from digest_template import (
     DIGEST_HTML_TEMPLATE,
-    NEWS_GRID_TEMPLATE,
     DIGEST_404_TEMPLATE,
     PROFILE_HTML_TEMPLATE,
     PROFILE_404_TEMPLATE,
@@ -127,9 +126,7 @@ import html
 import feedparser
 from telegram.error import TelegramError
 from urllib.parse import quote_plus
-from news_seen_cache import (
-    get_redis
-)
+
 from report_cache import (
     make_report_cache_key,
     get_report_from_redis,
@@ -896,7 +893,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
                 "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
                 "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n"
-                "• **Báo cáo Tự động:** Gửi bản tin Sáng (7h), Chiều (15h) & Tuần (CN).\n\n"
+                ""
                 "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
                 "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
             )
@@ -1747,7 +1744,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
             "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
             "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n"
-            "• **Báo cáo Tự động:** Gửi bản tin Sáng (7h), Chiều (15h) & Tuần (CN).\n\n"
+            ""
             "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
             "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay.\n\n"
             "----------------\n\n"
@@ -2945,23 +2942,9 @@ def view_digest(digest_id):
     )
 
 # Hàm helper xử lý phân trang
-def paginate_list(data_list, page, per_page=20):
-    total_items = len(data_list)
-    total_pages = (total_items + per_page - 1) // per_page
-    start = (page - 1) * per_page
-    end = start + per_page
-    items = data_list[start:end]
-    return items, total_pages
 
 # --- [MỚI] Route xem tin Vĩ mô (Grid View) ---
 # --- Route Tin Vĩ mô ---
-@flask_app.route("/digest/<digest_id>/macro")
-def view_digest_macro(digest_id):
-    data = get_digest_from_redis(digest_id)
-    if not data:
-        return render_template_string(DIGEST_404_TEMPLATE), 404
-    
-    # Lấy page từ URL (mặc định là 1)
     page = request.args.get('page', 1, type=int)
     
     # Lấy toàn bộ list
@@ -2970,8 +2953,7 @@ def view_digest_macro(digest_id):
     # Phân trang
     news_list, total_pages = paginate_list(full_list, page)
     
-    return render_template_string(
-        NEWS_GRID_TEMPLATE, 
+    return render_template_string( 
         digest_id=digest_id,
         page_title="Vĩ mô & Quốc tế",
         news_list=news_list,
@@ -2981,18 +2963,10 @@ def view_digest_macro(digest_id):
     )
 
 # --- Route Tin Doanh nghiệp ---
-@flask_app.route("/digest/<digest_id>/specialized")
-def view_digest_specialized(digest_id):
-    data = get_digest_from_redis(digest_id)
-    if not data:
-        return render_template_string(DIGEST_404_TEMPLATE), 404
-    
-    page = request.args.get('page', 1, type=int)
     full_list = data.get("spec_feed", [])
     news_list, total_pages = paginate_list(full_list, page)
     
-    return render_template_string(
-        NEWS_GRID_TEMPLATE, 
+    return render_template_string( 
         digest_id=digest_id,
         page_title="Doanh nghiệp & Ngành",
         news_list=news_list,
