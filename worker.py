@@ -2594,9 +2594,6 @@ async def worker_inbound_loop():
 
                             asyncio.create_task(_run_info_task())
 
-                        elif cmd == "GEN_SCREENER":
-                            chat_id = payload.get('chat_id')
-                            loading_id = payload.get('loading_msg_id')
                             asyncio.create_task(process_screener_view(chat_id, loading_id))
 
                         # elif cmd == "FORCE_SCREENER":
@@ -3527,15 +3524,6 @@ def _normalize_price_value(raw: Any) -> float | None:
     return value
 
 
-def _extract_price_from_screener_row(row: pd.Series) -> float | None:
-    candidates = ("close", "price", "price_near_realtime")
-    for key in candidates:
-        if key not in row:
-            continue
-        price = _normalize_price_value(row.get(key))
-        if price:
-            return price
-    return None
 
 
 # async def calculate_market_comprehensive_data():

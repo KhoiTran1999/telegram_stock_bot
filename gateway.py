@@ -21,8 +21,6 @@ from digest_template import (
     PROFILE_404_TEMPLATE,
     REPORT_HTML_TEMPLATE,
     REPORT_404_TEMPLATE,
-    SCREENER_HTML_TEMPLATE,
-    SCREENER_WEBAPP_TEMPLATE,
     LOCKED_FEATURE_TEMPLATE,
     EOD_HTML_TEMPLATE, 
     EOD_404_TEMPLATE,
@@ -874,7 +872,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             ],
             [
                 InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
-                InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")
             ],
             [
                 InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
@@ -980,7 +977,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     # --- NHÓM 4: CÁC TÁC VỤ KHÁC (Report, Info, Screener, Upgrade...) ---
     # (Copy logic cũ của bạn vào đây để không bị mất các tính năng đó)
     elif data == "menu_report": await cmd_report(update, context)
-    elif data == "menu_screener": await cmd_screener_value(update, context)
     # [MỚI] XỬ LÝ NÚT SOI HỒ SƠ TỪ DASHBOARD
     elif data == "menu_info":
         chat_id = update.effective_chat.id
@@ -1709,7 +1705,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
-            InlineKeyboardButton("💎 Lọc Cổ Phiếu", callback_data="menu_screener")
         ],
         [
             InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
@@ -2248,54 +2243,6 @@ pending_clear_confirmations = {}
 
 
 
-@task_locked
-async def cmd_screener_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Mở WebApp Screener để lọc cổ phiếu theo ngành và upside.
-    """
-    if not BOT_ACTIVE:
-        await send_md(context.bot, update.effective_chat.id, "⚙️ Bot đang bảo trì.")
-        return
-
-    chat_id = update.effective_chat.id
-    
-    # 1. Xác định Base URL (Ưu tiên Render -> Ngrok)
-    base_url = os.getenv("RENDER_EXTERNAL_URL")
-    if not base_url:
-        base_url = os.getenv("NGROK_URL")
-    
-    if not base_url:
-        await send_md(context.bot, chat_id, "⚠️ Server chưa cấu hình URL (Render/Ngrok). Không thể mở WebApp.")
-        return
-
-    # Xử lý trailing slash
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
-        
-    webapp_url = f"{base_url}/screener/value?chat_id={chat_id}"
-
-    # 2. Tạo nút mở WebApp
-    kb = [
-        [InlineKeyboardButton("🚀 Mở Bộ Lọc Cổ Phiếu", web_app=WebAppInfo(url=webapp_url))]
-    ]
-    reply_markup = InlineKeyboardMarkup(kb)
-
-    # 3. Gửi tin nhắn
-    await send_md(
-        context.bot, 
-        chat_id, 
-        "🔍 *Bộ Lọc Cổ Phiếu (Screener)*\n\n"
-        "Bấm nút bên dưới để mở công cụ lọc cổ phiếu theo ngành và biên an toàn (Upside).",
-        reply_markup=reply_markup
-    )
-
-
-
-
-
-# ============================================================
-# ♻️ /restore_core – Khôi phục dữ liệu core + Clear Redis + Sync Redis từ DB
-# ============================================================
 @task_locked
 async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -3058,187 +3005,6 @@ def view_digest_specialized(digest_id):
 # Các mã cần loại khỏi Screener (yêu cầu business)
 EXCLUDED_TICKERS = {"VIC", "VRE", "VHM"}
 
-def get_screener_data_for_webapp():
-    """
-    Lấy dữ liệu screener (Bản Chuẩn: Có Cache + Fix lỗi hist_data).
-    """
-    try:
-        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-        
-        # 1. Lấy từ Cache (BẬT LẠI)
-        cached = r.get("global_screener_snapshot")
-        if cached:
-            return json.loads(cached)
-
-        # 2. Lấy dữ liệu định giá lịch sử
-        hist_payload = get_historical_valuation_from_redis()
-        hist_data = hist_payload.get("stocks", {}) if hist_payload else {}
-        
-        if not hist_data:
-            return {"data": []}
-
-        # 3. Lấy dữ liệu thị trường
-        screener_df = Screener().stock(params={"exchangeName": "HOSE,HNX"}, limit=1700)
-        
-        # Lấy thông tin ngành
-        sectors_map = {}
-        try:
-            with open("sectors.json", "r", encoding="utf-8") as f:
-                sectors_map = json.load(f)
-        except: pass
-
-        result_data = []
-        for index, row in screener_df.iterrows():
-            sym = str(row['ticker']).upper()
-            if sym in EXCLUDED_TICKERS: continue
-            if sym not in hist_data: continue 
-            
-            try:
-                pe_cur = float(row['pe'])
-                pb_cur = float(row['pb'])
-                
-                p_close = row.get('close', 0)
-                p_price = row.get('price', 0)
-                p_realtime = row.get('price_near_realtime', 0)
-                
-                current_price = 0.0
-                try:
-                    val = float(p_close or p_price or p_realtime or 0)
-                    if val > 0 and val < 500: val *= 1000
-                    current_price = val
-                except: current_price = 0.0
-            except: continue
-
-            pe_avg = hist_data[sym].get('pe_avg', 0)
-            pb_avg = hist_data[sym].get('pb_avg', 0)
-            
-            if math.isnan(pe_cur) or pe_cur <= 0: continue
-            if math.isnan(pb_cur) or pb_cur <= 0: continue
-            if math.isnan(pe_avg) or pe_avg <= 0: continue
-            if math.isnan(pb_avg) or pb_avg <= 0: continue
-
-            upside_pe = (pe_avg / pe_cur) - 1
-            upside_pb = (pb_avg / pb_cur) - 1
-            avg_upside = (upside_pe + upside_pb) / 2
-            
-            fair_value = current_price * (1 + avg_upside)
-            discount_pct = -avg_upside * 100 
-
-            if avg_upside >= 0.15: signal = "Undervalued"
-            elif avg_upside <= -0.15: signal = "Overvalued"
-            else: signal = "Fair"
-
-            sector_info = sectors_map.get(sym, "Khác")
-            if isinstance(sector_info, dict):
-                sector = sector_info.get("sector", "Khác")
-            else:
-                sector = sector_info if isinstance(sector_info, str) else "Khác"
-            
-            def _s(v): return float(v) if v and not math.isnan(v) and not math.isinf(v) else 0.0
-
-            result_data.append({
-                "symbol": str(sym),
-                "sector": str(sector) if sector else "Khác",
-                "price": _s(current_price),
-                "fair": _s(fair_value),
-                "discount": _s(round(discount_pct, 2)),
-                "signal": str(signal),
-                "pe": _s(pe_cur),
-                "pe_avg": _s(pe_avg),
-                "pb": _s(pb_cur),
-                "pb_avg": _s(pb_avg)
-            })
-            
-        payload = {"data": result_data}
-        
-        # Cache 5 phút
-        try:
-            json_str = json.dumps(payload, allow_nan=False)
-            r.set("global_screener_snapshot", json_str, ex=300)
-        except: pass
-        
-        return payload
-
-    except Exception as e:
-        log.error(f"Lỗi get_screener_data_for_webapp: {e}")
-        return {"data": []}
-
-@flask_app.route("/screener/value")
-async def view_screener_webapp():
-    """Route hiển thị Web App Screener"""
-
-    # --- 1. KIỂM TRA QUYỀN PRO ---
-    chat_id_str = request.args.get("chat_id")
-    is_pro = False
-    if chat_id_str:
-        try:
-            cid = int(chat_id_str)
-            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
-        except: pass
-
-    if not is_pro:
-        return render_template_string(
-            LOCKED_FEATURE_TEMPLATE,
-            icon="💎",
-            title="Bộ Lọc Giá Trị (Mean Reversion)",
-            desc=(
-                "Hệ thống tự động quét toàn thị trường để tìm kiếm các cổ phiếu "
-                "đang bị định giá thấp hơn lịch sử 5 năm (P/E, P/B).\n\n"
-                "✅ Tự động loại bỏ cổ phiếu rác.\n"
-                "✅ Xếp hạng cơ hội đầu tư thực chiến.\n"
-                "✅ Dữ liệu Realtime trong phiên.\n\n"
-                "Kết quả lọc chuyên sâu này chỉ dành cho thành viên Pro."
-            )
-        ), 403
-
-    try:
-        data_obj = get_screener_data_for_webapp()
-        items = data_obj.get("data", [])
-        
-        # [NEW] Generate Sector Chart
-        sector_chart = None
-        sector_table = None
-        try:
-            hist_payload = get_historical_valuation_from_redis()
-            if hist_payload and "sectors" in hist_payload:
-                sector_chart = draw_sector_performance_chart(hist_payload["sectors"], '12w')
-                sector_table = generate_sector_table_html(hist_payload["sectors"])
-        except Exception as e:
-            log.error(f"Chart Error: {e}")
-        
-        vn_tz = pytz.timezone("Asia/Ho_Chi_Minh")
-        generated_time = datetime.datetime.now(vn_tz).strftime("%H:%M %d/%m/%Y")
-        
-        # --- [FIX] TRUYỀN BIẾN SECTORS VÀO TEMPLATE ---
-        # CACHED_SECTORS là biến toàn cục đã có sẵn ở đầu file gateway.py
-        sectors_json = json.dumps(CACHED_SECTORS, ensure_ascii=False)
-        
-        return render_template_string(
-            SCREENER_WEBAPP_TEMPLATE, 
-            items=items, 
-            generated_time=generated_time,
-            sector_chart=sector_chart,
-            sector_table=sector_table,
-            sectors=sectors_json  # <--- QUAN TRỌNG NHẤT: Fix lỗi JS
-        )
-    except Exception as e:
-        log.error(f"View Screener Error: {e}")
-        return "Lỗi tải dữ liệu.", 500
-
-@flask_app.route("/api/screener-data")
-def api_screener_data():
-    """API trả về dữ liệu JSON cho Screener WebApp"""
-    data = get_screener_data_for_webapp()
-    # Force standard JSON dump to avoid NaN issues on Safari
-    try:
-        return flask_app.response_class(
-            response=json.dumps(data, ensure_ascii=False, allow_nan=False),
-            mimetype='application/json'
-        )
-    except ValueError:
-        # If data still has NaN, return empty to prevent crash
-        return jsonify({"data": []})
-
 @flask_app.route("/info/<symbol>")
 async def view_profile(symbol: str): # <--- Đổi thành async
     """
@@ -3479,74 +3245,6 @@ async def view_chart(symbol: str):
         rsi_msg=data['rsi_msg'],
         volume_str=data['volume_str']
     )
-
-@flask_app.route("/screener/locked")
-def view_screener_locked():
-    """
-    Route hiển thị giao diện khóa cho Screener (Dành cho Free User).
-    Sử dụng LOCKED_FEATURE_TEMPLATE.
-    """
-    return render_template_string(
-        LOCKED_FEATURE_TEMPLATE,
-        icon="💎",
-        title="Bộ Lọc Giá Trị (Mean Reversion)",
-        desc=(
-            "Hệ thống tự động quét toàn thị trường để tìm kiếm các cổ phiếu "  # <--- Đã sửa: Thêm dấu cách, bỏ dấu chấm
-            "đang bị định giá thấp hơn lịch sử 5 năm (P/E, P/B).\n\n"
-            "✅ Tự động loại bỏ cổ phiếu rác.\n"                              # Rút gọn cho đỡ bị ngắt dòng xấu
-            "✅ Xếp hạng cơ hội đầu tư thực chiến.\n"
-            "✅ Dữ liệu Realtime trong phiên.\n\n"
-            "Kết quả lọc chuyên sâu này chỉ dành cho thành viên Pro."
-        )
-    )
-
-@flask_app.route("/screener_result/<id>")
-async def view_screener_result(id): # <--- Chuyển thành ASYNC để gọi DB
-    """
-    Route hiển thị kết quả Screener Value.
-    """
-    # 1. Kiểm tra quyền hạn (Paywall Check)
-    chat_id_str = request.args.get("chat_id")
-    is_pro = False
-    if chat_id_str:
-        try:
-            cid = int(chat_id_str)
-            # Gọi hàm check DB trong thread riêng
-            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
-        except: pass
-    
-    # Nếu không phải Pro -> Hiển thị giao diện Khóa
-    if not is_pro:
-        return render_template_string(
-            LOCKED_FEATURE_TEMPLATE,
-            icon="💎",
-            title="Bộ Lọc Giá Trị (Mean Reversion)",
-            desc="Kết quả lọc cổ phiếu định giá rẻ chuyên sâu này chỉ dành cho thành viên Pro."
-        ), 403
-
-    # 2. Lấy dữ liệu từ Redis (Logic cũ)
-    try:
-        r = get_redis()
-        raw = r.get(f"digest_web:screener_val:{id}")
-        
-        if not raw:
-            return "<h3>Dữ liệu đã hết hạn hoặc không tồn tại. Vui lòng tạo lại lệnh /screener_value</h3>", 404
-            
-        data = json.loads(raw)
-        
-        return render_template_string(
-            SCREENER_HTML_TEMPLATE, 
-            items=data['items'], 
-            generated_time=data['generated_time'],
-            sector_chart=data.get('sector_chart', '')
-        )
-    except Exception as e:
-        log.error(f"Lỗi render screener_result: {e}")
-        return f"Lỗi server: {e}", 500
-    
-# ==============================================
-# 👑 ADMIN DASHBOARD ROUTES
-# ==============================================
 
 @flask_app.route("/admin/dashboard")
 def admin_dashboard():
@@ -4901,7 +4599,6 @@ async def main():
     # Tính năng AI & Dữ liệu (Gateway gọi Worker)
     tg_app.add_handler(CommandHandler("report", cmd_report))
     tg_app.add_handler(CommandHandler("info", cmd_info))
-    tg_app.add_handler(CommandHandler("screener_value", cmd_screener_value))
     
     # Tài khoản & Cài đặt
     tg_app.add_handler(CommandHandler("setting", cmd_setting))
