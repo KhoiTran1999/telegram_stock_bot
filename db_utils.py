@@ -32,6 +32,14 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
+# Bắt buộc thêm sslmode=require khi kết nối tới DB external (trừ localhost)
+if "localhost" not in DATABASE_URL and "127.0.0.1" not in DATABASE_URL:
+    if "?sslmode=" not in DATABASE_URL and "&sslmode=" not in DATABASE_URL:
+        if "?" in DATABASE_URL:
+            DATABASE_URL += "&sslmode=require"
+        else:
+            DATABASE_URL += "?sslmode=require"
+
 # Tạo connection pool dùng chung cho toàn bộ service
 # min_size: số connection tối thiểu
 # max_size: số connection tối đa (tùy gói, Render free nên để 5–10 là ổn)

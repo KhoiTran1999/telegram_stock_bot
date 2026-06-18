@@ -7,6 +7,14 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Bắt buộc thêm sslmode=require khi kết nối tới DB external (trừ localhost)
+if DATABASE_URL and "localhost" not in DATABASE_URL and "127.0.0.1" not in DATABASE_URL:
+    if "?sslmode=" not in DATABASE_URL and "&sslmode=" not in DATABASE_URL:
+        if "?" in DATABASE_URL:
+            DATABASE_URL += "&sslmode=require"
+        else:
+            DATABASE_URL += "?sslmode=require"
+
 def migrate_admin_note():
     print("🚀 Đang kết nối đến Database...")
     
