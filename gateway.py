@@ -401,7 +401,7 @@ initial_active = None  # Trạng thái bot lúc khởi động (dùng trong life
 # HÀM TIỆN ÍCH
 # ==============================================
 
-async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'GENERAL', reply_markup=None, **kwargs):
+async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'GENERAL', reply_markup=None, silent: bool = False, **kwargs):
     """
     Gửi tin nhắn Markdown an toàn (async) + Ghi log msg_type.
     [UPDATED] Tự động chia nhỏ tin nhắn dài và chỉ gắn nút vào tin cuối cùng.
@@ -418,6 +418,7 @@ async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'G
                 text=chunk_text,
                 parse_mode="Markdown",
                 reply_markup=markup,
+                disable_notification=silent,
                 **kwargs,
             )
             # Lưu log DB (chạy thread)
@@ -428,7 +429,7 @@ async def send_md(bot: telegram.Bot, chat_id: int, text: str, msg_type: str = 'G
             if "can't parse entities" in str(e):
                 safe_text = escape_markdown_v2(chunk_text) # Hàm escape có sẵn trong gateway
                 return await bot.send_message(
-                    chat_id=chat_id, text=safe_text, parse_mode="Markdown", reply_markup=markup, **kwargs
+                    chat_id=chat_id, text=safe_text, parse_mode="Markdown", reply_markup=markup, disable_notification=silent, **kwargs
                 )
             raise e
 
@@ -1497,8 +1498,9 @@ async def redis_gateway_loop():
                                     chat_id=chat_id,
                                     text=text,
                                     msg_type=msg_type,
-                                    reply_markup=markup_data
-                                )
+                                    reply_markup=markup_data,
+                                silent=payload.get("silent", False)
+)
 
                     except json.JSONDecodeError:
                         log.warning(f"⚠️ [GATEWAY] Lỗi JSON: {message['data']}")
