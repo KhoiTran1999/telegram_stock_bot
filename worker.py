@@ -7,7 +7,7 @@ import logging
 import os
 import random
 import shutil
-from vnstock import Trading, Quote, Screener, Finance, Company, Vnstock
+from vnstock import Trading, Quote, Finance, Company, Vnstock
 import redis
 from dotenv import load_dotenv
 from google import genai
@@ -44,6 +44,7 @@ from asgiref.wsgi import WsgiToAsgi
 from chart_utils import generate_mini_chart, draw_sector_performance_chart
 from manual_valuation import fetch_manual_pe_pb
 from db_utils import (
+    get_stock_personalization_map,
     get_all_watch,
     get_all_pro_chat_ids,
     get_bot_active,
