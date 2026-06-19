@@ -3343,11 +3343,11 @@ async def market_monitor_fetcher_loop():
                             state["anchor"] = p_ref
                             log.info(f"[{sym}] Set anchor initial: {p_ref}")
 
-    except Exception as e:
-        log.error(f"Market Fetch Error: {e}")
+        except Exception as e:
+            log.error(f"Market Fetch Error: {e}")
 
-    # Chu kỳ fetch 10 giây để đảm bảo không bị VCI chặn IP (Rate limit)
-    await asyncio.sleep(10)
+        # Chu kỳ fetch 10 giây để đảm bảo không bị VCI chặn IP (Rate limit)
+        await asyncio.sleep(10)
 async def market_monitor_alert_loop():
     """
     Loop kiểm tra và bắn tin cảnh báo chung.
