@@ -2488,7 +2488,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 currentNote: '',
                 isNoteDirty: false,
                 toast: { visible: false, message: '' },
-                users: {{ initial_data | safe }},
+                users: {{ initial_data | tojson | safe }},
                 usersLoading: false,
                 usersError: null,
                 adminId: '{{ admin_id }}',
@@ -2505,7 +2505,6 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 broadcastMsg: '',
                 deleteFromDate: '',
                 deleteToDate: '',
-                cacheClearType: 'screener',
                 cacheOptions: [
                     { value: 'screener', label: 'Screener' },
                     { value: 'report', label: 'Report' },

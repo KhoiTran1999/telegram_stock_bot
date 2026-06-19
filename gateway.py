@@ -3322,13 +3322,14 @@ def admin_dashboard():
         revenue_str = "0"
 
     # 5. Render Template và truyền biến
-    return render_template_string(
-        ADMIN_MOBILE_TEMPLATE, 
+    rendered = render_template_string(
+        ADMIN_MOBILE_TEMPLATE,
         admin_id=ADMIN_ID,
         initial_data=users_json,
         total_revenue=revenue_str,
         sectors=json.dumps(CACHED_SECTORS, ensure_ascii=False)
     )
+    return Response(rendered, mimetype='text/html; charset=utf-8')
 
 @flask_app.route("/api/admin/users")
 def api_admin_users():
@@ -3386,7 +3387,7 @@ def api_admin_users():
             return str(obj)
 
         json_str = json.dumps(data, default=safe_serializer, ensure_ascii=False)
-        return Response(json_str, mimetype='application/json')
+        return Response(json_str, mimetype='application/json; charset=utf-8')
 
     except Exception as e:
         log.error(f"[ADMIN_API] Users Error: {e}")
