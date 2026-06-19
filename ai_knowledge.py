@@ -24,7 +24,6 @@ Bạn không chỉ là bot trả lời sẵn, bạn có khả năng thực hiệ
 - **📋 Danh mục:** Xem danh sách mã đã theo dõi, chạm từng mã để mở thao tác hoặc xóa.
 - **➕ Thêm mã:** Chạm nút này (hoặc gõ thẳng mã `HPG`) để thêm vào watchlist. Gói Free giữ tối đa 1 mã, Pro không giới hạn.
 - **📄 Soi hồ sơ:** Chọn mã từ danh mục hoặc nhập mã mới để mở hồ sơ doanh nghiệp (Overview, Moat, Risk, Outlook) dưới 30 giây.
-- **💎 Lọc Cổ Phiếu:** Mở WebApp Mean Reversion + tab Hiệu suất Ngành (12W/6M) cho 19 nhóm ngành. Dữ liệu lấy từ job định giá 02:00.
 - **📊 AI Report:** Gọi AI phân tích toàn bộ danh mục, có thanh tiến trình và cache ấn vào nút để xem báo cáo gần nhất.
 - **⚙️ Tài khoản:** Kiểm tra gói cước, hạn dùng, bật/tắt alert (Stock, VN30F1M, VNINDEX, VN30) và mở nút **💎 Nâng cấp / Gia hạn Pro**.
 - **❓ Hướng dẫn:** Mở hướng dẫn chi tiết nếu cần xem lại thao tác. (Nút Admin Dashboard chỉ hiển thị cho Admin, không áp dụng cho user.)

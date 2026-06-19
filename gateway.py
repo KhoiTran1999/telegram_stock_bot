@@ -833,6 +833,8 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
     # --- NHÓM 2: MENU LIST, ADD, HELP, INFO, BACK ---
     # (Giữ nguyên logic cũ cho các nút này - Copy từ file cũ nếu cần hoặc dùng đoạn dưới)
     if data == "menu_list" or data == "back_to_list":
+        try: await query.answer()
+        except: pass
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id) or []
         if not lst:
             kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
@@ -851,13 +853,19 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             await safe_edit_message(query, "📋 **Quản lý danh mục**", InlineKeyboardMarkup(keyboard))
             
     elif data == "menu_add":
+        try: await query.answer()
+        except: pass
         kb = [[InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]]
         await safe_edit_message(query, "➕ Gõ mã 3 chữ cái (VD: `HPG`) vào ô chat để thêm.", InlineKeyboardMarkup(kb))
 
     elif data == "menu_help":
+        try: await query.answer()
+        except: pass
         await cmd_help(update, context)
 
     elif data == "back_to_start":
+        try: await query.answer()
+        except: pass
         # --- LOGIC VẼ LẠI DASHBOARD (EDIT MODE) ---
         # 1. Check Trial/Admin status
         trial_status = await asyncio.to_thread(check_trial_eligibility, chat_id)
@@ -895,7 +903,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "🚀 **Tôi giúp gì cho bạn?**\n"
                 "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
                 "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
-                "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n"
                 ""
                 "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
                 "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
@@ -907,6 +914,8 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_edit_message(query, msg_text, InlineKeyboardMarkup(kb))
 
     elif data == "menu_setting":
+        try: await query.answer()
+        except: pass
         await cmd_setting(update, context) # Gọi hàm setting mới cập nhật ở trên
     
     elif data == "btn_trial_click":
@@ -991,9 +1000,14 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # --- NHÓM 4: CÁC TÁC VỤ KHÁC (Report, Info, Screener, Upgrade...) ---
     # (Copy logic cũ của bạn vào đây để không bị mất các tính năng đó)
-    elif data == "menu_report": await cmd_report(update, context)
+    elif data == "menu_report":
+        try: await query.answer("🔄 Đang chuẩn bị báo cáo...")
+        except: pass
+        await cmd_report(update, context)
     # [MỚI] XỬ LÝ NÚT SOI HỒ SƠ TỪ DASHBOARD
     elif data == "menu_info":
+        try: await query.answer()
+        except: pass
         chat_id = update.effective_chat.id
         
         # 1. Lấy danh sách watchlist
@@ -1745,7 +1759,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🚀 **Tôi giúp gì cho bạn?**\n"
             "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
             "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
-            "• **Sàng lọc:** Tìm cổ phiếu Rẻ/Đắt tự động.\n"
             ""
             "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
             "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay.\n\n"
@@ -1786,11 +1799,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2️⃣ ***Công cụ Phân tích AI (PRO)***\n"
         "• 📊 AI khám sức khỏe toàn bộ danh mục.\n"
         "• 📄 Soi hồ sơ doanh nghiệp (Lợi thế, Rủi ro).\n"
-        "• 💎 Lọc cổ phiếu Rẻ/Đắt (Mean Reversion).\n\n"
 
-        "3️⃣ ***Báo cáo Tự động (PRO)***\n"
+        "3️⃣ ***Cảnh báo & Báo cáo Tự động (PRO)***\n"
         "Bot sẽ tự động gửi thông tin đến bạn (không cần gõ lệnh):\n"
-        "• 🌅 **07:00 Hằng ngày:** Bản tin sáng (Tin tức + BCTC + Định giá cổ phiếu).\n"
+        "• 🔔 **Realtime:** Cảnh báo biến động giá Cổ phiếu, VNINDEX, VN30F1M.\n"
         "• 🌆 **15:00 Hằng ngày:** Tổng kết cuối phiên.\n"
         "• 📅 **09:00 Chủ Nhật:** Báo cáo chuyên sâu danh mục tuần.\n\n"
 
@@ -1832,7 +1844,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # -------------------------------------
 
     chat_id = update.effective_chat.id
-    await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID, note=symbol)
+    await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID)
 
     if not context.args:
         await reply_md(update,
@@ -1929,7 +1941,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/remove", ADMIN_ID, note=symbol)
+    await asyncio.to_thread(log_command_usage, chat_id, "/remove", ADMIN_ID)
 
     if not context.args:
         await reply_md(update,"⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
@@ -1980,7 +1992,7 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await track_user_activity(update)
     # cleaned là mã đã làm sạch
-    await asyncio.to_thread(log_command_usage, chat_id, "/alert", ADMIN_ID, note=cleaned)
+    await asyncio.to_thread(log_command_usage, chat_id, "/alert", ADMIN_ID)
 
     if not context.args:
         await reply_md(update, "⚠️ Cách dùng: /alert <MÃ> (ví dụ: /alert HPG)")
@@ -2224,9 +2236,8 @@ async def cmd_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚀 **KÍCH HOẠT THÀNH CÔNG!**\n\n"
             f"Bạn đã nhận được **{TRIAL_DAYS} ngày** trải nghiệm Full tính năng Pro:\n\n"
             f"💎 **Các đặc quyền đã được mở khóa:**\n"
-            f"• 📨 **Auto Report:** Tự động gửi bản tin Sáng (07:00), EOD (15:00) & Tuần (09:00 CN).\n"
+            f"• 📨 **Auto Report:** Cảnh báo giá Realtime, Báo cáo chốt phiên (15:00) & Tuần (09:00 CN).\n"
             f"• 📊 **AI Report:** Phân tích sâu sức khỏe danh mục & khuyến nghị hành động.\n"
-            f"• 🔍 **Screener:** Lọc cổ phiếu Rẻ/Đắt theo định giá lịch sử.\n"
             f"• 🏢 **Soi Hồ Sơ:** Phân tích mô hình kinh doanh, lợi thế cạnh tranh & rủi ro.\n"
             f"• 📉 **Phái Sinh:** Nhận tín hiệu cảnh báo VN30F1M realtime.\n"
             f"• 🔔 **Không Giới Hạn:** Theo dõi biến động giá cho toàn bộ danh mục (gói Free chỉ được 1 mã).\n\n"
