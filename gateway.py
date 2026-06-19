@@ -910,7 +910,22 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         await cmd_trial(update, context)
 
     # --- NHÓM 3: XỬ LÝ BẬT/TẮT (SETTING) ---
-    
+
+    # [CUSTOM THRESHOLD]
+    elif data.startswith("set_thresh_"):
+        new_thresh = float(data.split("_")[2])
+        await asyncio.to_thread(set_stock_alert_threshold, chat_id, new_thresh)
+        await query.answer(f"✅ Đã đổi biên độ cảnh báo thành {new_thresh}%")
+        await cmd_setting(update, context)
+
+    # [SILENT ALERTS]
+    elif data in ("set_silent_on", "set_silent_off"):
+        want_silent = (data == "set_silent_on")
+        await asyncio.to_thread(set_silent_alerts, chat_id, want_silent)
+        msg = "🔕 Đã tắt âm báo (Tin nhắn sẽ đến âm thầm)" if want_silent else "🔔 Đã bật âm báo (Có tiếng ting ting)"
+        await query.answer(msg)
+        await cmd_setting(update, context)
+
     # 3.1. VN30F1M
     elif data in ("set_vn30_on", "set_vn30_off"):
         want_on = (data == "set_vn30_on")
@@ -2050,19 +2065,24 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.to_thread(get_stock_alert_enabled_map),
             asyncio.to_thread(get_vnindex_enabled_map),
             asyncio.to_thread(get_vn30_enabled_map),
+            asyncio.to_thread(get_user_alert_settings, chat_id),
             return_exceptions=True
         )
-        
+
         expiry_date = results[0] if not isinstance(results[0], Exception) else None
         vn30f1m_map = results[1] if not isinstance(results[1], Exception) else {}
         stock_map = results[2] if not isinstance(results[2], Exception) else {}
         vnindex_map = results[3] if not isinstance(results[3], Exception) else {}
         vn30_index_map = results[4] if not isinstance(results[4], Exception) else {}
-        
+        alert_settings = results[5] if not isinstance(results[5], Exception) else {"stock_alert_threshold": 2.0, "silent_alerts": False}
+
         vn30f1m_enabled = bool(vn30f1m_map.get(chat_id, False))
         stock_enabled = bool(stock_map.get(chat_id, True))
         vnindex_enabled = bool(vnindex_map.get(chat_id, False))
         vn30_index_enabled = bool(vn30_index_map.get(chat_id, False))
+
+        threshold = alert_settings.get("stock_alert_threshold", 2.0)
+        silent_alerts = alert_settings.get("silent_alerts", False)
 
     except Exception as e:
         log.error(f"Setting error: {e}")
@@ -2091,7 +2111,7 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\n📰 *Bản tin sáng (Digest)*: TỰ ĐỘNG (07:00)")
 
     # Stock Alert
-    lines.append("\n📊 *Cảnh báo Biến động cổ phiếu*")
+    lines.append(f"\n📊 *Cảnh báo Biến động cổ phiếu (±{threshold}%)*")
     status_stock = "✅ *BẬT*" if stock_enabled else "❌ *TẮT*"
     lines.append(status_stock)
 
@@ -2110,8 +2130,13 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_vn30_index = "✅ *BẬT*" if vn30_index_enabled else "❌ *TẮT*"
     lines.append(status_vn30_index)
 
+    # Âm thanh
+    lines.append("\n🔕 *Chế độ im lặng (Silent Alerts)*")
+    status_silent = "✅ *BẬT* (Không kêu ting ting)" if silent_alerts else "❌ *TẮT* (Báo động có âm thanh)"
+    lines.append(status_silent)
+
     # --- 3. TẠO BÀN PHÍM ĐIỀU KHIỂN ---
-    
+
     vn30f1m_btn = "🔴 Tắt VN30F1M" if vn30f1m_enabled else "🟢 Bật VN30F1M"
     vn30f1m_cb = "set_vn30_off" if vn30f1m_enabled else "set_vn30_on"
 
@@ -2124,10 +2149,20 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vn30_index_btn = "🔴 Tắt VN30" if vn30_index_enabled else "🟢 Bật VN30"
     vn30_index_cb = "set_vn30_index_off" if vn30_index_enabled else "set_vn30_index_on"
 
+    silent_btn = "🔔 Bật Âm báo" if silent_alerts else "🔕 Tắt Âm báo"
+    silent_cb = "set_silent_off" if silent_alerts else "set_silent_on"
+
+    # Nút Threshold
+    t2_btn = "✅ Biên độ 2%" if threshold == 2.0 else "Biên độ 2%"
+    t3_btn = "✅ Biên độ 3%" if threshold == 3.0 else "Biên độ 3%"
+    t4_btn = "✅ Biên độ 4%" if threshold == 4.0 else "Biên độ 4%"
+
     kb = [
         [InlineKeyboardButton("💎 Nâng cấp / Gia hạn Pro", callback_data="btn_upgrade")],
-        [InlineKeyboardButton(stock_btn, callback_data=stock_cb), InlineKeyboardButton(vn30f1m_btn, callback_data=vn30f1m_cb)], 
-        [InlineKeyboardButton(vnindex_btn, callback_data=vnindex_cb), InlineKeyboardButton(vn30_index_btn, callback_data=vn30_index_cb)],   
+        [InlineKeyboardButton(stock_btn, callback_data=stock_cb), InlineKeyboardButton(vn30f1m_btn, callback_data=vn30f1m_cb)],
+        [InlineKeyboardButton(vnindex_btn, callback_data=vnindex_cb), InlineKeyboardButton(vn30_index_btn, callback_data=vn30_index_cb)],
+        [InlineKeyboardButton(t2_btn, callback_data="set_thresh_2"), InlineKeyboardButton(t3_btn, callback_data="set_thresh_3"), InlineKeyboardButton(t4_btn, callback_data="set_thresh_4")],
+        [InlineKeyboardButton(silent_btn, callback_data=silent_cb)],
         [InlineKeyboardButton("🔙 Dashboard", callback_data="back_to_start")]
     ]
     

@@ -48,13 +48,16 @@ from db_utils import (
     get_all_watch,
     get_all_pro_chat_ids,
     get_bot_active,
+    save_bot_message,
     get_users_with_stock_alert_off,
     get_vn30f1m_enabled_map,
     get_vnindex_enabled_map,
     get_vn30_enabled_map,
     get_recent_bctc_notified,
     get_recent_analysis_reports,
-    get_user_logs
+    get_user_logs,
+    get_user_alert_settings,
+    get_all_user_alert_settings,
 )
 from report_cache import (
     make_report_cache_key,
@@ -69,7 +72,7 @@ from apscheduler.jobstores.redis import RedisJobStore
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-from urllib.parse import urlparse # Để parse REDIS_URL
+from redis_client import get_redis
 
 # --- CẤU HÌNH CƠ BẢN ---
 load_dotenv()
@@ -284,15 +287,14 @@ async def asgi_wrapper_app(scope, receive, send):
     elif scope["type"] == "http":
         await wsgi_app(scope, receive, send)
 
-# Cấu hình Loop
+    # Cấu hình Loop
 FETCHER_INTERVAL_SECONDS = 20
 TICKER_INTERVAL_SECONDS = 10
 
 # Cache cục bộ của Worker
-_stock_current_price_cache = {} 
+_stock_current_price_cache = {}
 _stock_current_watch_cache = {}
 _stock_alert_disabled_cache = set()
-ALERT_STATE = {}
 _tech_alert_summary_cache: dict[str, dict[str, Any]] = {}
 
 # --- CẤU HÌNH MARKET MONITOR (VN30F1M, VNINDEX, VN30) ---
@@ -317,11 +319,70 @@ MARKET_MONITORS = {
     }
 }
 
-# State Market Monitor
+# --- Redis helper cho Alert State ---
+def get_stock_alert_state(chat_id: int, symbol: str) -> dict:
+    """Lấy state cảnh báo của cổ phiếu từ Redis."""
+    try:
+        r = get_redis()
+        key = f"alert_state:stock:{chat_id}:{symbol}"
+        raw = r.hgetall(key)
+        if raw:
+            return {
+                "last_pct": float(raw.get("last_pct", 0.0)),
+                "last_alert_at": raw.get("last_alert_at", "")
+            }
+    except Exception as e:
+        log.error(f"Redis get stock alert state error: {e}")
+    return {"last_pct": 0.0, "last_alert_at": ""}
+
+def save_stock_alert_state(chat_id: int, symbol: str, pct: float, timestamp: str):
+    """Lưu state cảnh báo của cổ phiếu vào Redis (hết ngày tự xóa)."""
+    try:
+        r = get_redis()
+        key = f"alert_state:stock:{chat_id}:{symbol}"
+        r.hset(key, mapping={"last_pct": str(pct), "last_alert_at": timestamp})
+        r.expire(key, 86400)
+    except Exception as e:
+        log.error(f"Redis save stock alert state error: {e}")
+
+def get_market_alert_state(symbol: str) -> dict:
+    """Lấy state chỉ số thị trường (Market Monitor) từ Redis."""
+    try:
+        r = get_redis()
+        key = f"alert_state:index:{symbol}"
+        raw = r.hgetall(key)
+        if raw and raw.get("anchor") and raw.get("date"):
+            return {
+                "anchor": float(raw["anchor"]),
+                "date": raw["date"]
+            }
+    except Exception as e:
+        log.error(f"Redis get market alert state error: {e}")
+    return {"anchor": None, "date": None}
+
+def save_market_alert_state(symbol: str, anchor: float, current_date_str: str):
+    """Lưu state chỉ số thị trường vào Redis."""
+    try:
+        r = get_redis()
+        key = f"alert_state:index:{symbol}"
+        r.hset(key, mapping={"anchor": str(anchor), "date": current_date_str})
+        r.expire(key, 86400)
+    except Exception as e:
+        log.error(f"Redis save market alert state error: {e}")
+
+def clear_market_alert_state(symbol: str):
+    try:
+        r = get_redis()
+        key = f"alert_state:index:{symbol}"
+        r.delete(key)
+    except Exception:
+        pass
+
+# State Market Monitor (RAM fallback)
 _market_data = {
-    "VN30F1M": {"price": None, "ref": None, "anchor": None, "date": None},
-    "VNINDEX": {"price": None, "ref": None, "anchor": None, "date": None},
-    "VN30":    {"price": None, "ref": None, "anchor": None, "date": None},
+    "VN30F1M": {"price": None, "ref": None, "date": None},
+    "VNINDEX": {"price": None, "ref": None, "date": None},
+    "VN30":    {"price": None, "ref": None, "date": None},
 }
 
 # Biến chặn VCI theo ngày
@@ -2994,28 +3055,42 @@ async def _dispatch_symbol_tech_followup(chat_id: int, symbol_contexts: list[dic
 
 
 async def alert_loop():
-    global ALERT_STATE, _stock_alert_disabled_cache
+    global _stock_alert_disabled_cache
     vn_tz = pytz.timezone(TIMEZONE)
     log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Alert Loop...")
-    
+
     # Load danh sách chặn alert lần đầu
     _stock_alert_disabled_cache = await asyncio.to_thread(get_users_with_stock_alert_off)
 
+    market_just_opened_delay_done = False
+
     while True:
         now = datetime.datetime.now(vn_tz)
-        
+
         if not get_bot_active() or not in_session_vietnam():
-            await asyncio.sleep(60); continue
+            market_just_opened_delay_done = False
+            await asyncio.sleep(60)
+            continue
+
+        # [MARKET OPEN DELAY]
+        if now.hour == 9 and now.minute == 15 and not market_just_opened_delay_done:
+            log.info(f"[{INSTANCE_ID}] ⏳ Thị trường vừa mở cửa, đợi 60s trước khi tính toán alert...")
+            await asyncio.sleep(60)
+            market_just_opened_delay_done = True
+            continue
 
         try:
             quote_cache = _stock_current_price_cache
             all_watch = _stock_current_watch_cache
-            
+
             if not quote_cache:
-                await asyncio.sleep(5); continue
+                await asyncio.sleep(5)
+                continue
 
             # Lấy danh sách Pro (để lọc limit user thường)
             pro_chat_ids = await asyncio.to_thread(get_all_pro_chat_ids)
+            # Lấy toàn bộ settings của users để áp dụng Threshold và Silent Alerts
+            all_alert_settings = await asyncio.to_thread(get_all_user_alert_settings)
             # Refresh danh sách tắt alert
             _stock_alert_disabled_cache = await asyncio.to_thread(get_users_with_stock_alert_off)
 
@@ -3033,9 +3108,10 @@ async def alert_loop():
                 is_pro = (chat_id in pro_chat_ids) or (chat_id == ADMIN_ID)
                 processing_list = watch_list if is_pro else watch_list[:1]
 
-                if chat_key not in ALERT_STATE: ALERT_STATE[chat_key] = {}
-                personal_state = ALERT_STATE[chat_key]
-                
+                user_settings = all_alert_settings.get(chat_id, {"stock_alert_threshold": 2.0, "silent_alerts": False})
+                threshold = user_settings["stock_alert_threshold"]
+                is_silent = user_settings["silent_alerts"]
+
                 messages = []
                 tech_followups: list[dict[str, Any]] = []
                 buttons = { "inline_keyboard": [] } # Cấu trúc nút bấm Telegram
@@ -3047,21 +3123,29 @@ async def alert_loop():
 
                     price = quote.get('price')
                     pct = quote.get('pct')
-                    
-                    # Logic so sánh state (đã rút gọn)
-                    last_pct = personal_state.get(sym_u, {}).get('last_pct', 0.0)
+
+                    # Lấy state cảnh báo từ Redis
+                    state = await asyncio.to_thread(get_stock_alert_state, chat_id, sym_u)
+                    last_pct = state.get('last_pct', 0.0)
+
+                    # [FIX RESTART STORM] Khởi tạo anchor ban đầu = pct hiện tại (thay vì 0) nếu đây là lần đầu chạy trong phiên
+                    if state.get("last_alert_at") == "" and pct != 0:
+                        # Đã trong phiên mà state chưa có -> gắn anchor hiện tại luôn, không báo động
+                        await asyncio.to_thread(save_stock_alert_state, chat_id, sym_u, pct, now.isoformat())
+                        continue
+
                     delta = float(pct) - float(last_pct)
-                    
-                    if abs(delta) >= 2.0: # Ngưỡng 2%
+
+                    if abs(delta) >= threshold:
                         icon = "🟢" if pct >= 0 else "🔴"
                         fun_line = random.choice(ALERT_FUN_LINES_UP if pct >= 0 else ALERT_FUN_LINES_DOWN)
-                        
+
                         msg = (
                             f"{icon} *{sym_u} {'tăng' if pct>=0 else 'giảm'} {pct:+.2f}%*\n"
                             f"Giá: {price:,.0f}\n_{fun_line}_"
                         )
                         messages.append(msg)
-                        
+
                         # Nút bấm soi chart
                         chart_url = f"{BASE_URL}/chart/{sym_u}"
                         buttons["inline_keyboard"].append([
@@ -3069,21 +3153,22 @@ async def alert_loop():
                         ])
 
                         # Cập nhật state
-                        personal_state[sym_u] = { "last_pct": float(pct), "last_alert_at": now.isoformat() }
+                        await asyncio.to_thread(save_stock_alert_state, chat_id, sym_u, pct, now.isoformat())
 
                 # Bắn tin sang Redis nếu có biến động
                 if messages:
                     header = f"⏰ *Cảnh báo {now.strftime('%H:%M')}*"
                     body = "\n".join(messages) + "\n" + header
-                    
+
                     # GỌI HÀM PUSH THAY VÌ GỬI TRỰC TIẾP
                     push_telegram_msg(
-                        chat_id=chat_id, 
-                        text=body, 
+                        chat_id=chat_id,
+                        text=body,
                         reply_markup=buttons if buttons["inline_keyboard"] else None,
-                        msg_type="STOCK_ALERT"
+                        msg_type="STOCK_ALERT",
+                        silent=is_silent
                     )
-                    log.info(f"🔔 Pushed alert for {chat_id}")
+                    log.info(f"🔔 Pushed alert for {chat_id} (Threshold: {threshold}%)")
 
         except Exception as e:
             log.error(f"Alert Loop Error: {e}")
@@ -3121,29 +3206,49 @@ async def _market_process_tick(symbol: str, price: float):
     Xử lý logic so sánh giá chung cho VN30F1M, VNINDEX, VN30.
     """
     global _market_data
-    
+    vn_tz = pytz.timezone(TIMEZONE)
+    now = datetime.datetime.now(vn_tz)
+
     config = MARKET_MONITORS.get(symbol)
     if not config: return None
 
     state = _market_data.get(symbol)
     if not state: return None
 
-    anchor = state["anchor"]
+    # [PERSIST STATE] Đọc anchor từ Redis thay vì RAM
+    redis_state = await asyncio.to_thread(get_market_alert_state, symbol)
+    anchor = redis_state.get("anchor")
+    date_str = redis_state.get("date")
+
     ref_price = state["ref"]
 
-    if anchor is None or ref_price is None:
+    if ref_price is None:
+        return None
+
+    # Khởi tạo anchor từ Redis
+    if anchor is None or date_str != now.strftime('%Y-%m-%d'):
+        # [FIX RESTART STORM] Gán anchor bằng giá hiện tại nếu đang trong phiên (sau 9h15)
+        # Ngược lại, nếu chưa giao dịch thì gán bằng giá tham chiếu
+        if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
+            anchor = float(price)
+            log.info(f"[{symbol}] Market already open, set initial anchor to CURRENT price = {anchor}")
+        else:
+            anchor = float(ref_price)
+            log.info(f"[{symbol}] Pre-market, set initial anchor to REF price = {anchor}")
+
+        await asyncio.to_thread(save_market_alert_state, symbol, anchor, now.strftime('%Y-%m-%d'))
         return None
 
     delta_trigger = float(price) - float(anchor)
     threshold = config["threshold"]
-    
+
     # Trigger nếu biến động >= threshold
     if abs(delta_trigger) >= threshold:
         delta_display = float(price) - float(ref_price)
         direction = "tăng" if delta_display > 0 else "giảm"
         icon = "🟢" if delta_display > 0 else "🔴"
         trend_icon = "🚀" if delta_display > 0 else "📉"
-        now_str = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M:%S")
+        now_str = now.strftime("%H:%M:%S")
 
         text = (
             f"{icon} *{symbol} {direction} {abs(delta_display):.1f} điểm*\n"
@@ -3151,12 +3256,12 @@ async def _market_process_tick(symbol: str, price: float):
             f"(So với TC: {ref_price:.1f})\n"
             f"{trend_icon} _Cập nhật lúc {now_str}_"
         )
-        
-        # Cập nhật mốc anchor mới
-        state["anchor"] = float(price)
+
+        # Cập nhật mốc anchor mới vào Redis
+        await asyncio.to_thread(save_market_alert_state, symbol, float(price), now.strftime('%Y-%m-%d'))
         log.info(f"[{symbol}] 🔔 Trigger! {price} (Delta: {delta_trigger})")
         return text
-    
+
     return None
 
 async def market_monitor_fetcher_loop():
@@ -3238,11 +3343,11 @@ async def market_monitor_fetcher_loop():
                             state["anchor"] = p_ref
                             log.info(f"[{sym}] Set anchor initial: {p_ref}")
 
-        except Exception as e:
-            log.error(f"Market Fetch Error: {e}")
+    except Exception as e:
+        log.error(f"Market Fetch Error: {e}")
 
-        # Chu kỳ fetch 10 giây để đảm bảo không bị VCI chặn IP (Rate limit)
-        await asyncio.sleep(10)
+    # Chu kỳ fetch 10 giây để đảm bảo không bị VCI chặn IP (Rate limit)
+    await asyncio.sleep(10)
 async def market_monitor_alert_loop():
     """
     Loop kiểm tra và bắn tin cảnh báo chung.
@@ -3250,16 +3355,29 @@ async def market_monitor_alert_loop():
     vn_tz = pytz.timezone(TIMEZONE)
     log.info(f"[{INSTANCE_ID}] 🚀 Bắt đầu Market Monitor Alert Loop...")
 
+    market_just_opened_delay_done = False
+
     while True:
         now = datetime.datetime.now(vn_tz)
         _market_reset_if_new_day(now)
 
         if not get_bot_active() or not in_session_vietnam():
             _market_clear_after_close()
+            market_just_opened_delay_done = False
             await asyncio.sleep(60)
             continue
 
+        # [MARKET OPEN DELAY]
+        if now.hour == 9 and now.minute == 15 and not market_just_opened_delay_done:
+            log.info(f"[{INSTANCE_ID}] ⏳ Thị trường vừa mở cửa, đợi 60s trước khi tính toán market monitor...")
+            await asyncio.sleep(60)
+            market_just_opened_delay_done = True
+            continue
+
         try:
+            # Lấy toàn bộ settings của users để áp dụng Silent Alerts
+            all_alert_settings = await asyncio.to_thread(get_all_user_alert_settings)
+
             # Duyệt qua từng mã trong config
             for symbol, config in MARKET_MONITORS.items():
                 state = _market_data.get(symbol)
@@ -3273,15 +3391,24 @@ async def market_monitor_alert_loop():
                     # Lấy danh sách user bật setting tương ứng
                     get_users = config["get_users_func"]
                     msg_type = config["msg_type"]
-                    
+
                     user_map = await asyncio.to_thread(get_users)
                     count = 0
-                    
+
                     for chat_id, enabled in user_map.items():
                         if enabled:
-                            push_telegram_msg(chat_id, alert_text, msg_type=msg_type)
+                            # [SILENT ALERT]
+                            user_settings = all_alert_settings.get(chat_id, {"silent_alerts": False})
+                            is_silent = user_settings["silent_alerts"]
+
+                            push_telegram_msg(
+                                chat_id=chat_id,
+                                text=alert_text,
+                                msg_type=msg_type,
+                                silent=is_silent
+                            )
                             count += 1
-                    
+
                     log.info(f"[{symbol}] Pushed alert to {count} users.")
 
         except Exception as e:

@@ -2515,6 +2515,58 @@ def get_digest_from_redis(digest_id):
     return None
 # ==========================================
 
+def get_user_alert_settings(chat_id: int) -> dict:
+    """Lấy cấu hình cảnh báo của user (stock_alert_threshold, silent_alerts)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT settings FROM bot_user_settings WHERE chat_id = %s", (chat_id,))
+            row = cur.fetchone()
+            settings = row[0] if row and row[0] else {}
+
+    return {
+        "stock_alert_threshold": float(settings.get("stock_alert_threshold", 2.0)),
+        "silent_alerts": bool(settings.get("silent_alerts", False))
+    }
+
+def set_stock_alert_threshold(chat_id: int, threshold: float):
+    """Cập nhật ngưỡng cảnh báo cổ phiếu (%)"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('stock_alert_threshold', %s::numeric))
+                ON CONFLICT (chat_id) DO UPDATE
+                SET settings = bot_user_settings.settings || jsonb_build_object('stock_alert_threshold', %s::numeric)
+            """, (chat_id, threshold, threshold))
+        conn.commit()
+
+def set_silent_alerts(chat_id: int, silent: bool):
+    """Bật/tắt cảnh báo im lặng"""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_user_settings (chat_id, settings)
+                VALUES (%s, jsonb_build_object('silent_alerts', %s::boolean))
+                ON CONFLICT (chat_id) DO UPDATE
+                SET settings = bot_user_settings.settings || jsonb_build_object('silent_alerts', %s::boolean)
+            """, (chat_id, silent, silent))
+        conn.commit()
+
+def get_all_user_alert_settings() -> dict:
+    """Lấy cấu hình cảnh báo của tất cả user để cache."""
+    settings_map = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id, settings FROM bot_user_settings")
+            rows = cur.fetchall()
+            for chat_id, settings in rows:
+                if not settings:
+                    settings = {}
+                settings_map[chat_id] = {
+                    "stock_alert_threshold": float(settings.get("stock_alert_threshold", 2.0)),
+                    "silent_alerts": bool(settings.get("silent_alerts", False))
+                }
+    return settings_map
 def get_ai_questions_by_month(year: int, month: int) -> list[str]:
     """
     Lấy danh sách câu hỏi (note) từ command_log với lệnh CMD_ASK_AI trong tháng/năm chỉ định.
