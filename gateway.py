@@ -25,7 +25,6 @@ from digest_template import (
     EOD_404_TEMPLATE,
     FLASH_VIEW_HTML_TEMPLATE,
     ADMIN_MOBILE_TEMPLATE,
-    CONTRIBUTE_HTML_TEMPLATE
 )
 # --- GLOBAL VARIABLES ---
 _vci_blocked_date = None
@@ -111,7 +110,6 @@ from db_utils import (
     delete_stock_personalization,
     cleanup_expired_stock_personalizations,
     list_user_contributions,
-    list_pending_notes_for_admin,
     get_personalization_note_by_id,
 )
 import psutil
@@ -1013,20 +1011,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    elif data == "menu_contribute":
-        # 1. Check Pro
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-        
-        if not is_pro:
-            await query.answer("⚠️ Chỉ dành cho thành viên Pro!", show_alert=True)
-            return
-
-        # 2. Tạo URL WebApp
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        web_app_url = f"{base_url}/webapp/contribute?chat_id={chat_id}"
-        
-        kb = [[InlineKeyboardButton("✍️ Mở trang Đóng Góp", web_app=WebAppInfo(url=web_app_url))]]
-        await safe_edit_message(query, "💡 **Đóng góp kiến thức**\n\nChia sẻ hiểu biết của bạn về cổ phiếu để cộng đồng cùng phát triển. Các đóng góp hay sẽ được Admin duyệt và đưa vào hệ thống AI.", InlineKeyboardMarkup(kb))
 
     elif data.startswith("btn_info_"):
         # 1. Báo cho Telegram biết đã nhận lệnh (Tắt vòng quay loading trên nút)
@@ -1708,9 +1692,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
             InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
         ],
-        [
-            InlineKeyboardButton("✍️ Đóng góp", callback_data="menu_contribute")
-        ]
     ]
 
     # Nếu đủ điều kiện Trial -> Thêm nút Kích hoạt
@@ -4001,154 +3982,14 @@ async def api_admin_personalization_delete():
         log.error(f"[ADMIN_API] Personalization delete error: {e}")
         return jsonify({"ok": False, "message": str(e)}), 500
 
-@flask_app.route("/api/admin/contributions/pending", methods=["GET"])
-async def api_admin_list_pending():
-    """Lấy danh sách chờ duyệt cho Admin (Phân trang)"""
-    try:
-        req_admin_id = request.args.get("admin_id")
-        page = int(request.args.get("page", 1))
-        limit = 10
-        offset = (page - 1) * limit
 
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
 
-        result = await asyncio.to_thread(list_pending_notes_for_admin, limit, offset)
-        
-        rows = result['rows']
-        total_records = result['total']
-        total_pages = math.ceil(total_records / limit) if limit > 0 else 1
-        
-        # Serialize
-        for r in rows:
-            for k in ['created_at', 'expires_at']:
-                if r.get(k): r[k] = r[k].isoformat()
-            if 'total_count' in r: del r['total_count']
-                
-        return jsonify({
-            "ok": True, 
-            "data": rows,
-            "pagination": {
-                "current_page": page,
-                "total_pages": total_pages,
-                "total_records": total_records
-            }
-        })
-    except Exception as e:
-        log.error(f"[ADMIN_API] List Pending Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
 
-@flask_app.route("/api/admin/contributions/moderate", methods=["POST"])
-async def api_admin_moderate():
-    """Admin Duyệt / Từ chối / Sửa bài đóng góp"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        note_id = int(data.get("note_id"))
-        action = data.get("action") # 'APPROVE' hoặc 'REJECT'
-        
-        # Admin có thể sửa nội dung và hạn sử dụng ngay lúc duyệt
-        new_note = data.get("note") 
-        new_expiry = _parse_admin_datetime(data.get("expires_at"))
-        admin_comment = data.get("admin_comment", "")
-
-        status = 'APPROVED' if action == 'APPROVE' else 'REJECTED'
-        
-        # 1. Update DB
-        row = await asyncio.to_thread(
-            update_stock_personalization,
-            note_id=note_id,
-            note=new_note,
-            expires_at=new_expiry,
-            status=status,
-            admin_comment=admin_comment
-        )
-        
-        # 2. Gửi thông báo cho User (Contributor)
-        if row and row.get('submitted_by'):
-            user_id = row['submitted_by']
-            symbol = row['symbol']
-            
-            if action == 'APPROVE':
-                msg = f"✅ **Đóng góp được duyệt!**\nGhi chú của bạn về mã **{symbol}** đã được Admin thông qua và đưa vào hệ thống AI. Cảm ơn bạn! 🌟"
-            else:
-                msg = f"❌ **Đóng góp bị từ chối**\nGhi chú về mã **{symbol}** không được duyệt.\nLý do: _{admin_comment}_"
-
-            if tg_app and MAIN_LOOP:
-                asyncio.run_coroutine_threadsafe(
-                    send_md(tg_app.bot, user_id, msg),
-                    MAIN_LOOP
-                )
-
-        return jsonify({"ok": True})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Moderate Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
 
 # --- USER CONTRIBUTION WEBAPP ROUTES ---
 
-@flask_app.route("/webapp/contribute")
-async def view_contribute_webapp():
-    """Hiển thị giao diện WebApp cho user (Inject Sectors)"""
-    # Lấy danh sách ngành từ Cache, nếu rỗng thì load lại
-    sectors_list = CACHED_SECTORS
-    if not sectors_list:
-        sectors_list = get_unique_sectors()
-        
-    return render_template_string(
-        CONTRIBUTE_HTML_TEMPLATE, 
-        sectors=json.dumps(sectors_list, ensure_ascii=False)
-    )
 
-@flask_app.route("/api/user/contributions", methods=["GET"])
-async def api_user_contributions():
-    """Lấy danh sách đóng góp của user (Phân trang)"""
-    try:
-        chat_id_str = request.args.get("chat_id")
-        page = int(request.args.get("page", 1))
-        limit = 10 # Số lượng mỗi trang
-        offset = (page - 1) * limit
 
-        if not chat_id_str: return jsonify({"ok": False, "message": "Missing chat_id"})
-        
-        chat_id = int(chat_id_str)
-        
-        # Check quyền Pro... (giữ nguyên)
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-        if not is_pro: return jsonify({"ok": False, "message": "Pro only"})
-
-        # Gọi hàm mới trả về dict {rows, total}
-        result = await asyncio.to_thread(list_user_contributions, chat_id, limit, offset)
-        
-        rows = result['rows']
-        total_records = result['total']
-        total_pages = math.ceil(total_records / limit) if limit > 0 else 1
-
-        # Format ngày tháng
-        data = []
-        for r in rows:
-            r['created_at'] = r['created_at'].isoformat() if r['created_at'] else None
-            r['updated_at'] = r['updated_at'].isoformat() if r['updated_at'] else None
-            r['expires_at'] = r['expires_at'].isoformat() if r['expires_at'] else None
-            # Xóa field total_count thừa trong từng row để JSON nhẹ hơn
-            if 'total_count' in r: del r['total_count']
-            data.append(r)
-            
-        return jsonify({
-            "ok": True, 
-            "data": data,
-            "pagination": {
-                "current_page": page,
-                "total_pages": total_pages,
-                "total_records": total_records
-            }
-        })
-    except Exception as e:
-        log.error(f"List contributions error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
 
 @flask_app.route("/api/user/contribute/save", methods=["POST"])
 async def api_user_save_note():
