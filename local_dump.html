@@ -1,0 +1,1541 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Admin StockBot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Manrope', sans-serif; background-color: #F8FAFC; -webkit-tap-highlight-color: transparent; }
+        [x-cloak] { display: none !important; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+    </style>
+</head>
+<body class="text-slate-800" x-data="mobileApp()">
+
+    <div x-show="isLoading" class="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm" x-cloak>
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+    </div>
+
+    <!-- MAIN CONTENT WRAPPER -->
+    <div class="pb-24 min-h-screen">
+        
+        <!-- TAB: USERS -->
+        <div x-show="activeTab === 'users'">
+            <div class="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 pb-2">
+                <div class="px-4 pt-4 pb-2 flex justify-between items-center">
+                    <h1 class="text-xl font-extrabold text-slate-800">StockBot<span class="text-blue-600">.Admin</span></h1>
+                    <div class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-mono" x-text="'Admin: ' + adminId"></div>
+                </div>
+                
+                <div class="px-4 mt-1">
+                    <div class="flex items-center gap-2">
+                        <div class="relative flex-1">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                            <input type="text" x-model="searchQuery" placeholder="Tìm tên, ID, SĐT..." 
+                                   class="w-full pl-10 pr-4 py-2.5 bg-slate-100 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm">
+                        </div>
+                        <button @click="refreshUsers(true)" class="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-500 active:scale-95 transition"
+                                :class="usersLoading ? 'opacity-70 pointer-events-none' : ''" title="Tải lại danh sách">
+                            <i class="fa-solid fa-rotate-right" :class="usersLoading ? 'animate-spin text-blue-600' : ''"></i>
+                        </button>
+                    </div>
+                    <p x-show="usersError" class="text-xs text-red-500 font-semibold mt-2" x-text="'⚠️ ' + usersError" x-cloak></p>
+                </div>
+
+                <div class="mt-3 pl-4 flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                    <template x-for="tab in userTabs">
+                        <button @click="filterStatus = tab.id"
+                                class="whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-bold transition-all border flex items-center gap-1"
+                                :class="filterStatus === tab.id ? 'bg-slate-800 text-white scale-105 shadow-md' : 'bg-white text-slate-500 border-slate-200'">
+                            <span x-text="tab.label"></span>
+                            <span class="text-[10px] opacity-80" x-text="'(' + getCount(tab.id) + ')'"></span>
+                        </button>
+                    </template>
+                </div>
+            </div>
+
+            <div class="p-4 space-y-3">
+                <div x-show="usersLoading" class="py-3 text-center text-xs text-slate-400" x-cloak>
+                    <i class="fa-solid fa-circle-notch animate-spin mr-1"></i> Đang tải danh sách user...
+                </div>
+                <!-- Stats Cards -->
+                <div class="flex gap-3 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 snap-x">
+                    <div class="snap-center shrink-0 w-36 p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl text-white shadow-lg shadow-blue-200">
+                        <div class="text-xs opacity-80 mb-1 font-medium">Tổng User</div>
+                        <div class="text-2xl font-bold" x-text="users.length"></div>
+                        <div class="text-[10px] bg-white/20 inline-block px-1.5 rounded mt-1">+ Active</div>
+                    </div>
+                    <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
+                        <div class="text-xs text-slate-400 mb-1 font-bold">Doanh thu</div>
+                        <div class="text-lg font-extrabold text-slate-800">99.000</div>
+                        <div class="text-[10px] text-green-500 mt-1 font-bold">↑ từ bảng bot_orders</div>
+                    </div>
+                    <div class="snap-center shrink-0 w-36 p-3 bg-white border border-slate-100 rounded-2xl shadow-sm">
+                        <div class="text-xs text-slate-400 mb-1 font-bold">Sắp hết hạn</div>
+                        <div class="text-xl font-bold text-red-500" x-text="getCount('expiring')"></div>
+                    </div>
+                </div>
+
+                <!-- User List -->
+                <template x-for="user in filteredUsers" :key="user.id">
+                    <div @click="openSheet(user)" class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-transform cursor-pointer relative overflow-hidden group">
+                        <div x-show="user.is_pro && !user.is_expired" class="absolute left-0 top-0 bottom-0 w-1 bg-yellow-400"></div>
+                        <div class="flex justify-between items-start">
+                            <div class="flex gap-3 w-full">
+                                <div class="relative shrink-0">
+                                    <img :src="`https://ui-avatars.com/api/?name=${user.name}&background=random&size=64`" class="w-11 h-11 rounded-full object-cover border border-slate-100">
+                                    <div x-show="user.is_pro && !user.is_expired" class="absolute -bottom-1 -right-1 bg-yellow-400 text-white text-[8px] p-0.5 rounded-full border-2 border-white">
+                                        <i class="fa-solid fa-crown"></i>
+                                    </div>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <h3 class="font-bold text-sm truncate flex items-center gap-2">
+                                        <span x-text="user.name" :class="user.is_banned ? 'line-through text-red-500' : 'text-slate-800'"></span>
+                                        <span x-show="user.is_banned" class="text-[10px] bg-red-100 text-red-600 px-1.5 rounded">BANNED</span>
+                                    </h3>
+                                    <div class="flex items-center gap-2 mt-0.5">
+                                        <div class="text-xs text-slate-400 font-mono" x-text="user.id"></div>
+                                        <button @click.stop="copyId(user.id)" class="text-slate-300 hover:text-blue-500 transition active:scale-90 p-1">
+                                            <i class="fa-regular fa-copy text-xs"></i>
+                                        </button>
+                                    </div>
+                                    <div class="flex gap-1.5 mt-2 flex-wrap">
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wide"
+                                              :class="getStatusClass(user)" x-text="getStatusLabel(user)"></span>
+                                        <span x-show="user.days_left > 0 && user.days_left <= 3" 
+                                              class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-50 text-red-500 border border-red-100 flex items-center animate-pulse">
+                                            <i class="fa-regular fa-clock mr-1"></i>Còn <span x-text="user.days_left"></span> ngày
+                                        </span>
+                                        <span x-show="user.has_used_trial && (!user.is_pro || user.is_expired) && (user.plan_name === 'trial' || !user.plan_name)" 
+                                            class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-100">
+                                            <i class="fa-solid fa-flask mr-1"></i>Hết Trial
+                                        </span>
+                                        <span x-show="(!user.is_pro || user.is_expired) && user.plan_name === 'pro'" 
+                                            class="px-2 py-0.5 rounded text-[10px] font-bold bg-orange-50 text-orange-600 border border-orange-100">
+                                            <i class="fa-solid fa-gem mr-1"></i>Hết hạn Pro
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex items-center h-full"><i class="fa-solid fa-chevron-right text-xs text-slate-300"></i></div>
+                        </div>
+                    </div>
+                </template>
+                
+                <div x-show="!usersLoading && filteredUsers.length === 0" class="py-10 text-center" x-cloak>
+                    <div class="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <i class="fa-solid fa-filter text-slate-300 text-xl"></i>
+                    </div>
+                    <p class="text-slate-400 text-sm">Không tìm thấy user nào.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: SYSTEM -->
+        <div x-show="activeTab === 'system'" x-cloak class="p-4 space-y-4">
+            <h2 class="text-xl font-extrabold text-slate-800 mb-4">Hệ Thống</h2>
+            
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Trạng thái Server</h3>
+                
+                <div x-show="systemStats" class="grid grid-cols-2 gap-3 mb-4">
+                    <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center">
+                        <div class="text-xs font-bold text-slate-400 uppercase">CPU</div>
+                        <div class="text-lg font-extrabold text-slate-700" x-text="systemStats.cpu + '%'"></div>
+                        <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+                            <div class="bg-blue-500 h-1.5 rounded-full" :style="'width: ' + systemStats.cpu + '%'"></div>
+                        </div>
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center">
+                        <div class="text-xs font-bold text-slate-400 uppercase">RAM</div>
+                        <div class="text-lg font-extrabold text-slate-700" x-text="systemStats.ram + '%'"></div>
+                        <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+                            <div class="bg-purple-500 h-1.5 rounded-full" :style="'width: ' + systemStats.ram + '%'"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="systemStats" class="flex items-center justify-between bg-slate-50 p-4 rounded-xl mb-4 border border-slate-200">
+                    <div>
+                        <div class="text-sm font-bold text-slate-700">Bot Status</div>
+                        <div class="text-xs font-bold mt-1" :class="(systemStats && systemStats.active) ? 'text-green-600' : 'text-red-500'" x-text="(systemStats && systemStats.active) ? '🟢 ĐANG HOẠT ĐỘNG' : '🔴 ĐANG BẢO TRÌ'"></div>
+                    </div>
+                    <button @click="toggleBotStatus()" 
+                            class="relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none shadow-inner"
+                            :class="(systemStats && systemStats.active) ? 'bg-green-500' : 'bg-slate-300'">
+                        <span class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform duration-200 ease-in-out"
+                              :class="(systemStats && systemStats.active) ? 'translate-x-6' : 'translate-x-1'"></span>
+                    </button>
+                </div>
+                <div x-show="!systemStats && !systemError" class="text-center py-4 text-slate-400 text-sm italic">Đang tải...</div>
+                <div x-show="systemError" class="text-center py-4 text-red-500 text-sm font-bold break-words px-4" x-text="'⚠️ ' + systemError"></div>
+                
+                <div class="mt-4 pt-4 border-t border-slate-100">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-bold text-slate-700">Cache Redis</span>
+                        <span class="text-xs font-mono bg-slate-100 px-2 py-1 rounded" x-text="(systemStats && systemStats.redis_keys !== undefined) ? systemStats.redis_keys + ' keys' : '...'"></span>
+                    </div>
+                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">Chọn loại cache</label>
+                    <div class="relative mb-3">
+                        <select x-model="cacheClearType" class="w-full appearance-none bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:ring-2 focus:ring-orange-200">
+                            <template x-for="opt in cacheOptions" :key="opt.value">
+                                <option :value="opt.value" x-text="opt.label"></option>
+                            </template>
+                        </select>
+                        <span class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"><i class="fa-solid fa-chevron-down"></i></span>
+                    </div>
+                    <button @click="clearCache()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100">
+                        <i class="fa-solid fa-broom mr-1.5"></i>
+                        <span x-text="'Xóa Cache ' + cacheLabel(cacheClearType)"></span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Worker Control</h3>
+                <div class="text-xs text-slate-500 mb-3 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                    <i class="fa-solid fa-circle-info text-blue-500 mr-1"></i>
+                    Các nút bên dưới sẽ gửi lệnh <code>RUN_WEEKLY_NOW</code>, <code>RUN_NIGHTLY_VALUATION</code>, <code>RUN_DAILY_DIGEST</code> hoặc <code>RUN_EOD_SUMMARY</code> tới Worker. Chỉ dùng khi cần vì có thể đẩy nhiều thông báo tới user.
+                </div>
+                <button @click="forceWorker()" class="w-full py-2.5 bg-blue-50 text-blue-600 border border-blue-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-blue-100 mb-2">
+                    <i class="fa-solid fa-robot mr-1.5"></i> Chạy Weekly Report
+                </button>
+                <button @click="forceNightlyValuation()" class="w-full py-2.5 bg-purple-50 text-purple-600 border border-purple-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-purple-100 mb-2">
+                    <i class="fa-solid fa-moon mr-1.5"></i> Chạy Screener Value
+                </button>
+                <button @click="forceDailyDigest()" class="w-full py-2.5 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100 mb-2">
+                    <i class="fa-solid fa-sun mr-1.5"></i> Chạy Digest Sáng
+                </button>
+                <button @click="forceEodSummary()" class="w-full py-2.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-emerald-100">
+                    <i class="fa-solid fa-hourglass-end mr-1.5"></i> Chạy EOD Summary
+                </button>
+                <button @click="forceMonthlyInsight()" class="w-full py-2.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-teal-100 mt-2">
+                    <i class="fa-solid fa-magnifying-glass-chart mr-1.5"></i> Chạy Monthly Insight (CSKH)
+                </button>
+            </div>
+        </div>
+
+        <!-- TAB: BROADCAST -->
+        <div x-show="activeTab === 'broadcast'" x-cloak class="p-4 space-y-4">
+            <h2 class="text-xl font-extrabold text-slate-800 mb-4">Gửi Thông Báo</h2>
+            
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <div class="mb-3">
+                    <label class="block text-xs font-bold text-slate-500 uppercase mb-1">Nội dung tin nhắn</label>
+                    <textarea x-model="broadcastMsg" rows="5" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none" placeholder="Nhập nội dung thông báo gửi tới tất cả user..."></textarea>
+                </div>
+                <div class="flex gap-2">
+                    <button @click="broadcastMsg = ''" class="flex-1 py-2.5 bg-slate-100 text-slate-600 rounded-xl text-sm font-bold active:scale-95 transition">Xóa</button>
+                    <button @click="sendBroadcast()" class="flex-[2] py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-200 active:scale-95 transition">
+                        <i class="fa-paper-plane mr-1"></i> Gửi Ngay
+                    </button>
+                </div>
+                <p class="text-[10px] text-slate-400 mt-3 text-center italic">Tin nhắn sẽ được gửi tới tất cả user trong hệ thống.</p>
+            </div>
+        </div>
+
+        <!-- TAB: DATA -->
+        <div x-show="activeTab === 'data'" x-cloak class="p-4 space-y-4">
+            <h2 class="text-xl font-extrabold text-slate-800 mb-4">Dữ Liệu</h2>
+            
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Sao lưu Database</h3>
+                <button @click="backupDb()" class="w-full py-2.5 bg-green-50 text-green-600 border border-green-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-green-100">
+                    <i class="fa-solid fa-download mr-1.5"></i> Tải Backup (.db)
+                </button>
+            </div>
+
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <div class="mb-3">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide">Ghi chú cá nhân hóa từng mã</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">⚠️ Danh sách tự động xóa khi hết hạn.</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">🚀 Danh sách này sẽ được đưa vào prompt report cho AI phân tích</p>
+                </div>
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 mb-3">
+                    <div class="flex-1 w-full">
+                        <div class="relative">
+                            <i class="fa-solid fa-magnifying-glass text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 text-xs"></i>
+                            <input type="text" x-model="personalizationSearch" @input="personalizationPage = 1"
+                                class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-blue-200"
+                                placeholder="Tìm mã, ngành, user, ngày (VD: 15/10)..." />
+                        </div>
+                    </div>
+                    <div class="flex bg-slate-100 p-1 rounded-lg mb-3">
+                        <button @click="dataFilter = 'active'; personalizationPage = 1" 
+                                class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all"
+                                :class="dataFilter === 'active' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'">
+                            Đang Hiệu Lực
+                        </button>
+                        <button @click="dataFilter = 'expired'; personalizationPage = 1" 
+                                class="flex-1 py-1.5 text-xs font-bold rounded-md transition-all relative"
+                                :class="dataFilter === 'expired' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'">
+                            Lưu Trữ / Hết Hạn
+                            <span x-show="personalizationNotes.some(n => n.expires_at && new Date(n.expires_at) < new Date())" class="absolute top-1 right-2 w-1.5 h-1.5 bg-red-500 rounded-full"></span>
+                        </button>
+                    </div>
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <button @click="loadPersonalizationNotes(true)"
+                                class="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50 active:scale-95"
+                                :class="personalizationLoading ? 'opacity-60 pointer-events-none' : ''">
+                            <i class="fa-solid fa-rotate-right mr-1" :class="personalizationLoading ? 'animate-spin text-blue-600' : ''"></i>
+                            Tải lại
+                        </button>
+                        <button @click="openPersonalizationModal()" class="flex-1 px-3 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-sm active:scale-95">
+                            <i class="fa-solid fa-plus mr-1"></i> Thêm
+                        </button>
+                    </div>
+                </div>
+                <p x-show="personalizationError" class="text-xs text-red-500 font-semibold mb-2" x-text="'⚠️ ' + personalizationError" x-cloak></p>
+                <div x-show="personalizationLoading" class="text-center py-4 text-xs text-slate-400" x-cloak>
+                    <i class="fa-solid fa-circle-notch animate-spin mr-1"></i> Đang tải danh sách ghi chú...
+                </div>
+                <div x-show="!personalizationLoading && personalizationFilteredNotesList.length" class="divide-y divide-slate-100 rounded-xl border border-slate-100" x-cloak>
+                    <template x-for="item in personalizationVisibleNotes" :key="item.id || item.symbol">
+                        <div class="px-3 py-3 space-y-2 hover:bg-slate-50 transition border-b border-slate-100 last:border-0 relative group">
+                            <div class="flex justify-between items-start gap-2">
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <span :class="getBadgeClass(item.symbol)"
+                                            class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border whitespace-nowrap"
+                                            x-text="getDisplaySymbol(item.symbol)"></span>
+                                        
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border whitespace-nowrap"
+                                            :class="item.status === 'PENDING' ? 'bg-yellow-50 text-yellow-600 border-yellow-200' : (item.status === 'APPROVED' ? 'bg-green-50 text-green-600 border-green-200' : 'bg-red-50 text-red-600 border-red-200')" 
+                                            x-text="item.status"></span>
+                                    </div>
+
+                                    <div class="flex items-center gap-1 mt-1" x-show="item.contributor_id">
+                                        <i class="fa-solid fa-user text-[10px] text-slate-400"></i>
+                                        <span class="text-[10px] text-slate-500 font-bold" x-text="item.contributor_name || 'User ' + item.contributor_id"></span>
+                                        <span class="text-[9px] text-slate-300 font-mono bg-slate-100 px-1 rounded ml-1" x-text="'ID:' + item.contributor_id"></span>
+                                    </div>
+                                </div>
+
+                                <div class="text-[10px] text-slate-400 text-right">
+                                    <span x-text="item.expires_at ? 'Hết hạn: ' + formatDateTime(item.expires_at) : 'Không hạn'" class="block"></span>
+                                    <span x-text="item.updated_at ? 'Cập nhật: ' + formatDateTime(item.updated_at) : ''"></span>
+                                </div>
+                            </div>
+
+                            <div class="pl-1" x-data="{ expanded: false }">
+                                <div class="text-sm text-slate-700 whitespace-pre-line transition-all duration-200" 
+                                     :class="expanded ? 'mb-2' : 'line-clamp-3 mb-1'" 
+                                     x-text="item.note"></div>
+                                
+                                <button x-show="item.note && item.note.length > 150" 
+                                        @click.stop="expanded = !expanded" 
+                                        class="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline mb-1 focus:outline-none flex items-center gap-1">
+                                    <span x-text="expanded ? 'Thu gọn' : 'Xem thêm...'"></span>
+                                    <i class="fa-solid" :class="expanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                                </button>
+                            </div>
+
+                            <div class="flex justify-end items-center gap-2 pt-2 mt-2 border-t border-dashed border-slate-100">
+                                
+                                <span class="text-[10px] text-slate-400 mr-auto" x-text="item.created_at ? 'Tạo: ' + formatDateShort(item.created_at) : ''"></span>
+                                
+                                <template x-if="dataFilter === 'expired'">
+                                    <button @click.stop="deletePersonalizationNote(item.id)" 
+                                            class="text-xs font-bold px-3 py-1.5 rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 active:scale-95 transition flex items-center gap-1 shadow-sm">
+                                        <i class="fa-solid fa-trash"></i> Xóa
+                                    </button>
+                                </template>
+
+                                <button @click.stop="openPersonalizationModal(item)" 
+                                        class="text-xs font-bold px-3 py-1.5 rounded-lg border active:scale-95 transition flex items-center gap-1 shadow-sm"
+                                        :class="dataFilter === 'expired' ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'">
+                                    
+                                    <i class="fa-solid" :class="dataFilter === 'expired' ? 'fa-clock-rotate-left' : 'fa-pen'"></i>
+                                    
+                                    <span x-text="dataFilter === 'expired' ? 'Gia hạn / Sửa' : 'Sửa'"></span>
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                <div x-show="!personalizationLoading && !personalizationFilteredNotesList.length" class="text-center text-sm text-slate-400 py-6" x-cloak>
+                    <p x-text="personalizationSearch ? 'Không tìm thấy ghi chú phù hợp.' : 'Chưa có ghi chú nào. Nhấn \"Thêm ghi chú\" để bắt đầu.'"></p>
+                </div>
+                <div x-show="!personalizationLoading && personalizationFilteredNotesList.length" class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mt-3 text-xs text-slate-500" x-cloak>
+                    <span x-text="personalizationShowingText"></span>
+                    <div class="flex items-center gap-2">
+                        <button @click="changePersonalizationPage(-1)" class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white font-semibold"
+                                :class="personalizationPage <= 1 ? 'opacity-40 pointer-events-none' : 'hover:bg-slate-50'">
+                            <i class="fa-solid fa-chevron-left text-[10px]"></i>
+                        </button>
+                        <span class="font-semibold" x-text="personalizationPage + ' / ' + personalizationTotalPages"></span>
+                        <button @click="changePersonalizationPage(1)" class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white font-semibold"
+                                :class="personalizationPage >= personalizationTotalPages ? 'opacity-40 pointer-events-none' : 'hover:bg-slate-50'">
+                            <i class="fa-solid fa-chevron-right text-[10px]"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3">Xóa Chat Cũ</h3>
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Từ thời điểm</label>
+                        <input type="datetime-local" x-model="deleteFromDate" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Đến thời điểm</label>
+                        <input type="datetime-local" x-model="deleteToDate" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-sm">
+                    </div>
+                    <button @click="deleteRange()" class="w-full py-2.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-red-100">
+                        <i class="fa-solid fa-trash mr-1.5"></i> Xóa Dữ Liệu
+                    </button>
+                </div>
+            </div>
+        </div>
+
+
+    </div>
+
+    <!-- BOTTOM NAVIGATION -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-2 flex justify-between items-center z-40 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
+        <button @click="activeTab = 'users'" :class="activeTab === 'users' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-users text-xl"></i>
+            <span class="text-[10px] font-bold">Users</span>
+        </button>
+        <button @click="activeTab = 'system'; fetchSystemStatus()" :class="activeTab === 'system' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-server text-xl"></i>
+            <span class="text-[10px] font-bold">System</span>
+        </button>
+        <button @click="activeTab = 'broadcast'" :class="activeTab === 'broadcast' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-bullhorn text-xl"></i>
+            <span class="text-[10px] font-bold">Tin</span>
+        </button>
+        <button @click="activeTab = 'data'; loadPersonalizationNotes()" :class="activeTab === 'data' ? 'text-blue-600' : 'text-slate-400'" class="flex flex-col items-center gap-1 p-2 w-16 transition-colors">
+            <i class="fa-solid fa-database text-xl"></i>
+            <span class="text-[10px] font-bold">Data</span>
+        </button>
+    </div>
+
+    <!-- USER DETAIL SHEET (Existing) -->
+    <div x-show="sheetOpen" class="relative z-50" x-cloak>
+        <div class="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300"
+             x-show="sheetOpen" x-transition.opacity @click="sheetOpen = false"></div>
+             
+        <div class="fixed bottom-0 left-0 right-0 bg-white rounded-t-3xl h-[85vh] flex flex-col shadow-2xl transform transition-transform duration-300"
+             x-show="sheetOpen" x-transition:enter-start="translate-y-full" x-transition:enter-end="translate-y-0"
+             x-transition:leave-start="translate-y-0" x-transition:leave-end="translate-y-full">
+            
+            <div class="w-full flex justify-center pt-3 pb-1" @click="sheetOpen = false"><div class="w-12 h-1.5 bg-slate-200 rounded-full"></div></div>
+            
+            <div class="px-6 py-3 flex justify-between items-center border-b border-slate-50 pb-4">
+                <div>
+                    <h2 class="text-xl font-bold text-slate-800 truncate max-w-[200px]" x-text="selectedUser?.name"></h2>
+                    <div class="text-xs text-slate-400 font-mono" x-text="'ID: ' + selectedUser?.id"></div>
+                </div>
+                <button @click="sheetOpen = false" class="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-200">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-[#F8FAFC]">
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-4">Gói Cước</h3>
+                    <div class="flex items-center gap-4 mb-5">
+                        <div class="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shadow-sm border border-slate-50"
+                             :class="selectedUser?.is_pro && !selectedUser?.is_expired ? 'bg-gradient-to-br from-yellow-400 to-yellow-600 text-white' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-crown"></i>
+                        </div>
+                        <div>
+                            <div class="text-lg font-bold text-slate-800" 
+                                 x-text="selectedUser?.is_pro ? (selectedUser?.is_expired ? 'ĐÃ HẾT HẠN' : 'GÓI PRO') : 'GÓI FREE'"></div>
+                            <div class="text-sm" :class="selectedUser?.is_expired ? 'text-red-500 font-medium' : 'text-slate-500'">
+                                <i class="fa-regular fa-calendar mr-1"></i>
+                                <span x-text="selectedUser?.expiry_date ? 'Hết hạn: ' + formatDate(selectedUser.expiry_date) : 'Vô thời hạn'"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button class="py-3 bg-slate-900 text-white rounded-xl text-sm font-bold shadow-lg shadow-slate-200 active:scale-95 transition" @click="extendUser(30)">+30 Ngày</button>
+                        <button class="py-3 bg-white border border-slate-200 text-slate-700 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-slate-50" @click="extendUser(7)">+7 Ngày</button>
+                        <button class="py-3 bg-orange-50 text-orange-600 border border-orange-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-orange-100" @click="extendUser(-7)">-7 Ngày</button>
+                        <button class="py-3 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95 transition hover:bg-red-100" @click="deactivateUser()"><i class="fa-solid fa-ban mr-1"></i> Hủy Gói</button>
+                        <button x-show="!selectedUser?.is_banned" @click="toggleBan(true)"
+                            class="w-full py-3 bg-red-50 text-red-600 border border-red-200 rounded-xl text-sm font-bold active:scale-95 transition flex items-center justify-center gap-2 hover:bg-red-100">
+                        <i class="fa-solid fa-ban"></i> CHẶN USER
+                    </button>
+                    
+                    <button x-show="selectedUser?.is_banned" @click="toggleBan(false)"
+                            class="w-full py-3 bg-green-50 text-green-600 border border-green-200 rounded-xl text-sm font-bold active:scale-95 transition flex items-center justify-center gap-2 hover:bg-green-100 animate-pulse">
+                        <i class="fa-solid fa-lock-open"></i> BỎ CHẶN
+                    </button>
+                    <div x-show="selectedUser?.is_banned" class="text-center text-[10px] text-red-500 mt-1 font-bold">⛔ User này đang bị chặn hoàn toàn khỏi hệ thống</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3 mt-4">
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.vn30 ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-chart-line"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">VN30F1m</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vn30 ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.stock ? 'bg-purple-100 text-purple-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-bell"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">Cổ Phiếu</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.stock ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.vnindex ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-chart-area"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">VNINDEX</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vnindex ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full flex shrink-0 items-center justify-center text-lg"
+                             :class="selectedUser?.config?.vn30_index ? 'bg-orange-100 text-orange-600' : 'bg-slate-100 text-slate-400'">
+                            <i class="fa-solid fa-chart-pie"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <div class="text-[10px] text-slate-400 font-bold uppercase truncate">VN30</div>
+                            <div class="text-sm font-bold text-slate-700" x-text="selectedUser?.config?.vn30_index ? 'BẬT' : 'TẮT'"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3 flex justify-between">
+                        <span>Đang theo dõi</span>
+                        <span class="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px]" x-text="selectedUser?.watchlist ? selectedUser.watchlist.length : 0"></span>
+                    </h3>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="sym in selectedUser?.watchlist">
+                            <span class="px-3 py-1.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-lg text-sm font-bold" x-text="sym"></span>
+                        </template>
+                        <template x-if="!selectedUser?.watchlist || selectedUser?.watchlist.length === 0">
+                            <span class="text-sm text-slate-400 italic w-full text-center py-2">Danh mục trống</span>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div class="bg-slate-50 px-4 py-3 border-b border-slate-100 flex justify-between items-center">
+                        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wide">Nhật ký hoạt động</h3>
+                        <button @click="fetchUserLogs(logsPage)" class="text-slate-400 hover:text-blue-500 transition">
+                            <i class="fa-solid fa-rotate-right text-xs" :class="logsLoading ? 'animate-spin text-blue-500' : ''"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="relative min-h-[150px]">
+                        <div x-show="logsLoading" class="absolute inset-0 bg-white/80 z-10 flex items-center justify-center backdrop-blur-sm">
+                            <i class="fa-solid fa-circle-notch animate-spin text-slate-400"></i>
+                        </div>
+
+                        <div class="max-h-60 overflow-y-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-slate-50 text-[10px] text-slate-400 uppercase font-bold sticky top-0">
+                                    <tr>
+                                        <th class="px-3 py-2 w-1/4">Lệnh</th>
+                                        <th class="px-3 py-2 w-1/2">Nội dung</th>
+                                        <th class="px-3 py-2 w-1/4 text-right">Thời gian</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-50">
+                                    <template x-for="log in userLogs" :key="log.used_at">
+                                        <tr class="hover:bg-slate-50 transition">
+                                            <td class="px-3 py-2 align-top">
+                                                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded border"
+                                                      :class="log.command === 'CMD_ASK_AI' ? 'bg-purple-50 text-purple-600 border-purple-100' : 
+                                                             (log.command === 'BUTTON_CLICK' ? 'bg-orange-50 text-orange-600 border-orange-100' : 'bg-blue-50 text-blue-600 border-blue-100')"
+                                                      x-text="log.command === 'CMD_ASK_AI' ? 'AI CHAT' : (log.command === 'BUTTON_CLICK' ? 'CLICK' : log.command)">
+                                                </span>
+                                            </td>
+                                            
+                                            <td class="px-3 py-2 align-top">
+                                                <div class="text-xs text-slate-700 font-medium break-words whitespace-pre-wrap" 
+                                                     x-text="log.note || '-'"></div>
+                                            </td>
+                                            
+                                            <td class="px-3 py-2 text-[10px] text-slate-400 text-right align-top whitespace-nowrap">
+                                                <div x-text="formatDate(log.used_at)"></div>
+                                                <div x-text="new Date(log.used_at).toLocaleTimeString('vi-VN', {hour:'2-digit', minute:'2-digit'})"></div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    <template x-if="!logsLoading && userLogs.length === 0">
+                                        <tr><td colspan="3" class="px-4 py-8 text-center text-slate-400 text-xs italic">Chưa có hoạt động nào</td></tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-50 px-3 py-2 border-t border-slate-100 flex justify-between items-center" x-show="logsTotalPages > 1">
+                        <button @click="changeLogPage(-1)" :disabled="logsPage <= 1"
+                                class="px-2 py-1 rounded hover:bg-white border border-transparent hover:border-slate-200 text-slate-500 disabled:opacity-30 transition">
+                            <i class="fa-solid fa-chevron-left text-xs"></i>
+                        </button>
+                        <span class="text-[10px] font-bold text-slate-500" x-text="logsPage + ' / ' + logsTotalPages"></span>
+                        <button @click="changeLogPage(1)" :disabled="logsPage >= logsTotalPages"
+                                class="px-2 py-1 rounded hover:bg-white border border-transparent hover:border-slate-200 text-slate-500 disabled:opacity-30 transition">
+                            <i class="fa-solid fa-chevron-right text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide">Ghi chú Admin</h3>
+                        <button @click="saveNote()" x-show="isNoteDirty" 
+                                class="text-[10px] bg-blue-600 text-white px-2 py-1 rounded font-bold animate-pulse">
+                            Lưu
+                        </button>
+                    </div>
+                    <textarea x-model="currentNote" @input="isNoteDirty = true"
+                              class="w-full bg-yellow-50 border border-yellow-100 rounded-xl p-3 text-sm text-slate-700 focus:ring-2 focus:ring-yellow-400 outline-none resize-none"
+                              rows="2" placeholder="Nhập ghi chú..."></textarea>
+                </div>
+
+                <div>
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-3 px-1">Giao dịch gần đây</h3>
+                    <div class="space-y-2">
+                        <template x-for="order in selectedUser?.orders">
+                            <div class="bg-white p-3 rounded-xl border border-slate-100 flex justify-between items-center"
+                                 :class="order.status === 'PENDING' ? 'opacity-70' : ''">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs"
+                                         :class="order.status === 'PAID' ? 'bg-green-100 text-green-600' : 'bg-yellow-100 text-yellow-600'">
+                                        <i :class="order.status === 'PAID' ? 'fa-solid fa-check' : 'fa-solid fa-hourglass'"></i>
+                                    </div>
+                                    <div>
+                                        <div class="text-sm font-bold" x-text="formatMoney(order.amount)"></div>
+                                        <div class="text-[10px] text-slate-400" x-text="formatDate(order.created_at)"></div>
+                                    </div>
+                                </div>
+                                <span class="text-xs font-bold px-2 py-1 rounded"
+                                      :class="order.status === 'PAID' ? 'text-green-600 bg-green-50' : 'text-yellow-600 bg-yellow-50'"
+                                      x-text="order.status"></span>
+                            </div>
+                        </template>
+                        <template x-if="!selectedUser?.orders || selectedUser?.orders.length === 0">
+                            <div class="text-center text-sm text-slate-400 italic py-4">Chưa có giao dịch nào.</div>
+                        </template>
+                    </div>
+                </div>
+                
+                <div class="h-6"></div> </div>
+
+            <div class="p-4 border-t border-slate-100 bg-white pb-8 grid grid-cols-2 gap-3">
+                
+                <button @click="sendMessage()" 
+                        class="w-full py-2.5 rounded-xl bg-blue-600 text-white text-xs font-bold shadow-md shadow-blue-200 active:scale-95 transition flex items-center justify-center gap-1.5">
+                    <i class="fa-brands fa-telegram text-sm"></i> BOT CHAT
+                </button>
+
+                <button @click="requestContact(selectedUser)" 
+                        class="w-full py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold active:scale-95 transition flex items-center justify-center gap-1.5 hover:bg-slate-50">
+                    <i class="fa-regular fa-comments text-sm"></i> ADMIN CHAT
+                </button>
+                
+            </div>
+        </div>
+    </div>
+
+    <!-- PERSONALIZATION MODAL -->
+    <div x-show="personalizationModalOpen" x-cloak>
+        <div class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50" @click="closePersonalizationModal()"></div>
+        <div class="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 relative">
+                <button @click="closePersonalizationModal()" class="absolute top-3 right-3 w-8 h-8 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center hover:bg-slate-200">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+                <h3 class="text-lg font-bold text-slate-800 mb-4" x-text="personalizationForm.isEditing ? 'Sửa Ghi Chú' : 'Thêm Ghi Chú Mới'"></h3>
+
+                <div class="flex bg-slate-100 p-1 rounded-lg mb-4" x-show="!personalizationForm.isEditing">
+                    <button @click="setNoteType('STOCK')" class="flex-1 px-3 py-1.5 text-xs font-bold rounded-md transition-all" 
+                            :class="personalizationForm.type === 'STOCK' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'">Cổ phiếu</button>
+                    <button @click="setNoteType('SECTOR')" class="flex-1 px-3 py-1.5 text-xs font-bold rounded-md transition-all" 
+                            :class="personalizationForm.type === 'SECTOR' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500'">Ngành</button>
+                    <button @click="setNoteType('MACRO')" class="flex-1 px-3 py-1.5 text-xs font-bold rounded-md transition-all" 
+                            :class="personalizationForm.type === 'MACRO' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-500'">Vĩ mô</button>
+                </div>
+                
+                <div x-show="personalizationForm.isEditing" class="mb-3">
+                    <span class="text-xs font-bold px-2 py-1 rounded border" :class="getBadgeClass(personalizationForm.symbol)" x-text="getDisplaySymbol(personalizationForm.symbol)"></span>
+                </div>
+
+                <div x-show="personalizationForm.type === 'STOCK'">
+                    <label class="block text-[11px] font-bold text-slate-500 mb-1">Mã cổ phiếu</label>
+                    <input type="text" x-model="personalizationForm.symbol" @input="handleSymbolInput()"
+                           :readonly="personalizationForm.isEditing"
+                           class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold tracking-widest uppercase focus:ring-2 focus:ring-blue-200 mb-3"
+                           placeholder="VD: SSI" maxlength="3">
+                </div>
+
+                <div x-show="personalizationForm.type === 'SECTOR'">
+                    <label class="block text-[11px] font-bold text-slate-500 mb-1">Chọn Ngành</label>
+                    <div class="relative mb-3">
+                        <select x-model="personalizationForm.sectorName" :disabled="personalizationForm.isEditing"
+                                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold focus:ring-2 focus:ring-purple-200 outline-none appearance-none text-slate-700">
+                            <option value="" disabled>-- Chọn ngành --</option>
+                            <template x-for="sec in sectorsList" :key="sec">
+                                <option :value="sec" x-text="sec"></option>
+                            </template>
+                        </select>
+                        <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                            <i class="fa-solid fa-chevron-down text-xs"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="personalizationForm.type === 'MACRO'" class="mb-3 bg-orange-50 border border-orange-100 rounded-lg p-3 flex items-center gap-3">
+                    <div class="bg-orange-100 p-2 rounded-full text-orange-600"><i class="fa-solid fa-globe"></i></div>
+                    <div>
+                        <div class="text-xs font-bold text-orange-800 uppercase">Ghi chú Vĩ mô</div>
+                        <div class="text-[11px] text-orange-600">Sẽ áp dụng cho toàn bộ danh mục đầu tư.</div>
+                    </div>
+                </div>
+
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">Nội dung ghi chú</label>
+                <textarea x-model="personalizationForm.note" rows="4"
+                          class="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm text-slate-700 focus:ring-2 focus:ring-blue-200 mb-3 placeholder:text-slate-300"
+                          placeholder="Nhập nội dung phân tích..."></textarea>
+
+                <label class="block text-[11px] font-bold text-slate-500 mb-1">Ngày hết hạn (tùy chọn)</label>
+                <input type="datetime-local" x-model="personalizationForm.expires_at"
+                       class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 focus:ring-2 focus:ring-blue-200 mb-4">
+
+                <div class="flex justify-between items-center gap-3">
+                    <button x-show="personalizationForm.isEditing"
+                            @click="deletePersonalizationNote()"
+                            class="flex-1 py-2.5 bg-red-50 text-red-600 border border-red-100 rounded-xl text-sm font-bold active:scale-95"
+                            x-cloak>
+                        <i class="fa-solid fa-trash mr-1"></i> Xóa
+                    </button>
+                    <button @click="savePersonalizationNote()"
+                            class="flex-1 py-2.5 text-white rounded-xl text-sm font-bold shadow-md active:scale-95 transition"
+                            :class="personalizationForm.type === 'MACRO' ? 'bg-orange-600 shadow-orange-200' : (personalizationForm.type === 'SECTOR' ? 'bg-purple-600 shadow-purple-200' : 'bg-blue-600 shadow-blue-200')"
+                            :disabled="personalizationSaving">
+                        <i class="fa-solid fa-floppy-disk mr-1"></i>
+                        <span x-text="personalizationSaving ? 'Đang lưu...' : 'Lưu ghi chú'"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div x-show="toast.visible" x-cloak 
+         class="fixed top-4 left-1/2 -translate-x-1/2 bg-slate-800/90 backdrop-blur text-white px-4 py-2.5 rounded-full text-sm font-medium shadow-xl z-[60] flex items-center gap-2 transition-all"
+         x-transition:enter="transform -translate-y-10 opacity-0"
+         x-transition:enter-end="transform translate-y-0 opacity-100"
+         x-transition:leave="transform -translate-y-10 opacity-0">
+        <i class="fa-solid fa-circle-check text-green-400"></i>
+        <span x-text="toast.message"></span>
+    </div>
+
+    <script>
+        const SECTORS_DATA = ["Bán lẻ", "Bảo hiểm", "Bất động sản", "Công nghệ Thông tin", "Du lịch và Giải trí", "Dầu khí", "Dịch vụ tài chính", "Hàng & Dịch vụ Công nghiệp", "Hàng cá nhân & Gia dụng", "Hóa chất", "Ngân hàng", "Thực phẩm và đồ uống", "Truyền thông", "Tài nguyên Cơ bản", "Viễn thông", "Xây dựng và Vật liệu", "Y tế", "Ô tô và phụ tùng", "Điện, nước & xăng dầu khí đốt"];
+        function mobileApp() {
+            return {
+                activeTab: 'users',
+                isLoading: false,
+                searchQuery: '',
+                filterStatus: 'all',
+                sheetOpen: false,
+                selectedUser: null,
+                currentNote: '',
+                isNoteDirty: false,
+                toast: { visible: false, message: '' },
+                users: [{"id": 1088200599, "name": "Khôi Trần", "username": "KhoiTran99", "admin_note": null, "is_banned": false, "has_used_trial": false, "expiry_date": "2025-12-31T11:51:17.804099+07:00", "plan_name": "pro", "is_pro": false, "is_expired": true, "days_left": -170, "watchlist": ["HPG"], "logs": [{"command": "CMD_ASK_AI", "note": "HELLO BOT", "used_at": "2026-06-18T20:53:44.768711", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "HELLO", "used_at": "2026-06-18T20:50:25.824872", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "/START", "used_at": "2026-06-18T20:48:44.784271", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "VẬY BẠN XEM GIÚP MÌNH CỔ ĐÓ CÓ TỐT KHÔNG?", "used_at": "2026-01-24T23:54:40.225488", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "CỔ TỨC THẾ NÀO?", "used_at": "2026-01-24T23:54:06.347226", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "HPG GIÁ SAO?", "used_at": "2026-01-24T23:53:32.141392", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "LỢI NHUẬN QUÝ NÀY BAO NHIÊU?", "used_at": "2026-01-24T23:50:46.223051", "total_count": 32}, {"command": "CMD_ASK_AI", "note": "GIÁ HPG THẾ NÀO?", "used_at": "2026-01-24T23:50:22.790011", "total_count": 32}, {"command": "unknown: zxcv", "note": null, "used_at": "2025-11-08T17:07:49.617185", "total_count": 32}, {"command": "unknown: hello", "note": null, "used_at": "2025-11-07T12:47:10.289092", "total_count": 32}], "orders": [{"order_id": "PAY108820059957E5C", "amount": 99000, "status": "PENDING", "created_at": "2025-11-27T08:46:29.721388+07:00"}, {"order_id": "PAY10882005994C6C0", "amount": 99000, "status": "PENDING", "created_at": "2025-11-27T08:46:12.270933+07:00"}, {"order_id": "PAY108820059994207", "amount": 99000, "status": "PENDING", "created_at": "2025-11-26T17:12:55.685548+07:00"}, {"order_id": "PAY1088200599D1A8D", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T17:16:23.570213+07:00"}, {"order_id": "PAY1088200599B35ED", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T17:12:36.560963+07:00"}], "config": {"vn30": true, "vn30f1m": true, "stock": true, "vnindex": true, "vn30_index": true, "news": false}}, {"id": 5203032153, "name": "User 5203032153", "username": null, "admin_note": null, "is_banned": false, "has_used_trial": false, "expiry_date": "2025-12-14T08:43:21.578374+07:00", "plan_name": "pro", "is_pro": false, "is_expired": true, "days_left": -187, "watchlist": ["CEO", "CII", "NKG"], "logs": [{"command": "/list", "note": null, "used_at": "2025-11-07T07:21:26.343670", "total_count": 3}, {"command": "/screener_value", "note": null, "used_at": "2025-11-06T15:26:28.454423", "total_count": 3}, {"command": "/screener_value", "note": null, "used_at": "2025-11-06T08:29:56.070064", "total_count": 3}], "orders": [], "config": {"vn30": true, "vn30f1m": true, "stock": true, "vnindex": false, "vn30_index": false, "news": false}}, {"id": 8218992920, "name": "Test Name", "username": null, "admin_note": "Đây là em trai của tui", "is_banned": false, "has_used_trial": true, "expiry_date": "2025-12-06T18:49:23.256543+07:00", "plan_name": "trial", "is_pro": false, "is_expired": true, "days_left": -194, "watchlist": [], "logs": [{"command": "/start", "note": null, "used_at": "2025-12-04T21:36:00.040173", "total_count": 53}, {"command": "/start", "note": null, "used_at": "2025-12-04T21:30:25.781882", "total_count": 53}, {"command": "CMD_ASK_AI", "note": "HELLO BOT", "used_at": "2025-12-04T21:24:57.680535", "total_count": 53}, {"command": "CMD_ASK_AI", "note": "HELLO", "used_at": "2025-12-04T21:23:53.070331", "total_count": 53}, {"command": "/start", "note": null, "used_at": "2025-11-28T08:55:59.185971", "total_count": 53}, {"command": "/upgrade", "note": null, "used_at": "2025-11-28T08:55:53.409728", "total_count": 53}, {"command": "/report", "note": null, "used_at": "2025-11-28T08:55:35.976134", "total_count": 53}, {"command": "/start", "note": null, "used_at": "2025-11-28T08:55:33.048678", "total_count": 53}, {"command": "/start", "note": null, "used_at": "2025-11-28T08:55:23.580292", "total_count": 53}, {"command": "/start", "note": null, "used_at": "2025-11-28T08:54:29.372181", "total_count": 53}], "orders": [{"order_id": "PAY8218992920796F8", "amount": 99000, "status": "PENDING", "created_at": "2025-11-28T08:55:53.416627+07:00"}], "config": {"vn30": false, "vn30f1m": false, "stock": true, "vnindex": false, "vn30_index": false, "news": true}}, {"id": 7295297402, "name": "Linh Lê", "username": null, "admin_note": null, "is_banned": false, "has_used_trial": true, "expiry_date": "2026-01-03T11:27:05.783847+07:00", "plan_name": "trial", "is_pro": false, "is_expired": true, "days_left": -167, "watchlist": ["DGC"], "logs": [{"command": "/info HPG", "note": null, "used_at": "2025-12-04T17:37:28.968621", "total_count": 47}, {"command": "/info HPG", "note": null, "used_at": "2025-12-04T17:37:11.708530", "total_count": 47}, {"command": "/info HPG", "note": null, "used_at": "2025-12-04T17:36:07.693931", "total_count": 47}, {"command": "/info VNM", "note": null, "used_at": "2025-12-04T17:31:45.205661", "total_count": 47}, {"command": "/info ACB", "note": null, "used_at": "2025-12-04T17:30:32.606226", "total_count": 47}, {"command": "/info ACB", "note": null, "used_at": "2025-12-04T17:30:11.453642", "total_count": 47}, {"command": "/start", "note": null, "used_at": "2025-12-04T17:28:12.918361", "total_count": 47}, {"command": "/info HPG", "note": null, "used_at": "2025-12-04T17:26:13.377766", "total_count": 47}, {"command": "/info DCM", "note": null, "used_at": "2025-12-04T17:15:59.832344", "total_count": 47}, {"command": "/info DPM", "note": null, "used_at": "2025-12-04T17:15:30.054488", "total_count": 47}], "orders": [], "config": {"vn30": false, "vn30f1m": false, "stock": true, "vnindex": false, "vn30_index": false, "news": true}}, {"id": 8307585408, "name": "ky Tran", "username": null, "admin_note": "Đây là anh trai của tui", "is_banned": false, "has_used_trial": true, "expiry_date": "2026-02-02T23:29:17.399189+07:00", "plan_name": "trial", "is_pro": false, "is_expired": true, "days_left": -136, "watchlist": ["NLG", "SSI", "HPG"], "logs": [{"command": "CMD_ASK_AI", "note": "CÓ NÚT ĐÓNG GÓP KHÔNG?", "used_at": "2025-12-04T22:37:43.380499", "total_count": 147}, {"command": "CMD_ASK_AI", "note": "BOT NÀY LÀM KHÓ KHÔNG", "used_at": "2025-12-04T22:37:00.589822", "total_count": 147}, {"command": "CMD_ASK_AI", "note": "BẠN LÀ AI", "used_at": "2025-12-04T22:36:52.593892", "total_count": 147}, {"command": "CMD_ASK_AI", "note": "CÁCH THÊM CỔ PHIẾU", "used_at": "2025-12-04T22:36:35.080844", "total_count": 147}, {"command": "CMD_ASK_AI", "note": "LÀM SAO ĐỂ CHIẾN THẮNG THỊ TRƯỜNG", "used_at": "2025-12-04T22:36:14.399662", "total_count": 147}, {"command": "CMD_ASK_AI", "note": "VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB", "used_at": "2025-12-04T22:07:32.214463", "total_count": 147}, {"command": "CMD_ASK_AI", "note": "VIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDBVIÊT SMOKNDHEO ÀBEO AKDKD ALBFKDBO DKDBK DKSBEO DKDB", "used_at": "2025-12-04T22:06:47.004447", "total_count": 147}, {"command": "/info ACB", "note": null, "used_at": "2025-12-04T17:59:19.546007", "total_count": 147}, {"command": "/info BID", "note": null, "used_at": "2025-12-04T17:58:47.583103", "total_count": 147}, {"command": "/info BVS", "note": null, "used_at": "2025-12-04T17:46:11.428111", "total_count": 147}], "orders": [{"order_id": "PAY830758540833A92", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T21:22:08.758532+07:00"}, {"order_id": "PAY83075854086F579", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T21:10:50.924252+07:00"}, {"order_id": "PAY830758540888D89", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T21:10:49.282626+07:00"}, {"order_id": "PAY83075854081DB55", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T21:04:12.988053+07:00"}, {"order_id": "PAY830758540815304", "amount": 99000, "status": "PENDING", "created_at": "2025-11-24T21:04:07.496510+07:00"}], "config": {"vn30": false, "vn30f1m": false, "stock": true, "vnindex": false, "vn30_index": false, "news": false}}],
+                usersLoading: false,
+                usersError: null,
+                adminId: '1088200599',
+                cacheClearType: 'screener',
+                dataFilter: 'active',
+                userLogs: [],
+                logsPage: 1,
+                logsTotalPages: 1,
+                logsLoading: false,
+                
+                // New State
+                systemStats: null,
+                systemError: null,
+                broadcastMsg: '',
+                deleteFromDate: '',
+                deleteToDate: '',
+                cacheClearType: 'screener',
+                cacheOptions: [
+                    { value: 'screener', label: 'Screener' },
+                    { value: 'report', label: 'Report' },
+                    { value: 'info', label: 'Info' },
+                    { value: 'all', label: 'All (Flush Redis)' },
+                ],
+                personalizationNotes: [],
+                personalizationLoading: false,
+                personalizationError: null,
+                personalizationLoaded: false,
+                personalizationModalOpen: false,
+                personalizationSaving: false,
+                personalizationSearch: '',
+                personalizationPage: 1,
+                personalizationPageSize: 5,
+                personalizationForm: {
+                    id: null,
+                    type: 'STOCK',
+                    symbol: '',
+                    sectorName: '',
+                    note: '',
+                    expires_at: '',
+                    isEditing: false,
+                },
+
+                userTabs: [
+                    { id: 'all', label: 'Tất cả' },
+                    { id: 'pro', label: 'Pro' },
+                    { id: 'churned', label: 'Tiềm năng' },
+                    { id: 'expiring', label: 'Sắp hết' },
+                    { id: 'free', label: 'Free' }
+                ],
+
+                getCount(tabId) {
+                    if (tabId === 'all') return this.users.length;
+                    if (tabId === 'pro') return this.users.filter(u => u.is_pro && !u.is_expired).length;
+                    if (tabId === 'churned') return this.users.filter(u => u.has_used_trial && (!u.is_pro || u.is_expired)).length;
+                    if (tabId === 'expiring') return this.users.filter(u => u.is_pro && !u.is_expired && u.days_left <= 3).length;
+                    if (tabId === 'free') return this.users.filter(u => !u.is_pro).length;
+                    return 0;
+                },
+                get filteredUsers() {
+                    return this.users.filter(user => {
+                        const s = this.searchQuery.toLowerCase();
+                        const uName = user.name ? user.name.toLowerCase() : '';
+                        const uId = String(user.id);
+                        
+                        if (!(!s || uId.includes(s) || uName.includes(s))) return false;
+                        
+                        if (this.filterStatus === 'pro') return user.is_pro && !user.is_expired;
+                        if (this.filterStatus === 'churned') {
+                            const isExpired = !user.is_pro || user.is_expired;
+                            return isExpired && (user.has_used_trial || user.plan_name === 'pro');
+                        }                        
+                        if (this.filterStatus === 'expiring') return user.is_pro && !user.is_expired && user.days_left <= 3;
+                        if (this.filterStatus === 'free') return !user.is_pro;
+                        
+                        return true;
+                    });
+                },
+                get personalizationFilteredNotesList() {
+                    // 1. Kiểm tra dữ liệu đầu vào
+                    if (!Array.isArray(this.personalizationNotes)) return [];
+                    
+                    // 2. Chuẩn bị từ khóa tìm kiếm (bỏ khoảng trắng thừa, chuyển thường)
+                    const rawQuery = (this.personalizationSearch || '').trim();
+                    const query = rawQuery.toLowerCase();
+                    const now = new Date();
+
+                    // 3. Thực hiện lọc
+                    return this.personalizationNotes.filter(item => {
+                        // --- A. LỌC THEO TRẠNG THÁI (Active / Expired) - Giữ nguyên logic cũ ---
+                        const expiry = item.expires_at ? new Date(item.expires_at) : null;
+                        const isExpired = expiry && expiry < now;
+
+                        if (this.dataFilter === 'active' && isExpired) return false;
+                        if (this.dataFilter === 'expired' && !isExpired) return false;
+
+                        // --- B. LỌC THEO TỪ KHÓA (SMART SEARCH) ---
+                        if (!query) return true; // Không nhập gì thì lấy hết
+
+                        // B1. Tìm theo Mã / Vĩ mô / Ngành
+                        const symbol = (item.symbol || '').toLowerCase();
+                        if (symbol.includes(query)) return true;
+                        
+                        // Hỗ trợ tìm 'macro' hoặc 'vi mo' đều ra VN_MACRO
+                        if (symbol === 'vn_macro' && ('vĩ mô'.includes(query) || 'macro'.includes(query))) return true;
+
+                        // B2. Tìm theo Nội dung ghi chú
+                        const note = (item.note || '').toLowerCase();
+                        if (note.includes(query)) return true;
+
+                        // B3. Tìm theo Người đóng góp (Tên hoặc ID)
+                        const contributor = (item.contributor_name || '').toLowerCase();
+                        const contributorId = String(item.contributor_id || '');
+                        if (contributor.includes(query) || contributorId.includes(query)) return true;
+
+                        // B4. Tìm theo Ngày tháng (Tạo hoặc Hết hạn)
+                        // Sử dụng hàm formatDateShort có sẵn để chuyển ISO sang dạng "DD/MM HH:MM"
+                        const createdStr = this.formatDateShort(item.created_at).toLowerCase(); 
+                        const updatedStr = this.formatDateShort(item.updated_at).toLowerCase();
+                        
+                        // Cho phép tìm theo ngày (VD: "20/10")
+                        if (createdStr.includes(query) || updatedStr.includes(query)) return true;
+
+                        return false; // Không khớp tiêu chí nào
+                    });
+                },
+                get personalizationTotalPages() {
+                    const total = this.personalizationFilteredNotesList.length;
+                    if (!total) return 1;
+                    return Math.max(1, Math.ceil(total / this.personalizationPageSize));
+                },
+                get personalizationVisibleNotes() {
+                    const total = this.personalizationFilteredNotesList.length;
+                    if (!total) return [];
+                    const page = Math.min(Math.max(1, this.personalizationPage), this.personalizationTotalPages);
+                    const start = (page - 1) * this.personalizationPageSize;
+                    return this.personalizationFilteredNotesList.slice(start, start + this.personalizationPageSize);
+                },
+                get personalizationShowingText() {
+                    const total = this.personalizationFilteredNotesList.length;
+                    if (!total) return '0 ghi chú';
+                    const page = Math.min(Math.max(1, this.personalizationPage), this.personalizationTotalPages);
+                    const start = (page - 1) * this.personalizationPageSize + 1;
+                    const end = Math.min(total, start + this.personalizationPageSize - 1);
+                    return `Hiển thị ${start}-${end} / ${total}`;
+                },
+,
+                
+                // Helper format ngày giờ ngắn gọn cho list
+                formatDateShort(iso) {
+                    if(!iso) return '';
+                    const d = new Date(iso);
+                    return d.getDate() + '/' + (d.getMonth()+1) + ' ' + d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+                },
+
+                init() {
+                    // Fallback: Get Admin ID from URL if template injection failed
+                    // Handle 'None' string from Python or empty
+                    if (!this.adminId || this.adminId === 'None') {
+                        try {
+                            const params = new URLSearchParams(window.location.search);
+                            this.adminId = params.get('admin_id') || '';
+                        } catch (e) {
+                            console.error("URL param error", e);
+                        }
+                    }
+
+                    // Set default datetime for delete range (Current time)
+                    try {
+                        const now = new Date();
+                        now.setMinutes(now.getMinutes() - now.getTimezoneOffset()); // Adjust to local
+                        this.deleteToDate = now.toISOString().slice(0, 16);
+                        
+                        const yesterday = new Date(now);
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        this.deleteFromDate = yesterday.toISOString().slice(0, 16);
+                    } catch (e) { console.error("Date init error", e); }
+
+                    if (this.adminId) {
+                        this.refreshUsers();
+                        this.loadPersonalizationNotes();
+                        this.loadPendingNotes();
+                    }
+                },
+
+                // --- SYSTEM ACTIONS ---
+                async refreshUsers(showToast = false) {
+                    const aid = String(this.adminId || '').trim();
+                    if (!aid) {
+                        this.usersError = "Thiếu Admin ID";
+                        return;
+                    }
+
+                    this.usersLoading = true;
+                    this.usersError = null;
+                    const url = `/api/admin/users?admin_id=${encodeURIComponent(aid)}&_t=${Date.now()}`;
+
+                    try {
+                        const res = await fetch(url, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                        });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        const payload = await res.json();
+                        if (!Array.isArray(payload)) throw new Error('Payload không hợp lệ');
+                        this.users = payload;
+                        if (showToast) this.showToast('🔄 Đã tải lại danh sách');
+                    } catch (err) {
+                        console.error('Fetch users error', err);
+                        this.usersError = err.message || String(err);
+                    } finally {
+                        this.usersLoading = false;
+                    }
+                },
+
+                async fetchSystemStatus() {
+                    this.systemStats = null;
+                    this.systemError = null;
+                    const aid = String(this.adminId || '').trim();
+                    if (!aid) { this.systemError = "Thiếu Admin ID"; return; }
+
+                    // Construct absolute URL manually
+                    let baseUrl = window.location.origin;
+                    if (!baseUrl || baseUrl === 'null') baseUrl = '';
+                    
+                    const url = baseUrl + '/api/admin/system/status?admin_id=' + encodeURIComponent(aid) + '&_t=' + Date.now();
+
+                    // Headers to bypass ngrok warning
+                    const headers = {
+                        'ngrok-skip-browser-warning': 'true',
+                        'Content-Type': 'application/json'
+                    };
+
+                    try {
+                        const res = await fetch(url, { 
+                            method: 'GET',
+                            headers: headers 
+                        });
+                        
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        
+                        // Check content type to ensure it is JSON
+                        const contentType = res.headers.get("content-type");
+                        if (!contentType || !contentType.includes("application/json")) {
+                            const text = await res.text();
+                            throw new Error("Not JSON: " + text.substring(0, 30).replace(/</g, '&lt;'));
+                        }
+
+                        const data = await res.json();
+                        if (data && data.active !== undefined) {
+                             this.systemStats = { 
+                                active: data.active, 
+                                redis_keys: data.redis_keys,
+                                cpu: data.cpu,
+                                ram: data.ram
+                             };
+                        } else {
+                             throw new Error("Invalid Data");
+                        }
+                    } catch (e) { 
+                        // Fallback to XHR
+                        try {
+                            const data = await new Promise((resolve, reject) => {
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('GET', url, true);
+                                // Add header to XHR as well
+                                xhr.setRequestHeader('ngrok-skip-browser-warning', 'true');
+                                
+                                xhr.onreadystatechange = function() {
+                                    if (xhr.readyState === 4) {
+                                        if (xhr.status === 200) {
+                                            try { 
+                                                resolve(JSON.parse(xhr.responseText)); 
+                                            } catch (err) { 
+                                                reject(new Error("JSON Error: " + xhr.responseText.substring(0, 30).replace(/</g, '&lt;'))); 
+                                            }
+                                        } else {
+                                            reject(new Error("XHR Status " + xhr.status));
+                                        }
+                                    }
+                                };
+                                xhr.onerror = () => reject(new Error("XHR Network Error"));
+                                xhr.send();
+                            });
+                            
+                            if (data && data.active !== undefined) {
+                                this.systemStats = { 
+                                    active: data.active, 
+                                    redis_keys: data.redis_keys,
+                                    cpu: data.cpu,
+                                    ram: data.ram
+                                };
+                                this.systemError = null;
+                            } else {
+                                throw new Error("Invalid Data (XHR)");
+                            }
+                        } catch (xhrErr) {
+                             this.systemError = "Fetch: " + e.message + " | " + xhrErr.message;
+                        }
+                    }
+                },
+                
+                async toggleBotStatus() {
+                    if (!this.systemStats) return;
+                    const newState = !this.systemStats.active;
+                    const action = newState ? 'BẬT (ON)' : 'TẮT (OFF)';
+                    if (!confirm(`Xác nhận ${action} Bot?`)) return;
+                    
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch('/api/admin/system/status', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, active: newState })
+                        });
+                        const data = await res.json();
+                        if (data.ok) {
+                            this.systemStats.active = data.active;
+                            this.showToast(`✅ Đã ${action} Bot thành công!`);
+                        } else alert('❌ Lỗi: ' + data.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); }
+                    finally { this.isLoading = false; }
+                },
+                cacheLabel(type) {
+                    const opt = this.cacheOptions.find(o => o.value === type);
+                    return opt ? opt.label : type;
+                },
+                async clearCache() {
+                    const label = this.cacheLabel(this.cacheClearType);
+                    if (!confirm(`Xác nhận xóa cache ${label}?`)) return;
+                    this.callApi(
+                        '/api/admin/cache/clear',
+                        { type: this.cacheClearType },
+                        `✅ Đã xóa cache ${label}!`
+                    );
+                },
+                async forceWorker() {
+                    if (!confirm('Bắt buộc chạy Worker (Weekly Report)?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'weekly' }, '✅ Đã gửi lệnh chạy worker!');
+                },
+                async forceNightlyValuation() {
+                    if (!confirm('Bắt buộc chạy Nightly Valuation (Tính toán định giá)?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'nightly_valuation' }, '✅ Đã gửi lệnh chạy Nightly Valuation!');
+                },
+                async forceDailyDigest() {
+                    if (!confirm('⚠️ Chạy Digest Sáng sẽ gửi thông báo tới toàn bộ user. Tiếp tục?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'daily_digest' }, '✅ Đã gửi lệnh chạy Digest Sáng!');
+                },
+                async forceEodSummary() {
+                    if (!confirm('⚠️ Chạy EOD sẽ gửi tổng kết cuối ngày cho toàn bộ user. Tiếp tục?')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'eod_summary' }, '✅ Đã gửi lệnh chạy EOD Summary!');
+                },
+                async forceMonthlyInsight() {
+                    if (!confirm('⚠️ Chạy phân tích CSKH tháng trước?\nAI sẽ đọc log chat và tổng hợp insight gửi về cho bạn.')) return;
+                    this.callApi('/api/admin/worker/force', { type: 'monthly_insight' }, '✅ Đã gửi lệnh chạy Monthly Insight!');
+                },
+
+                // --- BROADCAST ACTIONS ---
+                async sendBroadcast() {
+                    if (!this.broadcastMsg.trim()) return alert('Vui lòng nhập nội dung!');
+                    if (!confirm('⚠️ Gửi tin nhắn này tới TẤT CẢ user?')) return;
+                    
+                    this.callApi('/api/admin/system/broadcast', { text: this.broadcastMsg }, '✅ Đang gửi tin nhắn...');
+                    this.broadcastMsg = '';
+                },
+
+                // --- DATA ACTIONS ---
+                async backupDb() {
+                    if (!confirm('Tạo backup và gửi về Telegram Admin?')) return;
+                    this.callApi('/api/admin/system/backup', {}, '✅ Đang tạo backup và gửi về Telegram...');
+                },
+                async deleteRange() {
+                    if (!this.deleteFromDate || !this.deleteToDate) return alert('Vui lòng chọn thời gian!');
+                    // Convert "2023-10-27T14:30" -> "2023-10-27 14:30"
+                    const startStr = this.deleteFromDate.replace('T', ' ');
+                    const endStr = this.deleteToDate.replace('T', ' ');
+                    
+                    if (!confirm(`⚠️ XÓA dữ liệu từ [${startStr}] đến [${endStr}]?\nHành động này không thể hoàn tác!`)) return;
+                    
+                    this.callApi('/api/admin/system/delete_range', { 
+                        start: startStr, 
+                        end: endStr 
+                    }, '✅ Đã xóa dữ liệu!');
+                },
+
+                // --- PERSONALIZATION ACTIONS ---
+                async loadPersonalizationNotes(force = false) {
+                    const aid = String(this.adminId || '').trim();
+                    if (!aid) {
+                        this.personalizationError = 'Thiếu Admin ID';
+                        return;
+                    }
+                    if (this.personalizationLoading || (!force && this.personalizationLoaded)) return;
+                    this.personalizationLoading = true;
+                    this.personalizationError = null;
+                    try {
+                        const res = await fetch(`/api/admin/personalization/list?admin_id=${encodeURIComponent(aid)}&include_expired=true&_t=${Date.now()}`, {
+                            headers: { 'ngrok-skip-browser-warning': 'true' }
+                        });
+                        const payload = await res.json();
+                        if (!payload.ok) throw new Error(payload.message || 'Không tải được dữ liệu');
+                        this.personalizationNotes = payload.data || [];
+                        this.personalizationLoaded = true;
+                        this.personalizationPage = 1;
+                    } catch (err) {
+                        console.error('Personalization load error', err);
+                        this.personalizationError = err.message || String(err);
+                    } finally {
+                        this.personalizationLoading = false;
+                    }
+                },
+                changePersonalizationPage(delta) {
+                    const next = this.personalizationPage + delta;
+                    if (next < 1 || next > this.personalizationTotalPages) return;
+                    this.personalizationPage = next;
+                },
+                // --- Thay thế toàn bộ hàm openPersonalizationModal cũ ---
+                openPersonalizationModal(item = null) {
+                    if (item) {
+                        // Edit Mode: Tự động detect loại (Type) an toàn hơn
+                        let type = 'STOCK';
+                        let secName = '';
+                        let sym = (item.symbol || '').trim();
+                        const symUpper = sym.toUpperCase();
+
+                        // Lấy danh sách ngành an toàn (tránh lỗi null/undefined gây crash)
+                        const safeSectors = Array.isArray(this.sectorsList) ? this.sectorsList : [];
+
+                        if (symUpper === 'VN_MACRO') {
+                            type = 'MACRO';
+                        } else {
+                            // So sánh không phân biệt hoa thường
+                            const foundSector = safeSectors.find(s => s.toUpperCase() === symUpper);
+                            
+                            if (foundSector) {
+                                type = 'SECTOR';
+                                secName = foundSector; // Lấy tên chuẩn từ danh sách (VD: Bất động sản)
+                            } else {
+                                type = 'STOCK';
+                            }
+                        }
+
+                        this.personalizationForm = {
+                            id: item.id,
+                            type: type,
+                            symbol: sym,
+                            sectorName: secName,
+                            note: item.note || '',
+                            // Xử lý ngày tháng an toàn
+                            expires_at: item.expires_at ? this.toInputValue(item.expires_at) : '',
+                            isEditing: true
+                        };
+                    } else {
+                        // Add Mode
+                        this.personalizationForm = {
+                            id: null,
+                            type: 'STOCK',
+                            symbol: '',
+                            sectorName: '',
+                            note: '',
+                            expires_at: '',
+                            isEditing: false
+                        };
+                    }
+                    this.personalizationModalOpen = true;
+                },
+                closePersonalizationModal() {
+                    this.personalizationModalOpen = false;
+                    this.personalizationSaving = false;
+                    this.personalizationForm = { id: null, symbol: '', note: '', expires_at: '', isEditing: false };
+                },
+                handleSymbolInput() {
+                    if (!this.personalizationForm.symbol) return;
+                    this.personalizationForm.symbol = this.personalizationForm.symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                },
+                async savePersonalizationNote() {
+                    let finalSymbol = '';
+                    
+                    // Logic chọn symbol gửi lên server
+                    if (this.personalizationForm.type === 'MACRO') {
+                        finalSymbol = 'VN_MACRO';
+                    } else if (this.personalizationForm.type === 'SECTOR') {
+                        finalSymbol = this.personalizationForm.sectorName;
+                        if (!finalSymbol) return alert("Vui lòng chọn ngành");
+                    } else {
+                        finalSymbol = this.personalizationForm.symbol;
+                        if (!finalSymbol) return alert("Vui lòng nhập mã cổ phiếu");
+                    }
+
+                    const noteContent = (this.personalizationForm.note || '').trim();
+                    if (!noteContent) return alert("Ghi chú không được để trống.");
+
+                    let expiresIso = null;
+                    if (this.personalizationForm.expires_at) {
+                        try {
+                            expiresIso = new Date(this.personalizationForm.expires_at).toISOString();
+                        } catch (e) {
+                            alert('Ngày hết hạn không hợp lệ.');
+                            return;
+                        }
+                    }
+
+                    this.personalizationSaving = true;
+                    try {
+                        const payloadBody = {
+                            admin_id: this.adminId,
+                            symbol: finalSymbol,
+                            note: noteContent,
+                            expires_at: expiresIso,
+                        };
+                        if (this.personalizationForm.id) payloadBody.note_id = this.personalizationForm.id;
+                        
+                        const res = await fetch('/api/admin/personalization/save', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify(payloadBody)
+                        });
+                        const payload = await res.json();
+                        if (!payload.ok) throw new Error(payload.message || 'Không lưu được ghi chú');
+                        
+                        this.showToast('✅ Đã lưu ghi chú');
+                        await this.loadPersonalizationNotes(true);
+                        this.closePersonalizationModal();
+                    } catch (err) {
+                        alert('❌ Lỗi: ' + (err.message || err));
+                    } finally {
+                        this.personalizationSaving = false;
+                    }
+                },
+                setNoteType(type) {
+                    if (this.personalizationForm.isEditing) return; // Không cho đổi loại khi đang sửa
+                    this.personalizationForm.type = type;
+                    this.personalizationForm.symbol = '';
+                    this.personalizationForm.sectorName = '';
+                },
+                getBadgeClass(symbol) {
+                    if (!symbol) return '';
+                    const s = symbol.toUpperCase(); // Chuyển hết về in hoa để so sánh
+
+                    // 1. Vĩ Mô: Nền Cam
+                    if (s === 'VN_MACRO') {
+                        return 'bg-orange-100 text-orange-800 border-orange-200';
+                    }
+                    
+                    // 2. Ngành: Nền Tím
+                    // Dùng .some() để so sánh bất chấp viết hoa/thường
+                    if (this.sectorsList.some(sec => sec.toUpperCase() === s)) {
+                        return 'bg-purple-100 text-purple-800 border-purple-200';
+                    }
+                    
+                    // 3. Cổ phiếu (Mặc định): Nền Xanh
+                    return 'bg-blue-100 text-blue-800 border-blue-200';
+                },
+                getDisplaySymbol(symbol) {
+                    if (symbol === 'VN_MACRO') return '🌎 VĨ MÔ';
+                    return symbol;
+                },
+                // --- Sửa lại hàm deletePersonalizationNote để hỗ trợ xóa trực tiếp ---
+                async deletePersonalizationNote(directId = null) {
+                    // Ưu tiên lấy ID truyền vào (từ danh sách), nếu không có thì lấy từ Form (trong Modal)
+                    const noteId = directId || this.personalizationForm.id;
+                    
+                    if (!noteId) { alert('Không xác định được ID để xóa.'); return; }
+                    
+                    if (!confirm('⚠️ Bạn chắc chắn muốn XÓA VĨNH VIỄN ghi chú này?\nHành động không thể hoàn tác.')) return;
+                    
+                    this.personalizationSaving = true;
+                    try {
+                        const res = await fetch('/api/admin/personalization/delete', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, note_id: noteId })
+                        });
+                        const payload = await res.json();
+                        if (!payload.ok) throw new Error(payload.message || 'Không xóa được ghi chú');
+                        
+                        this.showToast('🗑️ Đã xóa vĩnh viễn');
+                        await this.loadPersonalizationNotes(true);
+                        
+                        // Nếu đang mở modal thì đóng lại
+                        if (this.personalizationModalOpen) this.closePersonalizationModal();
+                        
+                    } catch (err) {
+                        alert('❌ Lỗi: ' + (err.message || err));
+                    } finally {
+                        this.personalizationSaving = false;
+                    }
+                },
+
+                // --- USER ACTIONS (Existing) ---
+                async sendMessage() {
+                    const msg = prompt(`Gửi tin nhắn cho ${this.selectedUser.name}:`);
+                    if (!msg) return;
+                    this.callApi('/api/admin/user/message', { target_id: this.selectedUser.id, text: msg }, '📩 Đã gửi tin nhắn!');
+                },
+
+                async toggleBan(shouldBan) {
+                    const action = shouldBan ? 'ban' : 'unban';
+                    const text = shouldBan ? 'CHẶN' : 'BỎ CHẶN';
+                    if (!confirm(`⚠️ Xác nhận ${text} user ${this.selectedUser.name}?`)) return;
+                    
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch('/api/admin/user/ban', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, action: action })
+                        });
+                        const result = await res.json();
+                        if (result.ok) {
+                            this.selectedUser.is_banned = shouldBan;
+                            this.showToast(`✅ Đã ${text} thành công!`);
+                            await this.refreshUsers();
+                        } else alert('❌ Lỗi: ' + result.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                async requestContact(user) {
+                    this.isLoading = true;
+                    try {
+                        await fetch('/api/admin/user/contact', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: user.id, target_name: user.name, username: user.username })
+                        });
+                        if (window.Telegram && window.Telegram.WebApp) window.Telegram.WebApp.close();
+                        else alert("✅ Đã gửi link chat về bot!");
+                    } catch (e) { alert('Lỗi kết nối: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                async extendUser(days) {
+                    const actionName = days > 0 ? `Cộng thêm ${days} ngày` : `TRỪ ĐI ${Math.abs(days)} ngày`;
+                    if (!confirm(`Xác nhận: ${actionName} cho ${this.selectedUser.name}?`)) return;
+                    this.callApi('/api/admin/user/extend', { days: days }, '✅ Đã cập nhật!');
+                },
+
+                async deactivateUser() {
+                    if (!confirm(`⚠️ NGUY HIỂM: NGƯNG KÍCH HOẠT gói Pro của ${this.selectedUser.name}?`)) return;
+                    this.callApi('/api/admin/user/deactivate', {}, '🚫 Đã hủy gói thành công!');
+                },
+
+                async saveNote() {
+                    if (!this.selectedUser) return;
+                    this.isLoading = true;
+                    try {
+                        const res = await fetch('/api/admin/user/note', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: this.selectedUser.id, note: this.currentNote })
+                        });
+                        const result = await res.json();
+                        if (result.ok) {
+                            this.selectedUser.admin_note = this.currentNote;
+                            this.isNoteDirty = false;
+                            this.showToast('✅ Đã lưu ghi chú!');
+                        } else alert('❌ Lỗi: ' + result.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                async callApi(url, body, successMsg) {
+                    this.isLoading = true;
+                    try {
+                        const targetId = this.selectedUser ? this.selectedUser.id : null;
+                        const res = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'ngrok-skip-browser-warning': 'true'
+                            },
+                            body: JSON.stringify({ admin_id: this.adminId, target_id: targetId, ...body })
+                        });
+                        const text = await res.text();
+                        let result; try { result = JSON.parse(text); } catch { throw new Error("Server lỗi HTML."); }
+
+                        if (result.ok) {
+                            if (targetId) {
+                                await this.refreshUsers();
+                            }
+                            this.showToast(successMsg);
+                            this.sheetOpen = false;
+                        } else alert('❌ Lỗi: ' + result.message);
+                    } catch (e) { alert('❌ Lỗi mạng: ' + e.message); } 
+                    finally { this.isLoading = false; }
+                },
+
+                copyId(id) { navigator.clipboard.writeText(id); this.showToast('Đã sao chép ID: ' + id); },
+                showToast(msg) { this.toast.message = msg; this.toast.visible = true; setTimeout(() => this.toast.visible = false, 2500); },
+                openSheet(user) { 
+                    this.selectedUser = user; 
+                    this.currentNote = user.admin_note || ''; 
+                    this.isNoteDirty = false;
+                    
+                    // [MỚI] Reset và tải log trang 1
+                    this.userLogs = [];
+                    this.logsPage = 1;
+                    this.fetchUserLogs(1);
+                    
+                    this.sheetOpen = true; 
+                },
+                async fetchUserLogs(page) {
+                    if (!this.selectedUser) return;
+                    this.logsLoading = true;
+                    try {
+                        // Gọi API mới mà bạn vừa viết ở gateway.py
+                        const url = `/api/admin/user/logs?admin_id=${this.adminId}&target_id=${this.selectedUser.id}&page=${page}&limit=10`;
+                        
+                        const res = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' } });
+                        const json = await res.json();
+                        
+                        if (json.ok) {
+                            this.userLogs = json.data;
+                            this.logsPage = json.pagination.current_page;
+                            this.logsTotalPages = json.pagination.total_pages;
+                        }
+                    } catch (e) {
+                        console.error("Load logs error", e);
+                    } finally {
+                        this.logsLoading = false;
+                    }
+                },
+
+                // [MỚI] Hàm chuyển trang log
+                changeLogPage(delta) {
+                    const nextPage = this.logsPage + delta;
+                    if (nextPage >= 1 && nextPage <= this.logsTotalPages) {
+                        this.fetchUserLogs(nextPage);
+                    }
+                },
+                getStatusLabel(user) { return !user.is_pro ? 'FREE' : (user.is_expired ? 'EXPIRED' : 'PRO'); },
+                getStatusClass(user) { return !user.is_pro ? 'bg-slate-100 text-slate-500' : (user.is_expired ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'); },
+                formatDate(isoStr) { if (!isoStr) return '—'; try { return new Date(isoStr).toLocaleDateString('vi-VN'); } catch { return isoStr; } },
+                formatMoney(num) { return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(num); },
+                formatDateTime(isoStr) {
+                    if (!isoStr) return 'Không hạn';
+                    try {
+                        return new Date(isoStr).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' });
+                    } catch {
+                        return isoStr;
+                    }
+                },
+                toInputValue(isoStr) {
+                    try {
+                        const dt = new Date(isoStr);
+                        const pad = (n) => String(n).padStart(2, '0');
+                        return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+                    } catch {
+                        return '';
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

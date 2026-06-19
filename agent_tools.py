@@ -11,7 +11,8 @@ import glob
 from functools import wraps
 from typing import Optional, Literal
 
-from vnstock import Quote, Finance, Company, Vnstock, Trading
+from vnstock.api.quote import Quote
+from vnstock import Finance, Company, Trading
 from manual_valuation import fetch_manual_pe_pb
 from db_utils import get_historical_valuation_from_redis
 from profile_cache import make_profile_cache_key, get_profile_from_redis
@@ -360,11 +361,11 @@ async def tool_get_technical_indicators(symbol: str):
         end_date = datetime.datetime.now()
         start_date = end_date - datetime.timedelta(days=365)
         
-        stock = Vnstock().stock(symbol=symbol, source='VCI')
+        stock = Quote(symbol=symbol, source='KBS')
         df = await asyncio.to_thread(
-            stock.quote.history, 
-            start=start_date.strftime("%Y-%m-%d"), 
-            end=end_date.strftime("%Y-%m-%d"), 
+            stock.history,
+            start=start_date.strftime("%Y-%m-%d"),
+            end=end_date.strftime("%Y-%m-%d"),
             interval='1D'
         )
         
