@@ -146,25 +146,91 @@ def _prepare_quarterly(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _trailing_sum(df: pd.DataFrame, candidates: Iterable[str], periods: int = 4) -> float | None:
+	# First, check if candidates are in columns (like KBS parser or old format made them)
 	for col in candidates:
-		if col not in df.columns:
-			continue
-		series = pd.to_numeric(df[col], errors="coerce").dropna()
-		if series.empty:
-			continue
-		return float(series.head(periods).sum())
-	return None
+		if col in df.columns:
+			# If the column has numbers, calculate the sum
+			series_str = df[col].astype(str).str.replace(',', '', regex=False)
+			series = pd.to_numeric(series_str, errors="coerce").dropna()
+			if not series.empty:
+				return float(series.head(periods).sum())
 
+	# Second, check if candidates are in rows (like VCI raw data)
+	item_col = next((c for c in df.columns if c.lower() in ['item', 'chỉ tiêu']), None)
+	if item_col:
+		for col in candidates:
+			# VCI column names might match exactly
+			mask = df[item_col].astype(str).str.lower() == col.lower()
+			if mask.any():
+				row = df[mask].iloc[0]
+				period_vals = []
+				for c in df.columns:
+					if c != item_col and c != '_fallback_order' and not str(c).startswith('_'):
+						val = str(row[c]).replace(',', '')
+						try:
+							period_vals.append(float(val))
+						except (ValueError, TypeError):
+							pass
+				if period_vals:
+					# Normally data is sorted newest to oldest. We want the trailing sum.
+					# Take the first 'periods' values
+					return float(sum(period_vals[:periods]))
+
+	# VCI ratio quarter does NOT contain EPS or BVPS! It only contains P/E and P/B!
+	# We can't sum P/E or P/B. If the user asks for P/E and the API doesn't return EPS...
+	# We can extract P/E directly from the VCI data if they requested P/E, but _trailing_sum is for EPS.
+
+	return None
 
 def _pick_latest_value(df: pd.DataFrame, candidates: Iterable[str]) -> float | None:
+	# Same logic for picking latest value
 	for col in candidates:
-		if col not in df.columns:
-			continue
-		series = pd.to_numeric(df[col], errors="coerce").dropna()
-		if series.empty:
-			continue
-		return float(series.iloc[0])
+		if col in df.columns:
+			series_str = df[col].astype(str).str.replace(',', '', regex=False)
+			series = pd.to_numeric(series_str, errors="coerce").dropna()
+			if not series.empty:
+				return float(series.iloc[0])
+
+	item_col = next((c for c in df.columns if c.lower() in ['item', 'chỉ tiêu']), None)
+	if item_col:
+		for col in candidates:
+			mask = df[item_col].astype(str).str.lower() == col.lower()
+			if mask.any():
+				row = df[mask].iloc[0]
+				for c in df.columns:
+					if c != item_col and c != '_fallback_order' and not str(c).startswith('_'):
+						val = str(row[c]).replace(',', '')
+						try:
+							return float(val)
+						except (ValueError, TypeError):
+							pass
 	return None
+
+def _extract_direct_pe_pb(df: pd.DataFrame) -> tuple[float | None, float | None]:
+	pe, pb = None, None
+	item_col = next((c for c in df.columns if c.lower() in ['item', 'chỉ tiêu']), None)
+	if item_col:
+		for idx, row in df.iterrows():
+			item_name = str(row[item_col]).lower()
+			if 'p/e' in item_name or 'p\e' in item_name:
+				for c in df.columns:
+					if c != item_col and c != '_fallback_order' and not str(c).startswith('_'):
+						val = str(row[c]).replace(',', '')
+						try:
+							pe = float(val)
+							break
+						except (ValueError, TypeError):
+							pass
+			if 'p/b' in item_name or 'p\b' in item_name:
+				for c in df.columns:
+					if c != item_col and c != '_fallback_order' and not str(c).startswith('_'):
+						val = str(row[c]).replace(',', '')
+						try:
+							pb = float(val)
+							break
+						except (ValueError, TypeError):
+							pass
+	return pe, pb
 
 
 def _extract_board_value(row: pd.Series, keys: Iterable[tuple | str]) -> float | None:
@@ -214,8 +280,69 @@ def _fetch_price(symbol: str) -> float:
 
 
 def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
-	finance = Finance(symbol=symbol, source=FINANCE_SOURCE)
-	df = finance.ratio(period="quarter", lang="vi")
+	try:
+		finance = Finance(symbol=symbol, source="VCI")
+		df = finance.ratio(period="quarter", lang="vi")
+	except Exception:
+		# Fallback to KBS source if VCI fails (like KeyError 'data')
+		finance = Finance(symbol=symbol, source="KBS")
+		df = finance.ratio(period="quarter", lang="vi")
+
+		# KBS returns transposed data compared to VCI
+		# We need to map it back to the expected format
+		if df is not None and not df.empty and 'item' in df.columns:
+			# Get all period columns (e.g., '2026-Q1', '2025-Q4')
+			period_cols = [c for c in df.columns if c not in ('item', 'item_id')]
+
+			# Create a new structure
+			new_data = []
+			for col in period_cols:
+				try:
+					year, quarter = col.split('-Q')
+					year = int(year)
+					# Handle duplicate quarter columns like '2025-Q4_1'
+					quarter = int(quarter.split('_')[0])
+
+					row_data = {
+						'year': year,
+						'quarter': quarter
+					}
+
+					# Map values from the KBS rows to columns
+					for idx, row in df.iterrows():
+						item_name = str(row['item']).lower()
+						val = row[col]
+
+						# Only try to cast to float if it looks like a number, or it's NaN
+						try:
+							# Remove comma separators like "1,668.51"
+							if isinstance(val, str):
+								val = val.replace(',', '')
+							val = float(val) if pd.notna(val) else None
+						except (ValueError, TypeError):
+							val = None
+
+						# For KBS, we only have these strings:
+						# "Thu nhập trên mỗi cổ phần của 4 quý gần nhất (EPS)"
+						# "Giá trị sổ sách của cổ phiếu (BVPS)"
+						if 'eps' in item_name or 'thu nhập trên mỗi cổ phần' in item_name:
+							row_data['eps'] = val
+							row_data['eps_vnd'] = val
+						elif 'bvps' in item_name or 'giá trị sổ sách' in item_name:
+							row_data['bvps'] = val
+							row_data['bvps_vnd'] = val
+
+					new_data.append(row_data)
+				except ValueError:
+					pass
+
+			df = pd.DataFrame(new_data)
+
+			# Fix the sorting error by making sure the year and quarter columns are ints
+			if not df.empty and 'year' in df.columns:
+				df['year'] = df['year'].astype(int)
+				df['quarter'] = df['quarter'].astype(int)
+
 	if df is None or df.empty:
 		raise RuntimeError("Finance ratio API returned empty data")
 	return _prepare_quarterly(df)

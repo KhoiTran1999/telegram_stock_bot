@@ -55,7 +55,7 @@ from flask import Flask, request, jsonify, render_template_string, Response
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 from asgiref.wsgi import WsgiToAsgi
-from vnstock import Trading, Quote, Listing, Finance, Company, Screener
+from vnstock import Trading, Quote, Listing, Finance, Company
 from chart_utils import draw_sector_performance_chart, generate_sector_table_html
 from db_utils import (
     init_db,
@@ -151,6 +151,7 @@ from chart_utils import (
 from decimal import Decimal
 from functools import wraps
 import redis
+from redis_client import get_redis
 
 # --- HÀM HELPER VẼ THANH TIẾN TRÌNH ---
 def make_progress_bar(percent: int, width: int = 8) -> str:
