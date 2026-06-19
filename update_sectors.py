@@ -29,15 +29,11 @@ def update_sector_info():
         for index, row in df.iterrows():
             # Adjust column names based on actual output
             ticker = str(row.get('symbol', '')).strip().upper()
-            # Use icb_name2 (Supersector) as the main sector
-            industry = str(row.get('icb_name2', '')).strip()
+            # Use icb_name as the main sector
+            industry = str(row.get('icb_name', '')).strip()
             # Get company name
             name = str(row.get('organ_name', '')).strip()
-            
-            # Fallback to icb_name3 if icb_name2 is missing
-            if not industry or industry.lower() == 'nan':
-                 industry = str(row.get('icb_name3', '')).strip()
-            
+
             # Basic cleaning
             if ticker and industry and industry.lower() != 'nan':
                 # Save as object with name and sector

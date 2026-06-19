@@ -438,7 +438,7 @@ def ensure_redis_client() -> redis.Redis | None:
 
 # Khởi tạo Trading object (VCI)
 try:
-    stock_trading = Trading(source="VCI")
+    stock_trading = Trading(symbol='VNINDEX', source='KBS')
 except:
     stock_trading = None
 
@@ -1360,7 +1360,7 @@ def _tech_agent_fetch_history(
     end_date: str,
 ) -> pd.DataFrame | None:
     try:
-        stock = Vnstock().stock(symbol=symbol, source="VCI")
+        stock = Quote(symbol=symbol, source='KBS')
     except BaseException as exc:
         if _is_vci_rate_limit_error(exc):
             raise VCIRateLimitError(f"VCI rate limit khi khởi tạo stock {symbol}") from exc
@@ -1368,7 +1368,7 @@ def _tech_agent_fetch_history(
         return None
 
     try:
-        df = stock.quote.history(start=start_date, end=end_date, interval="1D")
+        df = stock.history(start=start_date, end=end_date, interval="1D")
     except BaseException as exc:
         if _is_vci_rate_limit_error(exc):
             raise VCIRateLimitError(f"VCI rate limit khi tải lịch sử {symbol}") from exc
@@ -2880,7 +2880,7 @@ async def fetch_data_smart(symbols: list):
     try:
         # 1. LẤY GIÁ QUA PRICE BOARD (Nhanh, phù hợp cho cổ phiếu)
         def _run_vci_board():
-            t = Trading(source="VCI")
+            t = Trading(symbol='VNINDEX', source='KBS')
             return t.price_board(symbols)
         
         df_board = await asyncio.wait_for(asyncio.to_thread(_run_vci_board), timeout=15.0)
@@ -2893,7 +2893,7 @@ async def fetch_data_smart(symbols: list):
                     if not sym: continue
                     
                     # Ưu tiên lấy giá khớp, nếu bằng 0 lấy giá tham chiếu
-                    match_p = _norm_price(row.get(('match', 'match_price')))
+                    match_p = _norm_price(row.get('close_price'))
                     ref_p = _norm_price(row.get(('listing', 'ref_price')))
                     
                     if match_p == 0 and ref_p > 0: 
@@ -4355,7 +4355,7 @@ async def job_scan_analysis_reports():
 
             try:
                 # Fetch dữ liệu từ Vnstock (chạy trong thread)
-                company = Company(symbol=symbol)
+                company = Company(symbol=symbol, source='VCI')
                 df = await asyncio.to_thread(company.reports)
                 
                 if df is None or df.empty:

@@ -22,7 +22,7 @@ async def _create_daily_chart(symbol: str, height: int) -> str:
         def _get_data():
             end = datetime.datetime.now()
             start = end - datetime.timedelta(days=180)
-            q = Quote(symbol=symbol, source='VCI')
+            q = Quote(symbol=symbol, source='KBS')
             return q.history(start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), interval='1D')
 
         df = await asyncio.to_thread(_get_data)
@@ -180,9 +180,9 @@ async def get_flash_view_data(symbol: str):
     Lấy toàn bộ dữ liệu Intraday, Resample và Tính toán chỉ số.
     [ĐÃ SỬA] Fix lỗi màu RSI khi ở vùng Trung tính (Neutral) trong Dark Mode.
     """
-    q = Quote(symbol=symbol, source='VCI')
+    q = Quote(symbol=symbol, source='KBS')
     try:
-        df = await asyncio.to_thread(lambda: q.intraday(symbol=symbol, page_size=10000))
+        df = await asyncio.to_thread(lambda: q.intraday())
     except: return None
 
     if df is None or df.empty: return None
@@ -211,12 +211,11 @@ async def get_flash_view_data(symbol: str):
     ref_price = df['price'].iloc[0]
     try:
         def _get_true_ref():
-            t = Trading(source='VCI')
+            t = Trading(symbol=symbol, source='KBS')
             board = t.price_board([symbol])
             if board is not None and not board.empty:
                 row = board.iloc[0]
-                if 'ref_price' in row: return float(row['ref_price'])
-                if ('listing', 'ref_price') in row: return float(row[('listing', 'ref_price')])
+                return float(row.get('reference_price', 0))
             return None
 
         true_ref = await asyncio.to_thread(_get_true_ref)

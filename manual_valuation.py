@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 CACHE_KEY_PREFIX = "manual_valuation:"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 1 day as agreed with user
 FINANCE_SOURCE = "VCI"
-TRADING_SOURCE = "VCI"
+TRADING_SOURCE = "KBS"
 
 
 @dataclass
@@ -255,21 +255,17 @@ def _fetch_price(symbol: str) -> float:
 	price = _extract_board_value(
 		row,
 		[
-			("match", "match_price"),
-			("match", "price"),
-			("match", "last_price"),
-			"match_price",
+			"close_price",
 			"last_price",
+			"match_price",
 		],
 	)
 	if price is None or price <= 0:
 		price = _extract_board_value(
 			row,
 			[
-				("listing", "ref_price"),
-				("listing", "reference_price"),
-				"ref_price",
 				"reference_price",
+				"ref_price",
 			],
 		)
 	if price is None or price <= 0:
