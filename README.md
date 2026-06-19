@@ -6,25 +6,23 @@
 
 ## Tổng quan
 
-Bot phục vụ toàn bộ trải nghiệm theo dõi thị trường: người dùng gõ mã cổ phiếu để kiểm tra biểu đồ, thêm mã vào watchlist, nhận cảnh báo realtime, mở WebApp Screener, đọc bản tin sáng và gọi báo cáo danh mục `/report`. Hậu trường được tách thành hai tiến trình độc lập (`gateway.py` và `worker.py`) giao tiếp qua Redis Pub/Sub để đảm bảo bot phản hồi nhanh ngay cả khi các tác vụ AI hoặc vẽ chart mất nhiều thời gian.
+Bot phục vụ toàn bộ trải nghiệm theo dõi thị trường: người dùng gõ mã cổ phiếu để thêm mã vào watchlist, nhận cảnh báo realtime, đọc bản tin sáng và gọi báo cáo danh mục. Hậu trường được tách thành hai tiến trình độc lập (`gateway.py` và `worker.py`) giao tiếp qua Redis Pub/Sub để đảm bảo bot phản hồi nhanh ngay cả khi các tác vụ AI mất nhiều thời gian.
 
 ## Nổi bật
 
 ### Telegram UX & Alerts
 - Watchlist không giới hạn (Pro) với thao tác nhanh `/add`, `/remove`, quick reply hoặc gõ thẳng mã (`gateway.py`).
-- Realtime quote + chart mini (Plotly) kèm nút “Theo dõi”, “Soi hồ sơ”, “Flash View”.
+- Xem hồ sơ doanh nghiệp nhanh qua lệnh hoặc nút bấm.
 - Stock alert tự động khi biên độ ±2% và bộ Market Monitor cho VN30F1M, VNINDEX, VN30 với ngưỡng ±5 điểm (`worker.py`).
-- Cá nhân hóa ghi chú từng mã và bật/tắt các loại thông báo ngay trong phần `⚙️ Setting`.
+- Bật/tắt các loại thông báo ngay trong phần `⚙️ Tài khoản`.
 
 ### AI & Tự động hóa (Gemini)
 - Morning Digest 07:00, EOD Summary 15:00 và Weekly Report 09:00 Chủ nhật với tường thuật AI (`worker.py` – `job_daily_digest`, `job_eod_summary`, `job_weekly_report`).
-- `/report` tạo báo cáo danh mục với tiến trình WebApp, cache kết quả trong `report_cache.py` để tránh gọi Gemini trùng lặp.
-- Soi hồ sơ doanh nghiệp, manual valuation (P/E, P/B) và AI knowledge base (`ai_knowledge.py`) cho CSKH tự động.
+- Tạo báo cáo danh mục, cache kết quả trong `report_cache.py` để tránh gọi Gemini trùng lặp.
+- Soi hồ sơ doanh nghiệp và AI knowledge base (`ai_knowledge.py`) cho trả lời chat tự động.
 - Bộ agent thủ công (`/agent`, `/agentlog`) cho phép admin kích hoạt pipeline vĩ mô/doanh nghiệp/kỹ thuật và đọc kết quả từ Redis cache trong vòng 24h.
 
 ### Web surfaces & Admin
-- Screener WebApp kết hợp bảng định giá Mean Reversion + tab hiệu suất ngành (Plotly) được build từ dữ liệu `job_nightly_valuation` và `calculate_market_comprehensive_data`.
-- Flash View (intraday line chart + orderbook heatbar) phục vụ yêu cầu tức thời.
 - Admin dashboard (route `/admin/dashboard`) để xem user, gia hạn Pro, broadcast, cập nhật ghi chú và theo dõi doanh thu.
 - Thanh toán tự động SePay qua webhook `/sepay-webhook` (optional) với mã đơn PAY_xxx.
 - **Contribute WebApp:** Giao diện cho phép Pro User đóng góp ghi chú/insight về mã cổ phiếu. Hỗ trợ soạn thảo, xem trạng thái duyệt (Pending/Approved/Rejected) và lịch sử đóng góp.
@@ -55,9 +53,8 @@ graph TD
     Redis -->|Notify| Gateway
 ```
 
-- `gateway.py`: host webhook `/webhook`, SePay webhook, các trang WebApp (digest, screener, admin, flash view) và toàn bộ command handlers. Những tác vụ dài >5s sẽ publish payload vào `worker_inbound` channel.
+- `gateway.py`: host webhook `/webhook`, SePay webhook, các trang WebApp (digest, admin, contribute) và toàn bộ command handlers. Những tác vụ dài >5s sẽ publish payload vào `worker_inbound` channel.
 - `worker.py`: chạy dưới Hypercorn để cung cấp endpoint `/health`, đồng thời khởi động runtime `run_worker_runtime()` gồm các loop realtime và APScheduler với `RedisJobStore`. Kết quả trả về Gateway qua channel `telegram_outbound` hoặc ghi cache (VD: `digest_web:*`).
-- ... `gateway.py`: host webhook ..., các trang WebApp (digest, screener, admin, flash view, **contribute**) ...
 
 ## Background processing
 
@@ -69,7 +66,7 @@ graph TD
 | `alert_loop` | ~10s | So sánh giá hiện tại với anchor để bắn stock alert ±2% (tôn trọng user bật/tắt trong DB). |
 | `market_monitor_fetcher_loop` | 5–10s tùy chỉ số | Lấy VN30F1M/VNINDEX/VN30 từ `Trading.price_board` và đặt `anchor/ref`. |
 | `market_monitor_alert_loop` | 10s | Xử lý logic cảnh báo chung, gửi câu quote vui tùy trạng thái. |
-| `worker_inbound_loop` | liên tục | Lắng nghe Redis channel `worker_inbound`, route các tác vụ Gateway (AI report, screener, agent, cache purge, force update...). |
+| `worker_inbound_loop` | liên tục | Lắng nghe Redis channel `worker_inbound`, route các tác vụ Gateway (AI report, agent, cache purge, force update...). |
 
 ### Scheduled jobs (Asia/Ho_Chi_Minh)
 
@@ -78,7 +75,7 @@ graph TD
 | `job_daily_digest` | 07:00 hằng ngày | Lấy tin RSS (CafeF, Vietstock, VnEconomy), dữ liệu GSO, dùng Gemini tóm tắt và gửi WebApp digest. |
 | `job_eod_summary` | 15:00 T2–T6 | Tổng kết phiên: lấy giá đóng cửa, thống kê khối lượng/GT, cảm xúc dòng tiền và render trang `/eod/<id>`. |
 | `job_weekly_report` | 09:00 Chủ nhật | Tái sử dụng cache report + dữ liệu tuần để gửi recap danh mục. |
-| `job_nightly_valuation` | 02:00 hằng ngày | Tính Mean Reversion P/E, P/B, hiệu suất ngành, lưu Redis `historical_valuation` và `sector:*`. |
+| `job_nightly_valuation` | 02:00 hằng ngày | Cập nhật dữ liệu cơ bản từ vnstock và lưu cache định giá vào Redis. |
 | `job_scan_news` | 06:00 & 18:00 | Hai feed (MACRO, SPECIALIZED) để sẵn dữ liệu tin nóng cho digest. |
 | `job_scan_bctc` | Tháng 1/4/5/10, 02:00/08:00/14:00/20:00 | Cập nhật hàng đợi thông báo BCTC và đánh dấu `bctc_notified`. |
 | `job_scan_analysis_reports` | 07:00 hằng ngày | Crawl báo cáo phân tích CTCK, chặn trùng với `analysis_report_seen`. |
@@ -95,10 +92,9 @@ telegram_stock_bot/
 ├── gateway.py            # Webhook + WebApp server, command handlers, admin dashboard
 ├── worker.py             # Worker runtime, Redis subscriber, APScheduler jobs
 ├── db_utils.py           # PostgreSQL pool + toàn bộ truy vấn và thao tác user/order/log
-├── chart_utils.py        # Plotly charts cho daily, intraday, sector performance
 ├── manual_valuation.py   # Hàm tính P/E/P/B TTM có cache Redis
 ├── ai_knowledge.py       # Prompt định nghĩa trợ lý CSKH
-├── digest_template.py    # HTML template cho Digest, Report, Screener, Flash view, Admin
+├── digest_template.py    # HTML template cho Digest, Report, Admin, Contribute
 ├── news_seen_cache.py    # Redis helper chặn gửi duplicate news
 ├── profile_cache.py      # Cache hồ sơ doanh nghiệp
 ├── report_cache.py       # Cache báo cáo AI và EOD digest
@@ -190,13 +186,11 @@ Worker expose `/health` tại `PORT` (mặc định 10001) để Render kiểm t
 | `/help` | Tất cả | Hướng dẫn thao tác cơ bản, link WebApp. |
 | `/add <MÃ>` | Tất cả | Thêm mã vào watchlist (Free giới hạn 1). |
 | `/remove <MÃ>` | Tất cả | Xóa mã khỏi watchlist. |
-| `/list` | Tất cả | Liệt kê watchlist; nhấn từng nút để xem chart hoặc xóa. |
-| `/alert` | Tất cả | Bật/tắt cảnh báo stock theo user. |
-| `/setting` | Tất cả | Mở trang cấu hình (alerts, market monitor, profile, upgrade). |
-| `/report` | Pro | Gọi AI Analyst, hiển thị tiến trình WebApp. |
+| `/list` | Tất cả | Liệt kê watchlist; nhấn từng nút để tương tác. |
+| `/setting` | Tất cả | Mở trang cấu hình (alerts, market monitor, upgrade). |
+| `/report` | Pro | Gọi AI phân tích toàn bộ watchlist, hiển thị tiến trình. |
+| `/info <MÃ>` | Tất cả | Soi hồ sơ, lợi thế & rủi ro của doanh nghiệp. |
 | `/trial` | Eligible | Kích hoạt 10 ngày dùng thử Pro một lần duy nhất. |
-| `/screener_value` | Pro | Trigger Screener WebApp (Mean Reversion). |
-| `/info <MÃ>` | Tất cả | Mở Quick Info + chart cho mã bất kỳ. |
 | `/upgrade` | Tất cả | Gửi QR thanh toán Pro thông qua SePay. |
 | `/admin` | Admin | Link dashboard web/mobile. |
 | `/announce <text>` | Admin | Broadcast toàn bộ user. |
@@ -208,21 +202,20 @@ Worker expose `/health` tại `PORT` (mặc định 10001) để Render kiểm t
 | --- | --- | --- |
 | `✍️ Đóng góp` | Pro | Mở WebApp để gửi ghi chú phân tích cho Admin duyệt. |
 
-Người dùng cũng có thể gõ trực tiếp mã (`HPG`, `VCB`...) để bot trả ra chart mini + nút thao tác.
+Người dùng cũng có thể gõ trực tiếp mã (`HPG`, `VCB`...) để nhận menu thao tác tương ứng cho mã.
 
 ## Admin & bảo trì
 
 - SePay webhook `/sepay-webhook` xác thực bằng `SEPAY_TOKEN`, match nội dung chuyển khoản với `bot_orders` để tự gia hạn Pro (`gateway.py`).
 - `update_sectors.py` nên được chạy định kỳ để cập nhật `sectors.json` từ vnstock Listing.
-- `process_force_update_screener` có thể được gọi từ Gateway (menu Admin) khi muốn tính lại toàn bộ định giá ngay lập tức (mất ~5–10 phút tùy máy).
 - `news_seen_cache.py`, `profile_cache.py`, `report_cache.py` dùng chung Redis; có thể xóa bằng các nút “Purge cache” trong admin UI nếu thấy dữ liệu cũ.
 - Tập tin CSV trong `GSO_Data/` dùng để build KPI vĩ mô; chỉ cần thêm các file mới, worker sẽ tự đọc theo `MACRO_GSO_MONTH_LIMIT`.
 
 ## Tech stack
 - Python 3.12, `python-telegram-bot 20.x`, Flask, Hypercorn, APScheduler, Redis.
-- Data layer: PostgreSQL (psycopg3 + pool), vnstock/vnai SDK, feedparser, pandas, Plotly, pandas-ta.
+- Data layer: PostgreSQL (psycopg3 + pool), vnstock/vnai SDK, feedparser, pandas.
 - AI: `google-genai` SDK (Gemini 2.0 Flash/Pro) với schema `REPORT_RESPONSE_SCHEMA` để bảo vệ format.
-- Frontend fragments trong `digest_template.py` (AlpineJS + Tailwind-lite inline) và asset Plotly.
+- Frontend fragments trong `digest_template.py` (AlpineJS + Tailwind-lite inline).
 
 ## License
 
