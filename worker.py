@@ -1117,27 +1117,25 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
 
         DANH SÁCH CÔNG CỤ (TOOLS) CÓ THỂ DÙNG (Chỉ dùng khi cần dữ liệu realtime):
         {tool_menu}
-        
+
         NHIỆM VỤ: Phân tích yêu cầu và chọn 1 trong 2 hành động:
 
         TRƯỜNG HỢP 1: TRẢ LỜI NGAY (Fast Track)
         Nếu câu hỏi là:
         - Chào hỏi xã giao (Hello, Hi...).
         - Hỏi về tính năng bot, cách dùng lệnh (/add, /start...), giá gói cước.
-        - Các câu hỏi nằm trong KIẾN THỨC NỀN TẢNG ở trên.
-        - Câu hỏi không liên quan đến dữ liệu chứng khoán/vĩ mô cụ thể.
-        => Hãy trả lời trực tiếp.
+        - Các câu hỏi mở về tài chính, kinh tế vĩ mô, lý thuyết phân tích kỹ thuật/cơ bản, định nghĩa các chỉ số P/E, P/B,...
+        - Các câu hỏi thảo luận, nhận định hoặc so sánh chung mà KHÔNG yêu cầu tra cứu số liệu giá thời gian thực (real-time price) hôm nay.
+        => Hãy tự trả lời trực tiếp bằng kiến thức tài chính sâu rộng của bạn.
         => OUTPUT FORMAT: Bắt đầu bằng từ khóa "ANSWER:" theo sau là câu trả lời.
-        Lưu ý: Câu trả lời phải ngắn gọn, súc tích, đúng trọng tâm.
-        
+        Lưu ý: Trình bày chuyên nghiệp, súc tích và có chiều sâu.
+
         TRƯỜNG HỢP 2: GỌI WORKER (Data Fetch)
-        Nhiệm vụ: Phân tích yêu cầu và chỉ đạo nhân viên Worker (Researcher) lấy dữ liệu cụ thể.
-        Hãy viết một "Lệnh làm việc" (Instruction) rõ ràng, chi tiết:
-        - Cần lấy mã cổ phiếu nào? Chỉ số nào (P/E, giá, chart...)?
-        - Cần tin tức gì? Vĩ mô hay doanh nghiệp?
-        - Cần báo cáo tài chính hay hồ sơ công ty?
+        Nếu câu hỏi yêu cầu dữ liệu thực tế:
+        - Lấy giá cổ phiếu realtime hoặc thông tin khớp lệnh, khối lượng giao dịch hiện tại của cổ phiếu hôm nay.
+        Nhiệm vụ: Chỉ đạo nhân viên Worker lấy dữ liệu giá cụ thể.
         => OUTPUT FORMAT: Bắt đầu bằng từ khóa "ACTION:" theo sau là lệnh chi tiết.
-        Ví dụ: "Hãy lấy giá hiện tại, P/E trung bình ngành và tin tức mới nhất của HPG."
+        Ví dụ: "Hãy lấy giá khớp lệnh hiện tại và khối lượng giao dịch của HPG."
         """
         
         resp_manager = await safe_generate_content(
