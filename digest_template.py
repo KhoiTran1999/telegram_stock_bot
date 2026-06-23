@@ -1739,6 +1739,7 @@ ADMIN_MOBILE_TEMPLATE = r"""
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
     </style>
+    <script id="admin-initial-data" type="application/json">{{ initial_data | safe }}</script>
 </head>
 <body class="text-slate-800" x-data="mobileApp()">
 
@@ -2474,7 +2475,6 @@ ADMIN_MOBILE_TEMPLATE = r"""
         <i class="fa-solid fa-circle-check text-green-400"></i>
         <span x-text="toast.message"></span>
     </div>
-
     <script>
         const SECTORS_DATA = {{ sectors | safe }};
         function mobileApp() {
@@ -2488,8 +2488,8 @@ ADMIN_MOBILE_TEMPLATE = r"""
                 currentNote: '',
                 isNoteDirty: false,
                 toast: { visible: false, message: '' },
-                users: {{ initial_data | tojson | safe }},
-                usersLoading: false,
+                users: [],
+                usersLoading: true,
                 usersError: null,
                 adminId: '{{ admin_id }}',
                 cacheClearType: 'screener',
@@ -3255,6 +3255,27 @@ ADMIN_MOBILE_TEMPLATE = r"""
                     } catch {
                         return '';
                     }
+                },
+                init() {
+                    // Load data from hidden script tag
+                    try {
+                        const rawData = document.getElementById('admin-initial-data').textContent.trim();
+                        if (rawData) {
+                            this.users = JSON.parse(rawData);
+                        } else {
+                            this.users = [];
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse initial user data:', e);
+                        this.usersError = 'Không thể tải dữ liệu ban đầu: ' + e.message;
+                        this.users = [];
+                    }
+                    this.usersLoading = false;
+
+                    // Fetch other initial data
+                    this.fetchSystemStatus();
+                    this.loadPersonalizationNotes();
+                    this.loadPendingNotes();
                 }
             }
         }

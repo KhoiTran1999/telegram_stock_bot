@@ -3312,20 +3312,19 @@ def admin_dashboard():
         # Format thành dạng: 4.500.000
         revenue_str = "{:,.0f}".format(real_revenue).replace(",", ".")
         
-        # 3. Hàm xử lý dữ liệu an toàn (Date, Decimal...)
-        def safe_serializer(obj):
-            if isinstance(obj, (datetime.datetime, datetime.date)):
-                return obj.isoformat()
-            if isinstance(obj, datetime.timedelta):
-                return str(obj)
-            if isinstance(obj, Decimal):
-                return float(obj)
-            if hasattr(obj, '__str__'): 
-                return str(obj)
-            return str(obj)
+        # 4. Convert manually each item and keep it as dict
+        # so that when passed to template, tojson works without extra escaping.
+        for r in raw_data:
+            for k, v in r.items():
+                if isinstance(v, (datetime.datetime, datetime.date)):
+                    r[k] = v.isoformat()
+                elif isinstance(v, datetime.timedelta):
+                    r[k] = str(v)
+                elif isinstance(v, Decimal):
+                    r[k] = float(v)
 
         # 4. Chuyển thành chuỗi JSON
-        users_json = json.dumps(raw_data, default=safe_serializer, ensure_ascii=False)
+        users_json = json.dumps(raw_data, ensure_ascii=False)
         
     except Exception as e:
         log.error(f"Lỗi load dashboard data: {e}")
