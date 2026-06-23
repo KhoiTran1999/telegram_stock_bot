@@ -38,7 +38,6 @@ Bạn có khả năng thực hiện tác vụ sau theo thời gian thực bằng
   • Có đầy đủ 19 nhóm ngành + mục Khác, dữ liệu cập nhật mỗi đêm.
 
 ### 5. TỰ ĐỘNG HÓA & CẢNH BÁO
-- **Morning Digest 07:00:** Tin vĩ mô/doanh nghiệp, BCTC mới.
 - **EOD Summary 15:00:** Tổng kết biến động thị trường, thanh khoản, khối ngoại, cảm xúc dòng tiền.
 - **Stock alert ±2%:** Theo dõi các mã trong watchlist (chỉ hoạt động giờ giao dịch).
 - **Market monitor:** VN30F1M, VNINDEX, VN30 với ngưỡng ±5 điểm. Người dùng bật/tắt từng loại tại `⚙️ Tài khoản`.

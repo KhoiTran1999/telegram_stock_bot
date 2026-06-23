@@ -3516,11 +3516,6 @@ async def api_admin_force_worker():
             await asyncio.to_thread(push_to_worker, payload)
             return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Nightly Valuation."})
         
-        elif task_type == 'daily_digest':
-            payload = {"cmd": "RUN_DAILY_DIGEST", "admin_id": ADMIN_ID}
-            await asyncio.to_thread(push_to_worker, payload)
-            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Daily Digest."})
-        
         elif task_type == 'eod_summary':
             payload = {"cmd": "RUN_EOD_SUMMARY", "admin_id": ADMIN_ID}
             await asyncio.to_thread(push_to_worker, payload)
