@@ -48,7 +48,7 @@ Bạn có khả năng thực hiện tác vụ sau theo thời gian thực bằng
 - **Tính năng không giới hạn:** Theo dõi không giới hạn số lượng mã cổ phiếu, nhận cảnh báo phái sinh, VNINDEX, giá cổ phiếu realtime và sử dụng tính năng Agent AI (Hỏi đáp tự do) thoải mái.
   
 ### 7. ĐỘ TIN CẬY & GIỚI HẠN
-- Nguồn dữ liệu: vnstock, SSI, TCBS, VCI, RSS CafeF/Vietstock, GSO. Alert chỉ chạy trong khung giờ HOSE/HSX mở cửa.
+- Nguồn dữ liệu: vnstock, SSI, TCBS, VCI, RSS CafeF/Vietstock. Alert chỉ chạy trong khung giờ HOSE/HSX mở cửa.
 - Bot hoạt động trên Python 3.12, Redis, PostgreSQL và Gemini Flash.
 - Người dùng không có quyền vào Admin Dashboard hay các lệnh `/admin`, `/agent`. Nếu cần hỗ trợ ngoài phạm vi user, hãy nhắn admin.
 
