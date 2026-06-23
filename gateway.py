@@ -867,10 +867,8 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         try: await query.answer()
         except: pass
         # --- LOGIC VẼ LẠI DASHBOARD (EDIT MODE) ---
-        # 1. Check Trial/Admin status
-        trial_status = await asyncio.to_thread(check_trial_eligibility, chat_id)
+        # 1. Check Admin status
         is_admin = (chat_id == ADMIN_ID)
-        show_trial = (trial_status == 'OK') and not is_admin
 
         # 2. Build Menu
         kb = [
@@ -884,9 +882,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]
         ]
 
-        if show_trial:
-            kb.append([InlineKeyboardButton("🎁 Kích hoạt Dùng thử (Free)", callback_data="btn_trial_click")])
-        
         if is_admin:
             base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
             admin_url = f"{base_url}/admin/dashboard?admin_id={ADMIN_ID}"
@@ -895,17 +890,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
 
         # 3. Build Text (Chỉ lấy phần Body)
-        if show_trial:
-             msg_text = (
-                "🚀 **Tôi giúp gì cho bạn?**\n"
-                "• **Báo tín hiệu:** Cảnh báo giá cổ phiếu và chỉ số realtime.\n"
-                "• **Soi danh mục & Định giá:** Phân tích doanh nghiệp trong 5s.\n"
-                ""
-                "🎁 **Tặng bạn 10 ngày dùng thử Full tính năng Pro!**\n"
-                "Bấm nút **'🎁 Kích hoạt Dùng thử'** bên dưới để nhận ngay."
-            )
-        else:
-            msg_text = "👇 *Chọn nhanh tính năng bên dưới:*"
+        msg_text = "👇 *Chọn nhanh tính năng bên dưới:*"
 
         # 4. Edit Message (Thay vì gửi mới)
         await safe_edit_message(query, msg_text, InlineKeyboardMarkup(kb))
@@ -914,10 +899,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         try: await query.answer()
         except: pass
         await cmd_setting(update, context) # Gọi hàm setting mới cập nhật ở trên
-    
-    elif data == "btn_trial_click":
-        # Gọi lại hàm cmd_trial
-        await cmd_trial(update, context)
 
     # --- NHÓM 3: XỬ LÝ BẬT/TẮT (SETTING) ---
 
@@ -1722,10 +1703,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
     ]
 
-    # Nếu đủ điều kiện Trial -> Thêm nút Kích hoạt
-    if show_trial:
-        kb.append([InlineKeyboardButton("🎁 Kích hoạt Dùng thử (Free)", callback_data="btn_trial_click")])
-    
     # Nếu là Admin -> Thêm nút Admin Dashboard
     if is_admin:
         base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
@@ -2169,7 +2146,6 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t4_btn = "✅ Biên độ 4%" if threshold == 4.0 else "Biên độ 4%"
 
     kb = [
-        [InlineKeyboardButton("💎 Nâng cấp / Gia hạn Pro", callback_data="btn_upgrade")],
         [InlineKeyboardButton(stock_btn, callback_data=stock_cb), InlineKeyboardButton(vn30f1m_btn, callback_data=vn30f1m_cb)],
         [InlineKeyboardButton(vnindex_btn, callback_data=vnindex_cb), InlineKeyboardButton(vn30_index_btn, callback_data=vn30_index_cb)],
         [InlineKeyboardButton(t2_btn, callback_data="set_thresh_2"), InlineKeyboardButton(t3_btn, callback_data="set_thresh_3"), InlineKeyboardButton(t4_btn, callback_data="set_thresh_4")],
@@ -2190,75 +2166,10 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Kích hoạt dùng thử 10 ngày (ĐÃ SỬA LỖI GỬI TIN ADMIN).
+    Thông báo tính năng Trial đã tắt.
     """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
+    await reply_md(update, "🎁 **Thông báo:** Tính năng Dùng thử đã đóng. Hiện tại Bot đang mở khóa MIỄN PHÍ 100% tất cả tính năng cho mọi người dùng!")
 
-    chat_id = update.effective_chat.id
-    await track_user_activity(update) 
-    
-    try: await asyncio.to_thread(log_command_usage, chat_id, "/trial", ADMIN_ID)
-    except: pass
-
-    # 1. Kiểm tra điều kiện
-    status = await asyncio.to_thread(check_trial_eligibility, chat_id)
-
-    if status == 'IS_PRO':
-        await reply_md(update, "😎 **Bạn đang là thành viên Pro rồi!**\nKhông cần kích hoạt dùng thử nữa.")
-        return
-
-    if status == 'USED':
-        kb = [[InlineKeyboardButton("💎 Nâng cấp ngay (Chỉ 3k/ngày)", callback_data="btn_upgrade")]]
-        await reply_md(
-            update, 
-            "😢 **Rất tiếc, bạn đã sử dụng hết lượt Dùng thử.**\n\nVui lòng nâng cấp gói Pro để tiếp tục.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
-
-    # 3. Kích hoạt
-    TRIAL_DAYS = 10
-    await reply_md(update, "⏳ Đang kích hoạt gói dùng thử...")
-    
-    try:
-        # Gọi hàm kích hoạt (chạy trực tiếp vì nó rất nhanh)
-        activate_trial_package(chat_id, TRIAL_DAYS)
-        
-        msg_success = (
-            f"🚀 **KÍCH HOẠT THÀNH CÔNG!**\n\n"
-            f"Bạn đã nhận được **{TRIAL_DAYS} ngày** trải nghiệm Full tính năng Pro:\n\n"
-            f"💎 **Các đặc quyền đã được mở khóa:**\n"
-            f"• 🏢 **Soi Hồ Sơ:** Phân tích mô hình kinh doanh, lợi thế cạnh tranh & rủi ro.\n"
-            f"• 📉 **Phái Sinh & Thị trường:** Nhận tín hiệu cảnh báo VN30F1M, VNINDEX realtime.\n"
-            f"• 🔔 **Không Giới Hạn:** Theo dõi biến động giá cho toàn bộ danh mục (gói Free chỉ được 1 mã).\n\n"
-            f"👉 **Hãy bắt đầu trải nghiệm ngay với** /start"
-        )
-        await reply_md(update, msg_success)
-        
-        # --- SỬA LỖI TẠI ĐÂY ---
-        # Dùng context.bot.send_message thay vì send_msg_to
-        if ADMIN_ID and chat_id != ADMIN_ID:
-            user = update.effective_user
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID, 
-                    text=f"👤 User {user.full_name} (ID: {chat_id}) vừa kích hoạt /trial."
-                )
-            except Exception: pass # Bỏ qua nếu lỗi gửi admin
-            
-    except Exception as e:
-        log.error(f"Lỗi kích hoạt trial cho {chat_id}: {e}")
-        # Sửa cả chỗ báo lỗi này luôn
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=f"⚠️ Lỗi hệ thống khi user {chat_id} trial: {e}"
-                )
-            except: pass
-        await reply_md(update, f"⚠️ Lỗi hệ thống. Vui lòng thử lại sau.")
 
 # Dùng dict lưu tạm xác nhận theo admin_id
 pending_clear_confirmations = {}
@@ -2589,96 +2500,10 @@ async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Xử lý khi user muốn nâng cấp Pro.
-    (ĐÃ SỬA: Gửi ảnh VietQR động)
+    Thông báo tính năng Nâng cấp Pro đã ngưng hoạt động.
     """
-    if not BOT_ACTIVE:
-        await reply_md(update, "⚙️ Bot đang bảo trì.")
-        return
+    await reply_md(update, "💎 **Thông báo:** Bot hiện đã mở khóa MIỄN PHÍ 100% tất cả các tính năng Pro cho toàn bộ người dùng! Bạn không cần nâng cấp hay thực hiện bất kỳ giao dịch thanh toán nào nữa nhé.")
 
-    chat_id = update.effective_chat.id
-    await asyncio.to_thread(log_command_usage, chat_id, "/upgrade", ADMIN_ID)
-    
-    # 1. Kiểm tra xem admin đã cấu hình QR chưa
-    if not SEPAY_QR_BANK or not SEPAY_QR_ACC:
-        log.error(f"[SEPAPAY] Lỗi: Admin chưa set SEPAY_QR_BANK/SEPAY_QR_ACC trong .env")
-        await reply_md(update, "⚠️ Hệ thống thanh toán đang bảo trì (thiếu cấu hình QR). Vui lòng liên hệ Admin.")
-        return
-
-    # 2. Tạo đơn hàng PENDING trong DB (Giữ nguyên)
-    try:
-        order_id = await asyncio.to_thread(
-            create_pending_order,
-            chat_id,
-            PRO_PACKAGE_AMOUNT,
-            PRO_PACKAGE_DAYS
-        )
-    except Exception as e:
-        log.error(f"Lỗi khi tạo đơn hàng SePay cho {chat_id}: {e}")
-        await reply_md(update, "⚠️ Đã xảy ra lỗi khi tạo đơn hàng. Vui lòng thử lại sau.")
-        return
-
-    # 3. Tạo URL ảnh VietQR (Dựa theo file order.php)
-    # Dùng quote_plus để mã hóa nội dung (ví dụ: PAY1088...)
-    qr_url = (
-        f"https://qr.sepay.vn/img?"
-        f"bank={SEPAY_QR_BANK}"
-        f"&acc={SEPAY_QR_ACC}"
-        f"&template=compact"
-        f"&amount={PRO_PACKAGE_AMOUNT}"
-        f"&des={quote_plus(order_id)}"
-    )
-
-    # 4. Gửi ảnh QR và Hướng dẫn
-    amount_str = f"{PRO_PACKAGE_AMOUNT:,}".replace(",", ".")
-    
-    # Tạo nội dung caption
-    caption_lines = [
-        f"🌟 *Nâng cấp Gói Pro ({PRO_PACKAGE_DAYS} ngày)*",
-        "",
-        f"Giá: *{amount_str} VNĐ*",
-        "",
-        "**Cách 1 (Khuyến nghị):**",
-        "Mở App ngân hàng và quét mã QR dưới đây. Mọi thông tin (số tiền, nội dung) sẽ được tự động điền.",
-        "",
-        "**Cách 2 (Thủ công):**",
-        "Nếu không thể quét, vui lòng chuyển khoản thủ công:",
-        f"• Số tiền: `{PRO_PACKAGE_AMOUNT}`",
-        f"• Nội dung: `{order_id}`",
-        "",
-        "Sau khi chuyển khoản, Gói Pro sẽ được tự động kích hoạt."
-    ]
-
-    try:
-        # Dùng send_photo để gửi ảnh trực tiếp
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=qr_url, # Telegram tự động tải URL ảnh này
-            caption="\n".join(caption_lines),
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        log.error(f"Lỗi khi gửi ảnh QR cho {chat_id}: {e}")
-        await reply_md(update, "⚠️ Lỗi khi tạo mã QR. Vui lòng thử lại.")
-
-def _send_telegram_message_safe(chat_id_to_send, text):
-    """
-    Hàm helper (Sync) để gọi từ Flask route (Thread khác)
-    gửi tin nhắn qua Main Loop của bot một cách an toàn.
-    """
-    try:
-        if not tg_app or not MAIN_LOOP:
-            log.error("[SEPAPAY] Lỗi: Không tìm thấy tg_app hoặc MAIN_LOOP.")
-            return
-            
-        # Gửi tin nhắn từ Flask route (thread khác) qua Main Loop của bot
-        future = asyncio.run_coroutine_threadsafe(
-            send_md(tg_app.bot, chat_id_to_send, text),
-            MAIN_LOOP
-        )
-        future.result(timeout=5) # Chờ 5s
-    except Exception as e:
-        log.error(f"[SEPAPAY] Lỗi khi gửi tin nhắn cho {chat_id_to_send}: {e}")
 
 # ==============================================
 # FLASK KEEPALIVE
@@ -4354,8 +4179,8 @@ async def main():
     
     # Tài khoản & Cài đặt
     tg_app.add_handler(CommandHandler("setting", cmd_setting))
-    tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
-    tg_app.add_handler(CommandHandler("trial", cmd_trial))
+    # tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
+    # tg_app.add_handler(CommandHandler("trial", cmd_trial))
     tg_app.add_handler(CommandHandler("agent", cmd_agent))
     tg_app.add_handler(CommandHandler("agentlog", cmd_agentlog))
 

@@ -1788,24 +1788,9 @@ def add_paid_user(chat_id: int, days_to_add: int):
 
 def is_user_pro(chat_id: int) -> bool:
     """
-    Trả về True nếu user có trong bảng paid_users VÀ ngày hết hạn > NOW()
+    Bot hiện tại đã mở khóa MIỄN PHÍ 100% tất cả các tính năng Pro cho toàn bộ người dùng!
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1 
-                FROM paid_users
-                WHERE chat_id = %s AND expiry_date > NOW()
-                LIMIT 1;
-                """,
-                (chat_id,),
-            )
-            row = cur.fetchone()
-    
-    # Nếu row không phải là None (tức là tìm thấy 1 dòng) -> True
-    # Nếu row là None (không tìm thấy) -> False
-    return bool(row)
+    return True
 
 def get_user_pro_expiry(chat_id: int) -> datetime.datetime | None:
     """
