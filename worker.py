@@ -1223,7 +1223,11 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             push_telegram_msg(chat_id, f"🛠 **Người Canh Bảng 🧑‍💻:** Đang tra cứu {tool_names}...", edit_id=loading_msg_id)
             
             # 2.2 Thực thi Tool
-            for fc in current_calls:
+            for idx, fc in enumerate(current_calls):
+                # Thêm khoảng nghỉ ngắn (1.5s) giữa các lệnh gọi API để tránh Rate Limit của VCI
+                if idx > 0:
+                    await asyncio.sleep(1.5)
+
                 tool_name = fc.function.name
                 tool_args = fc.function.arguments
                 

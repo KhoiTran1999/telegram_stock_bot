@@ -360,7 +360,13 @@ async def tool_get_company_profile(symbol: str) -> str:
                 log.warning(f"API profile fetch error: {err_msg}")
             return {}
 
-        ai_data, api_data = await asyncio.gather(fetch_from_redis(), fetch_from_api())
+        # SỬA LỖI LOGIC: Đọc Cache trước thay vì chạy song song (tiết kiệm request)
+        ai_data = await fetch_from_redis()
+
+        # Nếu chưa có đầy đủ thông tin hành chính từ AI data thì mới gọi API
+        api_data = {}
+        if not ai_data or "tên_đầy_đủ" not in ai_data:
+            api_data = await fetch_from_api()
 
         if not ai_data and not api_data:
             return json.dumps({"error": f"Không tìm thấy thông tin cho {symbol}"})
