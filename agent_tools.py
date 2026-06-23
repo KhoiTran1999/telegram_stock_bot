@@ -94,6 +94,8 @@ class ToolRegistry:
                     return await func(*args, **kwargs)
                 except Exception as e:
                     error_msg = f"Lỗi thực thi tool {tool_name}: {str(e)}"
+                    if isinstance(e, KeyError) and str(e) == "'data'":
+                        error_msg = f"Lỗi thực thi tool {tool_name}: Lấy dữ liệu từ API vnstock thất bại (có thể do mã không có dữ liệu hoặc bị API chặn rate limit)."
                     log.error(error_msg)
                     return json.dumps({"error": error_msg}, ensure_ascii=False)
 
@@ -244,12 +246,17 @@ async def tool_get_fundamentals(symbol: str):
     manual_val = await asyncio.to_thread(fetch_manual_pe_pb, symbol)
 
     if manual_val:
+        pe_str = f"{manual_val.pe:.2f}x" if manual_val.pe is not None else "N/A"
+        pb_str = f"{manual_val.pb:.2f}x" if manual_val.pb is not None else "N/A"
+        eps_str = f"{manual_val.eps_ttm:,.0f} VND" if manual_val.eps_ttm is not None else "N/A"
+        bvps_str = f"{manual_val.bvps:,.0f} VND" if manual_val.bvps is not None else "N/A"
+
         return (
             f"**Chỉ số cơ bản {symbol}**:\n"
-            f"- P/E: {manual_val.pe:.2f}x\n"
-            f"- P/B: {manual_val.pb:.2f}x\n"
-            f"- EPS (TTM): {manual_val.eps_ttm:,.0f} VND\n"
-            f"- Book Value: {manual_val.bvps:,.0f} VND\n"
+            f"- P/E: {pe_str}\n"
+            f"- P/B: {pb_str}\n"
+            f"- EPS (TTM): {eps_str}\n"
+            f"- Book Value: {bvps_str}\n"
             f"(Dữ liệu cập nhật: {manual_val.computed_at})"
         )
     return "Không tính được định giá (thiếu dữ liệu)."
@@ -293,7 +300,10 @@ async def tool_get_company_profile(symbol: str) -> str:
                         "mô_tả": data.get("company_profile")
                     }
             except Exception as e:
-                log.warning(f"API profile fetch error: {e}")
+                err_msg = str(e)
+                if isinstance(e, KeyError) and err_msg == "'data'":
+                    err_msg = "Lấy dữ liệu từ API vnstock thất bại (KeyError: 'data')"
+                log.warning(f"API profile fetch error: {err_msg}")
             return {}
 
         ai_data, api_data = await asyncio.gather(fetch_from_redis(), fetch_from_api())
