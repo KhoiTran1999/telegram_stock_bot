@@ -6096,7 +6096,7 @@ async def run_worker_runtime():
     if redis_url.startswith("redis://") and "?" not in redis_url and "localhost" not in redis_url and "127.0.0.1" not in redis_url:
         redis_url = "rediss://" + redis_url[8:]
 
-    connection_kwargs = {"decode_responses": True}
+    connection_kwargs = {}
     if redis_url.startswith("rediss://"):
         connection_kwargs["ssl_cert_reqs"] = "none"
 

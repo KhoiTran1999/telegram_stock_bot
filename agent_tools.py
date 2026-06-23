@@ -82,7 +82,6 @@ class ToolRegistry:
                 if param.default == inspect.Parameter.empty:
                     params_schema["required"].append(param_name)
 
-            self.tools[tool_name] = func
             self.schema.append({
                 "name": tool_name,
                 "description": description,
@@ -98,6 +97,7 @@ class ToolRegistry:
                     log.error(error_msg)
                     return json.dumps({"error": error_msg}, ensure_ascii=False)
 
+            self.tools[tool_name] = wrapper
             return wrapper
         return decorator
 
