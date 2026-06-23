@@ -184,7 +184,6 @@ def _resolve_web_base_url() -> str:
 BASE_URL = _resolve_web_base_url()  # URL công khai của Gateway/WebApp
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GSO_DATA_DIR = os.path.join(BASE_DIR, "GSO_Data")
-os.makedirs(GSO_DATA_DIR, exist_ok=True)
 
 # Cấu hình Redis Output
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -1966,97 +1965,25 @@ def collect_latest_gso_report(
 
 
 async def run_macro_agent(chat_id: int, request_id: str, ts_iso: str) -> dict:
-    latest_report, latest_label, tried_labels = await asyncio.to_thread(
-        collect_latest_gso_report
-    )
-
-    csv_path = (latest_report or {}).get("csv_path")
-    if not latest_report or not csv_path or not os.path.exists(csv_path):
-        target_label = latest_label or (tried_labels[0] if tried_labels else "N/A")
-        attempts = ", ".join(tried_labels) if tried_labels else "không xác định"
-        note = (
-            "Chưa tìm thấy báo cáo GSO có file Excel phù hợp. "
-            f"Các kỳ đã thử: {attempts}."
-        )
-        payload = _build_agent_stub("macro", request_id, ts_iso)
-        empty_stats = {
-            "gso_period": target_label,
-            "attempts": tried_labels,
-            "csv_path": None,
-            "gso_data_dir": GSO_DATA_DIR,
-            "errors": [note],
-        }
-        payload.update({
-            "notes": note,
-            "raw_data": empty_stats,
-            "redis_json": {
-                "generated_at": ts_iso,
-                "status": "CSV_MISSING",
-                "gso_data_dir": GSO_DATA_DIR,
-                "attempts": tried_labels,
-                "message": note,
-            },
-        })
-        return payload
-
-    if tried_labels and latest_label and latest_label != tried_labels[0]:
-        log.info(
-            f"[{INSTANCE_ID}] Macro agent fallback dùng báo cáo {latest_label} sau khi thử {tried_labels}"
-        )
-
-    persisted_meta = await asyncio.to_thread(
-        _persist_gso_csv_asset,
-        latest_report,
-        latest_label,
-    )
-
-    if not persisted_meta:
-        note = "Không thể lưu file CSV GSO vào thư mục dự án."
-        payload = _build_agent_stub("macro", request_id, ts_iso)
-        error_stats = {
-            "gso_period": latest_label,
-            "attempts": tried_labels,
-            "csv_path": None,
-            "gso_data_dir": GSO_DATA_DIR,
-            "errors": [note],
-        }
-        payload.update({
-            "notes": note,
-            "raw_data": error_stats,
-            "redis_json": {
-                "generated_at": ts_iso,
-                "status": "CSV_PERSIST_FAILED",
-                "attempts": tried_labels,
-                "message": note,
-            },
-        })
-        return payload
-
-    note = (
-        f"Đã tải báo cáo GSO kỳ {persisted_meta['period_label']} và lưu CSV tại "
-        f"{persisted_meta['csv_path']}."
-    )
-
-    stats = {
-        "gso_period": persisted_meta["period_label"],
-        "csv_path": persisted_meta["csv_path"],
-        "filename": persisted_meta["filename"],
-        "attachment_url": persisted_meta.get("attachment_url"),
-        "saved_at": persisted_meta["saved_at"],
-        "file_size_bytes": persisted_meta["file_size_bytes"],
-        "attempts": tried_labels,
-    }
-
+    # Vô hiệu hoá hoàn toàn việc cào GSO thô để tránh tạo file rác trên disk và tiết kiệm tài nguyên
+    note = "Tính năng phân tích vĩ mô GSO thô tạm thời ngưng hoạt động."
     payload = _build_agent_stub("macro", request_id, ts_iso)
+    empty_stats = {
+        "gso_period": "N/A",
+        "attempts": [],
+        "csv_path": None,
+        "gso_data_dir": GSO_DATA_DIR,
+        "errors": [note],
+    }
     payload.update({
         "notes": note,
-        "raw_data": stats,
+        "raw_data": empty_stats,
         "redis_json": {
             "generated_at": ts_iso,
-            "status": "CSV_SAVED",
-            "period": stats["gso_period"],
-            "csv_path": stats["csv_path"],
-            "attempts": tried_labels,
+            "status": "DISABLED",
+            "gso_data_dir": GSO_DATA_DIR,
+            "attempts": [],
+            "message": note,
         },
     })
     return payload
