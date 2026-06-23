@@ -880,9 +880,6 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             ],
             [
                 InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
-            ],
-            [
-                InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
                 InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
             ]
         ]
@@ -1721,9 +1718,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("📄 Soi hồ sơ", callback_data="menu_info"),
-        ],
-        [
-            InlineKeyboardButton("📊 AI Report", callback_data="menu_report"),
             InlineKeyboardButton("⚙️ Tài khoản", callback_data="menu_setting")
         ],
     ]
@@ -2122,7 +2116,7 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"⏳ *Hết hạn:* {exp_str}")
     else:
         lines.append("👤 *Gói cước:* 🆓 *FREE*")
-        lines.append("_Giới hạn: Theo dõi 1 mã, không có AI Report._")
+        lines.append("_Giới hạn: Theo dõi 1 mã._")
 
     # Morning Digest
     lines.append("\n📰 *Bản tin sáng (Digest)*: TỰ ĐỘNG (07:00)")
@@ -2236,10 +2230,8 @@ async def cmd_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚀 **KÍCH HOẠT THÀNH CÔNG!**\n\n"
             f"Bạn đã nhận được **{TRIAL_DAYS} ngày** trải nghiệm Full tính năng Pro:\n\n"
             f"💎 **Các đặc quyền đã được mở khóa:**\n"
-            f"• 📨 **Auto Report:** Cảnh báo giá Realtime, Báo cáo chốt phiên (15:00) & Tuần (09:00 CN).\n"
-            f"• 📊 **AI Report:** Phân tích sâu sức khỏe danh mục & khuyến nghị hành động.\n"
             f"• 🏢 **Soi Hồ Sơ:** Phân tích mô hình kinh doanh, lợi thế cạnh tranh & rủi ro.\n"
-            f"• 📉 **Phái Sinh:** Nhận tín hiệu cảnh báo VN30F1M realtime.\n"
+            f"• 📉 **Phái Sinh & Thị trường:** Nhận tín hiệu cảnh báo VN30F1M, VNINDEX realtime.\n"
             f"• 🔔 **Không Giới Hạn:** Theo dõi biến động giá cho toàn bộ danh mục (gói Free chỉ được 1 mã).\n\n"
             f"👉 **Hãy bắt đầu trải nghiệm ngay với** /start"
         )
@@ -2430,122 +2422,15 @@ async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @task_locked(manual_release=True)
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    (UX PRO) AI Report với thanh tiến trình (Progress Bar).
+    Thông báo tính năng AI Report đã ngưng hoạt động.
     """
     if not update or not update.effective_chat:
         return
     chat_id = update.effective_chat.id
-    lock_should_persist = False
-
     try:
-        if not BOT_ACTIVE:
-            await reply_md(update, "⚙️ Bot đang bảo trì.")
-            return
-
-        vn_tz = pytz.timezone(TIMEZONE)
-
-        # 1. Xác định trạng thái Pro
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        watch = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
-        symbols = [s.upper() for s in (watch or []) if not s.upper().startswith("VN")]
-        cache_key = make_report_cache_key(symbols) if symbols else "EMPTY"
-        web_app_url = f"{base_url}/report/view/{cache_key}?chat_id={chat_id}"
-
-        # --- NHÁNH 1: FREE USER (GIỮ NGUYÊN) ---
-        if not is_pro:
-            try:
-                await asyncio.to_thread(log_command_usage, chat_id, "/report (Free)", ADMIN_ID)
-            except Exception:
-                pass
-            kb = [[InlineKeyboardButton("📊 Xem Báo Cáo AI", web_app=WebAppInfo(url=web_app_url))],
-                  [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-            await reply_md(
-                update,
-                "📊 **Báo Cáo Danh Mục AI**\n\nAI sẽ phân tích chuyên sâu sức khỏe danh mục.\n👇 Nhấn nút bên dưới để xem chi tiết.",
-                reply_markup=InlineKeyboardMarkup(kb)
-            )
-            return
-
-        # --- NHÁNH 2: PRO USER (CÓ PROGRESS BAR) ---
-        await asyncio.to_thread(log_command_usage, chat_id, "/report", ADMIN_ID)
-        if not symbols:
-            await reply_md(update, "📭 Danh mục trống. Hãy dùng `/add` để thêm mã trước nhé!")
-            return
-
-        # 2. Check Cache (Gateway vẫn check cache được để phản hồi nhanh)
-        cache_key = make_report_cache_key(symbols)
-        cached = await asyncio.to_thread(get_report_from_redis, cache_key)
-
-        if cached and not cached[2]:  # Not error
-            text_json, generated_at, _, _ = cached
-            time_str = "vừa xong"
-            if generated_at:
-                try:
-                    time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m")
-                except Exception:
-                    pass
-            kb = [[InlineKeyboardButton("📊 Xem Báo Cáo Chi Tiết", web_app=WebAppInfo(url=web_app_url))],
-                  [InlineKeyboardButton("❌ Đóng", callback_data="close_msg")]]
-            await reply_md(
-                update,
-                f"✅ Báo cáo danh mục *{', '.join(symbols)}* đã sẵn sàng (bản lưu lúc {time_str}).",
-                reply_markup=InlineKeyboardMarkup(kb)
-            )
-            return
-
-        # B. Cache Miss -> CHẠY TIẾN TRÌNH
-
-        progress_msg = await reply_md(
-            update,
-            f"⏳ **Khởi động AI Analyst...**\n"
-            f"`[{make_progress_bar(10)}] 10%`"
-        )
-
-        try:
-            await asyncio.sleep(0.5)
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"📥 **Đang tải dữ liệu thị trường...**\n`[{make_progress_bar(35)}] 35%`",
-                parse_mode="Markdown"
-            )
-
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"⏳ **Đang gửi yêu cầu cho AI...**\n`[{make_progress_bar(60)}] 60%`",
-                parse_mode="Markdown"
-            )
-
-            sent_msg = await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=progress_msg.message_id,
-                text=f"✅ **Bot sẽ gửi báo cáo ngay khi xong (khoảng 30s)...**\n`[{make_progress_bar(70)}] 70%`",
-                parse_mode="Markdown"
-            )
-            await asyncio.sleep(0.5)
-
-            payload = {
-                "cmd": "GEN_REPORT",
-                "chat_id": chat_id,
-                "symbols": symbols,
-                "loading_msg_id": sent_msg.message_id
-            }
-            await asyncio.to_thread(push_to_worker, payload)
-            lock_should_persist = True
-
-        except Exception as e:
-            log.error(f"Lỗi /report: {e}")
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=progress_msg.message_id,
-                    text=f"⚠️ **Lỗi xử lý:** Hệ thống đang bận.\nVui lòng thử lại sau.",
-                    parse_mode="Markdown"
-                )
-            except Exception:
-                pass
+        await reply_md(update, "⚠️ **Thông báo:** Tính năng Báo cáo danh mục AI đã tạm thời ngưng hoạt động để tối ưu hóa hệ thống.")
+    except Exception as e:
+        log.error(f"Lỗi cmd_report: {e}")
 
     finally:
         if not lock_should_persist:
