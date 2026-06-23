@@ -5192,46 +5192,38 @@ def call_chatgpt_for_report(
         return json.dumps(data or {}, ensure_ascii=False, indent=2, default=_fallback)
 
     def _read_macro_csv(agent_payload: dict | None) -> str:
-        macro_data = (agent_payload or {}).get("macro") or {}
-        raw_meta = macro_data.get("raw_data") or {}
-        csv_path = raw_meta.get("csv_path") or ((macro_data.get("redis_json") or {}).get("csv_path"))
+        # Loại bỏ hoàn toàn việc đọc file CSV vĩ mô thô (nặng ~300k token)
+        return "Bối cảnh vĩ mô: Không khả dụng (Dữ liệu GSO thô đã được loại bỏ để tối ưu hiệu suất)."
 
-        meta_text = _format_agent_block(raw_meta)
-        if not csv_path:
-            return (
-                "Thông tin GSO:\n" + meta_text +
-                "\n\nDữ liệu CSV: Không tìm thấy đường dẫn csv_path trong macro agent."
-            )
+    # Lọc biz_data: Loại bỏ datasets chi tiết 20 kỳ (raw debug) để tiết kiệm token
+    biz_data = (agent_payload or {}).get("biz") or {}
+    biz_clean = {}
+    if isinstance(biz_data, dict):
+        biz_clean = {k: v for k, v in biz_data.items() if k != "raw_data"}
+        if "raw_data" in biz_data and isinstance(biz_data["raw_data"], dict):
+            raw_clean = {k: v for k, v in biz_data["raw_data"].items() if k != "datasets"}
+            biz_clean["raw_data"] = raw_clean
 
-        if not os.path.exists(csv_path):
-            return (
-                "Thông tin GSO:\n" + meta_text +
-                f"\n\nDữ liệu CSV: File không tồn tại tại đường dẫn {csv_path}."
-            )
-
-        try:
-            with open(csv_path, "r", encoding="utf-8") as f:
-                csv_text = f.read()
-        except Exception as exc:
-            return (
-                "Thông tin GSO:\n" + meta_text +
-                f"\n\nDữ liệu CSV: Lỗi đọc file ({exc})."
-            )
-
-        if not csv_text.strip():
-            return (
-                "Thông tin GSO:\n" + meta_text +
-                "\n\nDữ liệu CSV: File trống hoặc không có nội dung."
-            )
-
-        return (
-            "Thông tin GSO:\n" + meta_text +
-            f"\n\nDữ liệu CSV (tất cả sheet) từ {csv_path}:\n" + csv_text
-        )
+    # Lọc tech_data: Chỉ giữ lại 5 phiên giao dịch gần nhất thay vì 200 phiên thô để tiết kiệm token
+    tech_data = (agent_payload or {}).get("tech") or {}
+    tech_clean = {}
+    if isinstance(tech_data, dict):
+        tech_clean = {k: v for k, v in tech_data.items() if k != "raw_data"}
+        if "raw_data" in tech_data and isinstance(tech_data["raw_data"], dict):
+            raw_clean = {k: v for k, v in tech_data["raw_data"].items() if k != "entries"}
+            if "entries" in tech_data["raw_data"] and isinstance(tech_data["raw_data"]["entries"], dict):
+                entries_clean = {}
+                for sym, records in tech_data["raw_data"]["entries"].items():
+                    if isinstance(records, list):
+                        entries_clean[sym] = records[-5:] # Giữ 5 phiên gần nhất
+                    else:
+                        entries_clean[sym] = records
+                raw_clean["entries"] = entries_clean
+            tech_clean["raw_data"] = raw_clean
 
     macro_block = _read_macro_csv(agent_payload)
-    biz_block = _format_agent_block((agent_payload or {}).get("biz"))
-    tech_block = _format_agent_block((agent_payload or {}).get("tech"))
+    biz_block = _format_agent_block(biz_clean)
+    tech_block = _format_agent_block(tech_clean)
 
     def _format_personalization_block() -> str:
         notes_map = personalization_notes or {}
