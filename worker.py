@@ -2880,7 +2880,7 @@ async def fetch_data_smart(symbols: list):
     try:
         # 1. LẤY GIÁ QUA PRICE BOARD (Nhanh, phù hợp cho cổ phiếu)
         def _run_vci_board():
-            t = Trading(symbol='VNINDEX', source='KBS')
+            t = Trading(symbol='VNINDEX', source='VCI')
             return t.price_board(symbols)
         
         df_board = await asyncio.wait_for(asyncio.to_thread(_run_vci_board), timeout=15.0)
