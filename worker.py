@@ -10,8 +10,6 @@ import shutil
 from vnstock import Trading, Quote, Finance, Company, Vnstock
 import redis
 from dotenv import load_dotenv
-from google import genai
-from google.genai.types import Part, Content, FunctionResponse
 from agent_tools import TOOL_MAPPING, AGENT_TOOLS_SCHEMA
 from ai_knowledge import get_dynamic_system_prompt
 import uuid
@@ -19,6 +17,95 @@ import time
 import pandas as pd
 import numpy as np
 import inspect
+
+def serialize_gemini_contents_to_openai(contents):
+    if isinstance(contents, str):
+        return [{"role": "user", "content": contents}]
+    
+    if not isinstance(contents, list):
+        return []
+        
+    messages = []
+    for item in contents:
+        # If it's already a dict (OpenAI format)
+        if isinstance(item, dict):
+            messages.append(item)
+            continue
+            
+        # If it's a Content object
+        role = getattr(item, 'role', 'user')
+        if role == 'model':
+            role = 'assistant'
+            
+        parts = getattr(item, 'parts', [])
+        content_text = ""
+        tool_calls = []
+        
+        # If there's a function_response part, map it to tool role message
+        is_tool_response = False
+        tool_response_text = ""
+        tool_call_id = ""
+        
+        for part in parts:
+            if getattr(part, 'text', None):
+                content_text += part.text
+            if getattr(part, 'function_call', None) and part.function_call:
+                fc = part.function_call
+                # Convert args dict to JSON string for OpenAI format
+                import json
+                try:
+                    args_str = json.dumps(fc.args) if isinstance(fc.args, dict) else str(fc.args)
+                except:
+                    args_str = "{}"
+                tool_calls.append({
+                    "id": getattr(fc, 'id', 'call_dummy'),
+                    "type": "function",
+                    "function": {
+                        "name": fc.name,
+                        "arguments": args_str
+                    }
+                })
+            if getattr(part, 'function_response', None) and part.function_response:
+                is_tool_response = True
+                fr = part.function_response
+                import json
+                tool_response_text = json.dumps(fr.response) if isinstance(fr.response, dict) else str(fr.response)
+                # Extract call id if we tracked it, otherwise dummy
+                tool_call_id = getattr(fr, 'id', 'call_dummy')
+                
+        if is_tool_response:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": tool_response_text
+            })
+        else:
+            msg = {"role": role}
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            if content_text or not tool_calls:
+                msg["content"] = content_text
+            messages.append(msg)
+            
+    return messages
+
+
+class Part:
+    def __init__(self, text="", function_call=None, function_response=None):
+        self.text = text
+        self.function_call = function_call
+        self.function_response = function_response
+
+class Content:
+    def __init__(self, role="user", parts=None):
+        self.role = role
+        self.parts = parts or []
+
+class FunctionResponse:
+    def __init__(self, name, response):
+        self.name = name
+        self.response = response
+
 
 # pandas-ta (custom build) still expects numpy.NaN to exist; numpy>=2 drops it.
 # Create the alias before importing pandas_ta so the package can import cleanly.
@@ -442,31 +529,21 @@ try:
 except:
     stock_trading = None
 
-# --- CẤU HÌNH GEMINI (Worker) ---
-GEMINI_KEYS = []
-_gemini_keys_map = {}
+# --- CẤU HÌNH ROUTER9 (OPENAI COMPATIBLE) ---
+ROUTER9_API_KEY = os.getenv("ROUTER9_API_KEY")
 
-# 1. Lấy key chính (GEMINI_API_KEY)
-if os.getenv("GEMINI_API_KEY"):
-    _gemini_keys_map[1] = os.getenv("GEMINI_API_KEY")
+from openai import OpenAI, AsyncOpenAI
 
-# 2. Quét toàn bộ biến môi trường để tìm GEMINI_API_KEY_n
-for key, value in os.environ.items():
-    if key.startswith("GEMINI_API_KEY_") and value:
-        try:
-            # Lấy số thứ tự từ tên biến (ví dụ: GEMINI_API_KEY_2 -> 2)
-            suffix = key.replace("GEMINI_API_KEY_", "")
-            if suffix.isdigit():
-                _gemini_keys_map[int(suffix)] = value
-        except ValueError:
-            continue
+api_key_safe = ROUTER9_API_KEY or "dummy-key-to-pass-validation"
 
-# 3. Sắp xếp theo thứ tự index và đưa vào danh sách
-for idx in sorted(_gemini_keys_map.keys()):
-    GEMINI_KEYS.append(_gemini_keys_map[idx])
-
-GEMINI_KEYS = [k for k in GEMINI_KEYS if k] # Lọc key rỗng
-_gemini_key_index = 0 # Biến đếm toàn cục để xoay vòng
+openai_client = OpenAI(
+    api_key=api_key_safe,
+    base_url="https://khoitran1999-claude-server.hf.space/v1"
+)
+openai_async_client = AsyncOpenAI(
+    api_key=api_key_safe,
+    base_url="https://khoitran1999-claude-server.hf.space/v1"
+)
 
 def prepare_personalization_keys(symbols: list[str]) -> list[str]:
     """
@@ -603,67 +680,72 @@ async def job_monthly_cskh_report():
         push_telegram_msg(ADMIN_ID, f"⚠️ Lỗi tạo báo cáo tháng {period_label}: {e}", msg_type="SYSTEM_MSG")
 
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
-    """
-    Hàm gọi Gemini an toàn (Failover) + Retry 429.
-    Tự động xoay vòng Key và chờ nếu tất cả đều bận.
-    """
-    global _gemini_key_index
+    import json
     last_error = None
+    MAX_RETRIES = 3
+    BASE_SLEEP_SEC = 5
     
-    # CẤU HÌNH RETRY
-    MAX_RETRIES_GLOBAL = 3  # Số vòng thử lại tối đa nếu toàn bộ Key đều lỗi
-    BASE_SLEEP_SEC = 5      # Thời gian chờ cơ bản (giây)
+    messages = []
+    if config and "system_instruction" in config:
+        messages.append({"role": "system", "content": config["system_instruction"]})
+        
+    if isinstance(contents, str):
+        messages.append({"role": "user", "content": contents})
+    elif isinstance(contents, list):
+        messages.extend(contents)
+        
+    kwargs = {
+        "model": model_id,
+        "messages": messages,
+    }
     
-    for attempt in range(MAX_RETRIES_GLOBAL):
-        # Lấy danh sách key đã xoay vòng để ưu tiên key mới
-        rotated_keys = _get_rotated_gemini_keys()
-        
-        # Thử từng key trong danh sách
-        for api_key in rotated_keys:
-            # --- [THÊM ĐOẠN NÀY ĐỂ TRACK KEY] ---
-            key_suffix = api_key[-5:] if api_key else "NONE"
-            log.info(f"[{INSTANCE_ID}] 🔑 Đang thử gọi AI với Key đuôi: ...{key_suffix}")
-            # ------------------------------------
-            try:
-                client = genai.Client(api_key=api_key)
-                resp = client.models.generate_content(
-                    model=model_id, contents=contents, config=config
-                )
-                
-                # Lấy kết quả thành công
-                text = getattr(resp, "text", "").strip()
+    if config:
+        if "temperature" in config:
+            kwargs["temperature"] = config["temperature"]
+            
+        if "response_schema" in config:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response_schema",
+                    "schema": config["response_schema"],
+                    "strict": True
+                }
+            }
+        elif config.get("response_mime_type") == "application/json":
+            kwargs["response_format"] = {"type": "json_object"}
+            
+        if "tools" in config:
+            openai_tools = []
+            for tool in config["tools"][0]["function_declarations"]:
+                openai_tools.append({
+                    "type": "function",
+                    "function": tool
+                })
+            kwargs["tools"] = openai_tools
 
-                log.info(f"[{INSTANCE_ID}] ✅ Gọi AI thành công với Key ...{key_suffix}")
-                
-                if return_usage:
-                    usage = getattr(resp, "usage_metadata", None)
-                    return text, usage
-                    
-                return text
-
-            except Exception as e:
-                err_str = str(e)
-                key_suffix = api_key[-5:] if api_key else "N/A"
-                
-                # Xử lý riêng lỗi 429 (Rate Limit / Quota)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} bị 429 (Hết quota). Đang đổi key...")
-                    last_error = e
-                    continue # Chuyển ngay sang key tiếp theo
-                
-                # Các lỗi khác (400, 403, 500...)
-                log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} lỗi: {e}")
-                last_error = e
-                continue
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = openai_client.chat.completions.create(**kwargs)
+            text_result = resp.choices[0].message.content
+            if text_result is None: text_result = ""
+            if return_usage:
+                return text_result, resp.usage
+            return text_result
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                log.warning(f"[{INSTANCE_ID}] Router9 429. Thử lại...")
+            else:
+                log.warning(f"[{INSTANCE_ID}] Router9 lỗi: {e}")
+            last_error = e
         
-        # Nếu chạy hết vòng for (tất cả key đều lỗi) -> Nghỉ một chút rồi thử lại (Backoff)
-        if attempt < MAX_RETRIES_GLOBAL - 1:
-            sleep_time = BASE_SLEEP_SEC * (attempt + 1) # Tăng dần: 5s, 10s...
-            log.warning(f"[{INSTANCE_ID}] ⏳ Tất cả Keys đều bận. Nghỉ {sleep_time}s rồi thử lại (Vòng {attempt+1}/{MAX_RETRIES_GLOBAL})...")
+        if attempt < MAX_RETRIES - 1:
+            import time
+            sleep_time = BASE_SLEEP_SEC * (attempt + 1)
             time.sleep(sleep_time)
-    
-    # Nếu đã thử hết cách mà vẫn lỗi
-    log.error(f"❌ GỌI GEMINI THẤT BẠI TOÀN TẬP. Lỗi cuối: {last_error}")
+            
+    log.error(f"GỌI ROUTER9 THẤT BẠI. Lỗi: {last_error}")
     return (None, None) if return_usage else None
 
 # --- CÁC HÀM HELPER ---
@@ -824,9 +906,79 @@ def clean_data_robust(data):
         # Fallback nếu quá lỗi thì trả về string
         return str(data)
 
-# Định nghĩa Model ID (Bạn có thể thay đổi tên model thực tế tại đây)
-MODEL_BRAIN = "gemini-2.5-flash"      # Dùng cho bước đầu và cuối (2.5-pro nếu đã có access)
-MODEL_WORKER = "gemini-2.5-flash-lite" # Dùng cho các bước tool (2.0-flash-lite nếu đã có access)
+# Định nghĩa Model ID lấy từ biến môi trường (hoặc dùng mặc định nếu không có)
+MODEL_BRAIN = os.getenv("AI_MODEL_BRAIN", "gemini-3.1-pro")
+MODEL_WORKER = os.getenv("AI_MODEL_WORKER", "ag/gemini-3.5-flash-low")
+
+
+class GeminiPart:
+    def __init__(self, text="", function_call=None):
+        self.text = text
+        self.function_call = function_call
+
+class GeminiContent:
+    def __init__(self, role="assistant", parts=None):
+        self.role = role
+        self.parts = parts or []
+
+class GeminiCandidate:
+    def __init__(self, content):
+        self.content = content
+
+class GeminiResponseAdapter:
+    def __init__(self, openai_resp):
+        self._resp = openai_resp
+        self.usage_metadata = self._get_usage(openai_resp)
+        self.candidates = self._get_candidates(openai_resp)
+
+    @property
+    def choices(self):
+        return getattr(self._resp, 'choices', [])
+
+    @property
+    def usage(self):
+        return getattr(self._resp, 'usage', None)
+
+    def _get_usage(self, r):
+        class Usage:
+            def __init__(self, u):
+                self.prompt_token_count = getattr(u, 'prompt_tokens', 0) if u else 0
+                self.candidates_token_count = getattr(u, 'completion_tokens', 0) if u else 0
+        return Usage(getattr(r, 'usage', None))
+
+    def _get_candidates(self, r):
+        if not getattr(r, 'choices', None): return []
+        choice = r.choices[0]
+        parts = []
+        
+        # Text content
+        if getattr(choice.message, 'content', None):
+            parts.append(GeminiPart(text=choice.message.content))
+            
+        # Tool calls
+        if getattr(choice.message, 'tool_calls', None):
+            for tc in choice.message.tool_calls:
+                import json
+                try:
+                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                except:
+                    args = {}
+                
+                class GeminiFunctionCall:
+                    def __init__(self, name, arguments, id):
+                        self.name = name
+                        self.args = arguments
+                        self.id = id
+                        
+                        class MockFunction:
+                            def __init__(self, n, a):
+                                self.name = n
+                                self.arguments = a
+                        self.function = MockFunction(name, arguments)
+                        
+                parts.append(GeminiPart(function_call=GeminiFunctionCall(tc.function.name, args, tc.id)))
+                
+        return [GeminiCandidate(GeminiContent(role="assistant", parts=parts))]
 
 async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     """
@@ -841,11 +993,10 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
     stats = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
 
     def update_stats(response):
-        # Sử dụng getattr và or 0 để an toàn khi giá trị là None
-        if response and getattr(response, "usage_metadata", None):
+        if response and hasattr(response, "usage") and response.usage:
             stats["requests"] += 1
-            stats["input_tokens"] += (response.usage_metadata.prompt_token_count or 0)
-            stats["output_tokens"] += (response.usage_metadata.candidates_token_count or 0)
+            stats["input_tokens"] += getattr(response.usage, "prompt_tokens", 0)
+            stats["output_tokens"] += getattr(response.usage, "completion_tokens", 0)
 
     # Hàm helper để tạo footer thống kê (Chỉ Admin mới thấy)
     def get_admin_stats_footer():
@@ -858,56 +1009,58 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
 
     # --- HELPER: GỌI GEMINI AN TOÀN (RETRY & ROTATE KEY & LOGGING) ---
     async def safe_generate_content(model_id, contents, config=None):
+        import json
         last_error = None
-        MAX_RETRIES = 5  # Số vòng thử lại tối đa nếu toàn bộ Key đều lỗi
+        MAX_RETRIES = 3
         
-        for attempt in range(MAX_RETRIES):
-            # Lấy danh sách key xoay vòng
-            rotated_keys = _get_rotated_gemini_keys() # Hàm có sẵn trong worker.py
+        messages = []
+        if config and "system_instruction" in config:
+            messages.append({"role": "system", "content": config["system_instruction"]})
             
-            for api_key in rotated_keys:
-                # --- [LOGGING] Mới thêm vào ---
-                key_suffix = api_key[-5:] if api_key else "NONE"
-                log.info(f"[{INSTANCE_ID}] 🔑 Agent đang thử Model: {model_id} | Key ...{key_suffix}")
-                # -----------------------------
+        messages.extend(serialize_gemini_contents_to_openai(contents))
+            
+        kwargs = {
+            "model": model_id,
+            "messages": messages,
+        }
+        
+        if config:
+            if "temperature" in config:
+                kwargs["temperature"] = config["temperature"]
                 
-                try:
-                    # Tạo client mới cho mỗi key
-                    client = genai.Client(api_key=api_key)
-                    
-                    # Gọi API (chạy trong thread để không block)
-                    response = await asyncio.to_thread(
-                        client.models.generate_content,
-                        model=model_id,
-                        contents=contents,
-                        config=config
-                    )
-                    
-                    # --- [LOGGING] Thành công ---
-                    log.info(f"[{INSTANCE_ID}] ✅ Agent gọi thành công với Key ...{key_suffix}")
-                    # ----------------------------
-                    
-                    return response
+            if "response_schema" in config:
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response_schema",
+                        "schema": config["response_schema"],
+                        "strict": True
+                    }
+                }
+            elif config.get("response_mime_type") == "application/json":
+                kwargs["response_format"] = {"type": "json_object"}
+                
+            if "tools" in config:
+                openai_tools = []
+                for tool in config["tools"][0]["function_declarations"]:
+                    openai_tools.append({
+                        "type": "function",
+                        "function": tool
+                    })
+                kwargs["tools"] = openai_tools
 
-                except Exception as e:
-                    err_str = str(e)
-                    # Xử lý lỗi 429 hoặc Hết tài nguyên
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} bị 429. Đổi key...")
-                        last_error = e
-                        continue # Thử key tiếp theo ngay lập tức
-                    else:
-                        log.warning(f"[{INSTANCE_ID}] ⚠️ Key ...{key_suffix} lỗi khác: {e}")
-                        last_error = e
-                        continue
-            
-            # Nếu hết danh sách key mà vẫn lỗi -> Chờ rồi thử lại vòng sau
-            if attempt < MAX_RETRIES - 1:
-                wait_time = 30 * (attempt + 1)
-                log.warning(f"[{INSTANCE_ID}] ⏳ Agent: Tất cả keys bận. Chờ {wait_time}s...")
-                await asyncio.sleep(wait_time)
-
-        raise last_error or RuntimeError("All Gemini keys failed in Agent.")
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = await openai_async_client.chat.completions.create(**kwargs)
+                return GeminiResponseAdapter(response)
+            except Exception as e:
+                last_error = e
+                log.warning(f"[{INSTANCE_ID}] Router9 Error (Attempt {attempt+1}/{MAX_RETRIES}): {e}")
+                import asyncio
+                await asyncio.sleep(2)
+                
+        log.error(f"[{INSTANCE_ID}] Router9 Max Retries Reached.")
+        return None
 
     # ==========================================================================
     # GIAI ĐOẠN 1: MANAGER LẬP KẾ HOẠCH (BRAIN - PRO)
@@ -1066,43 +1219,38 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
                 break
                 
             # Log cho user biết đang gọi tool gì (UX)
-            tool_names = ", ".join([fc.name.replace("get_", "").replace("_", " ").title() for fc in current_calls])
+            tool_names = ", ".join([fc.function.name.replace("get_", "").replace("_", " ").title() for fc in current_calls])
             push_telegram_msg(chat_id, f"🛠 **Người Canh Bảng 🧑‍💻:** Đang tra cứu {tool_names}...", edit_id=loading_msg_id)
             
             # 2.2 Thực thi Tool
-            response_parts = []
             for fc in current_calls:
-                tool_name = fc.name
-                tool_args = fc.args
+                tool_name = fc.function.name
+                tool_args = fc.function.arguments
                 
                 tool_result = "Error: Tool not found"
                 if tool_name in TOOL_MAPPING: 
                     try:
-                        args_dict = {k: v for k, v in tool_args.items()}
+                        import json
+                        args_dict = json.loads(tool_args) if isinstance(tool_args, str) else {k: v for k, v in tool_args.items()}
                         func = TOOL_MAPPING[tool_name]
                         
-                        # [FIX 3] Kiểm tra tool là Async hay Sync để gọi đúng cách
                         if inspect.iscoroutinefunction(func):
                             raw_result = await func(**args_dict)
                         else:
                             raw_result = func(**args_dict)
                         
-                        # Làm sạch dữ liệu
                         tool_result = clean_data_robust(raw_result)
         
                     except Exception as e:
                         log.error(f"[{INSTANCE_ID}] ❌ Lỗi khi xử lý Tool {tool_name}: {e}")
                         tool_result = f"Tool Error: {str(e)}"
                 
-                response_parts.append(
-                    Part(function_response=FunctionResponse(
-                        name=tool_name,
-                        response={"result": tool_result} 
-                    ))
-                )
-            
-            # Đưa kết quả Tool (Raw JSON) vào lịch sử của Worker
-            worker_history.append(Content(role="user", parts=response_parts))
+                import json
+                worker_history.append({
+                    "role": "tool",
+                    "tool_call_id": fc.id,
+                    "content": json.dumps({"result": tool_result}, ensure_ascii=False)
+                })
             
         except Exception as e:
             log.error(f"Worker Loop Error ({i}): {e}")
@@ -1141,7 +1289,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         )
         update_stats(resp_syn)
         
-        refined_data = resp_syn.candidates[0].content.parts[0].text
+        refined_data = resp_syn.choices[0].message.content
 
     except Exception as e:
         log.error(f"Synthesis Error: {e}")
@@ -1183,7 +1331,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             push_telegram_msg(chat_id, "⚠️ AI không thể tổng hợp câu trả lời cuối cùng. Vui lòng thử lại.", edit_id=loading_msg_id)
             return
 
-        final_answer = resp_final.candidates[0].content.parts[0].text
+        final_answer = resp_final.choices[0].message.content
         
         # Gửi kết quả cuối cùng
         kb = default_ai_reply_markup()
