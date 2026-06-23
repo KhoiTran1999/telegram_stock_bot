@@ -235,22 +235,35 @@ def _extract_direct_pe_pb(df: pd.DataFrame) -> tuple[float | None, float | None]
 
 def _extract_board_value(row: pd.Series, keys: Iterable[tuple | str]) -> float | None:
 	for key in keys:
-		if key not in row.index:
-			continue
-		value = row[key]
-		if pd.isna(value):
-			continue
-		try:
-			return float(value)
-		except (TypeError, ValueError):
-			continue
+		if key in row.index:
+			value = row[key]
+			if pd.notna(value):
+				try:
+					return float(value)
+				except (TypeError, ValueError):
+					pass
+		if isinstance(key, str):
+			for idx in row.index:
+				if isinstance(idx, tuple) and len(idx) > 1 and idx[-1] == key:
+					value = row[idx]
+					if pd.notna(value):
+						try:
+							return float(value)
+						except (TypeError, ValueError):
+							pass
 	return None
 
 
 def _fetch_price(symbol: str) -> float:
-	board = Trading(symbol=symbol, source=TRADING_SOURCE).price_board([symbol])
-	if board is None or board.empty:
-		raise RuntimeError("price_board returned empty data")
+	try:
+		board = Trading(symbol=symbol, source=TRADING_SOURCE).price_board([symbol])
+		if board is None or board.empty:
+			raise RuntimeError("price_board returned empty data")
+	except Exception as exc:
+		log.warning("Primary price_board fetch failed for %s, falling back to KBS: %s", symbol, exc)
+		board = Trading(symbol=symbol, source="KBS").price_board([symbol])
+		if board is None or board.empty:
+			raise RuntimeError("price_board returned empty data on fallback")
 	row = board.iloc[0]
 	price = _extract_board_value(
 		row,
@@ -276,16 +289,11 @@ def _fetch_price(symbol: str) -> float:
 
 
 def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
+	df = None
+	# Try KBS first since it contains the needed EPS and BVPS TTM fields natively
 	try:
-		finance = Finance(symbol=symbol, source="VCI")
+		finance = Finance(symbol=symbol, source="KBS")
 		df = finance.ratio(period="quarter", lang="vi")
-	except Exception:
-		# Fallback to TCBS source if VCI fails (like KeyError 'data')
-		finance = Finance(symbol=symbol, source="TCBS")
-		df = finance.ratio(period="quarter", lang="vi")
-
-		# KBS returns transposed data compared to VCI
-		# We need to map it back to the expected format
 		if df is not None and not df.empty and 'item' in df.columns:
 			# Get all period columns (e.g., '2026-Q1', '2025-Q4')
 			period_cols = [c for c in df.columns if c not in ('item', 'item_id')]
@@ -301,11 +309,13 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 
 					row_data = {
 						'year': year,
-						'quarter': quarter
+						'quarter': quarter,
+						'is_ttm': True
 					}
 
 					# Map values from the KBS rows to columns
 					for idx, row in df.iterrows():
+						item_id = str(row.get('item_id', '')).lower()
 						item_name = str(row['item']).lower()
 						val = row[col]
 
@@ -321,10 +331,10 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 						# For KBS, we only have these strings:
 						# "Thu nhập trên mỗi cổ phần của 4 quý gần nhất (EPS)"
 						# "Giá trị sổ sách của cổ phiếu (BVPS)"
-						if 'eps' in item_name or 'thu nhập trên mỗi cổ phần' in item_name:
+						if item_id == 'trailing_eps' or (('eps' in item_name or 'thu nhập trên mỗi cổ phần' in item_name) and 'p/e' not in item_name and 'p\\e' not in item_name):
 							row_data['eps'] = val
 							row_data['eps_vnd'] = val
-						elif 'bvps' in item_name or 'giá trị sổ sách' in item_name:
+						elif item_id == 'book_value_per_share_bvps' or (('bvps' in item_name or 'giá trị sổ sách' in item_name) and 'p/b' not in item_name and 'p\\b' not in item_name and 'chỉ số' not in item_name):
 							row_data['bvps'] = val
 							row_data['bvps_vnd'] = val
 
@@ -338,6 +348,17 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 			if not df.empty and 'year' in df.columns:
 				df['year'] = df['year'].astype(int)
 				df['quarter'] = df['quarter'].astype(int)
+	except Exception as exc:
+		log.warning("KBS ratio fetch failed for %s, falling back to VCI: %s", symbol, exc)
+		df = None
+
+	if df is None or df.empty:
+		try:
+			finance = Finance(symbol=symbol, source="VCI")
+			df = finance.ratio(period="quarter", lang="vi")
+		except Exception as vci_exc:
+			log.warning("VCI ratio fetch failed for %s: %s", symbol, vci_exc)
+			df = None
 
 	if df is None or df.empty:
 		raise RuntimeError("Finance ratio API returned empty data")
@@ -404,7 +425,10 @@ def fetch_manual_pe_pb(
 
 	try:
 		ratio_df = ratio_df if ratio_df is not None else _fetch_ratio_quarter(sym)
-		eps = _trailing_sum(ratio_df, ("eps", "eps_vnd"))
+		if 'is_ttm' in ratio_df.columns and ratio_df['is_ttm'].any():
+			eps = _pick_latest_value(ratio_df, ("eps", "eps_vnd"))
+		else:
+			eps = _trailing_sum(ratio_df, ("eps", "eps_vnd"))
 		bvps = _pick_latest_value(ratio_df, ("bvps", "bvps_vnd", "book_value_ps"))
 	except Exception as exc:
 		log.warning("Manual valuation ratio fetch failed for %s: %s", sym, exc)

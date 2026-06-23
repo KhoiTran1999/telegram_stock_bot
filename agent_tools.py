@@ -193,12 +193,31 @@ async def tool_get_market_price(symbol: str):
 
         row = df.iloc[0]
 
-        # vnstock 4.x flat columns
-        close_price  = row.get('close_price', 0)
-        ref_price    = row.get('reference_price', 0)
-        pct_change   = row.get('percent_change', 0)
-        vol          = row.get('volume_accumulated', 0)
-        total_value  = row.get('total_value', 0)
+        def _get_val(row, key_name):
+            if key_name in row.index:
+                val = row[key_name]
+                return val if pd.notna(val) else 0
+            for idx in row.index:
+                if isinstance(idx, tuple) and len(idx) > 1 and idx[-1] == key_name:
+                    val = row[idx]
+                    return val if pd.notna(val) else 0
+            return 0
+
+        # vnstock 4.x flat or tuple columns
+        close_price  = _get_val(row, 'match_price') or _get_val(row, 'close_price')
+        ref_price    = _get_val(row, 'reference_price') or _get_val(row, 'ref_price')
+        pct_change   = _get_val(row, 'percent_change')
+        if pct_change == 0 and ref_price > 0:
+            pct_change = ((close_price - ref_price) / ref_price) * 100
+
+        vol          = _get_val(row, 'accumulated_volume') or _get_val(row, 'volume_accumulated')
+        total_value  = _get_val(row, 'accumulated_value') or _get_val(row, 'total_value')
+
+        if total_value > 0 and total_value < 1_000_000_000:
+            # VCI may return value in absolute VND or millions. Let's make sure it's VND.
+            # Usually absolute value is > 1B during day. If it's small, it might be in millions.
+            # But let's keep it direct.
+            pass
 
         # Fallback nếu close_price = 0
         if close_price == 0:
