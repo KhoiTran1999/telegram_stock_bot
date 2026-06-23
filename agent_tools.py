@@ -184,7 +184,7 @@ async def tool_get_market_price(symbol: str):
     symbol = symbol.upper()
     try:
         # vnstock 4.x: Trading(source="KBS") → flat columns (không còn tuple)
-        trading = Trading(symbol=symbol, source="KBS")
+        trading = Trading(symbol=symbol, source="VCI")
         df = await asyncio.to_thread(trading.price_board, symbols_list=[symbol])
 
         if df is None or df.empty:
@@ -304,7 +304,7 @@ async def tool_get_technical_indicators(symbol: str):
     symbol = symbol.upper().strip()
     try:
         # vnstock 4.x: Quote(symbol, source='KBS').history(length='1Y', interval='1D')
-        quote = Quote(symbol=symbol, source='KBS')
+        quote = Quote(symbol=symbol, source='VCI')
         df = await asyncio.to_thread(
             quote.history,
             length='1Y',
@@ -391,7 +391,7 @@ async def tool_get_market_index(index_name: Literal['VNINDEX', 'VN30'] = 'VNINDE
     index_name = index_name.upper()
     try:
         # vnstock 4.x: Quote(symbol, source='KBS') cho index
-        quote = Quote(symbol=index_name, source='KBS')
+        quote = Quote(symbol=index_name, source='VCI')
         df = await asyncio.to_thread(quote.history, length='5D', interval='1D')
 
         if df is None or df.empty:

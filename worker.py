@@ -525,7 +525,7 @@ def ensure_redis_client() -> redis.Redis | None:
 
 # Khởi tạo Trading object (VCI)
 try:
-    stock_trading = Trading(symbol='VNINDEX', source='KBS')
+    stock_trading = Trading(symbol='VNINDEX', source='VCI')
 except:
     stock_trading = None
 
@@ -1508,7 +1508,7 @@ def _tech_agent_fetch_history(
     end_date: str,
 ) -> pd.DataFrame | None:
     try:
-        stock = Quote(symbol=symbol, source='KBS')
+        stock = Quote(symbol=symbol, source='VCI')
     except BaseException as exc:
         if _is_vci_rate_limit_error(exc):
             raise VCIRateLimitError(f"VCI rate limit khi khởi tạo stock {symbol}") from exc

@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 CACHE_KEY_PREFIX = "manual_valuation:"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 1 day as agreed with user
 FINANCE_SOURCE = "VCI"
-TRADING_SOURCE = "KBS"
+TRADING_SOURCE = "VCI"
 
 
 @dataclass
@@ -280,8 +280,8 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 		finance = Finance(symbol=symbol, source="VCI")
 		df = finance.ratio(period="quarter", lang="vi")
 	except Exception:
-		# Fallback to KBS source if VCI fails (like KeyError 'data')
-		finance = Finance(symbol=symbol, source="KBS")
+		# Fallback to TCBS source if VCI fails (like KeyError 'data')
+		finance = Finance(symbol=symbol, source="TCBS")
 		df = finance.ratio(period="quarter", lang="vi")
 
 		# KBS returns transposed data compared to VCI

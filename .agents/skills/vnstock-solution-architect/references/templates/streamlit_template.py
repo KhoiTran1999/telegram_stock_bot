@@ -62,7 +62,7 @@ def load_data(symbol, days):
         else:
             # Fallback for old version or free library
             from vnstock import Quote
-            quote = Quote(symbol=symbol, source='kbs')
+            quote = Quote(symbol=symbol, source='vci')
             return quote.history(start=s_str, end=e_str)
     except Exception as e:
         st.error(f"Error loading data: {e}")
