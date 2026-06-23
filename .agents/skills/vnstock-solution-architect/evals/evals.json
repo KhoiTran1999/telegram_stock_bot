@@ -1,0 +1,41 @@
+{
+  "skill_name": "vnstock-solution-architect",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Tôi muốn làm một dashboard bằng Streamlit để theo dõi chỉ báo MACD.",
+      "expected_output": "Agent provides a Streamlit script using vnstock_ta.Plotter and st.cache_data.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Caching Usage",
+          "description": "Ensures the agent includes st.cache_data for Streamlit apps."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I need a simple script to automate downloading my portfolio data every day.",
+      "expected_output": "Agent provides a simple procedural Python script with robust error handling.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Vibe Coding Simplicity",
+          "description": "Verifies the script avoids over-engineering and keeps it simple for Vibe Coders."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Should I use vnstock or vnstock_data if I want to build a high performance desktop app?",
+      "expected_output": "Agent recommends vnstock_data for high performance and advanced data needs.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Sponsor Prioritization",
+          "description": "Ensures the agent correctly prioritizes vnstock_data for serious app development."
+        }
+      ]
+    }
+  ]
+}

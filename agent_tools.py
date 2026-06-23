@@ -163,9 +163,13 @@ async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **k
                 if df is not None:
                     return df
 
-            except Exception as e:
+            except BaseException as e:
+                # Bắt cả BaseException (SystemExit) vì Vnstock (vnai) sử dụng sys.exit() khi đạt giới hạn quota
                 last_err = e
                 err_str = str(e).lower()
+
+                # Kiểm tra nếu là SystemExit do Rate Limit
+                is_rate_limit = "429" in err_str or "'data'" in err_str or "rate limit" in err_str or isinstance(e, SystemExit)
 
                 # Lỗi không hỗ trợ source
                 if "nhận giá trị tham số source" in err_str or "not supported" in err_str:
@@ -173,7 +177,7 @@ async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **k
                     break # Break vòng lặp retry, chuyển sang source tiếp theo
 
                 # Lỗi bị chặn rate limit hoặc lỗi nội tại API (data)
-                elif "429" in err_str or "'data'" in err_str or "rate limit" in err_str:
+                elif is_rate_limit:
                     rate_limit_err = e
                     log.warning(f"Vnstock rate limit/error (429/data) cho {symbol} với source {source}. Lần thử {attempt+1}/2. Đang chờ 5s...")
                     await asyncio.sleep(5) # Tăng thời gian chờ lên 5 giây
@@ -186,9 +190,9 @@ async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **k
 
     # Nếu có lỗi rate limit, ưu tiên báo lỗi này vì nó là nguyên nhân chính gây thất bại
     if rate_limit_err:
-        raise RuntimeError(f"Hệ thống bị giới hạn truy cập (Rate Limit/429) từ API dữ liệu. Xin chờ một lúc rồi thử lại. (Lỗi gốc: {rate_limit_err})")
+        raise RuntimeError(f"Hệ thống bị giới hạn truy cập (Rate Limit/429) từ API dữ liệu. Xin chờ một lúc rồi thử lại. (Lỗi gốc: Rate Limit)")
 
-    raise last_err if last_err else RuntimeError("Tất cả các nguồn dữ liệu đều thất bại hoặc không trả về dữ liệu.")
+    raise RuntimeError(f"Tất cả các nguồn dữ liệu đều thất bại hoặc không trả về dữ liệu. Lỗi gốc: {last_err}")
 
 def _parse_gso_custom_csv(file_path: str, keywords: list) -> str:
     """Đọc file CSV GSO (định dạng custom với separator 'SHEET:') và trích xuất phần liên quan."""

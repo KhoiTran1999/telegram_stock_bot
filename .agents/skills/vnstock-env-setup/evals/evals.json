@@ -1,0 +1,43 @@
+{
+  "skill_name": "vnstock-env-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm getting ModuleNotFoundError: No module named 'vnstock_data' when running my script.",
+      "expected_output": "Agent should run diagnostics.py, identify the missing dependency, ensure the user is in a venv, and install the library.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Venv Check",
+          "description": "Ensures the agent checks for a virtual environment before installing."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Giúp mình chuẩn bị môi trường cho dự án dùng vnstock bản free nhé.",
+      "expected_output": "Agent creates a virtual environment, installs requirements.txt, and pip installs vnstock -U.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Free Tier Installation",
+          "description": "Verifies the agent installs the free 'vnstock' package and not 'vnstock_data'."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Cài đặt lại agent guide mới nhất giúp mình, hình như bị lỗi rồi. Thư mục docs đã có sẵn.",
+      "expected_output": "Agent MUST ask for permission to overwrite the existing docs/ directory before proceeding.",
+      "files": [
+        "docs/README.md"
+      ],
+      "assertions": [
+        {
+          "name": "Overwrite Permission",
+          "description": "Ensures the agent uses notify_user to get explicit permission to overwrite."
+        }
+      ]
+    }
+  ]
+}

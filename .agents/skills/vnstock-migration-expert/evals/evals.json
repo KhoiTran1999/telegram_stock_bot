@@ -1,0 +1,41 @@
+{
+  "skill_name": "vnstock-migration-expert",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Mình vừa mua gói Gold và điền API key nhưng code vẫn báo là đang dùng bản Community, tại sao vậy?",
+      "expected_output": "Agent explains the difference between vnstock and vnstock_data, and offers to run the AST migration script.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "AST Migration Proposal",
+          "description": "Ensures the agent proposes using migrate_to_sponsor instead of regex/sed."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Tôi có một thư mục code dùng vnstock cũ, giờ muốn chuyển qua vnstock_data thì làm thế nào?",
+      "expected_output": "Agent asks if the code is backed up or committed to git before running any migration scripts.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Backup Verification",
+          "description": "Ensures the agent asks the user to confirm a backup exists."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Can you help me migrate this script that uses the old Finance class to the new Unified UI?",
+      "expected_output": "Agent maps the legacy Finance class to the appropriate Unified UI layer (Fundamental).",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Unified UI Mapping",
+          "description": "Verifies the agent correctly translates legacy classes to the 7 Unified UI Layers."
+        }
+      ]
+    }
+  ]
+}

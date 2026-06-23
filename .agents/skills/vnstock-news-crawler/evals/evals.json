@@ -1,0 +1,45 @@
+{
+  "skill_name": "vnstock-news-crawler",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Viết cho mình một script để lấy tin tức realtime từ trang CafeF.",
+      "expected_output": "Agent runs the source analyzer, finds CafeF doesn't support RSS, and provides a Sitemap extraction script.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Analyzer Usage",
+          "description": "Ensures the agent runs the news_source_analyzer.py before generating code."
+        },
+        {
+          "name": "Correct Strategy",
+          "description": "Verifies the agent does not assume CafeF has an RSS feed."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Mình cần crawl dữ liệu lịch sử 1 năm từ trang Tuổi Trẻ.",
+      "expected_output": "Agent provides an AsyncBatchCrawler script using the historical sitemap template.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Sitemap Strategy",
+          "description": "Ensures the agent uses the Sitemap strategy for a 1-year timeframe."
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Làm sao để cào dữ liệu từ trang web customsite.vn không được support sẵn?",
+      "expected_output": "Agent provides a script using custom_config to natively parse the site.",
+      "files": [],
+      "assertions": [
+        {
+          "name": "Library Usage",
+          "description": "Ensures the agent uses vnstock_news with custom_config instead of bypassing it with raw requests/bs4."
+        }
+      ]
+    }
+  ]
+}
