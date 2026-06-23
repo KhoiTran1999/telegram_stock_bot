@@ -2674,49 +2674,7 @@ def sepay_webhook():
 # --- FLASK ROUTE CHO WEB APP ---
 @flask_app.route("/digest/<digest_id>")
 def view_digest(digest_id):
-    data = get_digest_from_redis(digest_id)
-    if not data:
-        return render_template_string(DIGEST_404_TEMPLATE)
-        
-    return render_template_string(
-        DIGEST_HTML_TEMPLATE, 
-        data=data, 
-        digest_id=digest_id  # <--- BẮT BUỘC PHẢI CÓ DÒNG NÀY
-    )
-
-# Hàm helper xử lý phân trang
-
-# --- [MỚI] Route xem tin Vĩ mô (Grid View) ---
-# --- Route Tin Vĩ mô ---
-    page = request.args.get('page', 1, type=int)
-    
-    # Lấy toàn bộ list
-    full_list = data.get("macro_feed", [])
-    
-    # Phân trang
-    news_list, total_pages = paginate_list(full_list, page)
-    
-    return render_template_string( 
-        digest_id=digest_id,
-        page_title="Vĩ mô & Quốc tế",
-        news_list=news_list,
-        current_page=page,      # Truyền thêm biến này
-        total_pages=total_pages, # Truyền thêm biến này
-        section="macro"         # Để tạo link phân trang đúng
-    )
-
-# --- Route Tin Doanh nghiệp ---
-    full_list = data.get("spec_feed", [])
-    news_list, total_pages = paginate_list(full_list, page)
-    
-    return render_template_string( 
-        digest_id=digest_id,
-        page_title="Doanh nghiệp & Ngành",
-        news_list=news_list,
-        current_page=page,
-        total_pages=total_pages,
-        section="specialized"
-    )
+    return "Tính năng Bản tin sáng (Daily Digest) đã được gỡ bỏ khỏi hệ thống để tối ưu hiệu năng.", 404
 
 # --- HELPER CHO SCREENER WEBAPP ---
 # Các mã cần loại khỏi Screener (yêu cầu business)
@@ -2828,74 +2786,8 @@ async def view_profile(symbol: str): # <--- Đổi thành async
     )
 
 @flask_app.route("/report/view/<cache_key>")
-async def view_report(cache_key):
-    """
-    Route hiển thị Web App Report (ĐÃ FIX ASYNC & LOG).
-    """
-    # 1. Check Pro (Giữ nguyên)
-    chat_id_str = request.args.get("chat_id")
-    is_pro = False
-    if chat_id_str:
-        try:
-            cid = int(chat_id_str)
-            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
-        except: pass
-    
-    if not is_pro:
-        return render_template_string(LOCKED_FEATURE_TEMPLATE, icon="📊", title="AI Phân Tích Danh Mục", desc=(
-            "Trợ lý AI (Gemini) sẽ phân tích chuyên sâu sức khỏe danh mục "
-            "đầu tư của bạn dựa trên dữ liệu Real-time.\n\n"
-            "✅ Chấm điểm sức khỏe danh mục (Portfolio Score).\n"
-            "✅ Khuyến nghị hành động cụ thể: Mua / Bán / Giữ.\n"
-            "✅ Phân tích động lực tăng giá & Rủi ro tiềm ẩn.\n\n"
-            "Báo cáo tư vấn chi tiết này chỉ dành cho thành viên Pro."
-        )), 403
-
-    # 2. Lấy Cache (FIX ASYNC REDIS)
-    try:
-        # Chạy trong thread để không block Flask async loop
-        cached = await asyncio.to_thread(get_report_from_redis, cache_key)
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}][VIEW] Lỗi đọc Redis: {e}")
-        cached = None
-
-    if not cached:
-        # Log debug để biết tại sao 404
-        log.warning(f"[{INSTANCE_ID}][VIEW] Cache MISS key: '{cache_key}' -> 404")
-        return render_template_string(REPORT_404_TEMPLATE), 404
-
-    text_json, generated_at, is_error, wait_sec = cached
-    
-    if is_error:
-        return f"<h3>Đang gặp lỗi: {text_json}</h3>", 500
-
-    try:
-        # Clean lần nữa cho chắc
-        clean_text = text_json.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_text)
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}][VIEW] Lỗi parse JSON: {e}")
-        return "Lỗi dữ liệu báo cáo (JSON Format)", 500
-
-    # 3. Tạo Chart (Giữ nguyên)
-    if 'stocks' in data and data['stocks']:
-        try:
-            tasks = [generate_mini_chart(stock['symbol']) for stock in data['stocks']]
-            charts = await asyncio.gather(*tasks)
-            for i, stock in enumerate(data['stocks']):
-                stock['chart_html'] = charts[i]
-        except: pass
-
-    # 4. Render
-    vn_tz = pytz.timezone(TIMEZONE)
-    time_str = generated_at.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y") if generated_at else ""
-
-    return render_template_string(
-        REPORT_HTML_TEMPLATE, 
-        data=data, 
-        generated_at=time_str,
-        is_pro=True 
-    )
+def view_report(cache_key):
+    return "Tính năng Báo cáo danh mục AI đã được gỡ bỏ khỏi hệ thống để tối ưu hiệu năng.", 404
 
 @flask_app.route("/eod/<eod_id>")
 def view_eod(eod_id):
