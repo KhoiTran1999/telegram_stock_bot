@@ -257,6 +257,7 @@ def _extract_board_value(row: pd.Series, keys: Iterable[tuple | str]) -> float |
 def _fetch_price(symbol: str) -> float:
 	board = None
 	last_err = None
+	rate_limit_err = None
 	import time
 	for source in ["VCI", "TCBS", "KBS"]:
 		for attempt in range(2):
@@ -269,14 +270,17 @@ def _fetch_price(symbol: str) -> float:
 				err_str = str(exc).lower()
 				if "nhận giá trị tham số source" in err_str or "not supported" in err_str:
 					break
-				if "429" in err_str or "'data'" in err_str:
-					time.sleep(3)
+				if "429" in err_str or "'data'" in err_str or "rate limit" in err_str:
+					rate_limit_err = exc
+					time.sleep(5)
 					continue
 				break
 		if board is not None and not board.empty:
 			break
 
 	if board is None or board.empty:
+		if rate_limit_err:
+			raise RuntimeError(f"Hệ thống bị giới hạn truy cập (Rate Limit/429). Last error: {rate_limit_err}")
 		raise RuntimeError(f"price_board returned empty data on all sources. Last error: {last_err}")
 	row = board.iloc[0]
 	price = _extract_board_value(
@@ -306,6 +310,7 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 	import time
 	df = None
 	last_err = None
+	rate_limit_err = None
 
 	for source in ["VCI", "TCBS", "KBS"]:
 		for attempt in range(2):
@@ -358,9 +363,10 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 				err_str = str(exc).lower()
 				if "nhận giá trị tham số source" in err_str or "not supported" in err_str:
 					break
-				if "429" in err_str or "'data'" in err_str:
-					log.warning("Rate limit (429) for %s on %s, attempt %d. Sleeping 3s...", symbol, source, attempt+1)
-					time.sleep(3)
+				if "429" in err_str or "'data'" in err_str or "rate limit" in err_str:
+					rate_limit_err = exc
+					log.warning("Rate limit (429) for %s on %s, attempt %d. Sleeping 5s...", symbol, source, attempt+1)
+					time.sleep(5)
 					continue
 				break
 
@@ -368,6 +374,8 @@ def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
 			break
 
 	if df is None or df.empty:
+		if rate_limit_err:
+			raise RuntimeError(f"Hệ thống bị giới hạn truy cập (Rate Limit/429). Last error: {rate_limit_err}")
 		raise RuntimeError(f"Finance ratio API returned empty data after trying all sources. Last error: {last_err}")
 	return _prepare_quarterly(df)
 

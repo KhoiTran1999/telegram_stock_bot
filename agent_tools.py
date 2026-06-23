@@ -142,6 +142,8 @@ async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **k
     import time
 
     last_err = None
+    rate_limit_err = None
+
     for source in sources_to_try:
         for attempt in range(2):
             try:
@@ -171,9 +173,10 @@ async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **k
                     break # Break vòng lặp retry, chuyển sang source tiếp theo
 
                 # Lỗi bị chặn rate limit hoặc lỗi nội tại API (data)
-                elif "429" in err_str or "'data'" in err_str:
-                    log.warning(f"Vnstock rate limit/error (429/data) cho {symbol} với source {source}. Lần thử {attempt+1}/2. Đang chờ 3s...")
-                    await asyncio.sleep(3)
+                elif "429" in err_str or "'data'" in err_str or "rate limit" in err_str:
+                    rate_limit_err = e
+                    log.warning(f"Vnstock rate limit/error (429/data) cho {symbol} với source {source}. Lần thử {attempt+1}/2. Đang chờ 5s...")
+                    await asyncio.sleep(5) # Tăng thời gian chờ lên 5 giây
                     continue # Retry lại với cùng source
 
                 # Lỗi khác -> thử source khác
@@ -181,7 +184,11 @@ async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **k
                     log.debug(f"Lỗi gọi {method_name} cho {symbol} nguồn {source}: {e}")
                     break
 
-    raise last_err if last_err else RuntimeError("Tất cả các nguồn dữ liệu đều thất bại.")
+    # Nếu có lỗi rate limit, ưu tiên báo lỗi này vì nó là nguyên nhân chính gây thất bại
+    if rate_limit_err:
+        raise RuntimeError(f"Hệ thống bị giới hạn truy cập (Rate Limit/429) từ API dữ liệu. Xin chờ một lúc rồi thử lại. (Lỗi gốc: {rate_limit_err})")
+
+    raise last_err if last_err else RuntimeError("Tất cả các nguồn dữ liệu đều thất bại hoặc không trả về dữ liệu.")
 
 def _parse_gso_custom_csv(file_path: str, keywords: list) -> str:
     """Đọc file CSV GSO (định dạng custom với separator 'SHEET:') và trích xuất phần liên quan."""
