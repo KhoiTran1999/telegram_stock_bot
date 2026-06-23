@@ -132,6 +132,57 @@ def _df_to_markdown(df: pd.DataFrame, limit: int = 5) -> str:
         return df_limited.to_string(index=False)
 
 
+async def call_vnstock_api_with_retry(class_ref, symbol, method_name, *args, **kwargs):
+    """
+    Hàm helper hỗ trợ gọi API Vnstock.
+    Tự động retry khi bị Rate Limit (429) và tự động đổi nguồn (fallback)
+    nếu nguồn mặc định không khả dụng (ví dụ: KBS bị loại bỏ trên server).
+    """
+    sources_to_try = ["VCI", "TCBS", "KBS"]
+    import time
+
+    last_err = None
+    for source in sources_to_try:
+        for attempt in range(2):
+            try:
+                # Khởi tạo object (Ví dụ: Company(symbol="HPG", source="VCI"))
+                instance = class_ref(symbol=symbol, source=source)
+
+                # Lấy thuộc tính/phương thức cần gọi (Ví dụ: events hoặc news)
+                method_or_attr = getattr(instance, method_name)
+
+                # Gọi (nếu là method) hoặc lấy giá trị (nếu là property/dataframe)
+                if callable(method_or_attr):
+                    df = await asyncio.to_thread(method_or_attr, *args, **kwargs)
+                else:
+                    df = method_or_attr # vnstock 4.x properties return df directly
+
+                # Validate DataFrame
+                if df is not None:
+                    return df
+
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+
+                # Lỗi không hỗ trợ source
+                if "nhận giá trị tham số source" in err_str or "not supported" in err_str:
+                    log.debug(f"Source {source} không được hỗ trợ bởi {class_ref.__name__}. Đổi source.")
+                    break # Break vòng lặp retry, chuyển sang source tiếp theo
+
+                # Lỗi bị chặn rate limit hoặc lỗi nội tại API (data)
+                elif "429" in err_str or "'data'" in err_str:
+                    log.warning(f"Vnstock rate limit/error (429/data) cho {symbol} với source {source}. Lần thử {attempt+1}/2. Đang chờ 3s...")
+                    await asyncio.sleep(3)
+                    continue # Retry lại với cùng source
+
+                # Lỗi khác -> thử source khác
+                else:
+                    log.debug(f"Lỗi gọi {method_name} cho {symbol} nguồn {source}: {e}")
+                    break
+
+    raise last_err if last_err else RuntimeError("Tất cả các nguồn dữ liệu đều thất bại.")
+
 def _parse_gso_custom_csv(file_path: str, keywords: list) -> str:
     """Đọc file CSV GSO (định dạng custom với separator 'SHEET:') và trích xuất phần liên quan."""
     if not os.path.exists(file_path):
@@ -185,9 +236,7 @@ async def tool_get_market_price(symbol: str):
     """
     symbol = symbol.upper()
     try:
-        # vnstock 4.x: Trading(source="KBS") → flat columns (không còn tuple)
-        trading = Trading(symbol=symbol, source="VCI")
-        df = await asyncio.to_thread(trading.price_board, symbols_list=[symbol])
+        df = await call_vnstock_api_with_retry(Trading, symbol, 'price_board', symbols_list=[symbol])
 
         if df is None or df.empty:
             log.warning(f"Không có dữ liệu price_board cho {symbol}")
@@ -286,9 +335,7 @@ async def tool_get_company_profile(symbol: str) -> str:
         async def fetch_from_api():
             """Lấy dữ liệu hành chính từ API Vnstock 4.x"""
             try:
-                # vnstock 4.x: Company(source="VCI") - VCI có overview đầy đủ hơn KBS
-                company = Company(symbol=symbol, source='VCI')
-                df = await asyncio.to_thread(company.overview)
+                df = await call_vnstock_api_with_retry(Company, symbol, 'overview')
                 if df is not None and not df.empty:
                     data = df.iloc[0].to_dict()
                     return {
@@ -458,20 +505,19 @@ async def tool_get_financial_report(
     Các Chỉ Số Tài Chính (Financial Ratios): biên lợi nhuận, ROE, ROA, hệ số nợ,...
     """
     symbol = symbol.upper().strip()
-    # vnstock 4.x: Finance(source='VCI') - VCI có nhiều cột hơn KBS cho financial reports
-    finance = Finance(symbol=symbol, source='VCI')
 
     func_map = {
-        'income':  finance.income_statement,
-        'balance': finance.balance_sheet,
-        'cash':    finance.cash_flow,
-        'ratio':   finance.ratio
+        'income':  'income_statement',
+        'balance': 'balance_sheet',
+        'cash':    'cash_flow',
+        'ratio':   'ratio'
     }
 
     if report_type not in func_map:
         return "Loại báo cáo không hợp lệ (chọn: income, balance, cash, ratio)."
 
-    df = await asyncio.to_thread(func_map[report_type], period=period, lang='vi')
+    method_name = func_map[report_type]
+    df = await call_vnstock_api_with_retry(Finance, symbol, method_name, period=period, lang='vi')
 
     # Sort descending để lấy kỳ mới nhất
     if df is not None and not df.empty:
@@ -548,10 +594,7 @@ async def tool_get_macro_data(topic: Literal['gdp', 'cpi', 'industry', 'trade', 
 async def tool_get_stock_events(symbol: str):
     """Lấy lịch sự kiện: Cổ tức, phát hành thêm, họp ĐHCĐ."""
     symbol = symbol.upper().strip()
-    # vnstock 4.x: Company.events() là method (gọi có ngoặc)
-    # VCI có dữ liệu events đầy đủ hơn KBS
-    company = Company(symbol=symbol, source='VCI')
-    df = await asyncio.to_thread(company.events)
+    df = await call_vnstock_api_with_retry(Company, symbol, 'events')
 
     if df is not None and not df.empty:
         # Cột vnstock 4.x Company.events() với VCI
@@ -569,9 +612,7 @@ async def tool_get_stock_events(symbol: str):
 async def tool_get_stock_news(symbol: str):
     """Tìm kiếm tin tức báo chí mới nhất liên quan trực tiếp đến mã cổ phiếu."""
     symbol = symbol.upper().strip()
-    # vnstock 4.x: Company.news() là method
-    company = Company(symbol=symbol, source='VCI')
-    df = await asyncio.to_thread(company.news)
+    df = await call_vnstock_api_with_retry(Company, symbol, 'news')
 
     if df is not None and not df.empty:
         priority_cols = ['news_title', 'public_date', 'news_source']

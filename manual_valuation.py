@@ -255,15 +255,29 @@ def _extract_board_value(row: pd.Series, keys: Iterable[tuple | str]) -> float |
 
 
 def _fetch_price(symbol: str) -> float:
-	try:
-		board = Trading(symbol=symbol, source=TRADING_SOURCE).price_board([symbol])
-		if board is None or board.empty:
-			raise RuntimeError("price_board returned empty data")
-	except Exception as exc:
-		log.warning("Primary price_board fetch failed for %s, falling back to KBS: %s", symbol, exc)
-		board = Trading(symbol=symbol, source="KBS").price_board([symbol])
-		if board is None or board.empty:
-			raise RuntimeError("price_board returned empty data on fallback")
+	board = None
+	last_err = None
+	import time
+	for source in ["VCI", "TCBS", "KBS"]:
+		for attempt in range(2):
+			try:
+				board = Trading(symbol=symbol, source=source).price_board([symbol])
+				if board is not None and not board.empty:
+					break
+			except Exception as exc:
+				last_err = exc
+				err_str = str(exc).lower()
+				if "nhận giá trị tham số source" in err_str or "not supported" in err_str:
+					break
+				if "429" in err_str or "'data'" in err_str:
+					time.sleep(3)
+					continue
+				break
+		if board is not None and not board.empty:
+			break
+
+	if board is None or board.empty:
+		raise RuntimeError(f"price_board returned empty data on all sources. Last error: {last_err}")
 	row = board.iloc[0]
 	price = _extract_board_value(
 		row,
@@ -289,79 +303,72 @@ def _fetch_price(symbol: str) -> float:
 
 
 def _fetch_ratio_quarter(symbol: str) -> pd.DataFrame:
+	import time
 	df = None
-	# Try KBS first since it contains the needed EPS and BVPS TTM fields natively
-	try:
-		finance = Finance(symbol=symbol, source="KBS")
-		df = finance.ratio(period="quarter", lang="vi")
-		if df is not None and not df.empty and 'item' in df.columns:
-			# Get all period columns (e.g., '2026-Q1', '2025-Q4')
-			period_cols = [c for c in df.columns if c not in ('item', 'item_id')]
+	last_err = None
 
-			# Create a new structure
-			new_data = []
-			for col in period_cols:
-				try:
-					year, quarter = col.split('-Q')
-					year = int(year)
-					# Handle duplicate quarter columns like '2025-Q4_1'
-					quarter = int(quarter.split('_')[0])
+	for source in ["VCI", "TCBS", "KBS"]:
+		for attempt in range(2):
+			try:
+				finance = Finance(symbol=symbol, source=source)
+				df_temp = finance.ratio(period="quarter", lang="vi")
 
-					row_data = {
-						'year': year,
-						'quarter': quarter,
-						'is_ttm': True
-					}
-
-					# Map values from the KBS rows to columns
-					for idx, row in df.iterrows():
-						item_id = str(row.get('item_id', '')).lower()
-						item_name = str(row['item']).lower()
-						val = row[col]
-
-						# Only try to cast to float if it looks like a number, or it's NaN
+				if source == "KBS" and df_temp is not None and not df_temp.empty and 'item' in df_temp.columns:
+					# Format lại cột dữ liệu cho KBS
+					period_cols = [c for c in df_temp.columns if c not in ('item', 'item_id')]
+					new_data = []
+					for col in period_cols:
 						try:
-							# Remove comma separators like "1,668.51"
-							if isinstance(val, str):
-								val = val.replace(',', '')
-							val = float(val) if pd.notna(val) else None
-						except (ValueError, TypeError):
-							val = None
+							year, quarter = col.split('-Q')
+							year = int(year)
+							quarter = int(quarter.split('_')[0])
+							row_data = {'year': year, 'quarter': quarter, 'is_ttm': True}
 
-						# For KBS, we only have these strings:
-						# "Thu nhập trên mỗi cổ phần của 4 quý gần nhất (EPS)"
-						# "Giá trị sổ sách của cổ phiếu (BVPS)"
-						if item_id == 'trailing_eps' or (('eps' in item_name or 'thu nhập trên mỗi cổ phần' in item_name) and 'p/e' not in item_name and 'p\\e' not in item_name):
-							row_data['eps'] = val
-							row_data['eps_vnd'] = val
-						elif item_id == 'book_value_per_share_bvps' or (('bvps' in item_name or 'giá trị sổ sách' in item_name) and 'p/b' not in item_name and 'p\\b' not in item_name and 'chỉ số' not in item_name):
-							row_data['bvps'] = val
-							row_data['bvps_vnd'] = val
+							for idx, row in df_temp.iterrows():
+								item_id = str(row.get('item_id', '')).lower()
+								item_name = str(row['item']).lower()
+								val = row[col]
+								try:
+									if isinstance(val, str):
+										val = val.replace(',', '')
+									val = float(val) if pd.notna(val) else None
+								except (ValueError, TypeError):
+									val = None
 
-					new_data.append(row_data)
-				except ValueError:
-					pass
+								if item_id == 'trailing_eps' or (('eps' in item_name or 'thu nhập trên mỗi cổ phần' in item_name) and 'p/e' not in item_name and 'p\\e' not in item_name):
+									row_data['eps'] = val
+									row_data['eps_vnd'] = val
+								elif item_id == 'book_value_per_share_bvps' or (('bvps' in item_name or 'giá trị sổ sách' in item_name) and 'p/b' not in item_name and 'p\\b' not in item_name and 'chỉ số' not in item_name):
+									row_data['bvps'] = val
+									row_data['bvps_vnd'] = val
+							new_data.append(row_data)
+						except ValueError:
+							pass
+					df = pd.DataFrame(new_data)
+					if not df.empty and 'year' in df.columns:
+						df['year'] = df['year'].astype(int)
+						df['quarter'] = df['quarter'].astype(int)
+				else:
+					df = df_temp
 
-			df = pd.DataFrame(new_data)
+				if df is not None and not df.empty:
+					break
+			except Exception as exc:
+				last_err = exc
+				err_str = str(exc).lower()
+				if "nhận giá trị tham số source" in err_str or "not supported" in err_str:
+					break
+				if "429" in err_str or "'data'" in err_str:
+					log.warning("Rate limit (429) for %s on %s, attempt %d. Sleeping 3s...", symbol, source, attempt+1)
+					time.sleep(3)
+					continue
+				break
 
-			# Fix the sorting error by making sure the year and quarter columns are ints
-			if not df.empty and 'year' in df.columns:
-				df['year'] = df['year'].astype(int)
-				df['quarter'] = df['quarter'].astype(int)
-	except Exception as exc:
-		log.warning("KBS ratio fetch failed for %s, falling back to VCI: %s", symbol, exc)
-		df = None
+		if df is not None and not df.empty:
+			break
 
 	if df is None or df.empty:
-		try:
-			finance = Finance(symbol=symbol, source="VCI")
-			df = finance.ratio(period="quarter", lang="vi")
-		except Exception as vci_exc:
-			log.warning("VCI ratio fetch failed for %s: %s", symbol, vci_exc)
-			df = None
-
-	if df is None or df.empty:
-		raise RuntimeError("Finance ratio API returned empty data")
+		raise RuntimeError(f"Finance ratio API returned empty data after trying all sources. Last error: {last_err}")
 	return _prepare_quarterly(df)
 
 
