@@ -467,8 +467,9 @@ openai_async_client = AsyncOpenAI(
     base_url="https://khoitran1999-claude-server.hf.space/v1"
 )
 
-MODEL_BRAIN = os.getenv("AI_MODEL_BRAIN", "gemini-2.5-pro")
-MODEL_WORKER = os.getenv("AI_MODEL_WORKER", "gemini-2.0-flash-lite")
+MODEL_BRAIN = os.getenv("AI_MODEL_BRAIN") or os.getenv("MODEL_BRAIN") or "gemini-3.1-pro"
+MODEL_WORKER = os.getenv("AI_MODEL_WORKER") or os.getenv("MODEL_WORKER") or "gemini-3.5-Flash"
+log.info(f"[{INSTANCE_ID}] Loaded models - Brain: {MODEL_BRAIN}, Worker: {MODEL_WORKER}")
 
 def get_tool_descriptions_for_brain():
     """
