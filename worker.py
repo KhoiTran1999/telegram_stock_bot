@@ -470,6 +470,33 @@ openai_async_client = AsyncOpenAI(
 MODEL_BRAIN = os.getenv("AI_MODEL_BRAIN", "gemini-2.5-pro")
 MODEL_WORKER = os.getenv("AI_MODEL_WORKER", "gemini-2.0-flash-lite")
 
+def get_tool_descriptions_for_brain():
+    """
+    Tạo danh sách mô tả ngắn gọn các công cụ cho Brain (Manager).
+    Chỉ lấy Tên và Mô tả, bỏ qua chi tiết tham số kỹ thuật.
+    """
+    lines = ["Dưới đây là danh sách các CÔNG CỤ (Tools) mà Worker có thể sử dụng:"]
+    for tool in AGENT_TOOLS_SCHEMA:
+        name = tool.get("name")
+        desc = tool.get("description", "")
+        lines.append(f"- {name}: {desc}")
+
+    return "\n".join(lines)
+
+def clean_data_robust(data):
+    """
+    Làm sạch dữ liệu triệt để bằng cách encode/decode JSON.
+    Biến đổi mọi kiểu dữ liệu lạ (numpy, pandas timestamp...) thành string hoặc chuẩn Python.
+    """
+    def default_converter(o):
+        return str(o)
+
+    try:
+        json_str = json.dumps(data, default=default_converter, ensure_ascii=False)
+        return json.loads(json_str)
+    except Exception:
+        return str(data)
+
 def prepare_personalization_keys(symbols: list[str]) -> list[str]:
     """
     Từ danh sách mã cổ phiếu (VD: ['HPG', 'VCB'])
