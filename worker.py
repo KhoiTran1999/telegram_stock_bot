@@ -165,8 +165,7 @@ from redis_client import get_redis
 load_dotenv()
 TIMEZONE = "Asia/Ho_Chi_Minh"
 INSTANCE_ID = "WORKER_01" # Định danh cho Worker
-ADMIN_ID_STR = os.getenv("ADMIN_ID")
-ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+ADMIN_ID = None
 
 def _resolve_web_base_url() -> str:
     """Worker phải dùng URL Gateway, không phải domain riêng của Worker."""
@@ -582,58 +581,6 @@ Hãy trình bày kết quả dưới dạng báo cáo Markdown ngắn gọn, chu
         log.error(f"[MONTHLY_INSIGHT] Lỗi gọi AI: {e}")
         return f"⚠️ Lỗi khi phân tích AI: {e}"
 
-async def job_monthly_cskh_report():
-    """
-    [JOB APSCHEDULER] Chạy vào 08:00 sáng ngày 1 hàng tháng.
-    Tổng hợp câu hỏi user tháng trước và báo cáo cho Admin.
-    """
-    if not ADMIN_ID:
-        log.warning("[MONTHLY_INSIGHT] Chưa cấu hình ADMIN_ID. Bỏ qua job.")
-        return
-
-    log.info("[MONTHLY_INSIGHT] 📅 Bắt đầu tổng hợp báo cáo CSKH tháng...")
-    
-    # 1. Xác định tháng trước
-    vn_tz = pytz.timezone(TIMEZONE)
-    now = datetime.datetime.now(vn_tz)
-    
-    # Lấy ngày đầu tháng hiện tại, trừ đi 1 ngày để về tháng trước
-    first_day_this_month = now.replace(day=1)
-    
-    target_month = first_day_this_month.month
-    target_year = first_day_this_month.year
-    period_label = f"{target_month}/{target_year}"
-
-    try:
-        # 2. Lấy dữ liệu từ DB
-        questions = await asyncio.to_thread(get_ai_questions_by_month, target_year, target_month)
-        
-        if not questions:
-            msg = f"📉 **BÁO CÁO CSKH THÁNG {period_label}**\n\nKhông có câu hỏi nào được ghi nhận trong tháng qua."
-            push_telegram_msg(ADMIN_ID, msg, msg_type="SYSTEM_MSG")
-            return
-
-        # 3. Gửi lời nhắn chờ (vì AI có thể chạy lâu)
-        push_telegram_msg(ADMIN_ID, f"⏳ Đang tổng hợp {len(questions)} câu hỏi tháng {period_label} để phân tích...", msg_type="SYSTEM_MSG")
-
-        # 4. Phân tích AI
-        ai_analysis = await _generate_monthly_insight(questions, period_label)
-        
-        # 5. Gửi báo cáo hoàn chỉnh
-        final_msg = (
-            f"📈 **TỔNG HỢP CSKH THÁNG {period_label}**\n\n"
-            f"{ai_analysis}\n\n"
-            f"--------------------\n"
-            f"🤖 *Báo cáo tự động bởi StockBot AI Worker*"
-        )
-        
-        push_telegram_msg(ADMIN_ID, final_msg, msg_type="SYSTEM_MSG")
-        log.info(f"[MONTHLY_INSIGHT] ✅ Đã gửi báo cáo tháng {period_label}.")
-
-    except Exception as e:
-        log.error(f"[MONTHLY_INSIGHT] ❌ Lỗi job: {e}")
-        push_telegram_msg(ADMIN_ID, f"⚠️ Lỗi tạo báo cáo tháng {period_label}: {e}", msg_type="SYSTEM_MSG")
-
 def call_gemini_safe(model_id, contents, config=None, return_usage=False):
     import json
     last_error = None
@@ -848,15 +795,6 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             stats["input_tokens"] += getattr(response.usage, "prompt_tokens", 0)
             stats["output_tokens"] += getattr(response.usage, "completion_tokens", 0)
 
-    # Hàm helper để tạo footer thống kê (Chỉ Admin mới thấy)
-    def get_admin_stats_footer():
-        if chat_id == ADMIN_ID:
-            return (
-                f"\n\n`⚙️ Specs: {stats['requests']} calls | "
-                f"In: {stats['input_tokens']} | Out: {stats['output_tokens']}`"
-            )
-        return ""
-
     # --- HELPER: GỌI GEMINI AN TOÀN (RETRY & ROTATE KEY & LOGGING) ---
     async def safe_generate_content(model_id, contents, config=None):
         import json
@@ -1011,7 +949,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
             
             # Gửi ngay lập tức và KẾT THÚC
             kb = default_ai_reply_markup()
-            push_telegram_msg(chat_id, final_answer + get_admin_stats_footer(), reply_markup=kb, edit_id=loading_msg_id)
+            push_telegram_msg(chat_id, final_answer, reply_markup=kb, edit_id=loading_msg_id)
             return  # <--- THOÁT HÀM NGAY TẠI ĐÂY
 
         # NHÁNH 2: CẦN DỮ LIỆU -> TIẾP TỤC GỌI WORKER
@@ -1187,7 +1125,7 @@ async def run_autonomous_agent(chat_id, user_query, loading_msg_id=None):
         
         # Gửi kết quả cuối cùng
         kb = default_ai_reply_markup()
-        push_telegram_msg(chat_id, final_answer + get_admin_stats_footer(), reply_markup=kb, edit_id=loading_msg_id)
+        push_telegram_msg(chat_id, final_answer, reply_markup=kb, edit_id=loading_msg_id)
 
     except Exception as e:
         log.error(f"Final Answer Error: {e}")
@@ -1900,8 +1838,7 @@ async def worker_inbound_loop():
                         # Xóa CMD_RUN_DAILY_DIGEST
 
                         elif cmd == "RUN_EOD_SUMMARY":
-                            admin_id = payload.get('admin_id')
-                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run EOD Summary từ {admin_id}")
+                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run EOD Summary")
                             asyncio.create_task(job_eod_summary())
 
                         elif cmd == "GEN_INFO":
@@ -1921,11 +1858,6 @@ async def worker_inbound_loop():
                         # elif cmd == "FORCE_SCREENER":
                         #     admin_id = payload.get('admin_id')
                         #     asyncio.create_task(process_force_update_screener(admin_id))
-
-                        elif cmd == "RUN_MONTHLY_INSIGHT":
-                            admin_id = payload.get('admin_id')
-                            log.info(f"[{INSTANCE_ID}] 📥 Nhận lệnh Force Run Monthly Insight")
-                            asyncio.create_task(job_monthly_cskh_report())
 
                         elif cmd == "CMD_AGENT_RUN":
                             asyncio.create_task(handle_agent_run(payload))
@@ -2275,7 +2207,7 @@ async def alert_loop():
                 if not watch_list: continue
 
                 # Logic giới hạn (Pro/Free)
-                is_pro = (chat_id in pro_chat_ids) or (chat_id == ADMIN_ID)
+                is_pro = (chat_id in pro_chat_ids)
                 processing_list = watch_list if is_pro else watch_list[:1]
 
                 user_settings = all_alert_settings.get(chat_id, {"stock_alert_threshold": 2.0, "silent_alerts": False})
@@ -3730,11 +3662,9 @@ def job_listener(event):
         if event.exception:
             error_msg = f"🚨 **WORKER CRITICAL ERROR**\nJob ID: `{event.job_id}`\nLỗi: `{event.exception}`"
             log.error(error_msg)
-            push_telegram_msg(ADMIN_ID, error_msg, msg_type="SYSTEM_MSG")
         elif event.code == EVENT_JOB_MISSED:
             warning_msg = f"⚠️ **MISSED JOB**: Job `{event.job_id}` đã bị bỏ qua do quá hạn."
             log.warning(warning_msg)
-            push_telegram_msg(ADMIN_ID, warning_msg, msg_type="SYSTEM_MSG")
     except Exception as e:
         log.error(f"Lỗi trong job_listener: {e}")
 
@@ -3794,9 +3724,6 @@ async def run_worker_runtime():
 
     # D. EOD Summary (15:00)
     scheduler.add_job(job_eod_summary, 'cron', day_of_week='mon-fri', hour=15, minute=0, id='eod_summary', replace_existing=True)
-
-    # E. Báo cáo CSKH AI Monthly (08:00 ngày 1 hàng tháng)
-    scheduler.add_job(job_monthly_cskh_report, 'cron', day=1, hour=8, minute=0, id='monthly_insight', replace_existing=True)
 
     # Bắt đầu Scheduler
     scheduler.start()

@@ -250,7 +250,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Lỗi khởi tạo DB: {e}")
 
-    migrate_admin_note()
     add_ban_column()
     migrate_trial()
     migrate_paid_users()

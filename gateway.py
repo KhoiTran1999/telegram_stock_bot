@@ -84,7 +84,6 @@ from db_utils import (
     delete_bot_log_record,
     save_historical_valuation_to_redis,
     upsert_user_info,
-    get_admin_dashboard_data,
     get_user_orders,
     get_user_logs,
     get_user_configs,
@@ -100,9 +99,6 @@ from db_utils import (
     set_silent_alerts,
     set_vn30_enabled,
     get_total_revenue_real,
-    update_user_admin_note,
-    get_banned_users,
-    set_user_ban_status,
     check_trial_eligibility,
     activate_trial_package,
     get_digest_from_redis,
@@ -219,11 +215,7 @@ def anti_spam_check(func):
             
         user_id = update.effective_user.id
         
-        # 1. CHECK BLACKLIST (Ưu tiên cao nhất - Im lặng tuyệt đối)
-        if user_id in BANNED_CACHE:
-            # Nếu muốn log debug thì mở dòng dưới, còn không thì im lặng luôn cho nhẹ
-            # log.info(f"⛔ Ignored request from BANNED user: {user_id}")
-            return 
+
 
         # 2. Check Spam Click (Logic cũ)
         if is_user_spamming(user_id):
@@ -276,8 +268,8 @@ def task_locked(func=None, *, manual_release: bool = False):
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 PORT = int(os.getenv("PASSENGER_PORT", "10000"))
 TIMEZONE = "Asia/Ho_Chi_Minh"
-ADMIN_ID_STR = os.getenv("ADMIN_ID")
-ADMIN_ID = int(ADMIN_ID_STR) if ADMIN_ID_STR else None
+ADMIN_ID_STR = None
+ADMIN_ID = None
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_CHANNEL_OUTBOUND = 'telegram_outbound'
@@ -362,7 +354,7 @@ def push_to_worker(payload):
         log.error(f"Push Worker Error: {e}")
 
 # 🔥 CACHE DANH SÁCH ĐEN (Lưu trong RAM để check siêu nhanh)
-BANNED_CACHE = set()
+
 
 # 🗂 Thư mục tạm dùng chung cho backup/restore (tự động phù hợp Windows / Linux)
 TMP_DIR = tempfile.gettempdir()
@@ -668,7 +660,7 @@ async def broadcast_to_all_watchers(text: str, target_audience: str = 'pro', msg
             # === LOGIC PAYWALL (Linh hoạt) ===
             if target_audience == 'pro':
                 # Nếu target là 'pro', thì bỏ qua user thường
-                if chat_id not in pro_chat_ids and chat_id != ADMIN_ID:
+                if chat_id not in pro_chat_ids:
                     continue 
             
             # Nếu target_audience == 'all', không làm gì cả,
@@ -789,7 +781,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # user_text là biến đã có sẵn ở đầu hàm
         # [FIX] Đổi ADMIN_ID -> None để Admin cũng được lưu log chat (phục vụ bộ nhớ context)
-        await asyncio.to_thread(log_command_usage, chat_id, "CMD_ASK_AI", None, note=user_text)
+        await asyncio.to_thread(log_command_usage, chat_id, "CMD_ASK_AI", note=user_text)
     except Exception as e:
         log.warning(f"Log AI Chat error: {e}")
     
@@ -817,7 +809,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         # Chạy ngầm để không làm chậm bot
-        asyncio.create_task(asyncio.to_thread(log_command_usage, chat_id, "BUTTON_CLICK", ADMIN_ID, note=data))
+        asyncio.create_task(asyncio.to_thread(log_command_usage, chat_id, "BUTTON_CLICK", note=data))
     except: pass
     
     # Kiểm tra bảo trì
@@ -868,8 +860,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         except: pass
         # --- LOGIC VẼ LẠI DASHBOARD (EDIT MODE) ---
         # 1. Check Admin status
-        is_admin = (chat_id == ADMIN_ID)
-
+        
         # 2. Build Menu
         kb = [
             [
@@ -882,10 +873,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]
         ]
 
-        if is_admin:
-            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-            admin_url = f"{base_url}/admin/dashboard?admin_id={ADMIN_ID}"
-            kb.append([InlineKeyboardButton("👑 Admin Dashboard", web_app=WebAppInfo(url=admin_url))])
+
 
         kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
 
@@ -923,7 +911,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Check Pro
         if want_on:
-            is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+            is_pro = await asyncio.to_thread(is_user_pro, chat_id)
             if not is_pro:
                 await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
                 return
@@ -953,7 +941,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         want_on = (data == "set_vnindex_on")
         
         # Check Pro
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id)
         if want_on and not is_pro:
              await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
              return
@@ -967,7 +955,7 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         want_on = (data == "set_vn30_index_on")
         
         # Check Pro
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id)
         if want_on and not is_pro:
              await query.answer("⚠️ Chỉ dành cho Gói Pro!", show_alert=True)
              return
@@ -1046,9 +1034,8 @@ async def handle_quick_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Check giới hạn Pro (nếu cần)
         is_pro = await asyncio.to_thread(is_user_pro, chat_id)
-        is_admin = (chat_id == ADMIN_ID)
-        
-        if not is_pro and not is_admin and len(lst) >= 1:
+                
+        if not is_pro and len(lst) >= 1:
              # Nếu chưa có mã này mà list đã đầy -> Chặn
              if symbol not in lst:
                 await query.answer("⚠️ Free chỉ được 1 mã. Nâng Pro để thêm!", show_alert=True)
@@ -1381,18 +1368,6 @@ async def auto_on_after_delay(initial_active: bool):
         
         log.info(f"[{INSTANCE_ID}] BOT auto switched ON after 2 minutes (initial OFF).")
 
-        if ADMIN_ID:
-            try:
-                # 👇 ĐÃ SỬA: Thêm tham số 'tg_app.bot' vào đầu
-                await send_md(
-                    tg_app.bot, 
-                    ADMIN_ID,
-                    "✅ *Hệ thống đã được kích hoạt trở lại (auto /on sau 2 phút).* \n\n"
-                    "Bot hiện đang ở trạng thái *hoạt động bình thường* và sẵn sàng phục vụ người dùng. 🚀"
-                )
-            except Exception as e:
-                log.warning(f"[{INSTANCE_ID}] Lỗi khi gửi thông báo auto /on cho admin: {e}")
-
 async def redis_gateway_loop():
     """[GATEWAY] Lắng nghe Redis -> Gửi/Sửa Telegram (có cơ chế tự reconnect)."""
     log.info(f"[{INSTANCE_ID}][GATEWAY] 🎧 Khởi chạy Redis outbound loop trên kênh '{REDIS_CHANNEL_OUTBOUND}'")
@@ -1518,151 +1493,8 @@ async def redis_gateway_loop():
 # COMMAND HANDLERS
 # ==============================================
 
-async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mở Admin Dashboard Web App"""
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return # Silent ignore
 
-    base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-    # Tạo link kèm admin_id để xác thực đơn giản
-    web_app_url = f"{base_url}/admin/dashboard?admin_id={user_id}"
 
-    kb = [[InlineKeyboardButton("👑 Mở Admin Dashboard", web_app=WebAppInfo(url=web_app_url))]]
-    
-    await reply_md(update, "👇 Bấm bên dưới để vào trang quản trị:", reply_markup=InlineKeyboardMarkup(kb))
-
-# /agentlog <macro|biz|tech|all>
-async def cmd_agentlog(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command để xem nhanh dữ liệu agent lưu trên Redis."""
-    if ADMIN_ID is None or not update.effective_user:
-        return
-
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return
-
-    chat_id = update.effective_chat.id if update.effective_chat else user_id
-
-    try:
-        await asyncio.to_thread(log_command_usage, chat_id, "/agentlog", ADMIN_ID)
-    except Exception as exc:
-        log.warning(f"/agentlog log error: {exc}")
-
-    scope = (context.args[0].lower() if context.args else "all")
-    if scope not in VALID_AGENT_SCOPES:
-        valid_text = ", ".join(sorted(VALID_AGENT_SCOPES))
-        await reply_md(update, f"⚠️ Cú pháp: `/agentlog <{valid_text}>`")
-        return
-
-    # Thử lấy dữ liệu từ Redis
-    try:
-        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    except Exception as exc:
-        log.error(f"/agentlog Redis error: {exc}")
-        await reply_md(update, "⚠️ Không kết nối được Redis.")
-        return
-
-    def _load_agent(agent_type: str):
-        key = _agent_result_key(agent_type)
-        raw = r.get(key)
-        if not raw:
-            return key, None
-        try:
-            return key, json.loads(raw)
-        except json.JSONDecodeError:
-            return key, {"error": "JSON lỗi", "raw": raw}
-
-    lines = ["🗂 *Agent Cache Snapshot*"]
-
-    if scope == "all" or scope == "bundle":
-        bundle_key = _agent_bundle_key(chat_id)
-        bundle_raw = r.get(bundle_key)
-        if bundle_raw:
-            try:
-                bundle_data = json.loads(bundle_raw)
-            except json.JSONDecodeError:
-                bundle_data = {"error": "JSON lỗi", "raw": bundle_raw}
-        else:
-            bundle_data = None
-
-        lines.append("")
-        lines.append(f"*BUNDLE* key `{bundle_key}`")
-        if bundle_data:
-            request_id = bundle_data.get("request_id", "?")
-            generated_at = bundle_data.get("generated_at", "?")
-            scope_saved = bundle_data.get("scope", "?")
-            lines.append(f"• Request: `{request_id}` | Scope: `{scope_saved}`")
-            lines.append(f"• Generated at: {generated_at}")
-            lines.append(f"• AI Summary: {bundle_data.get('ai_summary', '—')}")
-        else:
-            lines.append("• Không tìm thấy dữ liệu bundle cho chat này.")
-
-    target_agents = [scope] if scope in ("macro", "biz", "tech") else ["macro", "biz", "tech"]
-
-    for agent_type in target_agents:
-        key, agent_data = _load_agent(agent_type)
-        lines.append("")
-        lines.append(f"*{agent_type.upper()}* key `{key}`")
-        if not agent_data:
-            lines.append("• Không tìm thấy dữ liệu.")
-            continue
-        request_id = agent_data.get("request_id", "?")
-        generated_at = agent_data.get("generated_at", "?")
-        notes = agent_data.get("notes", "—")
-        insights = agent_data.get("insights")
-        insight_count = len(insights) if isinstance(insights, list) else 0
-        lines.append(f"• Request: `{request_id}` | Generated at: {generated_at}")
-        lines.append(f"• Insights: {insight_count} mục")
-        lines.append(f"• Notes: {notes}")
-
-    await reply_md(update, "\n".join(lines))
-
-# /agent <macro|biz|tech|all>
-async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Trigger multi-agent crawl via command (admin only)."""
-    if ADMIN_ID is None or not update.effective_user:
-        return
-
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        return
-
-    chat_id = update.effective_chat.id if update.effective_chat else user_id
-
-    # Log command usage for audit
-    try:
-        await asyncio.to_thread(log_command_usage, chat_id, "/agent", ADMIN_ID)
-    except Exception as exc:
-        log.warning(f"/agent log error: {exc}")
-
-    scope = (context.args[0].lower() if context.args else "all")
-    if scope not in VALID_AGENT_SCOPES:
-        valid_text = ", ".join(sorted(VALID_AGENT_SCOPES))
-        await reply_md(update, f"⚠️ Cú pháp: `/agent <{valid_text}>`")
-        return
-
-    request_id = str(uuid.uuid4())[:8]
-    payload = {
-        "cmd": "CMD_AGENT_RUN",
-        "chat_id": chat_id,
-        "scope": scope,
-        "request_id": request_id,
-    }
-
-    await asyncio.to_thread(push_to_worker, payload)
-
-    scope_label = scope.upper()
-    await reply_md(
-        update,
-        f"🚀 Đang khởi chạy agent *{scope_label}*\n"
-        f"🆔 Request: `{request_id}`\n"
-        "⏳ Worker sẽ phản hồi khi hoàn tất.",
-    )
-
-# (Nhớ thêm tg_app.add_handler(CommandHandler("admin", cmd_admin)) vào main)
-
-# alert_bot.py
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1677,7 +1509,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 1. Init watchlist nếu chưa có
     try:
-        await asyncio.to_thread(log_command_usage, chat_id, "/start", ADMIN_ID)
+        await asyncio.to_thread(log_command_usage, chat_id, "/start")
         lst = await asyncio.to_thread(get_watch_list_for_chat, chat_id)
         if lst is None: await asyncio.to_thread(save_watch_list_for_chat, chat_id, [])
     except: pass
@@ -1688,8 +1520,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Logic hiển thị: Chỉ hiện Trial nếu user ĐỦ ĐIỀU KIỆN ('OK')
     # Nếu là Admin thì cũng coi như không hiện (để giao diện gọn, hoặc tùy bạn)
-    is_admin = (chat_id == ADMIN_ID)
-    show_trial = (trial_status == 'OK') and not is_admin
+    show_trial = (trial_status == 'OK')
 
     # --- MENU DASHBOARD CƠ BẢN ---
     kb = [
@@ -1703,12 +1534,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
     ]
 
-    # Nếu là Admin -> Thêm nút Admin Dashboard
-    if is_admin:
-        base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://google.com"
-        admin_url = f"{base_url}/admin/dashboard?admin_id={ADMIN_ID}"
-        kb.append([InlineKeyboardButton("👑 Admin Dashboard", web_app=WebAppInfo(url=admin_url))])
-
+    
     # Thêm nút Hướng dẫn cuối cùng
     kb.append([InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help")])
 
@@ -1757,7 +1583,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     try:
-        await asyncio.to_thread(log_command_usage, chat_id, "/help", ADMIN_ID)
+        await asyncio.to_thread(log_command_usage, chat_id, "/help")
     except: pass
 
     help_text = (
@@ -1815,7 +1641,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # -------------------------------------
 
     chat_id = update.effective_chat.id
-    await asyncio.to_thread(log_command_usage, chat_id, "/add", ADMIN_ID)
+    await asyncio.to_thread(log_command_usage, chat_id, "/add")
 
     if not context.args:
         await reply_md(update,
@@ -1868,9 +1694,8 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Kiểm tra Paywall
     is_pro = await asyncio.to_thread(is_user_pro, chat_id)
-    is_admin = (chat_id == ADMIN_ID)
-    
-    if not is_pro and not is_admin and len(lst) >= 1:
+        
+    if not is_pro and len(lst) >= 1:
         await reply_md(update,
             f"⚠️ Tài khoản miễn phí chỉ được theo dõi tối đa **1 mã**.\n"
             f"Vui lòng `/remove {lst[0]}` trước, hoặc nâng cấp Pro."
@@ -1912,7 +1737,7 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     # ⭐️ SỬA: Chạy CSDL trong thread
-    await asyncio.to_thread(log_command_usage, chat_id, "/remove", ADMIN_ID)
+    await asyncio.to_thread(log_command_usage, chat_id, "/remove")
 
     if not context.args:
         await reply_md(update,"⚠️ Cách dùng: /remove <MÃ>\nVí dụ: /remove SSI")
@@ -1963,7 +1788,7 @@ async def cmd_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await track_user_activity(update)
     # cleaned là mã đã làm sạch
-    await asyncio.to_thread(log_command_usage, chat_id, "/alert", ADMIN_ID)
+    await asyncio.to_thread(log_command_usage, chat_id, "/alert")
 
     if not context.args:
         await reply_md(update, "⚠️ Cách dùng: /alert <MÃ> (ví dụ: /alert HPG)")
@@ -2038,7 +1863,7 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Chỉ log command nếu là lệnh gõ tay (để tránh spam log khi bấm nút)
     if not update.callback_query:
         try:
-            await asyncio.to_thread(log_command_usage, chat_id, "/setting", ADMIN_ID)
+            await asyncio.to_thread(log_command_usage, chat_id, "/setting")
             await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except: pass
 
@@ -2085,9 +1910,7 @@ async def cmd_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["⚙️ *CÀI ĐẶT & TRẠNG THÁI TÀI KHOẢN* ⚙️\n"]
 
     # Trạng thái Pro
-    if chat_id == ADMIN_ID:
-        lines.append("👤 *Gói cước:* 😎 *ADMIN*")
-    elif expiry_date and expiry_date.astimezone(vn_tz) > now:
+    if expiry_date and expiry_date.astimezone(vn_tz) > now:
         exp_str = expiry_date.astimezone(vn_tz).strftime("%H:%M %d/%m/%Y")
         lines.append(f"👤 *Gói cước:* 👑 *PRO*")
         lines.append(f"⏳ *Hết hạn:* {exp_str}")
@@ -2177,158 +2000,6 @@ pending_clear_confirmations = {}
 
 
 @task_locked
-async def cmd_restore_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Khôi phục dữ liệu core từ file JSON backup.
-    (ĐÃ SỬA: Thống kê chính xác số lượng bản ghi trước và sau restore)
-    """
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
-    if ADMIN_ID is None or user_id != ADMIN_ID:
-        await reply_md(update, "⛔ Lệnh này chỉ dành cho admin.")
-        return
-    
-    try:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except: pass
-
-    # 1. Lấy file
-    document = update.message.document or (update.message.reply_to_message.document if update.message.reply_to_message else None)
-    if not document:
-        await reply_md(update, "📥 Vui lòng gửi file `.json` kèm caption `/restore_core`.")
-        return
-
-    # 2. Tải file
-    tmp_dir = Path(tempfile.gettempdir()) / "stockbot_restore"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", document.file_name or "backup.json")
-    tmp_path = tmp_dir / f"{int(time.time())}_{safe_name}"
-
-    try:
-        tg_file = await document.get_file()
-        await tg_file.download_to_drive(tmp_path)
-    except Exception as e:
-        await reply_md(update, f"⚠️ Lỗi tải file: `{e}`")
-        return
-
-    # 3. Clear Redis
-    try:
-        r = get_redis()
-        key_count = r.dbsize()
-        r.flushdb()
-        await reply_md(update, f"🧹 Đã xóa {key_count} keys Redis.")
-    except Exception: pass
-
-    # 4. Đọc JSON
-    try:
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except Exception as e:
-        await reply_md(update, f"⚠️ File JSON lỗi: `{e}`")
-        return
-
-    # --- HÀM ĐẾM SỐ LƯỢNG BẢN GHI (SYNC) ---
-    def _count_current_rows():
-        stats = {}
-        # Danh sách tất cả các bảng quan trọng
-        tables = [
-            "users","bot_watch", "news_pref", "bot_config", "bctc_notified", # Core cũ
-            "paid_users", "bot_orders", "bot_user_settings", "analysis_report_seen" # Core mới (Tiền nong)
-        ]
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                for tbl in tables:
-                    try:
-                        cur.execute(f"SELECT COUNT(*) FROM {tbl}")
-                        res = cur.fetchone()
-                        stats[tbl] = res[0] if res else 0
-                    except Exception:
-                        # Nếu bảng chưa tồn tại (lần đầu chạy), coi như 0
-                        stats[tbl] = 0
-        return stats
-    # ---------------------------------------
-
-    # 5. Lấy thống kê TRƯỚC khi restore
-    try:
-        before_stats = await asyncio.to_thread(_count_current_rows)
-    except Exception as e:
-        log.warning(f"Lỗi đếm before: {e}")
-        before_stats = {}
-
-    # 6. Thực hiện IMPORT
-    try:
-        # Hàm import_core_data không cần trả về gì cả, nó chỉ cần chạy xong không lỗi
-        await asyncio.to_thread(import_core_data, payload, "replace")
-    except Exception as e:
-        await reply_md(update, f"⚠️ Lỗi Import DB: `{e}`")
-        return
-
-    # 7. Lấy thống kê SAU khi restore
-    try:
-        after_stats = await asyncio.to_thread(_count_current_rows)
-    except Exception:
-        after_stats = {}
-
-    # 8. Đồng bộ lại Redis (Watchlist)
-    sync_msg = ""
-    try:
-        synced_users = 0
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT chat_id, watch_list FROM bot_watch")
-                rows = cur.fetchall()
-        
-        r = get_redis()
-        r.delete("watch_chat_ids")
-        for cid, wl in rows:
-            r.set(f"watch:{cid}", json.dumps(wl))
-            r.sadd("watch_chat_ids", cid)
-            synced_users += 1
-        sync_msg = f"🔄 Đã đồng bộ Redis (Watchlist). Tổng user: *{synced_users}*"
-    except Exception as e:
-        sync_msg = f"⚠️ Lỗi đồng bộ Redis: {e}"
-
-    # 9. Tạo báo cáo kết quả
-    lines = ["✅ **Khôi phục dữ liệu core thành công!**\n"]
-    lines.append("**Biến động dữ liệu (Trước → Sau):**")
-    
-    # Danh sách hiển thị đẹp
-    display_map = {
-        "users": "👤 User Info",
-        "paid_users": "💰 User Pro",
-        "bot_orders": "🧾 Đơn hàng",
-        "bot_watch": "📋 Watchlist",
-        "bot_user_settings": "⚙️ Setting",
-        "bctc_notified": "🔔 Log BCTC",
-        "analysis_report_seen": "📊 Log Report",
-        "news_pref": "📰 News Pref",
-        "bot_config": "🔧 Config"
-    }
-
-    for tbl, name in display_map.items():
-        b = before_stats.get(tbl, 0)
-        a = after_stats.get(tbl, 0)
-        # Chỉ hiện những bảng có dữ liệu hoặc có sự thay đổi
-        if b > 0 or a > 0:
-            lines.append(f"- {name}: {b} → **{a}**")
-
-    lines.append("")
-    lines.append(sync_msg)
-
-    await reply_md(update, "\n".join(lines))
-
-    # Dọn dẹp file tạm
-    try:
-        if os.path.exists(tmp_path): os.remove(tmp_path)
-    except: pass
-
-
-
-# ==============================================
-# COMMAND: /report (CÓ CACHE REDIS + RETRY, KHÔNG COOLDOWN)
-# Cache nội dung report theo danh mục vào Redis (theo cache_key = danh mục chuẩn hoá)
-# ==============================================
 
 @task_locked(manual_release=True)
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2374,13 +2045,13 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         symbol = context.args[0].strip().upper()
 
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id)
         base_url = os.getenv("RENDER_EXTERNAL_URL", "https://google.com")
         web_app_url = f"{base_url}/info/{symbol}?chat_id={chat_id}"
 
         if not is_pro:
             try:
-                await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol} (Free)", ADMIN_ID)
+                await asyncio.to_thread(log_command_usage, chat_id, f"/info {symbol} (Free)")
             except Exception:
                 pass
             kb = [[InlineKeyboardButton(f"📄 Mở Hồ Sơ {symbol}", web_app=WebAppInfo(url=web_app_url))],
@@ -2393,7 +2064,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            await asyncio.to_thread(log_command_usage, chat_id, "/info", ADMIN_ID, note=symbol)
+            await asyncio.to_thread(log_command_usage, chat_id, "/info", note=symbol)
         except Exception:
             pass
 
@@ -2486,7 +2157,7 @@ async def check_pro_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     is_pro = await asyncio.to_thread(is_user_pro, chat_id)
     
     # 2. Áp dụng logic của bạn: (Không phải Pro) VÀ (Không phải Admin) -> Chặn
-    if not is_pro and chat_id != ADMIN_ID:
+    if not is_pro:
         await reply_md(
             update, 
             "⚠️ Tính năng này chỉ dành cho Gói Pro. Vui lòng liên hệ Admin `https://t.me/KhoiTran99` để nâng cấp ạ 🙏."
@@ -2624,18 +2295,7 @@ def sepay_webhook():
         )
         _send_telegram_message_safe(chat_id, msg_fail_user)
 
-        # 2. Báo cho Admin (Kèm link chat)
-        if ADMIN_ID:
-            msg_fail_admin = (
-                f"🚨 **CẢNH BÁO: LỖI THANH TOÁN (SAI TIỀN)**\n\n"
-                f"👤 User ID: `{chat_id}`\n"
-                f"📝 Mã đơn: `{order_id}`\n"
-                f"🔻 Thực nhận: `{received_amount:,} đ`\n"
-                f"yêu cầu: `{expected_amount:,} đ`\n\n"
-                f"👉 [Bấm vào đây để chat với khách](tg://user?id={chat_id})"
-            )
-            _send_telegram_message_safe(ADMIN_ID, msg_fail_admin)
-
+        
         return jsonify({"message": "Incorrect amount"}), 200
 
     # --- CASE 2: THANH TOÁN THÀNH CÔNG ---
@@ -2653,18 +2313,7 @@ def sepay_webhook():
         )
         _send_telegram_message_safe(chat_id, msg_success_user)
 
-        # 2. Báo cho Admin (Kèm link chat)
-        if ADMIN_ID:
-            msg_success_admin = (
-                f"💰 **NẠP TIỀN THÀNH CÔNG**\n\n"
-                f"👤 User ID: `{chat_id}`\n"
-                f"💵 Số tiền: `{received_amount:,} đ`\n"
-                f"📦 Gói: `{days_to_add} ngày`\n"
-                f"📝 Mã: `{order_id}`\n\n"
-                f"👉 [Bấm vào đây để chat/cảm ơn khách](tg://user?id={chat_id})"
-            )
-            _send_telegram_message_safe(ADMIN_ID, msg_success_admin)
-        
+                
     except Exception as e:
         log.error(f"[SEPAPAY] Lỗi kích hoạt Pro: {e}")
         return jsonify({"message": "Error activating Pro"}), 500
@@ -2695,7 +2344,7 @@ async def view_profile(symbol: str): # <--- Đổi thành async
     if chat_id_str:
         try:
             cid = int(chat_id_str)
-            is_pro = await asyncio.to_thread(is_user_pro, cid) or (cid == ADMIN_ID)
+            is_pro = await asyncio.to_thread(is_user_pro, cid)
         except: pass
     
     if not is_pro:
@@ -2855,782 +2504,6 @@ async def view_chart(symbol: str):
         volume_str=data['volume_str']
     )
 
-@flask_app.route("/admin/dashboard")
-def admin_dashboard():
-    """Trang chủ Admin Dashboard (Đã cập nhật: Full dữ liệu Logs + Orders + Settings)"""
-    req_admin_id = request.args.get("admin_id")
-    
-    # 1. Check quyền Admin
-    if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-        return "⛔ Access Denied. Chỉ Admin mới được truy cập.", 403
-
-    try:
-        # 2. Lấy dữ liệu cơ bản từ DB
-        raw_data = get_admin_dashboard_data()
-        
-        # --- 🔥 [PHẦN MỚI THÊM VÀO] BỔ SUNG DỮ LIỆU CHI TIẾT ---
-        for row in raw_data:
-            uid = row['id']
-            
-            # A. Lấy Nhật ký hoạt động (Command Logs)
-            try:
-                # [FIX] Lấy 'rows' từ kết quả trả về
-                log_result = get_user_logs(uid, limit=10)
-                logs = log_result.get('rows', [])
-                
-                # Convert datetime sang ISO string để JSON hiểu được
-                for l in logs:
-                    if isinstance(l.get('used_at'), (datetime.datetime, datetime.date)):
-                        l['used_at'] = l['used_at'].isoformat()
-                row['logs'] = logs
-            except Exception:
-                row['logs'] = []
-
-            # B. Lấy Lịch sử giao dịch (Orders)
-            try:
-                orders = get_user_orders(uid)
-                for o in orders:
-                    if isinstance(o.get('created_at'), (datetime.datetime, datetime.date)):
-                        o['created_at'] = o['created_at'].isoformat()
-                row['orders'] = orders
-            except Exception:
-                row['orders'] = []
-
-            # C. Lấy Cấu hình (VN30F1M, News...)
-            try:
-                row['config'] = get_user_configs(uid)
-            except Exception:
-                row['config'] = {"vn30": False, "news": True}
-            
-            # D. Parse Watchlist từ JSON string (nếu cần)
-            if isinstance(row.get('watchlist'), str):
-                try: row['watchlist'] = json.loads(row['watchlist'])
-                except: row['watchlist'] = []
-        # -------------------------------------------------------
-
-        # --- TÍNH DOANH ---
-        # Gọi hàm tính tổng từ bảng orders
-        real_revenue = get_total_revenue_real() # <-- Hàm mới viết ở db_utils
-        # Format thành dạng: 4.500.000
-        revenue_str = "{:,.0f}".format(real_revenue).replace(",", ".")
-        
-        # 4. Convert manually each item and keep it as dict
-        # so that when passed to template, tojson works without extra escaping.
-        for r in raw_data:
-            for k, v in r.items():
-                if isinstance(v, (datetime.datetime, datetime.date)):
-                    r[k] = v.isoformat()
-                elif isinstance(v, datetime.timedelta):
-                    r[k] = str(v)
-                elif isinstance(v, Decimal):
-                    r[k] = float(v)
-
-        # 4. Chuyển thành chuỗi JSON
-        users_json = json.dumps(raw_data, ensure_ascii=False)
-        
-    except Exception as e:
-        log.error(f"Lỗi load dashboard data: {e}")
-        users_json = "[]"
-        revenue_str = "0"
-
-    # 5. Render Template và truyền biến
-    rendered = render_template_string(
-        ADMIN_MOBILE_TEMPLATE,
-        admin_id=ADMIN_ID,
-        initial_data=users_json,
-        total_revenue=revenue_str,
-        sectors=json.dumps(CACHED_SECTORS, ensure_ascii=False)
-    )
-    return Response(rendered, mimetype='text/html; charset=utf-8')
-
-@flask_app.route("/api/admin/users")
-def api_admin_users():
-    """API trả về danh sách user JSON (Kèm Logs + Config)"""
-    req_admin_id = request.args.get("admin_id")
-    try:
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"error": "Unauthorized"}), 403
-    except:
-        return jsonify({"error": "Invalid Admin ID"}), 403
-
-    try:
-        data = get_admin_dashboard_data()
-        
-        # Loop từng user để lấy thêm dữ liệu chi tiết
-        for row in data:
-            uid = row['id']
-            
-            # 1. Lấy Orders (Code cũ)
-            orders = get_user_orders(uid)
-            for o in orders:
-                if isinstance(o.get('created_at'), (datetime.datetime, datetime.date)):
-                    o['created_at'] = o['created_at'].isoformat()
-            row['orders'] = orders
-
-            # 2. [MỚI] Lấy Logs hoạt động
-            log_result = get_user_logs(uid, limit=10)
-            logs = log_result.get('rows', [])
-
-            for l in logs:
-                if isinstance(l.get('used_at'), (datetime.datetime, datetime.date)):
-                    l['used_at'] = l['used_at'].isoformat()
-            row['logs'] = logs
-
-            # 3. [MỚI] Lấy Cấu hình
-            row['config'] = get_user_configs(uid)
-
-            # 4. Xử lý datetime chung cho user object
-            for key, val in row.items():
-                if isinstance(val, (datetime.datetime, datetime.date)):
-                    row[key] = val.isoformat()
-            
-            if isinstance(row.get('watchlist'), str):
-                try: row['watchlist'] = json.loads(row['watchlist'])
-                except: row['watchlist'] = []
-
-        # Serialize an toàn
-        def safe_serializer(obj):
-            if isinstance(obj, (datetime.datetime, datetime.date)):
-                return obj.isoformat()
-            if isinstance(obj, Decimal):
-                return float(obj)
-            if hasattr(obj, '__str__'):
-                return str(obj)
-            return str(obj)
-
-        json_str = json.dumps(data, default=safe_serializer, ensure_ascii=False)
-        return Response(json_str, mimetype='application/json; charset=utf-8')
-
-    except Exception as e:
-        log.error(f"[ADMIN_API] Users Error: {e}")
-        return jsonify({"error": "Server Error", "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/extend", methods=["POST"])
-def api_admin_extend():
-    """API Gia hạn user"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = data.get("target_id")
-        days = data.get("days")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        # Gọi hàm gia hạn có sẵn
-        add_paid_user(int(target_id), int(days))
-        
-        # Gửi thông báo cho user qua Telegram
-        # Lưu ý: Cần dùng run_coroutine_threadsafe vì Flask chạy khác thread với Bot
-        if tg_app and MAIN_LOOP:
-            msg_text = f"🎁 TÀI KHOẢN ĐƯỢC GIA HẠN!\nAdmin vừa cộng thêm *{days} ngày* Pro cho bạn. Hạn dùng mới đã được cập nhật."
-            asyncio.run_coroutine_threadsafe(
-                send_md(tg_app.bot, int(target_id), msg_text),
-                MAIN_LOOP
-            )
-
-        return jsonify({"ok": True})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Extend Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/deactivate", methods=["POST"])
-def api_admin_deactivate_user():
-    """API Ngưng kích hoạt gói Pro"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = data.get("target_id")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        # Gọi hàm DB để set ngày hết hạn về quá khứ
-        rows = deactivate_paid_user(int(target_id))
-        
-        if rows > 0:
-            # Gửi thông báo cho user
-            if tg_app and MAIN_LOOP:
-                msg_text = "⚠️ **Thông báo:** Gói Pro của bạn đã bị ngưng kích hoạt bởi Admin.\nVui lòng liên hệ hỗ trợ nếu có thắc mắc."
-                asyncio.run_coroutine_threadsafe(
-                    send_md(tg_app.bot, int(target_id), msg_text),
-                    MAIN_LOOP
-                )
-            return jsonify({"ok": True})
-        else:
-            return jsonify({"ok": False, "message": "User này chưa kích hoạt Pro."}), 400
-
-    except Exception as e:
-        log.error(f"[ADMIN_API] Deactivate Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/message", methods=["POST"])
-def api_admin_send_message():
-    """API Gửi tin nhắn trực tiếp cho user"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = data.get("target_id")
-        text = data.get("text")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-        
-        if not text:
-            return jsonify({"ok": False, "message": "Nội dung trống"}), 400
-
-        # Gửi qua Bot
-        if tg_app and MAIN_LOOP:
-            # Thêm prefix để user biết là từ Admin
-            final_text = f"💌 **Tin nhắn từ Admin:**\n\n{text}"
-            asyncio.run_coroutine_threadsafe(
-                send_md(tg_app.bot, int(target_id), final_text),
-                MAIN_LOOP
-            )
-            return jsonify({"ok": True})
-        
-        return jsonify({"ok": False, "message": "Bot not ready"}), 500
-
-    except Exception as e:
-        log.error(f"[ADMIN_API] Send Message Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/contact", methods=["POST"])
-def api_admin_request_contact():
-    """API gửi link chat (Markdown) về cho admin rồi đóng webapp"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = data.get("target_id")
-        target_name = data.get("target_name")
-        username = data.get("username")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        # Tạo nội dung tin nhắn
-        if username:
-            # Case 1: Có username -> Dùng link t.me chuẩn
-            display_link = f"https://t.me/{username}"
-            msg_text = (
-                f"👤 **Contact:** {target_name}\n"
-                f"🔗 Link: {display_link}\n\n"
-                f"👉 [Bấm vào đây để chat với @{username}]({display_link})"
-            )
-        else:
-            # Case 2: Không có username -> Dùng Markdown Link với ID
-            # Cú pháp: [Text hiển thị](tg://user?id=123456) <- Đây là cách duy nhất hoạt động ổn định
-            deep_link = f"tg://user?id={target_id}"
-            msg_text = (
-                f"👤 **Contact:** {target_name} (ID: `{target_id}`)\n"
-                f"⚠️ User này chưa đặt Username.\n\n"
-                f"👉 [Bấm vào đây để mở chat riêng]({deep_link})"
-            )
-
-        # Gửi tin nhắn
-        if tg_app and MAIN_LOOP:
-            asyncio.run_coroutine_threadsafe(
-                send_md(tg_app.bot, int(req_admin_id), msg_text),
-                MAIN_LOOP
-            )
-            return jsonify({"ok": True})
-        
-        return jsonify({"ok": False, "message": "Bot not ready"}), 500
-
-    except Exception as e:
-        log.error(f"[ADMIN_API] Request Contact Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/note", methods=["POST"])
-async def api_admin_save_note():
-    """API Lưu ghi chú admin"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = data.get("target_id")
-        note = data.get("note")
-
-        # Check quyền Admin
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        # Gọi hàm DB (chạy trong thread để không block bot)
-        await asyncio.to_thread(update_user_admin_note, int(target_id), note)
-
-        return jsonify({"ok": True})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Save Note Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/ban", methods=["POST"])
-async def api_admin_ban_user():
-    """API Chặn / Bỏ chặn user (Có gửi thông báo)"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        target_id = int(data.get("target_id"))
-        action = data.get("action") # 'ban' hoặc 'unban'
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        should_ban = (action == 'ban')
-        
-        # 1. Cập nhật DB (Async)
-        await asyncio.to_thread(set_user_ban_status, target_id, should_ban)
-        
-        # 2. Cập nhật RAM Cache ngay lập tức
-        if should_ban:
-            BANNED_CACHE.add(target_id)
-            log.info(f"[ADMIN] ⛔ Đã BAN user {target_id}")
-            
-            # Nội dung tin nhắn khi BAN
-            msg_text = (
-                "⛔ **THÔNG BÁO: TÀI KHOẢN BỊ KHÓA**\n\n"
-                "Tài khoản của bạn đã bị chặn truy cập Bot do vi phạm chính sách hoặc nghi vấn Spam.\n"
-                "Vui lòng liên hệ Admin @KhoiTran99 để được hỗ trợ."
-            )
-        else:
-            if target_id in BANNED_CACHE:
-                BANNED_CACHE.remove(target_id)
-            log.info(f"[ADMIN] ✅ Đã UNBAN user {target_id}")
-            
-            # Nội dung tin nhắn khi UNBAN
-            msg_text = (
-                "✅ **THÔNG BÁO: TÀI KHOẢN ĐƯỢC MỞ KHÓA**\n\n"
-                "Quyền truy cập Bot của bạn đã được khôi phục.\n"
-                "Chúc bạn đầu tư hiệu quả! 🚀"
-            )
-
-        # 3. Gửi thông báo tới User
-        # Sử dụng run_coroutine_threadsafe để đảm bảo an toàn luồng giữa Flask và Telegram Bot
-        if tg_app and MAIN_LOOP:
-            asyncio.run_coroutine_threadsafe(
-                send_md(tg_app.bot, target_id, msg_text),
-                MAIN_LOOP
-            )
-
-        return jsonify({"ok": True})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Ban Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-# ==============================================
-# 🛠️ NEW ADMIN API ENDPOINTS (SYSTEM CONTROL)
-# ==============================================
-
-@flask_app.route("/api/admin/system/status", methods=["GET", "POST"])
-async def api_admin_system_status():
-    """Lấy hoặc Cập nhật trạng thái Bot (ON/OFF)"""
-    global BOT_ACTIVE
-    
-    # GET: Lấy trạng thái hiện tại
-    if request.method == "GET":
-        req_admin_id = request.args.get("admin_id")
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"error": "Unauthorized"}), 403
-            
-        # Lấy thêm thông tin Redis Keys
-        redis_keys = 0
-        try:
-            r = get_redis()
-            redis_keys = await asyncio.to_thread(r.dbsize)
-        except: pass
-
-        # Lấy thông tin CPU & RAM
-        cpu_usage = psutil.cpu_percent(interval=None)
-        ram = psutil.virtual_memory()
-        ram_usage = ram.percent
-            
-        return jsonify({
-            "active": BOT_ACTIVE,
-            "redis_keys": redis_keys,
-            "cpu": cpu_usage,
-            "ram": ram_usage
-        })
-
-    # POST: Cập nhật trạng thái
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        want_active = data.get("active") # True/False
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        BOT_ACTIVE = want_active
-        await asyncio.to_thread(set_bot_active, want_active)
-        
-        log.info(f"[ADMIN_API] System Status changed to: {BOT_ACTIVE}")
-        return jsonify({"ok": True, "active": BOT_ACTIVE})
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/user/logs", methods=["GET"])
-def api_admin_user_logs():
-    """API lấy nhật ký lệnh của user (Phân trang & Nội dung)"""
-    try:
-        req_admin_id = request.args.get("admin_id")
-        target_id = request.args.get("target_id")
-        page = int(request.args.get("page", 1))
-        limit = int(request.args.get("limit", 10))
-        offset = (page - 1) * limit
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        if not target_id:
-            return jsonify({"ok": False, "message": "Missing target_id"}), 400
-
-        # Gọi hàm get_user_logs từ db_utils
-        result = get_user_logs(int(target_id), limit, offset)
-        
-        # Xử lý dữ liệu trả về
-        data = []
-        # Lưu ý: result là dict {'rows': [], 'total': int}
-        rows = result.get('rows', [])
-        
-        for row in rows:
-            r = dict(row)
-            # Convert datetime sang string để JSON hiểu
-            if r.get('used_at'):
-                r['used_at'] = r['used_at'].isoformat()
-            data.append(r)
-
-        return jsonify({
-            "ok": True,
-            "data": data,
-            "pagination": {
-                "current_page": page,
-                "total_pages": math.ceil(result['total'] / limit) if limit > 0 else 1,
-                "total_records": result['total']
-            }
-        })
-    except Exception as e:
-        log.error(f"[ADMIN_API] Get Logs Error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/system/broadcast", methods=["POST"])
-async def api_admin_broadcast():
-    """Gửi thông báo tới toàn bộ user"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        text = data.get("text")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-        
-        if not text:
-            return jsonify({"ok": False, "message": "Nội dung trống"}), 400
-
-        # Gọi hàm broadcast (chạy background task để không block request)
-        # Lưu ý: broadcast_to_all_watchers là async, cần wrap vào task
-        if tg_app and MAIN_LOOP:
-            asyncio.run_coroutine_threadsafe(
-                broadcast_to_all_watchers(text, target_audience='all'),
-                MAIN_LOOP
-            )
-            return jsonify({"ok": True, "message": "Đang gửi broadcast..."})
-        
-        return jsonify({"ok": False, "message": "Bot not ready"}), 500
-
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/cache/clear", methods=["POST"])
-async def api_admin_clear_cache():
-    """Xóa Cache (Screener, Report, Info)"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        cache_type = data.get("type") # 'screener', 'report', 'info', 'all'
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        r = get_redis()
-        deleted = 0
-        
-        if cache_type == 'all':
-            r.flushdb()
-            msg = "Đã xóa toàn bộ dữ liệu Redis (flushdb)."
-
-        elif cache_type == 'screener':
-            # Logic cũ: push lệnh sang worker để tính lại, hoặc xóa key
-            # Ở đây ta xóa key snapshot để lần tới nó tự tính lại
-            r.delete("global_screener_snapshot")
-            # Gửi lệnh force update sang worker
-            payload = {"cmd": "FORCE_SCREENER", "admin_id": ADMIN_ID}
-            await asyncio.to_thread(push_to_worker, payload)
-            msg = "Đã xóa cache Screener & Trigger Worker update."
-
-        elif cache_type == 'report':
-            # Quét xóa report_cache:*
-            for key in r.scan_iter(match="report_cache:*"):
-                r.delete(key)
-                deleted += 1
-            msg = f"Đã xóa {deleted} key Report Cache."
-
-        elif cache_type == 'info':
-            # Quét xóa profile_cache:*
-            for key in r.scan_iter(match="profile_cache:*"):
-                r.delete(key)
-                deleted += 1
-            msg = f"Đã xóa {deleted} key Profile Cache."
-        
-        else:
-            return jsonify({"ok": False, "message": "Unknown type"}), 400
-
-        return jsonify({"ok": True, "message": msg})
-
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/worker/force", methods=["POST"])
-async def api_admin_force_worker():
-    """Force chạy tác vụ Worker (Weekly Report, etc.)"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        task_type = data.get("type") # 'weekly'
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        if task_type == 'weekly':
-            payload = {"cmd": "RUN_WEEKLY_NOW", "admin_id": ADMIN_ID}
-            await asyncio.to_thread(push_to_worker, payload)
-            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Weekly Report."})
-        
-        elif task_type == 'nightly_valuation':
-            payload = {"cmd": "RUN_NIGHTLY_VALUATION", "admin_id": ADMIN_ID}
-            await asyncio.to_thread(push_to_worker, payload)
-            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Nightly Valuation."})
-        
-        elif task_type == 'eod_summary':
-            payload = {"cmd": "RUN_EOD_SUMMARY", "admin_id": ADMIN_ID}
-            await asyncio.to_thread(push_to_worker, payload)
-            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy EOD Summary."})
-
-        elif task_type == 'monthly_insight':
-            payload = {"cmd": "RUN_MONTHLY_INSIGHT", "admin_id": ADMIN_ID}
-            await asyncio.to_thread(push_to_worker, payload)
-            return jsonify({"ok": True, "message": "Đã gửi lệnh chạy Monthly Insight."})
-
-        return jsonify({"ok": False, "message": "Unknown task"}), 400
-
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/system/backup", methods=["POST"])
-async def api_admin_backup():
-    """Trigger Backup Core và gửi file về Telegram Admin"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        # Tái sử dụng logic của cmd_backup_core nhưng chạy background
-        async def _do_backup():
-            try:
-                payload = await asyncio.to_thread(export_core_data)
-                vn_tz = pytz.timezone(TIMEZONE)
-                now = datetime.datetime.now(vn_tz)
-                ts = now.strftime("%Y%m%d_%H%M%S")
-                filename = f"stockbot_core_backup_{ts}.json"
-                tmp_path = os.path.join(TMP_DIR, filename)
-
-                def json_datetime_converter(o):
-                    if isinstance(o, (datetime.date, datetime.datetime)):
-                        return o.isoformat()
-                    raise TypeError(f"Type {o} not serializable")
-
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, ensure_ascii=False, indent=2, default=json_datetime_converter)
-
-                await tg_app.bot.send_document(
-                    chat_id=ADMIN_ID,
-                    document=open(tmp_path, "rb"),
-                    filename=filename,
-                    caption=f"📦 Backup System Triggered from Dashboard."
-                )
-                os.remove(tmp_path)
-            except Exception as e:
-                log.error(f"Backup Error: {e}")
-                await send_md(tg_app.bot, ADMIN_ID, f"⚠️ Backup thất bại: {e}")
-
-        if tg_app and MAIN_LOOP:
-            asyncio.run_coroutine_threadsafe(_do_backup(), MAIN_LOOP)
-            return jsonify({"ok": True, "message": "Đang tạo backup và gửi về Telegram..."})
-        
-        return jsonify({"ok": False, "message": "Bot not ready"}), 500
-
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/system/delete_range", methods=["POST"])
-async def api_admin_delete_range():
-    """Xóa tin nhắn theo khoảng thời gian"""
-    try:
-        data = request.get_json()
-        req_admin_id = data.get("admin_id")
-        start_str = data.get("start") # "YYYY-MM-DD HH:MM"
-        end_str = data.get("end")     # "YYYY-MM-DD HH:MM"
-
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        vn_tz = pytz.timezone(TIMEZONE)
-        start_time = vn_tz.localize(datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M"))
-        end_time = vn_tz.localize(datetime.datetime.strptime(end_str, "%Y-%m-%d %H:%M"))
-
-        # Chạy background task để xóa
-        async def _do_delete():
-            try:
-                records = await asyncio.to_thread(get_bot_messages_in_range, start_time, end_time)
-                if not records:
-                    await send_md(tg_app.bot, ADMIN_ID, "📭 Không có tin nhắn nào để xóa trong khoảng đã chọn.")
-                    return
-
-                deleted = 0
-                skipped = 0
-                now = datetime.datetime.now(vn_tz)
-
-                for chat_id, msg_id, _sent_at in records:
-                    try:
-                        sent_at_vn = _sent_at.astimezone(vn_tz) if _sent_at.tzinfo else _sent_at.replace(tzinfo=pytz.UTC).astimezone(vn_tz)
-                        if (now - sent_at_vn).total_seconds() > 48*3600:
-                            skipped += 1
-                            continue
-                        
-                        # Gọi API xóa
-                        try:
-                            await tg_app.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                            deleted += 1
-                        except: pass
-                        
-                        await asyncio.sleep(0.05) # Rate limit nhẹ
-                    except: pass
-                
-                # Xóa DB
-                await asyncio.to_thread(delete_bot_messages_in_range, start_time, end_time)
-                
-                await send_md(tg_app.bot, ADMIN_ID, f"✅ Đã xóa {deleted} tin nhắn.\n(Bỏ qua {skipped} tin cũ > 48h).")
-
-            except Exception as e:
-                log.error(f"Delete Range Error: {e}")
-
-        if tg_app and MAIN_LOOP:
-            asyncio.run_coroutine_threadsafe(_do_delete(), MAIN_LOOP)
-            return jsonify({"ok": True, "message": "Tiến trình xóa đang chạy ngầm..."})
-
-        return jsonify({"ok": False, "message": "Bot not ready"}), 500
-
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/personalization/list", methods=["GET"])
-async def api_admin_personalization_list():
-    try:
-        req_admin_id = request.args.get("admin_id")
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        include_expired = (request.args.get("include_expired", "false").lower() in ("1", "true", "yes"))
-
-        try:
-            await asyncio.to_thread(cleanup_expired_stock_personalizations)
-        except Exception as exc:
-            log.warning(f"[ADMIN_API] Cleanup personalization error: {exc}")
-
-        rows = await asyncio.to_thread(list_stock_personalizations, include_expired)
-        payload = []
-        for row in rows:
-            payload.append({
-                "id": row.get("id"),
-                "symbol": row.get("symbol"),
-                "note": row.get("note"),
-                "status": row.get("status"), # Thêm status để biết
-                "contributor_name": row.get("contributor_name"), # MỚI
-                "contributor_id": row.get("contributor_id"),     # MỚI
-                "expires_at": row.get("expires_at").isoformat() if row.get("expires_at") else None,
-                "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-                "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
-            })
-        return jsonify({"ok": True, "data": payload})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Personalization list error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/personalization/save", methods=["POST"])
-async def api_admin_personalization_save():
-    try:
-        data = request.get_json() or {}
-        req_admin_id = data.get("admin_id")
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        note_id_raw = data.get("note_id")
-        note_id = None
-        if note_id_raw is not None:
-            try:
-                note_id = int(note_id_raw)
-            except (TypeError, ValueError):
-                return jsonify({"ok": False, "message": "note_id không hợp lệ"}), 400
-        symbol = _normalize_symbol(data.get("symbol"))
-        note = (data.get("note") or "").strip()
-        if not note:
-            return jsonify({"ok": False, "message": "Nội dung ghi chú trống"}), 400
-
-        expires_input = data.get("expires_at")
-        expires_dt = _parse_admin_datetime(expires_input)
-
-        if note_id:
-            row = await asyncio.to_thread(update_stock_personalization, note_id, note, expires_dt)
-            if not row:
-                return jsonify({"ok": False, "message": "Không tìm thấy note"}), 404
-        else:
-            if not symbol:
-                return jsonify({"ok": False, "message": "Symbol trống"}), 400
-            row = await asyncio.to_thread(create_stock_personalization, symbol, note, expires_dt)
-
-        payload = {
-            "id": row.get("id"),
-            "symbol": row.get("symbol"),
-            "note": row.get("note"),
-            "expires_at": row.get("expires_at").isoformat() if row.get("expires_at") else None,
-            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-            "updated_at": row.get("updated_at").isoformat() if row.get("updated_at") else None,
-        }
-        return jsonify({"ok": True, "data": payload})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Personalization save error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-@flask_app.route("/api/admin/personalization/delete", methods=["POST"])
-async def api_admin_personalization_delete():
-    try:
-        data = request.get_json() or {}
-        req_admin_id = data.get("admin_id")
-        if not req_admin_id or int(req_admin_id) != ADMIN_ID:
-            return jsonify({"ok": False, "message": "Unauthorized"}), 403
-
-        note_id_raw = data.get("note_id")
-        try:
-            note_id = int(note_id_raw)
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "message": "Thiếu note_id"}), 400
-
-        await asyncio.to_thread(delete_stock_personalization, note_id)
-        return jsonify({"ok": True})
-    except Exception as e:
-        log.error(f"[ADMIN_API] Personalization delete error: {e}")
-        return jsonify({"ok": False, "message": str(e)}), 500
-
-
 
 
 
@@ -3665,7 +2538,7 @@ async def api_user_save_note():
         note_id = data.get("id")
 
         # 1. Check quyền Pro
-        is_pro = await asyncio.to_thread(is_user_pro, chat_id) or (chat_id == ADMIN_ID)
+        is_pro = await asyncio.to_thread(is_user_pro, chat_id)
         if not is_pro: return jsonify({"ok": False, "message": "Tính năng chỉ dành cho gói Pro."})
 
         # 2. Validate độ dài nội dung
@@ -3731,20 +2604,7 @@ async def api_user_save_note():
                 status='PENDING'
             )
             
-            if tg_app and MAIN_LOOP and ADMIN_ID:
-                # [MỚI] Lấy username từ request và format tin nhắn
-                username = data.get("username")
-                user_display = f"`{chat_id}`"
-                if username:
-                    user_display += f" (@{username})" # Thêm username nếu có
-
-                type_label = "Vĩ mô" if symbol == "VN_MACRO" else ("Ngành" if len(symbol) > 3 else "Cổ phiếu")
-                
-                # Gửi thông báo kèm username
-                asyncio.run_coroutine_threadsafe(
-                    send_md(tg_app.bot, ADMIN_ID, f"🔔 User {user_display} vừa đóng góp ({type_label}): `{symbol}`."),
-                    MAIN_LOOP
-                )
+            log.info(f"User {chat_id} contributed note for symbol {symbol}")
 
         return jsonify({"ok": True})
 
@@ -3894,7 +2754,7 @@ async def asgi_wrapper_app(scope, receive, send):
                 
                 BACKGROUND_TASKS = [
                     MAIN_LOOP.create_task(redis_gateway_loop()),
-                    MAIN_LOOP.create_task(run_background_startup_tasks(ADMIN_ID, initial_active, INSTANCE_ID, tg_app)),
+                    MAIN_LOOP.create_task(run_background_startup_tasks(initial_active, INSTANCE_ID, tg_app)),
                     MAIN_LOOP.create_task(auto_on_after_delay(initial_active)),
                 ]
                 log.info(f"[Lifespan] Đã khởi động {len(BACKGROUND_TASKS)} tác vụ nền.")
@@ -3910,108 +2770,28 @@ async def asgi_wrapper_app(scope, receive, send):
         await wsgi_app(scope, receive, send)
 
 # Đặt hàm này bên trên hàm main()
-async def run_background_startup_tasks(admin_id: int | None, initial_active: bool, instance_id: str, app: telegram.ext.Application):
+async def run_background_startup_tasks(initial_active: bool, instance_id: str, app: telegram.ext.Application):
     """
     Chạy các tác vụ khởi động chậm (I/O, network) trong nền
     sau khi máy chủ web đã khởi động.
     """
     try:
-        # Tác vụ 1: Đăng ký lệnh bot (network call) - Thêm (admin) để phân loại commands của users và admin
         commands = [
             # --- CÁC LỆNH CỐT LÕI ---
             ("start", "🏠 Mở Dashboard chính"),
             ("help", "📘 Hướng dẫn nhanh"),
-            ("admin", "(admin) Mở Dashboard Admin"),
-            ("restore_core", "(admin) Khôi phục dữ liệu core từ file backup"),
-            ("agent", "(admin) macro|biz|tech|all - Kích hoạt Agent chuyên dụng"),
-            ("agentlog", "(admin) macro|biz|tech|all - Xem log hoạt động Agent"),
         ]
-   
-        # Tách commands
-        user_cmds = [(c, d) for c, d in commands if "(admin)" not in d]
-        admin_cmds = commands
 
         # 1) Set commands cho USERS: tất cả private chats
         await app.bot.set_my_commands(
-            [BotCommand(cmd, desc) for cmd, desc in user_cmds],
+            [BotCommand(cmd, desc) for cmd, desc in commands],
             scope=BotCommandScopeAllPrivateChats(),
-        )
-
-        # 2) Set commands cho ADMIN: private chat 1088200599
-        await app.bot.set_my_commands(
-            [BotCommand(cmd, desc) for cmd, desc in admin_cmds],
-            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
         )
 
         log.info(f"[{instance_id}] ✅ Đã đăng ký danh sách lệnh Telegram thành công.")
 
     except Exception as e:
         log.warning(f"[{instance_id}] Lỗi khi set_my_commands: {e}")
-
-    try:
-        # Tác vụ 2: Gửi thông báo cho admin (blocking I/O + network)
-        if admin_id:
-            # Chạy các hàm blocking trong thread riêng
-            def _build_admin_message():
-                # Lấy thông tin hệ thống (dùng interval=None để không block)
-                cpu_percent = psutil.cpu_percent(interval=0.1) 
-                ram = psutil.virtual_memory()
-                ram_used = ram.used / (1024 * 1024)
-                ram_total = ram.total / (1024 * 1024)
-                uptime_seconds = time.time() - psutil.boot_time()
-                uptime_days = int(uptime_seconds // 86400)
-                uptime_hours = int((uptime_seconds % 86400) // 3600)
-                uptime_mins = int((uptime_seconds % 3600) // 60)
-
-                def progress_bar(percent: float, length: int = 10):
-                    filled = int((percent / 100) * length)
-                    empty = length - filled
-                    return "█" * filled + "░" * empty
-
-                cpu_bar = progress_bar(cpu_percent)
-                ram_percent = (ram_used / ram_total) * 100
-                ram_bar = progress_bar(ram_percent)
-
-                state_text = (
-                    "🟢 Bot đã khởi động và đang *hoạt động bình thường.*"
-                    if initial_active
-                    else "🔴 Bot đã khởi động nhưng đang ở *chế độ bảo trì.*"
-                )
-
-                boot_time = datetime.datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
-
-                auto_on_notice = ""
-                if not initial_active:
-                    auto_on_notice = "✅ *Hệ thống sẽ được kích hoạt trở lại sau 2 phút (auto /on).*"
-
-                git_info = get_git_deploy_info() # <- Đây là blocking call (subprocess)
-
-                parts = [
-                    f"🚀 *Chatbot đã khởi động lại thành công!*\n\n"
-                    f"🕓 Thời gian: {boot_time}\n"
-                    f"{state_text}\n\n"
-                    f"🧠 CPU [{cpu_bar}] {cpu_percent:.1f}%\n"
-                    f"🦾 RAM [{ram_bar}] {ram_percent:.1f}%\n"
-                    f"📡 Uptime server: {uptime_days}d {uptime_hours}h {uptime_mins}m\n"
-                    f"🧩 Instance ID: `{instance_id}`"
-                ]
-
-                if git_info:
-                    parts.append(f"`{git_info}`")
-                if auto_on_notice:
-                    parts.append(auto_on_notice)
-
-                return "\n\n".join(parts)
-
-            # Chạy hàm build message (có I/O) trong thread
-            msg = await asyncio.to_thread(_build_admin_message)
-            
-            # Chạy hàm gửi tin (network) trong thread
-            await asyncio.to_thread(send_msg_to, admin_id, msg)
-            log.info(f"[{instance_id}] Đã gửi thông báo khởi động lại tới admin ({admin_id}).")
-
-    except Exception as e:
-        log.warning(f"[{instance_id}] Lỗi khi gửi thông báo khởi động lại cho admin: {e}")
 
 # ==============================================
 # MAIN (HÀM MAIN MỚI, ĐÃ SỬA LỖI)
@@ -4068,25 +2848,17 @@ async def main():
     tg_app.add_handler(CommandHandler("setting", cmd_setting))
     # tg_app.add_handler(CommandHandler("upgrade", cmd_upgrade))
     # tg_app.add_handler(CommandHandler("trial", cmd_trial))
-    tg_app.add_handler(CommandHandler("agent", cmd_agent))
-    tg_app.add_handler(CommandHandler("agentlog", cmd_agentlog))
-
+        
     # --- ADMIN COMMANDS (Quản trị viên) ---
     # 1. Hệ thống
-    tg_app.add_handler(CommandHandler("admin", cmd_admin)) # Web Dashboard
-    tg_app.add_handler(CommandHandler("restore_core", cmd_restore_core))
-
+     # Web Dashboard
+    
     # Handlers khác
     tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
     tg_app.add_handler(CallbackQueryHandler(handle_quick_button))
 
     # 🆕 Bắt case gửi file JSON + caption /restore_core
-    tg_app.add_handler(
-        MessageHandler(
-            filters.Document.ALL & filters.CaptionRegex(r"^/restore_core(@\w+)?"),
-            cmd_restore_core,
-        )
-    )
+    
 
     tg_app.add_handler(MessageHandler(filters.TEXT, unknown_message))
     
@@ -4096,13 +2868,7 @@ async def main():
 
     log.info(f"[{INSTANCE_ID}] Cấu hình hoàn tất. Khởi động máy chủ và các tác vụ nền...")
 
-    # 🔥 LOAD BLACKLIST VÀO RAM
-    global BANNED_CACHE
-    try:
-        BANNED_CACHE = await asyncio.to_thread(get_banned_users)
-        log.info(f"[{INSTANCE_ID}] ⛔ Đã load {len(BANNED_CACHE)} users vào danh sách chặn (Blacklist).")
-    except Exception as e:
-        log.error(f"[{INSTANCE_ID}] ❌ Lỗi load Blacklist: {e}")
+
 
     # Chạy tất cả các tác vụ song song
     await asyncio.gather(

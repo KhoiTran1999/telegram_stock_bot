@@ -238,64 +238,6 @@ def upsert_user_info(chat_id: int, username: str | None, full_name: str | None):
         conn.commit()
 
 # db_utils.py
-
-def get_admin_dashboard_data():
-    """
-    Lấy dữ liệu tổng hợp cho Admin Dashboard.
-    (ĐÃ CẬP NHẬT: Lấy thêm has_used_trial)
-    """
-    with get_conn() as conn:
-        with conn.cursor(row_factory=rows.dict_row) as cur:
-            # Dùng CTE để hợp nhất mọi nguồn chat_id (users, paid_users, bot_watch)
-            cur.execute("""
-                WITH all_ids AS (
-                    SELECT chat_id FROM users
-                    UNION
-                    SELECT chat_id FROM paid_users
-                    UNION
-                    SELECT chat_id FROM bot_watch
-                )
-                SELECT 
-                    ids.chat_id as id,
-                    COALESCE(u.full_name, u.username, 'User ' || ids.chat_id::text) as name,
-                    u.username,
-                    u.admin_note,
-                    COALESCE(u.is_banned, FALSE) as is_banned,
-                    
-                    -- [MỚI] Lấy trạng thái đã dùng thử hay chưa
-                    COALESCE(u.has_used_trial, FALSE) as has_used_trial,
-                    
-                    -- Thông tin Pro
-                    p.expiry_date,
-                    p.plan_name, -- Lấy thêm plan_name để biết là gói 'trial' hay 'pro'
-                    CASE WHEN p.expiry_date > NOW() THEN true ELSE false END as is_pro,
-                    CASE WHEN p.expiry_date <= NOW() AND p.expiry_date IS NOT NULL THEN true ELSE false END as is_expired,
-                    
-                    -- Tính số ngày còn lại
-                    CASE WHEN p.expiry_date IS NOT NULL THEN EXTRACT(DAY FROM (p.expiry_date - NOW()))::int ELSE NULL END as days_left,
-                    
-                    -- Watchlist
-                    COALESCE(w.watch_list, '[]'::jsonb) as watchlist
-                    
-                FROM all_ids ids
-                LEFT JOIN users u ON u.chat_id = ids.chat_id
-                LEFT JOIN paid_users p ON p.chat_id = ids.chat_id
-                LEFT JOIN bot_watch w ON w.chat_id = ids.chat_id
-                ORDER BY COALESCE(u.last_active_at, p.expiry_date, NOW() - INTERVAL '365 days') DESC
-            """)
-            return cur.fetchall()
-
-def update_user_admin_note(chat_id: int, note: str):
-    """Cập nhật ghi chú của admin cho user"""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE users
-                SET admin_note = %s
-                WHERE chat_id = %s
-            """, (note, chat_id))
-        conn.commit()
-
 # ==========================================
 # WATCHLIST
 # ==========================================
@@ -503,15 +445,10 @@ def set_bot_active(active: bool):
 # ==========================================
 # LOG COMMAND
 # ==========================================
-def log_command_usage(chat_id: int, command: str, admin_id: int | None = None, note: str | None = None):
+def log_command_usage(chat_id: int, command: str, note: str | None = None):
     """
     Ghi log sử dụng lệnh.
-    CẬP NHẬT: Thêm tham số `note` để lưu nội dung chat hoặc tham số lệnh.
-    Nếu admin_id được truyền vào và chat_id == admin_id -> bỏ qua.
     """
-    if admin_id is not None and chat_id == admin_id:
-        return
-
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1450,31 +1387,6 @@ def list_user_contributions(user_id: int, limit: int = 10, offset: int = 0) -> d
             
             return {'rows': rows_data, 'total': total}
         
-def list_pending_notes_for_admin(limit: int = 10, offset: int = 0) -> dict:
-    """
-    Lấy danh sách chờ duyệt cho Admin (Hỗ trợ phân trang).
-    FIX LỖI: takes 0 positional arguments but 2 were given
-    """
-    with get_conn() as conn:
-        with conn.cursor(row_factory=rows.dict_row) as cur:
-            cur.execute("""
-                SELECT 
-                    s.id, s.symbol, s.note, s.status, s.expires_at, s.created_at,
-                    s.submitted_by,
-                    COALESCE(u.full_name, u.username, 'User ' || s.submitted_by::text) as contributor_name,
-                    COUNT(*) OVER() as total_count
-                FROM stock_personalization s
-                LEFT JOIN users u ON s.submitted_by = u.chat_id
-                WHERE s.status = 'PENDING'
-                ORDER BY s.created_at ASC
-                LIMIT %s OFFSET %s
-            """, (limit, offset))
-            rows_data = cur.fetchall()
-            
-            total = rows_data[0]['total_count'] if rows_data else 0
-            
-            return {'rows': rows_data, 'total': total}
-
 def get_personalization_note_by_id(note_id: int) -> dict | None:
     """Lấy chi tiết 1 note để check quyền sở hữu và trạng thái"""
     with get_conn() as conn:
