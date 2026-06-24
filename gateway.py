@@ -2732,7 +2732,7 @@ async def run_telegram_processing():
 async def asgi_wrapper_app(scope, receive, send):
     global wsgi_app, log, tg_app, IS_PRODUCTION
     global BACKGROUND_TASKS, MAIN_LOOP
-    global ADMIN_ID, initial_active, INSTANCE_ID
+    global initial_active, INSTANCE_ID
  
     if scope["type"] == "lifespan":
         while True:
