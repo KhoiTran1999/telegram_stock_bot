@@ -396,6 +396,8 @@ _market_data = {
 
 # Biến chặn VCI theo ngày
 _vci_blocked_date = None
+_vci_consecutive_errors = 0
+_vci_cooldown_until = None
 
 # Logging
 logging.basicConfig(
@@ -2086,10 +2088,10 @@ def fetch_rss_entries_for_urls(urls: list[str]) -> list[dict[str, Any]]:
 
 async def fetch_data_smart(symbols: list):
     """
-    [FIXED] Chỉ sử dụng nguồn VCI. 
+    [FIXED] Chỉ sử dụng nguồn VCI.
     Tự động xử lý giá cho Cổ phiếu (price_board) và Index (history 1m).
     """
-    global _vci_blocked_date
+    global _vci_blocked_date, _vci_consecutive_errors, _vci_cooldown_until
     results = {}
     vn_tz = pytz.timezone(TIMEZONE)
     now = datetime.datetime.now(vn_tz)
@@ -2102,8 +2104,11 @@ async def fetch_data_smart(symbols: list):
         if 0 < p < 500: return p * 1000.0
         return p
 
-    # Nếu VCI bị chặn IP trong ngày hôm nay, tạm dừng để tránh spam
+    # Nếu VCI bị chặn IP trong ngày hôm nay hoặc đang cooldown, tạm dừng để tránh spam
     if _vci_blocked_date == today_date:
+        return results
+
+    if _vci_cooldown_until and now < _vci_cooldown_until:
         return results
 
     try:
@@ -2111,23 +2116,23 @@ async def fetch_data_smart(symbols: list):
         def _run_vci_board():
             t = Trading(symbol='VNINDEX', source='VCI')
             return t.price_board(symbols)
-        
+
         df_board = await asyncio.wait_for(asyncio.to_thread(_run_vci_board), timeout=15.0)
-        
+
         if df_board is not None and not df_board.empty:
             for _, row in df_board.iterrows():
                 try:
                     # Xử lý lấy Symbol linh hoạt
                     sym = str(row.get(('listing', 'symbol'), row.get('symbol', ''))).upper().strip()
                     if not sym: continue
-                    
+
                     # Ưu tiên lấy giá khớp, nếu bằng 0 lấy giá tham chiếu
-                    match_p = _norm_price(row.get('close_price'))
+                    match_p = _norm_price(row.get(('match', 'match_price'), row.get('close_price')))
                     ref_p = _norm_price(row.get(('listing', 'ref_price')))
-                    
-                    if match_p == 0 and ref_p > 0: 
+
+                    if match_p == 0 and ref_p > 0:
                         match_p = ref_p
-                    
+
                     pct = ((match_p - ref_p) / ref_p * 100) if ref_p > 0 else 0.0
                     results[sym] = {"price": match_p, "pct": pct}
                 except: continue
@@ -2135,31 +2140,40 @@ async def fetch_data_smart(symbols: list):
         # 2. XỬ LÝ RIÊNG CHO INDEX HOẶC MÃ BỊ THIẾU (Dùng History 1m)
         # Các mã Index (VNINDEX, VN30...) thường trả về 0 ở price_board của VCI
         missing_or_index = [s for s in symbols if s in ['VNINDEX', 'VN30', 'VN30F1M'] or s not in results or results[s]["price"] == 0]
-        
+
         if missing_or_index:
             for sym in missing_or_index:
                 try:
                     q = Quote(symbol=sym, source='VCI')
                     # Lấy nến 1 phút mới nhất
                     df_1m = await asyncio.to_thread(q.history, start=today_str, end=today_str, interval='1m')
-                    
+
                     if df_1m is not None and not df_1m.empty:
                         curr_p = float(df_1m.iloc[-1]['close'])
                         if sym not in ['VNINDEX', 'VN30', 'VN30F1M'] and curr_p < 500:
                             curr_p *= 1000
-                            
+
                         # Nếu đã có ref_p từ board thì giữ, không thì coi như pct = 0 hoặc lấy từ nến ngày (nếu cần)
                         old_ref = results.get(sym, {}).get("pct", 0) # Tạm giữ pct cũ nếu có
                         results[sym] = {"price": curr_p, "pct": old_ref}
                 except: continue
 
+        # Reset lỗi liên tiếp khi chạy thành công (hoặc không ném ngoại lệ)
+        _vci_consecutive_errors = 0
+
     except Exception as e:
         # Nếu bị lỗi Rate Limit (thường là 429), đánh dấu để switch sang nghỉ ngơi
         if "429" in str(e) or "Rate limit" in str(e):
             _vci_blocked_date = today_date
-            log.warning(f"[{INSTANCE_ID}] VCI Rate Limit. Tạm dừng fetcher trong ngày hôm nay.")
-        log.error(f"[{INSTANCE_ID}] fetch_data_smart Error: {e}")
-        
+            log.warning(f"[{INSTANCE_ID}] VCI Rate Limit. Tạm dừng fetcher trong ngày hôm nay. Chi tiết: {e}")
+        else:
+            _vci_consecutive_errors += 1
+            if _vci_consecutive_errors >= 3:
+                _vci_cooldown_until = now + datetime.timedelta(minutes=5)
+                log.warning(f"[{INSTANCE_ID}] VCI lỗi liên tiếp {_vci_consecutive_errors} lần. Cooldown 5 phút tới {_vci_cooldown_until.strftime('%H:%M:%S')}. Chi tiết lỗi: {e}")
+            else:
+                log.warning(f"[{INSTANCE_ID}] fetch_data_smart VCI lỗi mạng/timeout ({_vci_consecutive_errors}/3): {e}")
+
     return results
 
 # --- LOOP 1: FETCHER (Lấy giá) ---
@@ -2440,6 +2454,11 @@ async def market_monitor_fetcher_loop():
         if not in_session_vietnam():
             next_start = next_session_start(now)
             await asyncio.sleep((next_start - now).total_seconds())
+            continue
+
+        # Kiểm tra nếu VCI đang bị chặn hoặc trong trạng thái cooldown
+        if _vci_blocked_date == now.date() or (_vci_cooldown_until and now < _vci_cooldown_until):
+            await asyncio.sleep(10)
             continue
 
         try:
