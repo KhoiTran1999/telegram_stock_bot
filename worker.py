@@ -1786,6 +1786,116 @@ def next_session_start(now):
         
     return now + datetime.timedelta(seconds=60)
 
+
+from profile_cache import make_profile_cache_key, save_profile_to_redis
+
+
+def call_gemini_for_profile(symbol: str) -> str:
+    """
+    (PHIÊN BẢN WORKER) Gọi Gemini tạo hồ sơ doanh nghiệp.
+    """
+    sym = symbol.upper().strip()
+    log.info(f"[{INSTANCE_ID}] Gọi Gemini (Profile): {sym}")
+
+    prompt = f"""
+Hãy tạo một "Hồ sơ Doanh nghiệp" chi tiết cho mã cổ phiếu: {sym}
+
+YÊU CẦU FORMAT:
+Trả về **JSON thuần** (RFC 8259). Cấu trúc bắt buộc gồm các keys sau:
+{{
+  "overview": "...",
+  "products": "...",
+  "business_model": "...",
+  "market_position": "...",
+  "value_chain": "...",
+  "moat": "...",
+  "risks": "...",
+  "leadership": "..."
+}}
+
+YÊU CẦU NỘI DUNG:
+- Các trường nội dung phải trình bày gãy gọn, dùng ký tự xuống dòng (\\n) và gạch đầu dòng (•) để tách ý.
+- Giọng văn khách quan, KHÔNG khuyến nghị mua bán.
+- JSON không được chứa lỗi cú pháp (trailing comma, unescaped quotes).
+"""
+
+    try:
+        raw_text = call_gemini_safe(
+            model_id="gemini-2.5-flash", # Dùng Flash cho nhanh
+            contents=prompt,
+            config={'response_mime_type': 'application/json'}
+        )
+
+        # Làm sạch JSON bằng hàm Regex đã có
+        return extract_json_from_text(raw_text)
+
+    except Exception as e:
+        log.error(f"[{INSTANCE_ID}] Lỗi Gemini Profile: {e}")
+        raise e
+
+
+async def process_profile_for_user(chat_id, symbol, loading_msg_id=None):
+    """
+    Xử lý logic Hồ sơ doanh nghiệp: Gọi AI -> Cache -> Trả kết quả.
+    """
+    try:
+        sym = symbol.upper()
+        cache_key = make_profile_cache_key(sym)
+
+        # 1. Gọi AI
+        json_text = await asyncio.to_thread(call_gemini_for_profile, sym)
+
+        # 2. Lưu Cache
+        save_profile_to_redis(cache_key, json_text, source="on_demand")
+
+        # --- [MỚI] 3. Cập nhật Queue Crawler ---
+        # Để báo cho Crawler biết mã này vừa mới được làm xong, không cần làm lại nữa.
+        try:
+            r = ensure_redis_client()
+            if r:
+                vn_tz = pytz.timezone(TIMEZONE)
+                now_ts = datetime.datetime.now(vn_tz).timestamp()
+
+                # Cập nhật Score = NOW
+                r.zadd("profile_crawl_queue", {sym: now_ts})
+                # log.info(f"[{INSTANCE_ID}] Đã update ZSET cho {sym} từ yêu cầu user.")
+        except Exception as e:
+            log.error(f"Lỗi update ZSET on-demand {sym}: {e}")
+        # ---------------------------------------
+
+        # 3. Tạo Web App Link
+        web_url = f"{BASE_URL}/info/{sym}?chat_id={chat_id}"
+
+        # 4. Tạo Nút Bấm (Dọc)
+        kb = {
+            "inline_keyboard": [
+                [{"text": f"📄 Mở Hồ Sơ {sym}", "web_app": {"url": web_url}}],
+                [{"text": "❌ Đóng", "callback_data": "close_msg"}]
+            ]
+        }
+
+        # 5. Gửi kết quả (SỬA tin nhắn loading cũ)
+        push_telegram_msg(
+            chat_id=chat_id,
+            text=f"✅ **Hồ sơ doanh nghiệp: {sym}**\nĐã phân tích xong mô hình kinh doanh & vị thế.",
+            reply_markup=kb,
+            msg_type="INFO_RESULT",
+            edit_id=loading_msg_id # <--- Quan trọng để sửa tin nhắn cũ
+        )
+
+        log.info(f"[{INSTANCE_ID}] Đã gửi Profile {sym} cho {chat_id}")
+
+    except Exception as e:
+        log.error(f"Profile Process Error: {e}")
+        # Báo lỗi cho user (Sửa tin loading thành báo lỗi)
+        push_telegram_msg(
+            chat_id=chat_id,
+            text=f"⚠️ Không thể lấy hồ sơ mã {symbol}. Vui lòng thử lại sau.",
+            msg_type="ERROR",
+            edit_id=loading_msg_id
+        )
+
+
 async def worker_inbound_loop():
     """[WORKER] Lắng nghe lệnh từ Gateway (ví dụ: User gõ /report)."""
     global r_client
@@ -1852,8 +1962,6 @@ async def worker_inbound_loop():
                                     push_task_unlock_signal(chat_id)
 
                             asyncio.create_task(_run_info_task())
-
-                            asyncio.create_task(process_screener_view(chat_id, loading_id))
 
                         # elif cmd == "FORCE_SCREENER":
                         #     admin_id = payload.get('admin_id')
