@@ -62,9 +62,9 @@ graph TD
 
 | Loop | Tần suất | Mô tả |
 | --- | --- | --- |
-| `stock_price_fetcher_loop` | ~20s | Đồng bộ bảng giá watchlist, lưu cache cục bộ `_stock_current_price_cache` và chuẩn hóa dữ liệu cho alert. |
+| `stock_price_fetcher_loop` | ~20s | Đồng bộ bảng giá watchlist, lưu cache cục bộ `_stock_current_price_cache` và chuẩn hóa dữ liệu cho alert. Tự động cooldown 5 phút nếu lỗi VCI liên tiếp 3 lần. |
 | `alert_loop` | ~10s | So sánh giá hiện tại với anchor để bắn stock alert ±2% (tôn trọng user bật/tắt trong DB). |
-| `market_monitor_fetcher_loop` | 5–10s tùy chỉ số | Lấy VN30F1M/VNINDEX/VN30 từ `Trading.price_board` và đặt `anchor/ref`. |
+| `market_monitor_fetcher_loop` | 5–10s tùy chỉ số | Lấy VN30F1M/VNINDEX/VN30 từ `Trading.price_board` (sử dụng MultiIndex mapping của VCI). Tự động skip khi VCI bị block hoặc cooldown. |
 | `market_monitor_alert_loop` | 10s | Xử lý logic cảnh báo chung, gửi câu quote vui tùy trạng thái. |
 | `worker_inbound_loop` | liên tục | Lắng nghe Redis channel `worker_inbound`, route các tác vụ Gateway (AI report, agent, cache purge, force update...). |
 
@@ -116,6 +116,9 @@ telegram_stock_bot/
 - Telegram Bot Token (`@BotFather`).
 - Google Gemini API key (`google-genai` SDK). Có thể khai báo thêm `GEMINI_API_KEY_2`, `_3`... cho fallback.
 - Optional: SePay token + thông tin QR nếu muốn auto-provision gói Pro.
+
+### Lưu ý quan trọng về vnstock
+Dự án hiện đang sử dụng **vnstock 3.3.0** (Vnstock v3 API). KHÔNG sử dụng cú pháp vnstock v4 (ví dụ `Market().equity()`) vì cấu trúc cột trong DataFrame trả về khác biệt. Các hàm lấy dữ liệu thị trường từ VCI truy xuất cột qua MultiIndex tuple keys (như `('match', 'match_price')`). Do đó, nếu gặp lỗi kết nối/quá tải VCI, hãy kiểm tra lại định dạng cột thay vì giả định API của v4.
 
 ### Cài đặt
 
