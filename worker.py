@@ -467,6 +467,9 @@ openai_async_client = AsyncOpenAI(
     base_url="https://khoitran1999-claude-server.hf.space/v1"
 )
 
+MODEL_BRAIN = os.getenv("AI_MODEL_BRAIN", "gemini-2.5-pro")
+MODEL_WORKER = os.getenv("AI_MODEL_WORKER", "gemini-2.0-flash-lite")
+
 def prepare_personalization_keys(symbols: list[str]) -> list[str]:
     """
     Từ danh sách mã cổ phiếu (VD: ['HPG', 'VCB'])
@@ -3673,6 +3676,110 @@ async def try_send_cached_report(
     except Exception as exc:
         log.error(f"[{INSTANCE_ID}] ❌ Lỗi gửi cache report {cache_key}: {exc}")
         return False
+
+
+def job_listener(event):
+    try:
+        if event.exception:
+            error_msg = f"🚨 **WORKER CRITICAL ERROR**\nJob ID: `{event.job_id}`\nLỗi: `{event.exception}`"
+            log.error(error_msg)
+            push_telegram_msg(ADMIN_ID, error_msg, msg_type="SYSTEM_MSG")
+        elif event.code == EVENT_JOB_MISSED:
+            warning_msg = f"⚠️ **MISSED JOB**: Job `{event.job_id}` đã bị bỏ qua do quá hạn."
+            log.warning(warning_msg)
+            push_telegram_msg(ADMIN_ID, warning_msg, msg_type="SYSTEM_MSG")
+    except Exception as e:
+        log.error(f"Lỗi trong job_listener: {e}")
+
+
+async def run_worker_runtime():
+    log.info(f"[{INSTANCE_ID}] Worker starting (Advanced APScheduler Mode)...")
+
+    # --- 1. CẤU HÌNH REDIS JOB STORE ---
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    if redis_url.startswith("redis://") and "?" not in redis_url and "localhost" not in redis_url and "127.0.0.1" not in redis_url:
+        redis_url = "rediss://" + redis_url[8:]
+
+    connection_kwargs = {}
+    if redis_url.startswith("rediss://"):
+        connection_kwargs["ssl_cert_reqs"] = "none"
+
+    pool = redis.ConnectionPool.from_url(
+        redis_url,
+        **connection_kwargs
+    )
+
+    jobstores = {
+        'default': RedisJobStore(
+            jobs_key='apscheduler.jobs',
+            run_times_key='apscheduler.run_times',
+            connection_pool=pool
+        )
+    }
+
+    job_defaults = {
+        'coalesce': True,
+        'max_instances': 1,
+        'misfire_grace_time': 600
+    }
+
+    scheduler = AsyncIOScheduler(
+        jobstores=jobstores,
+        job_defaults=job_defaults,
+        timezone=TIMEZONE
+    )
+
+    scheduler.add_listener(job_listener, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
+
+    # A. Quét Tin tức (06:00, 18:00)
+    scheduler.add_job(job_scan_news, 'cron', hour='6,18', args=["MACRO"], id='news_macro', replace_existing=True)
+    scheduler.add_job(job_scan_news, 'cron', hour='6,18', args=["SPECIALIZED"], id='news_spec', replace_existing=True)
+
+    # B. Dọn dẹp (03:30)
+    scheduler.add_job(job_maintenance, 'cron', hour=3, minute=30, id='maintenance_daily', replace_existing=True)
+
+    # C. Thông báo Phiên (Session Notices)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=9, minute=10, args=["⏰ Phiên sáng sắp mở lúc 09:15. Bạn tranh thủ xem lại danh mục nhé."], id='notice_open_am', replace_existing=True)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=11, minute=25, args=["🔔 Phiên sáng sắp kết thúc lúc 11:30."], id='notice_close_am', replace_existing=True)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=12, minute=55, args=["⏰ Phiên chiều sắp mở lúc 13:00. Chuẩn bị chiến đấu tiếp nhé!"], id='notice_open_pm', replace_existing=True)
+    scheduler.add_job(job_session_notice, 'cron', day_of_week='mon-fri', hour=14, minute=40, args=["🔔 Phiên chiều sắp kết thúc (14:45). Kiểm tra lại các lệnh ATC nhé."], id='notice_close_pm', replace_existing=True)
+
+    # D. EOD Summary (15:00)
+    scheduler.add_job(job_eod_summary, 'cron', day_of_week='mon-fri', hour=15, minute=0, id='eod_summary', replace_existing=True)
+
+    # E. Báo cáo CSKH AI Monthly (08:00 ngày 1 hàng tháng)
+    scheduler.add_job(job_monthly_cskh_report, 'cron', day=1, hour=8, minute=0, id='monthly_insight', replace_existing=True)
+
+    # Bắt đầu Scheduler
+    scheduler.start()
+    log.info("✅ APScheduler đã kích hoạt các tác vụ định kỳ.")
+
+    # Sync 1 lần lúc khởi động
+    try:
+        await asyncio.to_thread(sync_sectors_to_redis)
+    except Exception as e:
+        log.error(f"Sync Sector Error: {e}")
+
+    # Chạy song song các loop chính
+    try:
+        await asyncio.gather(
+            stock_price_fetcher_loop(),
+            alert_loop(),
+            market_monitor_fetcher_loop(),
+            market_monitor_alert_loop(),
+            worker_inbound_loop(),
+        )
+    except asyncio.CancelledError:
+        log.info(f"[{INSTANCE_ID}] Worker runtime cancelled. Shutting down gracefully...")
+        raise
+    finally:
+        try:
+            scheduler.shutdown(wait=False)
+            log.info(f"[{INSTANCE_ID}] Scheduler stopped.")
+        except Exception as exc:
+            log.warning(f"[{INSTANCE_ID}] Scheduler shutdown error: {exc}")
+
 
 async def main():
     config = Config()
