@@ -1821,7 +1821,7 @@ YÊU CẦU NỘI DUNG:
 
     try:
         raw_text = call_gemini_safe(
-            model_id="gemini-2.5-flash", # Dùng Flash cho nhanh
+            model_id=MODEL_WORKER, # Dùng Flash cho nhanh
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
