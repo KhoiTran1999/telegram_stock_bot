@@ -215,7 +215,7 @@ async def get_flash_view_data(symbol: str):
             board = t.price_board([symbol])
             if board is not None and not board.empty:
                 row = board.iloc[0]
-                return float(row.get('reference_price', 0))
+                return float(row.get(('listing', 'ref_price'), row.get('reference_price', 0)))
             return None
 
         true_ref = await asyncio.to_thread(_get_true_ref)

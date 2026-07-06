@@ -305,6 +305,17 @@ _stock_current_watch_cache = {}
 _stock_alert_disabled_cache = set()
 _tech_alert_summary_cache: dict[str, dict[str, Any]] = {}
 
+ALERT_FUN_LINES_UP = [
+    "🚀 Bảng điện xanh rì – giữ vững tinh thần!",
+    "🌱 Dòng tiền đang ủng hộ, đừng vội rời trận.",
+    "💹 Khối ngoại gom hàng, ta cũng không thể đứng ngoài!",
+]
+ALERT_FUN_LINES_DOWN = [
+    "🧯 Đỏ quá thì nhấp cafe bình tĩnh đã nhé.",
+    "🛑 Giữ tiền quan trọng hơn giữ cảm xúc, hít thở sâu nào.",
+    "📉 Sóng gió tạm thời, quản trị rủi ro trước đã!",
+]
+
 # --- CẤU HÌNH MARKET MONITOR (VN30F1M, VNINDEX, VN30) ---
 MARKET_MONITORS = {
     "VN30F1M": {
